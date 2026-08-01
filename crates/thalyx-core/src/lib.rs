@@ -57,6 +57,9 @@ pub enum CoreError {
     Manifest(#[from] thalyx_manifest::ManifestError),
 
     #[error(transparent)]
+    Contract(#[from] thalyx_contract::ContractError),
+
+    #[error(transparent)]
     Journal(#[from] thalyx_journal::JournalError),
 
     #[error("bundle is malformed: {0}")]

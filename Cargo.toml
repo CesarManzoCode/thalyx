@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/thalyx-manifest",
     "crates/thalyx-parser",
+    "crates/thalyx-contract",
     "crates/thalyx-graph",
     "crates/thalyx-journal",
     "crates/thalyx-core",
@@ -19,6 +20,7 @@ repository = "https://github.com/CesarManzoCode/thalyx"
 [workspace.dependencies]
 thalyx-manifest = { path = "crates/thalyx-manifest" }
 thalyx-parser = { path = "crates/thalyx-parser" }
+thalyx-contract = { path = "crates/thalyx-contract" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }

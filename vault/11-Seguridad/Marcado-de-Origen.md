@@ -41,6 +41,16 @@ El marcado de origen, en cambio, es **mecánicamente verificable**. No requiere 
 
 El marcado tiene que existir desde la primera versión del contrato. Retrofitearlo es mucho más caro que construirlo: obliga a rehacer el pipeline entero de generación para que cada campo arrastre su procedencia, y hasta entonces cada campo sin origen conocido es indistinguible de uno comprometido.
 
+## Reglas que la implementación añadió
+
+Al construirlo aparecieron tres precisiones que el decreto no tenía:
+
+**Un origen ausente se rechaza.** Un campo cuya procedencia nunca se registró y uno cuya procedencia fue borrada son indistinguibles desde el núcleo. Tratar la ausencia como confiable convertiría todo el mecanismo en opcional para quien quiera evadirlo.
+
+**El orden es parte de la garantía.** La validación de procedencia corre antes de abrir el paquete, antes de descargar nada, antes de cualquier E/S. Todo lo que el núcleo haga antes de decidir si un contrato es admisible es trabajo que el atacante obtuvo gratis.
+
+**El journal registra el origen menos confiable, no el más.** Un contrato vale lo que vale su campo más débil, y una auditoría necesita leer el piso, no el techo.
+
 ## Relacionado
 - [[Modelo-de-Amenaza]]
 - [[Contrato-Estructurado]]

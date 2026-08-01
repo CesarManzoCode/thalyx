@@ -19,6 +19,7 @@ use crate::store::Store;
 use crate::trusted_path::CapabilityPrompt;
 use crate::{CoreError, RUNTIME_VERSION, Result};
 use std::path::Path;
+use thalyx_contract::{Contract, Operation};
 use thalyx_journal::{Entry, Journal, Origin, Outcome};
 use thalyx_manifest::{Distribution, Manifest};
 
@@ -50,15 +51,22 @@ impl Confirmer for AllowAll {
 
 pub struct InstallRequest<'a> {
     pub bundle_path: &'a Path,
-    /// Ties the whole operation together: the pending grants, the journal
-    /// entry, and the audit trail all carry it.
-    pub request_id: String,
-    /// Where the fields that drive this operation came from.
+    /// The contract authorising this operation.
     ///
-    /// `UntrustedContent` is refused outright: repository text may inform what
-    /// a user is shown, never what an operation does.
-    /// See `vault/11-Seguridad/Marcado-de-Origen.md`.
-    pub origin: Origin,
+    /// Carries the request id that ties the pending grants and the journal
+    /// entry together, and the per-field provenance the core checks before
+    /// anything else. See `vault/04-Flujo-Canonico/Contrato-Estructurado.md`.
+    pub contract: Contract,
+}
+
+impl InstallRequest<'_> {
+    fn request_id(&self) -> &str {
+        &self.contract.caller.request_id
+    }
+
+    fn origin(&self) -> Origin {
+        self.contract.effective_origin()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,8 +94,8 @@ pub fn install(
                 module_id: Some(outcome.module_id.clone()),
                 version: Some(outcome.version.clone()),
                 outcome: Outcome::Success,
-                request_id: request.request_id.clone(),
-                origin: request.origin,
+                request_id: request.request_id().to_string(),
+                origin: request.origin(),
                 snapshot: None,
                 notes: outcome
                     .replaced
@@ -124,8 +132,8 @@ pub fn install(
                 module_id: None,
                 version: None,
                 outcome,
-                request_id: request.request_id.clone(),
-                origin: request.origin,
+                request_id: request.request_id().to_string(),
+                origin: request.origin(),
                 snapshot: None,
                 notes: vec![],
             });
@@ -143,12 +151,16 @@ fn install_inner(
     // journal never accumulates ambiguity.
     reconcile::reconcile(store)?;
 
-    // Step 4a — origin. A field sourced from untrusted content may never drive
-    // an operation, no matter how well-formed the rest of the request is.
-    if request.origin == Origin::UntrustedContent {
-        return Err(CoreError::MalformedBundle(
-            "operation originated in untrusted content and cannot have effect".to_string(),
-        ));
+    // Step 4a — the contract itself: schema, provenance of every effectful
+    // field, and policy. Runs before the bundle is even opened, so a hostile
+    // contract is refused before it causes any work.
+    request.contract.validate()?;
+
+    if request.contract.operation != Operation::InstallModule {
+        return Err(CoreError::MalformedBundle(format!(
+            "contract operation is `{}`, not install_module",
+            request.contract.operation
+        )));
     }
 
     let bundle = Bundle::read(request.bundle_path)?;
@@ -174,7 +186,11 @@ fn install_inner(
     let mut keystore = Keystore::load(store.keystore_path())?;
     keystore.check(&manifest.id, &manifest.publisher_key)?;
 
-    // Step 4e — runtime requirement.
+    // Step 4e — containment. The manifest is the authority on what a module
+    // may hold; a contract asking for more is refused outright.
+    request.contract.validate_against_manifest(manifest)?;
+
+    // Step 4f — runtime requirement.
     check_runtime(manifest)?;
 
     if store.installed_version(&manifest.id).as_deref() == Some(manifest.version.as_str()) {
@@ -214,7 +230,7 @@ fn install_inner(
     // on any error path is what makes a failed install leave no live grant.
     let pending = PendingGrants::new(
         &manifest.id,
-        &request.request_id,
+        request.request_id(),
         manifest.permissions.clone(),
     );
 
@@ -275,8 +291,8 @@ fn install_inner(
         "install_module",
         &manifest.id,
         &manifest.version,
-        &request.request_id,
-        request.origin,
+        request.request_id(),
+        request.origin(),
     )?;
 
     // Step 11b — the atomic commit. FaultPoint::MidCommit lives inside.

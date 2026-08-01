@@ -1,6 +1,6 @@
 [package]
-name = "thalyx-core"
-description = "Validation, verification, staging and atomic commit"
+name = "thalyx-contract"
+description = "The structured contract, with per-field provenance"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,21 +9,11 @@ repository.workspace = true
 
 [dependencies]
 thalyx-manifest.workspace = true
-thalyx-contract.workspace = true
 thalyx-journal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-hex.workspace = true
-tar.workspace = true
-flate2.workspace = true
-uuid.workspace = true
 semver.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
-thalyx-contract.workspace = true
 
 [lints]
 workspace = true

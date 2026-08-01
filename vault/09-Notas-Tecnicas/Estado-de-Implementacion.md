@@ -26,6 +26,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Registro de permisos con vigencia condicionada | `crates/thalyx-core/permissions.rs` | Completo |
 | Camino confiable | `crates/thalyx-core/trusted_path.rs` | Completo para autorización de capacidades |
 | Puntos de inyección de fallos | `crates/thalyx-core/fault.rs` | Cuatro puntos sobre la ruta de instalación |
+| Contrato con marcado de origen | `crates/thalyx-contract` | Schema v1, procedencia por campo, contención |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | Escrito, **sin probar**: requiere kernel real |
@@ -49,6 +50,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - El filesystem es la verdad: el índice es un caché y **toda consulta devuelve su grado de actualización junto con las filas**, de modo que quien lee no puede olvidarse de la advertencia.
 - El índice falla cerrado: lo que no se puede determinar cuenta como obsoleto.
 - Una referencia que apunta fuera del árbol se conserva sin destino en vez de inventarse uno.
+- Cada campo con efecto del contrato declara su procedencia, y el núcleo rechaza los que vienen de contenido no confiable **antes de abrir nada**.
+- Un origen ausente se rechaza, no se asume confiable.
+- El journal registra el origen **menos** confiable del contrato, no el más.
 
 ## No construido todavía
 
@@ -57,7 +61,6 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-permd` | Conectar la política al mapa BPF; hoy los permisos se registran pero **no se aplican** |
 | `thalyx-sandbox` | Ejecución de módulos en runtime |
 | `thalyx-agent` | Todo el flujo conversacional |
-| Contratos y marcado de origen | [[Contrato-Estructurado]], [[Marcado-de-Origen]] |
 | Snapshots, `rollback` y `restore` | [[Rollback-vs-Restore]] |
 | Memoria persistente | [[Memoria-Persistente]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
@@ -70,7 +73,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ## Pruebas
 
-103 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+129 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

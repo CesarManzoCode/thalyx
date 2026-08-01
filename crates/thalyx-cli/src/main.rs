@@ -11,8 +11,8 @@ mod render;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use thalyx_contract::{Contract, Operation, Origin, Origins};
 use thalyx_core::Store;
-use thalyx_journal::Origin;
 
 #[derive(Parser)]
 #[command(
@@ -167,10 +167,13 @@ fn run_module(
 
     match command {
         ModuleCommand::Install { bundle, yes } => {
+            // The CLI is the human's own route, so every effectful field comes
+            // from what they typed. The agent's contracts will look the same
+            // but carry different provenance — and that is exactly the
+            // distinction the core checks.
             let request = thalyx_core::InstallRequest {
                 bundle_path: &bundle,
-                request_id: new_request_id(),
-                origin: Origin::UserUtterance,
+                contract: install_contract(&bundle),
             };
 
             let mut prompt = render::TerminalConfirmer::new(yes);
@@ -205,6 +208,36 @@ fn default_root() -> PathBuf {
     std::env::var_os("THALYX_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/opt/thalyx"))
+}
+
+/// Build the contract for a human-initiated install.
+///
+/// Permissions are left empty on purpose: the CLI is not claiming to know what
+/// the module wants. The manifest is the authority, and the core confirms its
+/// full set regardless of what the contract mentions.
+fn install_contract(bundle: &std::path::Path) -> Contract {
+    let mut origins = Origins::new();
+    origins
+        .set("operation", Origin::UserUtterance)
+        .set("targets", Origin::UserUtterance)
+        .set("constraint", Origin::UserUtterance)
+        .set("permissions", Origin::SystemState);
+
+    Contract {
+        version: thalyx_contract::SUPPORTED_VERSION.to_string(),
+        operation: Operation::InstallModule,
+        targets: vec![bundle.display().to_string()],
+        constraint: None,
+        permissions: Vec::new(),
+        requires_confirmation: true,
+        sandbox_profile: Some("module_standard".to_string()),
+        rollback: Default::default(),
+        caller: thalyx_contract::Caller {
+            module_id: "thalyx-cli".to_string(),
+            request_id: new_request_id(),
+        },
+        origins,
+    }
 }
 
 /// Ties an operation to its journal entry and its pending permission grants.

@@ -788,11 +788,24 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "thalyx-contract",
  "thalyx-core",
  "thalyx-graph",
  "thalyx-journal",
  "thalyx-manifest",
  "toml",
+]
+
+[[package]]
+name = "thalyx-contract"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "thalyx-journal",
+ "thalyx-manifest",
+ "thiserror",
 ]
 
 [[package]]
@@ -807,6 +820,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "thalyx-contract",
  "thalyx-journal",
  "thalyx-manifest",
  "thiserror",
