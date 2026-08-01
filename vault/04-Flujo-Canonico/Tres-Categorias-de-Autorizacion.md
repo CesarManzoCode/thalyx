@@ -33,11 +33,24 @@ Esta es la categoría **más nueva** y se desprende directamente de la arquitect
 
 Existe una frontera explícita entre **"ejecutado"** e **"instalado oficialmente"**. El éxito de la ejecución del Sandbox no implica automáticamente un cambio permanente del sistema — eso solo ocurre en el commit, después de la verificación del Core.
 
+## Regla común a las tres: el camino confiable
+
+Las tres categorías se presentan al humano **generadas y renderizadas por el Core**, nunca compuestas ni transportadas por el agente. Ver [[Camino-Confiable]].
+
+En el caso de la autorización de capacidades, además, lo que se presenta es el **conjunto completo de permisos del manifiesto**, no solo los que el contrato mencionó. Ver [[Formato-Manifiesto-Thmod]].
+
 ## Por qué importa esta distinción
 
 Evita que el éxito de la ejecución implique automáticamente un cambio permanente del sistema. Es la base conceptual de por qué el flujo tiene una etapa de verificación explícita antes del commit, separada de la ejecución en sí.
 
+## Revisiones
+
+### 2026-08-01 — Se añade la regla del camino confiable
+**Motivo:** las tres categorías estaban bien distinguidas, pero nada decía *quién* le presenta la pregunta al humano. Con el agente fuera de la TCB, esa omisión permitía que el componente no confiable redactara la pregunta sobre la que el soberano decide.
+
 ## Relacionado
+- [[Camino-Confiable]]
+- [[Verificacion-y-Distribucion]]
 - [[Fase-Commit-Atomico]]
 - [[Tres-Tipos-de-Permiso]]
 - [[Flujo-Canonico-Overview]]
