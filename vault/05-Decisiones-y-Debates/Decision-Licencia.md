@@ -31,7 +31,7 @@ Todo contribuyente externo acepta esta doble condición antes de que se acepte s
 
 ## Por qué se decreta ahora y no después
 
-Es la clase de decisión que solo es barata mientras el único titular de derechos de autor sos vos. Cada contribuyente externo que acepta un pull request se convierte en cotitular, y a partir de ahí la licencia deja de ser reversible en la práctica.
+Es la clase de decisión que solo es barata mientras el único titular de derechos de autor eres tú. Cada contribuyente externo que acepta un pull request se convierte en cotitular, y a partir de ahí la licencia deja de ser reversible en la práctica.
 
 ## Relacionado
 - [[Filosofia-Fundacional]]

@@ -1,7 +1,7 @@
 ---
 tipo: pendientes
 estado: activo
-fecha-decreto: 2026-07-31
+fecha-decreto: 2026-08-01
 tags: [pendientes, tareas, roadmap-decisiones]
 ---
 
@@ -11,27 +11,49 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de decreto formal
 
-- [ ] **Mecanismo concreto de resolución de versiones** — qué formato de constraint se acepta (`^2.3`, `~2.3.1`, `latest`, `stable`), cómo se resuelve contra el repo comunitario, cómo se manejan conflictos de dependencias. Ver [[Resolucion-de-Versiones]].
-- [ ] **Formato exacto del manifiesto de módulo (`.thmod`)** — qué campos son obligatorios (nombre, versión, permisos, firma, hash, dependencias), quién define ese schema, cómo se valida. Ver [[Sistema-de-Modulos]].
-- [ ] **Mecanismo de sandboxing en detalle** — qué namespaces se usan, qué seccomp policies, cómo se maneja el acceso a recursos compartidos. Ver [[Sandbox-Ejecucion]].
-- [ ] **Diseño del ISO booteable para Fase 1** — cómo se construye, qué contiene, cómo se arranca en QEMU con un solo comando. Ver [[Condiciones-de-Adopcion]].
+- [ ] **Modelo concreto del agente** — qué modelo local de 3B-7B, con qué prompting y qué router de reglas. No bloquea la Fase 1, pero es el riesgo técnico más grande del proyecto. Ver [[Debate-Agente-Fine-Tuning]].
+- [ ] **Métricas de benchmark concretas** para la Fase 2 — qué se mide exactamente para el índice semántico y los permisos JIT, con qué carga y contra qué línea base. El umbral de decisión ya está decretado, lo que falta es el instrumento. Ver [[Decision-Kernel-vs-Userspace]].
+- [ ] **Técnicas de interpretabilidad** aplicables al agente. Ver [[Interpretabilidad-Mecanicista]].
+- [ ] **Arquitectura del índice semántico a mayor escala** — SQLite alcanza para Fase 1; falta saber a partir de qué volumen deja de alcanzar.
+- [ ] **Sistema de reputación resistente a Sybil** — pospuesto deliberadamente. Ver [[Sistema-Reputacion-Sybil]].
+- [ ] **Dependencias entre módulos y resolver con backtracking** — pospuesto hasta que exista un módulo real que las necesite. Ver [[Resolucion-de-Versiones]].
+- [ ] **Condiciones para habilitar llamadas a modelos remotos** — las reglas ya están escritas; falta decidir cuándo se activan. Ver [[Agente-Conversacional]].
 
-## Ya resueltos (referencia histórica)
+## Resueltos el 2026-08-01
 
-- [x] Re-trazar el caso de "instalar módulo" con build-then-commit — resuelto, ver [[Caso-Instalar-Modulo]].
-- [x] Trazar un caso de fallo/rollback explícito — resuelto, ver [[Caso-Fallo-Rollback]].
-- [x] Decidir si "resolver módulo" es contrato separado o sub-tarea sin contrato — resuelto, ver [[Resolver-vs-Instalar]] (se decidió: sub-tarea sin contrato).
+- [x] **Nombre del sistema y nomenclatura** — Thalyx. Ver [[Nomenclatura-y-Convenciones]].
+- [x] **Licencia** — GPLv3 en userspace, GPLv2 en kernel. Ver [[Decision-Licencia]].
+- [x] **Modelo de amenaza y definición de la TCB** — ver [[Modelo-de-Amenaza]].
+- [x] **Formato exacto del manifiesto `.thmod`** — ver [[Formato-Manifiesto-Thmod]].
+- [x] **Mecanismo de resolución de versiones** — ver [[Resolucion-de-Versiones]].
+- [x] **Mecanismo de sandboxing en detalle** — ver [[Sandbox-Ejecucion]].
+- [x] **Diseño del ISO booteable** — ver [[Construccion-del-ISO]].
+- [x] **Mecanismo real del commit atómico** — ver [[Fase-Commit-Atomico]].
+- [x] **Defensa contra inyección de prompts** — ver [[Marcado-de-Origen]].
+- [x] **Camino confiable para la confirmación humana** — ver [[Camino-Confiable]].
+- [x] **Coherencia entre doble ruta y estado del sistema** — ver [[Coherencia-Doble-Ruta]].
+- [x] **Semántica de rollback frente a restore** — ver [[Rollback-vs-Restore]].
+- [x] **Modelo de concurrencia** — ver [[Concurrencia]].
+- [x] **Criterio de salida de la Fase 1** — ver [[Criterio-de-Salida-Fase-1]].
+- [x] **Estrategia de pruebas** — ver [[Estrategia-de-Pruebas]].
+- [x] **Ubicación de los permisos JIT (kernel vs userspace)** — ver [[Permisos-JIT]].
+- [x] **Modo de actualización del índice en grafo** — ver [[Parser-Mecanico]] y [[Coherencia-Doble-Ruta]].
+- [x] **FUSE dentro o fuera de Fase 1** — fuera. Ver [[Decision-Kernel-vs-Userspace]].
+- [x] **Zona gris del umbral de migración** — ver [[Decision-Kernel-vs-Userspace]].
+- [x] **Filesystem requerido** — Btrfs. Ver [[Journal-y-Snapshots]].
+- [x] **Alcance de la Fase 1** — ver [[Fases-de-Implementacion]].
 
-## Todo lo del documento original que sigue sin tocarse en esta sesión de arquitectura
+## Resueltos antes (referencia histórica)
 
-Estos temas del resumen fundacional del proyecto **siguen abiertos** — la sesión de diseño del flujo canónico no los tocó:
+- [x] Re-trazar el caso de "instalar módulo" con build-then-commit — ver [[Caso-Instalar-Modulo]].
+- [x] Trazar un caso de fallo/rollback explícito — ver [[Caso-Fallo-Rollback]].
+- [x] Decidir si "resolver módulo" es contrato separado o sub-tarea sin contrato — sub-tarea sin contrato. Ver [[Resolver-vs-Instalar]].
 
-- Arquitectura del índice semántico a mayor escala (¿SQLite + FUSE es suficiente o se necesita algo más escalable?)
-- Modelo concreto del agente para fine-tuning (¿qué modelo 3B-7B, qué dataset?) — ver [[Debate-Agente-Fine-Tuning]]
-- Mecanismo del scheduler sin introducir latencia — ver [[Scheduler-Predictivo]]
-- Técnicas de interpretabilidad más prometedoras — ver [[Interpretabilidad-Mecanicista]]
-- Métricas de benchmark concretas para validar mejoras del FS semántico y scheduler
-- Sistema de reputación resistente a Sybil attacks — deliberadamente pospuesto, ver [[Sistema-Reputacion-Sybil]]
+## Lo que sigue sin validarse
+
+**Ningún decreto de esta bóveda ha sido contrastado con una persona ajena al proyecto.** Todo el razonamiento sobre por qué alguien elegiría Thalyx sigue siendo a priori. Ver [[Por-Que-Elegirian-Este-SO]] y [[Riesgo-de-Ejecucion]].
+
+El [[Criterio-de-Salida-Fase-1|criterio de salida de la Fase 1]] está diseñado para forzar ese contacto: no se cierra la fase sin que alguien de fuera use el sistema.
 
 ## Relacionado
 - [[00-Indice/Indice-Principal|Índice principal]]

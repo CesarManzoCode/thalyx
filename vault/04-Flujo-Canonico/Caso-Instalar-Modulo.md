@@ -68,7 +68,7 @@ El texto presenta **el conjunto completo de permisos del manifiesto**, no solo l
 > *`org.publisher.pyassist` v2.3.1 solicita, de forma permanente:*
 > *· salida a red*
 > *· lectura de /home/user/projects*
-> *¿Confirmás?*
+> *¿Confirmas?*
 
 Usuario: *"Sí."*
 
@@ -110,7 +110,7 @@ En el mismo commit. Si no hubiera habido commit, se habrían descartado sin deja
 Ver [[Memoria-Persistente]].
 
 ### 15. Core → Usuario
-*"pyassist-core instalado correctamente. Tiene acceso a red y a tu carpeta de proyectos, como confirmaste. ¿Querés que te ayude a configurarlo?"*
+*"pyassist-core instalado correctamente. Tiene acceso a red y a tu carpeta de proyectos, como confirmaste. ¿Quieres que te ayude a configurarlo?"*
 
 ## Descubrimientos que salieron de este trazado
 

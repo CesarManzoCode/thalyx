@@ -1,0 +1,9 @@
+# Obsidian per-machine state (the shared config is tracked)
+vault/.obsidian/workspace.json
+vault/.obsidian/workspace-mobile.json
+vault/.obsidian/cache/
+vault/.obsidian/plugins/*/data.json
+
+# OS noise
+.DS_Store
+Thumbs.db
