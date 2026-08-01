@@ -1,0 +1,29 @@
+[package]
+name = "thalyx-cli"
+description = "The `thalyx` command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "thalyx"
+path = "src/main.rs"
+
+[dependencies]
+thalyx-core.workspace = true
+thalyx-journal.workspace = true
+thalyx-manifest.workspace = true
+clap.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

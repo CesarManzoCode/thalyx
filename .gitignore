@@ -7,3 +7,7 @@ vault/.obsidian/plugins/*/data.json
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Rust
+/target/
+**/*.rs.bk

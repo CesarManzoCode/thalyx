@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/thalyx-manifest",
+    "crates/thalyx-journal",
+    "crates/thalyx-core",
+    "crates/thalyx-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/CesarManzoCode/thalyx"
+
+[workspace.dependencies]
+thalyx-manifest = { path = "crates/thalyx-manifest" }
+thalyx-journal = { path = "crates/thalyx-journal" }
+thalyx-core = { path = "crates/thalyx-core" }
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+hex = "0.4"
+base64 = "0.22"
+tar = "0.4"
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+semver = "1"
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

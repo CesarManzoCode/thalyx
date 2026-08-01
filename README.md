@@ -4,9 +4,40 @@ An open-source operating system designed from the kernel outward, where AI is a
 first-class citizen rather than one more application, and the human stays
 sovereign.
 
-> **Status: design phase.** There is no code in this repository yet. What exists
-> is the design vault — the record of every decision, why it was made, and what
-> was deliberately deferred.
+> **Status: early Phase 1.** The module install path works end to end —
+> manifest parsing, signature verification, publisher key pinning, atomic
+> commit, journal, permission grants — and the atomicity claim is backed by
+> fault-injection tests rather than asserted. No agent, no LSM, no sandbox yet.
+
+## Try it
+
+```sh
+cargo build
+
+# Publisher side: a key and a signed bundle
+./target/debug/thalyx dev keygen --out publisher.key
+./target/debug/thalyx dev pack ./payload \
+    --manifest manifest.toml --key publisher.key --out demo.thmod
+
+# User side
+export THALYX_ROOT=/tmp/thalyx-demo
+./target/debug/thalyx module install demo.thmod
+./target/debug/thalyx module list
+./target/debug/thalyx permissions
+./target/debug/thalyx journal
+```
+
+To watch the atomic commit survive being killed in its most dangerous instant —
+between the directory rename and the symlink swap:
+
+```sh
+THALYX_FAULT_POINT=mid-commit ./target/debug/thalyx module install demo.thmod --yes
+# process dies with SIGABRT, no unwinding, no cleanup
+
+./target/debug/thalyx module list     # not installed
+./target/debug/thalyx store status    # one inert orphan, store consistent
+./target/debug/thalyx module install demo.thmod   # retry succeeds
+```
 
 ## The idea
 
@@ -45,6 +76,12 @@ contract does. The core revalidates everything it produces.
 ## Repository layout
 
 ```
+crates/
+  thalyx-manifest/  .thmod parsing, validation, ed25519 signatures
+  thalyx-journal/   append-only operation journal
+  thalyx-core/      verification, staging, atomic commit, permissions
+  thalyx-cli/       the `thalyx` binary
+
 vault/          Design vault (Obsidian, Spanish)
   00-Indice/            Entry point — start here
   01-Filosofia/         Founding principles
