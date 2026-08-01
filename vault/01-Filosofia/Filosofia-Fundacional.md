@@ -7,6 +7,8 @@ tags: [filosofia, core, no-negociable]
 
 # Filosofía fundacional
 
+El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
+
 ## Declaración central
 
 > "La IA no debe ser una aplicación más dentro del sistema operativo. Debe ser el mecanismo principal mediante el cual el usuario interactúa con la máquina."
@@ -21,7 +23,7 @@ Un sistema operativo de código abierto donde la inteligencia artificial no es u
 2. **El ser humano sigue siendo el soberano.** La IA ejecuta, pero el humano manda. La IA es una extensión de la voluntad del usuario, no un sustituto. Ver [[Principio-Doble-Ruta]].
 3. **Arquitectura asimétrica.** El sistema tiene dos caras. Una para el humano (interfaz gráfica tradicional, archivos jerárquicos, permisos estáticos) y otra para la IA (API semántica, sistema de archivos en grafo, permisos just-in-time, scheduler predictivo, memoria persistente). Ver [[Arquitectura-Asimetrica]].
 4. **La IA no es un LLM genérico.** El agente es especializado en la API interna del sistema, la documentación, los módulos, los permisos y las políticas. No es un ChatGPT con esteroides; es un traductor de intención que convierte lenguaje natural en acciones de sistema. Ver [[Agente-Conversacional]].
-5. **El sistema no es un producto.** Es código abierto (licencia tipo GPL). No se vende. El modelo de negocio (si llegara a necesitarse) serían servicios, soporte, formación o módulos premium, pero el núcleo y el agente base siempre serán gratuitos.
+5. **El sistema no es un producto.** Es código abierto: GPLv3 en userspace, GPLv2 en los componentes de kernel — ver [[Decision-Licencia]]. No se vende. El modelo de negocio (si llegara a necesitarse) serían servicios, soporte, formación o módulos premium, pero el núcleo y el agente base siempre serán gratuitos.
 6. **El sistema no compite en el escritorio tradicional.** No busca reemplazar Windows en gaming o Adobe. Su nicho inicial son desarrolladores, investigadores y power users que valoran la eficiencia por encima del ocio. Estrategia similar a "Linux primero en servidores".
 
 ## El "por qué" profundo
@@ -30,7 +32,16 @@ El sistema actual (Windows, Linux, macOS) fue diseñado en una era donde los hum
 
 Este sistema revierte esa relación: en lugar de que la IA se adapte al SO, el SO se adapta a la IA. Las primitivas del sistema (permisos, scheduler, sistema de archivos) están diseñadas para que la IA las use de forma nativa, no emulada. El humano sigue viendo una interfaz tradicional, pero por debajo, la IA tiene acceso a un mundo de operaciones que a un humano le serían inútiles o confusas, pero que para ella son naturales.
 
+## Revisiones
+
+### 2026-08-01 — Nombre y licencia
+**Antes:** el sistema no tenía nombre propio y la licencia era "tipo GPL".
+**Ahora:** el sistema se llama Thalyx; la licencia es GPLv3 en userspace y GPLv2 en componentes de kernel.
+**Motivo:** "tipo GPL" no es una licencia, y GPLv3 es incompatible con el kernel Linux, que es GPLv2 únicamente. Ver [[Decision-Licencia]].
+
 ## Relacionado
 - [[Decision-Capa-vs-SO-Nuevo]] — por qué esto no puede ser una capa sobre Linux existente
+- [[Nomenclatura-y-Convenciones]]
+- [[Decision-Licencia]]
 - [[Principio-Doble-Ruta]]
 - [[00-Indice/Indice-Principal|Índice principal]]

@@ -1,6 +1,6 @@
 ---
 tipo: decision
-estado: pospuesto-deliberadamente
+estado: pospuesto
 fecha-decreto: 2026-07-31
 tags: [debate, reputacion, comunidad, primitiva-futura]
 ---

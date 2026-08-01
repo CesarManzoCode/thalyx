@@ -28,7 +28,7 @@ JSON Schema, versión 1.0 para Fase 1.
     "snapshot_id": null
   },
   "caller": {
-    "module_id": "os-assistant",
+    "module_id": "thalyx-agent",
     "request_id": "abc-123"
   }
 }

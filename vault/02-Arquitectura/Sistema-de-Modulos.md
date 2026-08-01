@@ -7,7 +7,7 @@ tags: [arquitectura, modulos, ecosistema]
 
 # El sistema de módulos (el ecosistema)
 
-- Todas las funcionalidades IA son módulos descargables (archivos `.osmod`). El usuario elige qué activar.
+- Todas las funcionalidades IA son módulos descargables (archivos `.thmod`). El usuario elige qué activar.
 - **Distribución descentralizada:** no hay gatekeeper central. Cualquier persona puede crear un módulo y distribuirlo por sus propios medios (web, repositorios personales, foros).
 - **Repositorio comunitario** (estilo AUR/Flathub): existe un repositorio opcional donde los usuarios suben módulos, votan, dejan reseñas y reportan problemas. Los más populares destacan por mérito propio.
 
@@ -22,7 +22,7 @@ tags: [arquitectura, modulos, ecosistema]
 - **Rollback:** el sistema incluye snapshots (Btrfs/ZFS) que permiten revertir cualquier cambio realizado por un módulo o por el agente. Ver [[Journal-y-Snapshots]].
 
 ## Pendiente
-- [[Formato-Manifiesto-Osmod]] — formato exacto del manifiesto `.osmod` (pendiente de decreto)
+- [[Formato-Manifiesto-Osmod]] — formato exacto del manifiesto `.thmod` (pendiente de decreto)
 - [[Sistema-Reputacion-Sybil]] — problema de reputación anti-Sybil (pospuesto deliberadamente)
 
 ## Relacionado

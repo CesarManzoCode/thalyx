@@ -12,7 +12,7 @@ tags: [debate, core-modules, gobernanza]
 
 ## Resolución
 
-Core Modules son el agente base (`os-assistant`), el gestor de archivos, el terminal, y el panel de control. Son **<20 módulos** mantenidos por el equipo central, firmados y verificados.
+Core Modules son el agente base (`thalyx-agent`), el gestor de archivos, el terminal, y el panel de control. Son **<20 módulos** mantenidos por el equipo central, firmados y verificados.
 
 El criterio para que algo entre o salga de esta lista lo decide el **equipo central** (el creador del proyecto, en esta etapa). Es una decisión política, no técnica, y puede evolucionar con el tiempo.
 

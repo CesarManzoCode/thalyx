@@ -22,7 +22,7 @@ Sistema operativo de código abierto, diseñado desde el núcleo hacia afuera, d
 ### 2. Arquitectura general (cómo está construido)
 - [[Arquitectura-Asimetrica]] — cara humana vs. cara IA
 - [[Core-Nucleo]] — el núcleo del sistema
-- [[Sistema-de-Modulos]] — el ecosistema de módulos `.osmod`
+- [[Sistema-de-Modulos]] — el ecosistema de módulos `.thmod`
 - [[Agente-Conversacional]] — el traductor de intención
 - [[Decision-Kernel-vs-Userspace]] — qué vive en el kernel y qué en userspace
 - [[Criterio-de-Inclusion-de-Primitivas]] — el filtro metodológico para decidir qué se construye ahora
@@ -73,7 +73,7 @@ Sistema operativo de código abierto, diseñado desde el núcleo hacia afuera, d
 | Caso "instalar módulo" trazado | ✅ Completo |
 | Caso de fallo trazado | ✅ Completo |
 | Resolución de versiones (mecanismo concreto) | ⚠️ Pendiente |
-| Formato manifiesto `.osmod` | ⚠️ Pendiente |
+| Formato manifiesto `.thmod` | ⚠️ Pendiente |
 | Detalle de sandboxing (namespaces/seccomp) | ⚠️ Pendiente |
 | ISO booteable | ⚠️ Pendiente (diseño) |
 | Agente: modelo/dataset de fine-tuning | ⚠️ Abierto, no bloqueante para Fase 1 |

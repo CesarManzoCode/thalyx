@@ -12,7 +12,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de decreto formal
 
 - [ ] **Mecanismo concreto de resolución de versiones** — qué formato de constraint se acepta (`^2.3`, `~2.3.1`, `latest`, `stable`), cómo se resuelve contra el repo comunitario, cómo se manejan conflictos de dependencias. Ver [[Resolucion-de-Versiones]].
-- [ ] **Formato exacto del manifiesto de módulo (`.osmod`)** — qué campos son obligatorios (nombre, versión, permisos, firma, hash, dependencias), quién define ese schema, cómo se valida. Ver [[Sistema-de-Modulos]].
+- [ ] **Formato exacto del manifiesto de módulo (`.thmod`)** — qué campos son obligatorios (nombre, versión, permisos, firma, hash, dependencias), quién define ese schema, cómo se valida. Ver [[Sistema-de-Modulos]].
 - [ ] **Mecanismo de sandboxing en detalle** — qué namespaces se usan, qué seccomp policies, cómo se maneja el acceso a recursos compartidos. Ver [[Sandbox-Ejecucion]].
 - [ ] **Diseño del ISO booteable para Fase 1** — cómo se construye, qué contiene, cómo se arranca en QEMU con un solo comando. Ver [[Condiciones-de-Adopcion]].
 

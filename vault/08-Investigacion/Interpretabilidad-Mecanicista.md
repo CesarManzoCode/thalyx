@@ -1,6 +1,6 @@
 ---
 tipo: investigacion
-estado: identificado-no-implementado
+estado: pospuesto
 fecha-decreto: 2026-07-31
 tags: [investigacion, interpretabilidad, carrera]
 ---

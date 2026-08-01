@@ -7,7 +7,7 @@ tags: [arquitectura, agente, ia]
 
 # El agente general (Módulo 0, preinstalado)
 
-- **Nombre:** `os-assistant` (tentativo).
+- **Nombre:** `thalyx-agent` (tentativo).
 - **Función:** Traductor de intención. Convierte lenguaje natural en acciones de sistema.
 - **Especialización:** No es un LLM genérico. Está fine-tuneado en la documentación del Core, la API de módulos, la estructura de permisos y los comandos de sistema.
 - **Modelo:** Local, cuantizado (3B-7B) para tareas rutinarias. Para tareas complejas, con consentimiento explícito del usuario, puede llamar a modelos en la nube (Claude/GPT).
@@ -18,7 +18,7 @@ tags: [arquitectura, agente, ia]
 2. Agente: busca en el repo comunitario, filtra por reputación, muestra opciones.
 3. Usuario: "Instala el mejor puntuado."
 4. Agente: descarga, verifica firma (si aplica), pide confirmación de permisos, instala y configura.
-5. El usuario nunca tocó un `.osmod`.
+5. El usuario nunca tocó un `.thmod`.
 
 Ver el trazado completo y actualizado en [[Caso-Instalar-Modulo]].
 

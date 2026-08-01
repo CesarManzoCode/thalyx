@@ -1,6 +1,6 @@
 ---
 tipo: notas-tecnicas
-estado: para-implementacion
+estado: activo
 fecha-decreto: 2026-07-31
 tags: [implementacion, tecnico, referencia-rapida]
 ---
