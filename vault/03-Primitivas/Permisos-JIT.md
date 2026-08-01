@@ -47,8 +47,19 @@ Cualquier permiso persistente sobre red o carpetas de usuario requiere confirmac
 ### Regla de alcance
 Los permisos efectivos de un módulo son exactamente los declarados en su manifiesto. Ver [[Formato-Manifiesto-Thmod]] y la regla de contención en [[Contrato-Estructurado]].
 
-### Regla de orden
-Un permiso confirmado por el usuario se registra en estado **pendiente**, atado al `request_id` del contrato, y se vuelve efectivo únicamente dentro del commit atómico. Si no hay commit, se descarta. Ver [[Fase-Commit-Atomico]].
+### Regla de orden y de vigencia
+
+Un permiso confirmado por el usuario se registra en estado **pendiente**, atado al `request_id` del contrato. Su registro se escribe **antes** del commit, pero **solo tiene fuerza mientras el módulo al que pertenece sea la versión actual**.
+
+Esa condición es lo que hace que el intercambio del enlace simbólico del commit sea el **único punto atómico** que decide a la vez "instalado" y "autorizado". No hay una segunda transición que pueda interrumpirse por separado.
+
+Consecuencias:
+
+- Si el proceso muere antes del commit, el registro queda escrito pero **inerte**: ningún módulo apunta a él, así que no otorga nada.
+- Si muere después, el módulo y sus permisos son consistentes de inmediato, sin depender de ningún paso posterior.
+- Un registro inerte no se muestra nunca como permiso vigente. Mostrarlo sería mentirle al soberano sobre lo que autorizó.
+
+Ver [[Fase-Commit-Atomico]] y [[Estado-de-Implementacion]].
 
 ## Origen de esta distinción
 
@@ -63,6 +74,12 @@ Esta distinción de tres tipos no estaba en el diseño original — surgió al t
 
 ### 2026-08-01 — Se añaden las reglas de alcance y de orden
 **Motivo:** al trazar el caso canónico contra el [[Modelo-de-Amenaza]] se detectó que nada cruzaba los permisos del contrato contra los del manifiesto, y que un permiso persistente podía quedar vivo tras una instalación fallida.
+
+### 2026-08-01 — La vigencia se ata a la versión actual, no al orden de escritura
+**Antes:** el decreto decía que los permisos "se vuelven efectivos únicamente dentro del commit atómico", sin precisar cómo. Al implementarlo quedó claro que no puede hacerse literalmente: el commit publica archivos y el registro de permisos es otro archivo, así que serían dos escrituras, y una de las dos quedaría fuera de la ventana atómica.
+**Ahora:** el registro se escribe antes del commit y su vigencia se condiciona a que el módulo sea la versión actual.
+**Motivo:** escribir los permisos *después* del commit deja una ventana donde el módulo está instalado y no tiene nada; escribirlos antes sin condicionar la vigencia deja un permiso vivo para un módulo que no existe. Condicionar la vigencia elimina ambas: hay un solo punto atómico, el del enlace simbólico, y gobierna las dos cosas.
+**Cómo se descubrió:** al ejecutar el sistema real tras un crash inyectado a mitad del commit. El núcleo filtraba bien, pero la interfaz mostraba dos permisos persistentes de red vigentes para un módulo que no estaba instalado. Ver [[Estrategia-de-Pruebas]].
 
 ## Relacionado
 - [[Caso-Instalar-Modulo]]

@@ -9,6 +9,13 @@ tags: [pendientes, tareas, roadmap-decisiones]
 
 Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el estado en el frontmatter de cada nota enlazada conforme se resuelvan.
 
+> Para saber **qué está construido** en vez de qué está decidido, ver [[Estado-de-Implementacion]].
+
+## Pendientes de implementación
+
+- [ ] **Registro de intención en el journal.** Hoy el journal se escribe después del commit, así que un corte justo después del intercambio del symlink deja el módulo instalado y funcional pero sin registro de la operación. Falta anotar la intención antes de tocar nada y reconciliar al arrancar. Ver [[Fase-Commit-Atomico]].
+- [ ] **Enforcement de permisos.** Los permisos se registran correctamente pero **nadie los aplica** hasta que exista `thalyx-lsm`. Ver [[Estado-de-Implementacion]].
+
 ## Pendientes de decreto formal
 
 - [ ] **Modelo concreto del agente** — qué modelo local de 3B-7B, con qué prompting y qué router de reglas. No bloquea la Fase 1, pero es el riesgo técnico más grande del proyecto. Ver [[Debate-Agente-Fine-Tuning]].

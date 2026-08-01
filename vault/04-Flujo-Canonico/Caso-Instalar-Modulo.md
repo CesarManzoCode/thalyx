@@ -75,7 +75,7 @@ Usuario: *"Sí."*
 *(Si el usuario dice "no" → rama de [[Ramas-de-Fallo|Rechazo]]. No hay acción física, no hay journal, termina ahí.)*
 
 ### 7. Permisos registrados como pendientes
-`thalyx-permd` registra los permisos confirmados en estado **pendiente**, atados al `request_id`. **Todavía no son efectivos.** Ver [[Permisos-JIT]].
+`thalyx-permd` registra los permisos confirmados en estado **pendiente**, atados al `request_id`. **Todavía no son efectivos:** su vigencia está condicionada a que el módulo sea la versión actual, cosa que solo ocurre en el paso 11. Ver [[Permisos-JIT]].
 
 ### 8. Core → Sandbox
 Arma el paquete de ejecución: contrato validado con versión exacta + perfil `module_standard`.
@@ -96,8 +96,8 @@ Recalcula el hash del artefacto **por su cuenta** — no acepta el que reporte e
 
 En el instante del paso 2, el módulo está instalado. Ver [[Fase-Commit-Atomico]].
 
-### 12. Los permisos pendientes se vuelven efectivos
-En el mismo commit. Si no hubiera habido commit, se habrían descartado sin dejar rastro en el registro de permisos activos.
+### 12. Los permisos pendientes pasan a estar vigentes
+En el mismo instante del paso 11, sin ninguna escritura adicional: el registro ya estaba en disco y lo que cambió fue la condición que lo activa. Si el commit no hubiera ocurrido, el registro seguiría ahí pero inerte, sin otorgar nada, y `thalyx store clean` lo retiraría.
 
 ### 13. Core actualiza el índice y el Journal
 - Índice: nodos para los archivos nuevos, etiqueta `module:org.publisher.pyassist`, arista de dependencia hacia el intérprete de Python.

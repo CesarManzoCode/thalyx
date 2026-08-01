@@ -67,7 +67,8 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 - [[Interpretabilidad-Mecanicista]]
 
 ### 10. Notas técnicas
-- [[Notas-Tecnicas-Implementacion]] — referencia rápida para cuando se escriba código
+- [[Estado-de-Implementacion]] — **qué está construido de lo que está decretado**
+- [[Notas-Tecnicas-Implementacion]] — referencia rápida para escribir código
 - [[Estrategia-de-Pruebas]] — tres niveles, con inyección de fallos como obligatorio
 - [[Construccion-del-ISO]] — cómo se construye y se arranca la imagen
 
@@ -75,6 +76,8 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]
 
 ## Estado global del proyecto (snapshot al 1 de agosto de 2026)
+
+El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la ruta de instalación de módulos funciona de punta a punta con la atomicidad respaldada por pruebas de inyección de fallos. Ver [[Estado-de-Implementacion]].
 
 | Área | Estado |
 |---|---|
@@ -95,6 +98,10 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 | Estrategia de pruebas | ✅ Decretado |
 | Diseño del ISO | ✅ Decretado |
 | Casos trazados (feliz y de fallo) | ✅ Completos |
+| Ruta de instalación de módulos | ✅ Implementada y probada |
+| Atomicidad del commit | ✅ Demostrada con inyección de fallos |
+| Registro de intención en el journal | ⚠️ Pendiente (hueco conocido) |
+| Enforcement real de permisos | ⚠️ Se registran, todavía no se aplican |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |
 | Interpretabilidad: técnicas concretas | ⚠️ Abierto |

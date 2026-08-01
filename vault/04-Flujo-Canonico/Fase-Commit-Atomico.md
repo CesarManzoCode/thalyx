@@ -37,7 +37,13 @@ La publicación son dos operaciones, ambas atómicas:
    El destino no existe todavía, así que no hay `ENOTEMPTY`.
 2. Intercambio del enlace simbólico: se crea `<id>/.current.tmp` apuntando a `<version>` y se hace `rename` sobre `<id>/current`.
 
-**El módulo está oficialmente instalado en el instante del paso 2, no antes.** Los permisos confirmados se vuelven efectivos en ese mismo instante — ver [[Permisos-JIT]].
+**El módulo está oficialmente instalado en el instante del paso 2, no antes.** Los permisos confirmados se vuelven efectivos en ese mismo instante, porque su vigencia está condicionada a que el módulo sea la versión actual — ver [[Permisos-JIT]].
+
+### Limpieza de huérfanos antes de publicar
+
+Si ya existe un directorio para esa versión y **no** es el actual, se borra antes del `rename`. Es el residuo de un commit interrumpido: por definición nadie apunta a él, así que nadie puede estar usándolo. Un directorio que sí es el actual nunca llega aquí — instalar sobre una versión viva se rechaza antes.
+
+Sin este paso, reintentar tras un corte a mitad del commit falla con `ENOTEMPTY`: el sistema queda consistente pero irrecuperable sin intervención manual, que en la práctica es igual de inútil que quedar corrupto.
 
 ### Por qué así y no de otra forma
 
@@ -80,6 +86,14 @@ El rollback deja de significar "deshacer archivos parcialmente copiados" (frági
 ## Verificación obligatoria de esta propiedad
 
 La atomicidad es la afirmación central de Thalyx, y no se documenta sin evidencia. El invariante *publicado o no publicado, nunca a medias* se comprueba con tests de inyección de fallos que matan el proceso en cada punto intermedio del commit, incluido el instante entre los dos `rename`. Ver [[Estrategia-de-Pruebas]].
+
+## Hueco conocido: el journal se escribe después del commit
+
+Si el proceso muere justo después del intercambio del enlace simbólico, el módulo queda **instalado y funcional, pero sin entrada en el journal**. El invariante de atomicidad se sostiene —el módulo está publicado, no a medias— pero el registro de la operación se pierde.
+
+La solución es un **registro de intención previo al commit**: anotar "voy a publicar X versión Y" antes de tocar nada, y marcarlo como completado después. Al arrancar, una intención sin completar se reconcilia contra el estado real del disco.
+
+Está pendiente y documentado como tal en [[Tareas-Pendientes]]. Registrarlo importa más que taparlo: un journal que a veces no registra una operación exitosa es peor que uno que declara cuándo puede fallar.
 
 ## Revisiones
 
