@@ -101,6 +101,7 @@ El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la
 | Ruta de instalación de módulos | ✅ Implementada y probada |
 | Atomicidad del commit | ✅ Demostrada con inyección de fallos |
 | Registro de intención en el journal | ✅ Implementado |
+| Índice en grafo y parser mecánico | ✅ Implementados |
 | Enforcement real de permisos | ⚠️ Se registran, todavía no se aplican |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |

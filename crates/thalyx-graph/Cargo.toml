@@ -1,0 +1,21 @@
+[package]
+name = "thalyx-graph"
+description = "The semantic index: files as nodes, dependencies as edges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-parser.workspace = true
+rusqlite.workspace = true
+walkdir.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

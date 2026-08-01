@@ -50,6 +50,14 @@ Que:
 
 Esta operación se ejecuta bajo el lock global del Core — ver [[Concurrencia]].
 
+## Regla de honestidad de las consultas
+
+Toda consulta devuelve las filas **junto con** el grado de actualización del índice. No son dos llamadas: quien quiere los datos recibe la advertencia por obligación.
+
+Hacerlo separable dejaría que se olvidara, que es exactamente cómo un caché empieza a confundirse con la verdad.
+
+Corolario descubierto al implementarlo: **el índice no puede vivir dentro del árbol que indexa**. Un caché que forma parte de su propia entrada nunca puede estar al día, porque escribirlo lo invalida. Está impedido por construcción, no por convención.
+
 ## Actualización durante el flujo canónico
 
 **Solo el Core actualiza el FS en grafo**, nunca el [[Sandbox-Ejecucion|Sandbox]] directamente — ver [[Flujo-Canonico-Overview]] y la corrección de separación de responsabilidades ahí documentada.

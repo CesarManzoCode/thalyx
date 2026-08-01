@@ -26,6 +26,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Registro de permisos con vigencia condicionada | `crates/thalyx-core/permissions.rs` | Completo |
 | Camino confiable | `crates/thalyx-core/trusted_path.rs` | Completo para autorización de capacidades |
 | Puntos de inyección de fallos | `crates/thalyx-core/fault.rs` | Cuatro puntos sobre la ruta de instalación |
+| Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
+| Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | CLI `thalyx` | `crates/thalyx-cli` | `module`, `journal`, `permissions`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
 
@@ -42,12 +44,14 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - El journal declara su propio alcance al mostrarse.
 - Silencio no es consentimiento: sin terminal, la confirmación se rechaza.
 - Una operación interrumpida deja una intención sin resolver, no un vacío, y la reconciliación la resuelve contra el disco.
+- El filesystem es la verdad: el índice es un caché y **toda consulta devuelve su grado de actualización junto con las filas**, de modo que quien lee no puede olvidarse de la advertencia.
+- El índice falla cerrado: lo que no se puede determinar cuenta como obsoleto.
+- Una referencia que apunta fuera del árbol se conserva sin destino en vez de inventarse uno.
 
 ## No construido todavía
 
 | Pieza | Bloqueante para |
 |---|---|
-| Índice en grafo y parser mecánico | [[FS-en-Grafo]], [[Parser-Mecanico]] |
 | `thalyx-lsm` | [[Permisos-JIT]] real; hoy los permisos se registran pero **no se aplican** |
 | `thalyx-permd` | Ídem |
 | `thalyx-sandbox` | Ejecución de módulos en runtime |
@@ -63,7 +67,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ## Pruebas
 
-66 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+103 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

@@ -5,6 +5,7 @@
 //! Everything the agent will be able to do, a human can do here first.
 
 mod dev;
+mod graph;
 mod render;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +35,10 @@ enum Command {
     /// Install, list and remove modules
     #[command(subcommand)]
     Module(ModuleCommand),
+
+    /// Build and query the semantic index
+    #[command(subcommand)]
+    Graph(graph::GraphCommand),
 
     /// Read the operation journal
     Journal {
@@ -95,6 +100,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Module(command) => run_module(&root, command),
+        Command::Graph(command) => {
+            Store::open(&root)?;
+            graph::run(&root, command)
+        }
         Command::Journal { limit } => {
             let store = Store::open(&root)?;
             render::journal(&store, limit)

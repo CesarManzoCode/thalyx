@@ -43,6 +43,12 @@ Re-parsear dentro del hook obligaría a cada escritura del sistema a esperar al 
 **Ahora:** incremental dirigido por los eventos que intercepta `thalyx-lsm`, con batch reservado para arranque y comando manual.
 **Motivo:** el batch puro deja al agente razonando sobre un grafo que puede tener horas de atraso. Con el LSM decretado para Fase 1, interceptar es incremental en costo, y a diferencia de inotify no requiere un watch por directorio ni pierde eventos por overflow. Se conserva del decreto original la propiedad que lo hacía valioso: el parseo sigue siendo determinista y aislado, solo cambia qué lo dispara.
 
+## Lo que el parser no hace: resolver
+
+El parser emite la referencia **tal como está escrita**. Decidir a qué archivo apunta `import foo.bar` no es una pregunta sobre el texto, sino sobre el árbol, y por eso vive en el grafo.
+
+Esa separación resultó valiosa de inmediato al implementarla: la resolución necesitó tres correcciones —recortar el sufijo que nombra un ítem en vez de un archivo, no recortar tanto como para inventar aristas, y tratar `crate` como la raíz— y ninguna tocó el parser.
+
 ## Relacionado
 - [[FS-en-Grafo]]
 - [[Coherencia-Doble-Ruta]]

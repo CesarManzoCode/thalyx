@@ -43,6 +43,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Criterio de salida de la Fase 1** — ver [[Criterio-de-Salida-Fase-1]].
 - [x] **Estrategia de pruebas** — ver [[Estrategia-de-Pruebas]].
 - [x] **Registro de intención en el journal** — implementado y probado. Ver [[Fase-Commit-Atomico]].
+- [x] **Índice en grafo y parser mecánico** — implementados. Ver [[Estado-de-Implementacion]].
 - [x] **Ubicación de los permisos JIT (kernel vs userspace)** — ver [[Permisos-JIT]].
 - [x] **Modo de actualización del índice en grafo** — ver [[Parser-Mecanico]] y [[Coherencia-Doble-Ruta]].
 - [x] **FUSE dentro o fuera de Fase 1** — fuera. Ver [[Decision-Kernel-vs-Userspace]].

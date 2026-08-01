@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/thalyx-manifest",
+    "crates/thalyx-parser",
+    "crates/thalyx-graph",
     "crates/thalyx-journal",
     "crates/thalyx-core",
     "crates/thalyx-cli",
@@ -16,6 +18,8 @@ repository = "https://github.com/CesarManzoCode/thalyx"
 
 [workspace.dependencies]
 thalyx-manifest = { path = "crates/thalyx-manifest" }
+thalyx-parser = { path = "crates/thalyx-parser" }
+thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }
 
@@ -34,6 +38,8 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 semver = "1"
+rusqlite = "0.37"
+walkdir = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [workspace.lints.rust]
