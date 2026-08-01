@@ -38,7 +38,7 @@ Toda medición de overhead debe reportar media y p99. Reportar solo la media est
 | FS en grafo | Userspace (SQLite) | Seguridad, simplicidad, overhead aceptable en Fase 1 |
 | Scheduler predictivo | Userspace (cgroups + nice), Fase 2 | Optimización, no dependencia crítica |
 | Memoria persistente | Userspace (BD vectorial) | No requiere kernel |
-| Permisos JIT | Kernel (`thalyx-lsm`) + broker en userspace (`thalyx-permd`) | Sin kernel, los permisos son solo cooperativos |
+| Permisos JIT | Kernel (`thalyx-lsm`, programa BPF LSM) + broker en userspace (`thalyx-permd`) | Sin kernel, los permisos son solo cooperativos |
 
 ## Revisiones
 
@@ -52,9 +52,9 @@ Toda medición de overhead debe reportar media y p99. Reportar solo la media est
 **Ahora:** entre 5% y 15% decide la latencia p99 de operaciones interactivas, con corte en 50 ms.
 **Motivo:** el overhead medio es la métrica equivocada para esta decisión. Un 8% repartido de forma uniforme es imperceptible; el mismo 8% concentrado en picos de cientos de milisegundos hace que el sistema se sienta roto. La migración al kernel es la decisión más cara e irreversible del roadmap y merece un criterio que mida lo que el usuario percibe.
 
-### 2026-08-01 — El LSM se adelanta a la Fase 1
-**Antes:** la tabla lo daba por hecho desde el inicio; [[Fases-de-Implementacion]] lo posponía a Fase 3.
-**Ahora:** `thalyx-lsm` se escribe en Fase 1. Ver el detalle en [[Permisos-JIT]].
+### 2026-08-01 — El LSM se adelanta a la Fase 1, y pasa a ser BPF LSM
+**Antes:** la tabla lo daba por hecho desde el inicio; [[Fases-de-Implementacion]] lo posponía a Fase 3. Y ambos lo describían como un módulo cargable, que no existe en Linux mainline.
+**Ahora:** `thalyx-lsm` se escribe en Fase 1 como programa BPF LSM. Ver el detalle en [[Permisos-JIT]].
 
 ## Relacionado
 - [[Criterio-de-Inclusion-de-Primitivas]]

@@ -28,6 +28,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Puntos de inyección de fallos | `crates/thalyx-core/fault.rs` | Cuatro puntos sobre la ruta de instalación |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
+| `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | Escrito, **sin probar**: requiere kernel real |
+| Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
 | CLI `thalyx` | `crates/thalyx-cli` | `module`, `journal`, `permissions`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
 
@@ -52,8 +54,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| `thalyx-lsm` | [[Permisos-JIT]] real; hoy los permisos se registran pero **no se aplican** |
-| `thalyx-permd` | Ídem |
+| `thalyx-permd` | Conectar la política al mapa BPF; hoy los permisos se registran pero **no se aplican** |
 | `thalyx-sandbox` | Ejecución de módulos en runtime |
 | `thalyx-agent` | Todo el flujo conversacional |
 | Contratos y marcado de origen | [[Contrato-Estructurado]], [[Marcado-de-Origen]] |
@@ -61,7 +62,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Memoria persistente | [[Memoria-Persistente]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
 
-### La advertencia importante
+### Las dos advertencias importantes
+
+**Nada de `lsm/` ha sido ejecutado todavía.** Se escribió sin poder compilarlo ni cargarlo: el entorno donde se redactó no tiene kernel accesible. Hasta que `make -C dev check` pase en una máquina real, ese código es una propuesta, no una implementación.
 
 **Hoy los permisos se registran pero nadie los aplica.** El registro de permisos es contabilidad honesta, no enforcement: hasta que exista `thalyx-lsm`, un módulo instalado no está contenido por nada. Es esperable en esta etapa, pero no debe describirse como si el sistema ya protegiera algo.
 

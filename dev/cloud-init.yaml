@@ -1,0 +1,111 @@
+#cloud-config
+# Guest configuration for Thalyx development.
+#
+# Two things here are not optional:
+#
+#   1. `lsm=...,bpf` on the kernel command line. Distributions build with
+#      CONFIG_BPF_LSM=y but leave bpf out of the default LSM order, so the
+#      hooks exist and nothing can attach to them. Without this the guest
+#      looks capable and silently is not.
+#
+#   2. A Btrfs volume at /opt/thalyx. The atomic commit publishes with rename
+#      within one subvolume, and the rollback demonstration needs snapshots.
+#      On ext4 neither works.
+
+hostname: thalyx-dev
+
+users:
+  - name: thalyx
+    groups: [sudo, adm]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - @SSH_PUBKEY@
+
+package_update: true
+packages:
+  # BPF toolchain
+  - clang
+  - llvm
+  - libbpf-dev
+  - linux-tools-common
+  - linux-tools-generic
+  - bpftool
+  # Build
+  - build-essential
+  - pkg-config
+  - libsqlite3-dev
+  - git
+  # Filesystem
+  - btrfs-progs
+
+write_files:
+  # Enable the BPF LSM. GRUB_CMDLINE is regenerated below.
+  - path: /etc/default/grub.d/99-thalyx.cfg
+    content: |
+      # Thalyx needs bpf in the LSM order. Ubuntu's default omits it, which
+      # leaves CONFIG_BPF_LSM=y looking like support that does not work.
+      GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT lsm=lockdown,capability,landlock,yama,apparmor,bpf"
+
+  # A Btrfs filesystem in a file: no second disk, no partitioning, and it
+  # gives real subvolumes and real snapshots.
+  - path: /usr/local/sbin/thalyx-mount-store
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Create and mount the Btrfs volume Thalyx publishes into.
+      set -e
+      IMG=/var/lib/thalyx-store.img
+      MNT=/opt/thalyx
+
+      if [ ! -f "$IMG" ]; then
+          truncate -s 8G "$IMG"
+          mkfs.btrfs -q -L thalyx "$IMG"
+      fi
+
+      mkdir -p "$MNT"
+      mountpoint -q "$MNT" || mount -o loop,compress=zstd "$IMG" "$MNT"
+
+      # Separate subvolumes for system, modules and user data, as decreed.
+      for sub in system modules userdata; do
+          [ -d "$MNT/$sub" ] || btrfs subvolume create "$MNT/$sub" >/dev/null
+      done
+
+      chown -R thalyx:thalyx "$MNT"
+
+  - path: /etc/systemd/system/thalyx-store.service
+    content: |
+      [Unit]
+      Description=Thalyx Btrfs store
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/thalyx-mount-store
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/profile.d/thalyx.sh
+    content: |
+      export THALYX_ROOT=/opt/thalyx/system
+
+runcmd:
+  - [ update-grub ]
+  - [ systemctl, enable, --now, thalyx-store.service ]
+  - [ mkdir, -p, /sys/fs/bpf ]
+  - [ sh, -c, "mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf" ]
+  - [ sh, -c, "echo 'bpf /sys/fs/bpf bpf defaults 0 0' >> /etc/fstab" ]
+  # Rust, as the user rather than as root.
+  - [ sh, -c, "su - thalyx -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal'" ]
+  # The LSM order only takes effect after a reboot.
+  - [ sh, -c, "touch /var/lib/thalyx-first-boot-done" ]
+
+power_state:
+  mode: reboot
+  message: rebooting to activate the BPF LSM
+  timeout: 30
+  condition: true
+
+final_message: "Thalyx development guest ready after reboot. Verify with: make check"

@@ -13,17 +13,33 @@ La IA pide acceso temporal a recursos, el SO otorga y revoca automáticamente.
 
 ## Implementación (Fase 1)
 
-- **`thalyx-lsm`**, un módulo de seguridad del kernel (Linux Security Module) propio, escrito desde la Fase 1.
-- **`thalyx-permd`**, el broker en userspace que decide qué se otorga y por cuánto tiempo, y le comunica las decisiones al LSM.
+- **`thalyx-lsm`**, el enforcement en el kernel, implementado como **programa BPF LSM**.
+- **`thalyx-permd`**, el broker en userspace que decide qué se otorga y por cuánto tiempo.
 
-El LSM es la única pieza de Thalyx que vive en el kernel en Fase 1. Aplica los permisos y además intercepta las mutaciones del filesystem que alimentan el [[FS-en-Grafo|índice semántico]] — ver [[Coherencia-Doble-Ruta]].
+La frontera entre ambos es un **mapa BPF anclado**: `thalyx-permd` escribe la política, `thalyx-lsm` la lee y decide en el hook. El userspace nunca está en el camino crítico de una decisión de seguridad, y el kernel nunca contiene lógica de política.
+
+El LSM aplica los permisos y además intercepta las mutaciones del filesystem que alimentan el [[FS-en-Grafo|índice semántico]] — ver [[Coherencia-Doble-Ruta]].
+
+### Por qué BPF LSM y no un módulo del kernel
+
+**En Linux mainline un LSM no puede ser un módulo cargable.** `security_add_hooks()` no está exportado a módulos; los LSM se registran en el arranque con `DEFINE_LSM()` y el parámetro `lsm=`. La capacidad de cargarlos dinámicamente se retiró del kernel deliberadamente hace casi veinte años.
+
+BPF LSM (kernel 5.7+, `CONFIG_BPF_LSM=y`) permite enganchar programas a los mismos hooks en tiempo de ejecución, con la misma capacidad de denegar. No es una versión debilitada del enforcement: es el mismo punto del kernel, con el mismo poder de veto.
+
+Lo que sí cambia es el ciclo de trabajo: cargar y recargar toma segundos en vez de recompilar el kernel y reiniciar. Eso importa más de lo que parece — **todos los defectos reales encontrados en este proyecto salieron de ejecutar el sistema, no de revisarlo**, y un ciclo de quince minutos por iteración es la forma más eficaz de dejar de encontrarlos.
+
+### Camino hacia el LSM in-tree
+
+El conjunto de hooks y la política que se descubran en BPF se trasladan directamente a un LSM in-tree cuando estén estables. La condición para migrar es una limitación documentada del verificador de BPF que impida expresar una política necesaria — no una preferencia estética.
+
+Thalyx compila su propio kernel en cualquiera de los dos casos: BPF LSM exige `CONFIG_BPF_LSM=y` y `bpf` en el orden de `lsm=`. La autoridad de diseño de [[Decision-Capa-vs-SO-Nuevo]] se conserva íntegra.
 
 Flujo:
 
 1. El agente solicita: `REQUEST_PERMISSION(resource: "/home/user/docs", action: "write", type: "jit", duration: "30s")`.
-2. `thalyx-permd` evalúa la solicitud contra la política y otorga un token temporal.
-3. El LSM aplica la restricción sobre el proceso.
-4. El token expira y el permiso se revoca automáticamente.
+2. `thalyx-permd` evalúa la solicitud contra la política y escribe la concesión en el mapa BPF, indexada por el cgroup del módulo.
+3. `thalyx-lsm` lee el mapa en cada hook y permite o deniega.
+4. Al expirar, `thalyx-permd` retira la entrada del mapa. La revocación es inmediata: no hay proceso al que avisar.
 
 ## Tipos de permiso (decretado — reemplaza el campo `duracion` simple)
 
@@ -82,6 +98,14 @@ Esta distinción de tres tipos no estaba en el diseño original — surgió al t
 **Ahora:** el registro se escribe antes del commit y su vigencia se condiciona a que el módulo sea la versión actual.
 **Motivo:** escribir los permisos *después* del commit deja una ventana donde el módulo está instalado y no tiene nada; escribirlos antes sin condicionar la vigencia deja un permiso vivo para un módulo que no existe. Condicionar la vigencia elimina ambas: hay un solo punto atómico, el del enlace simbólico, y gobierna las dos cosas.
 **Cómo se descubrió:** al ejecutar el sistema real tras un crash inyectado a mitad del commit. El núcleo filtraba bien, pero la interfaz mostraba dos permisos persistentes de red vigentes para un módulo que no estaba instalado. Ver [[Estrategia-de-Pruebas]].
+
+## Revisiones
+
+### 2026-08-01 — El LSM pasa a ser un programa BPF LSM
+**Antes:** se decretaba `thalyx-lsm` como "un módulo de seguridad del kernel propio", cargable.
+**Ahora:** programa BPF LSM, con un mapa anclado como frontera entre política (userspace) y enforcement (kernel).
+**Motivo:** el decreto no era implementable. Un LSM no puede ser un módulo cargable en Linux mainline — `security_add_hooks()` no está exportado y el registro ocurre en el arranque. La intención del decreto (enforcement real en el kernel, no cooperativo) se conserva entera; lo que cambia es el mecanismo, y de paso el ciclo de iteración pasa de quince minutos a segundos.
+**Qué no cambia:** se sigue rechazando Landlock por la misma razón de antes. BPF LSM no es una política ajena que se acata, es infraestructura del kernel sobre la que Thalyx escribe la suya.
 
 ## Relacionado
 - [[Caso-Instalar-Modulo]]

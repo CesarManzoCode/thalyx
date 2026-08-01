@@ -11,3 +11,10 @@ Thumbs.db
 # Rust
 /target/
 **/*.rs.bk
+
+# Development VM artifacts (large, machine-local)
+dev/.vm/
+
+# BPF build output
+lsm/*.o
+lsm/vmlinux.h

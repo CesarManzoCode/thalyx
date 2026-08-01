@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// thalyx-lsm — permission enforcement in the kernel.
+//
+// This program attaches to LSM hooks and vetoes operations a module has not
+// been granted. It contains no policy: policy lives in `thalyx-permd` in
+// userspace and arrives here through a pinned map. The kernel side only reads
+// what it was told and answers allow or deny.
+//
+// That split is deliberate. Policy changes constantly — a permission is
+// granted, expires, is revoked — and none of that should require touching a
+// program running in the kernel. Enforcement changes almost never.
+//
+// See vault/03-Primitivas/Permisos-JIT.md.
+//
+// Licensed GPL-2.0 because it links against the kernel, which is GPLv2-only.
+// The rest of Thalyx userspace is GPLv3. See vault/05-Decisiones-y-Debates/Decision-Licencia.md.
+
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+char LICENSE[] SEC("license") = "GPL";
+
+#define AF_INET  2
+#define AF_INET6 10
+
+// Permission bits, mirrored exactly by the Rust side.
+#define THALYX_NET_OUTBOUND (1 << 0)
+#define THALYX_FS_READ      (1 << 1)
+#define THALYX_FS_WRITE     (1 << 2)
+
+// What a module is allowed to do.
+//
+// Keyed by cgroup id: every module runs in its own cgroup, which is already
+// how the sandbox limits its resources, so it is the identity the kernel can
+// establish without trusting anything the module says about itself.
+struct policy {
+    __u32 allowed;      // bitmask of the THALYX_* bits above
+    __u32 flags;        // reserved
+    __u64 expires_ns;   // 0 = no expiry (a persistent grant)
+};
+
+// The interface between userspace and the kernel.
+//
+// `thalyx-permd` writes entries; this program only reads them. An absent key
+// means "not a Thalyx module", not "denied" — see the fail-open note below.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);            // cgroup id
+    __type(value, struct policy);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} thalyx_policy SEC(".maps");
+
+// Denials, for the journal. Losing an event under load is acceptable: the
+// denial already happened, this is the record of it.
+struct denial {
+    __u64 cgroup_id;
+    __u32 pid;
+    __u32 permission;
+    char  comm[16];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} thalyx_denials SEC(".maps");
+
+// Whether enforcement is live.
+//
+// A single-entry map rather than a compile-time flag, so `thalyx-permd` can
+// run in observe-only mode — logging what it *would* have denied — without
+// reloading anything. The first policy of a security system should be
+// measurable before it is binding.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);          // 0 = observe only, 1 = enforce
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} thalyx_enforcing SEC(".maps");
+
+static __always_inline int enforcing(void)
+{
+    __u32 key = 0;
+    __u32 *value = bpf_map_lookup_elem(&thalyx_enforcing, &key);
+    return value && *value;
+}
+
+static __always_inline void record_denial(__u64 cgroup_id, __u32 permission)
+{
+    struct denial *event = bpf_ringbuf_reserve(&thalyx_denials, sizeof(*event), 0);
+    if (!event)
+        return;
+
+    event->cgroup_id = cgroup_id;
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->permission = permission;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    bpf_ringbuf_submit(event, 0);
+}
+
+// Decide whether the current task holds a permission.
+//
+// Returns 0 to allow, -EPERM to deny.
+//
+// **Fail-open for unknown cgroups, on purpose.** A process Thalyx did not
+// place in a module cgroup is not a module: it is the shell, the package
+// manager, the user's editor. Denying by default would not make the system
+// safer, it would make it unbootable, and a security mechanism that has to be
+// switched off to use the machine protects nothing.
+//
+// Fail-*closed* applies within what Thalyx does know: a cgroup that has an
+// entry gets exactly the bits in that entry, and an expired entry grants
+// nothing.
+static __always_inline int check(__u32 permission)
+{
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+
+    struct policy *policy = bpf_map_lookup_elem(&thalyx_policy, &cgroup_id);
+    if (!policy)
+        return 0;   // not a module Thalyx placed
+
+    if (policy->expires_ns != 0 && bpf_ktime_get_boot_ns() > policy->expires_ns) {
+        // A JIT grant that ran out. Expiry is enforced here as well as by
+        // permd removing the entry, so a userspace stall cannot extend a
+        // permission past its deadline.
+        record_denial(cgroup_id, permission);
+        return enforcing() ? -EPERM : 0;
+    }
+
+    if (policy->allowed & permission)
+        return 0;
+
+    record_denial(cgroup_id, permission);
+    return enforcing() ? -EPERM : 0;
+}
+
+// ---------------------------------------------------------------- network
+
+// The permission from the canonical case: `resource = "net", action =
+// "outbound", type = "persistent"`.
+SEC("lsm/socket_connect")
+int BPF_PROG(thalyx_socket_connect, struct socket *sock,
+             struct sockaddr *address, int addrlen, int ret)
+{
+    // Never override a denial another LSM already issued. Hooks compose, and
+    // returning 0 here would turn Thalyx into a way to bypass AppArmor.
+    if (ret != 0)
+        return ret;
+
+    __u16 family = BPF_CORE_READ(address, sa_family);
+    if (family != AF_INET && family != AF_INET6)
+        return 0;   // unix sockets are local IPC, not "the network"
+
+    return check(THALYX_NET_OUTBOUND);
+}
+
+// ---------------------------------------------------------------- filesystem
+
+SEC("lsm/file_open")
+int BPF_PROG(thalyx_file_open, struct file *file, int ret)
+{
+    if (ret != 0)
+        return ret;
+
+    __u32 flags = BPF_CORE_READ(file, f_flags);
+    // O_ACCMODE is 3; O_RDONLY is 0.
+    __u32 writing = flags & 3;
+
+    return check(writing ? THALYX_FS_WRITE : THALYX_FS_READ);
+}
+
+// ---------------------------------------------------------------- mutations
+//
+// These hooks exist to feed the semantic index, not to deny anything: they
+// report what changed so the graph can reprocess it.
+//
+// They **never block**. Re-parsing inside a hook would make every write in the
+// system wait for a parser, and a stalled parser would stall the filesystem.
+// The event is queued and a worker picks it up, which is why the index is
+// eventually consistent with a known lag rather than instantly exact.
+//
+// See vault/04-Flujo-Canonico/Coherencia-Doble-Ruta.md.
+
+struct mutation {
+    __u64 cgroup_id;
+    __u32 pid;
+    __u32 kind;     // 0 = created, 1 = removed, 2 = renamed
+    char  comm[16];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1024 * 1024);
+} thalyx_mutations SEC(".maps");
+
+static __always_inline void report_mutation(__u32 kind)
+{
+    struct mutation *event = bpf_ringbuf_reserve(&thalyx_mutations, sizeof(*event), 0);
+    if (!event)
+        return;   // ring full: the worker marks the index stale rather than
+                  // pretending it saw everything
+
+    event->cgroup_id = bpf_get_current_cgroup_id();
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->kind = kind;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    bpf_ringbuf_submit(event, 0);
+}
+
+SEC("lsm/path_unlink")
+int BPF_PROG(thalyx_path_unlink, const struct path *dir,
+             struct dentry *dentry, int ret)
+{
+    if (ret == 0)
+        report_mutation(1);
+    return ret;
+}
+
+SEC("lsm/path_rename")
+int BPF_PROG(thalyx_path_rename, const struct path *old_dir,
+             struct dentry *old_dentry, const struct path *new_dir,
+             struct dentry *new_dentry, unsigned int flags, int ret)
+{
+    if (ret == 0)
+        report_mutation(2);
+    return ret;
+}
+
+SEC("lsm/path_mknod")
+int BPF_PROG(thalyx_path_mknod, const struct path *dir,
+             struct dentry *dentry, umode_t mode, unsigned int dev, int ret)
+{
+    if (ret == 0)
+        report_mutation(0);
+    return ret;
+}
