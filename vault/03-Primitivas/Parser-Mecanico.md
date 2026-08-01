@@ -26,10 +26,24 @@ Es el mismo patrón que separar "el contrato de interfaz" (grafo: nodos, aristas
 
 ## Modo de ejecución (decretado)
 
-**Batch (barrido on-demand).** No hay daemon vigilante (inotify) en Fase 1. El grafo se reconstruye desde cero cuando se necesita (ej. comando `build-graph`).
+**Incremental dirigido por eventos, con batch como reconciliación.**
 
-Razón: más simple, determinista, y suficientemente rápido para un proyecto pequeño (<1s). El **modo incremental** (daemon + inotify) es una optimización para fases posteriores.
+- `thalyx-lsm` intercepta las mutaciones del filesystem y publica eventos en una cola. El hook **no bloquea**: encola y devuelve.
+- Un worker consume la cola y re-parsea únicamente los archivos afectados.
+- El **modo batch** (barrido completo) se conserva para dos casos: la reconciliación al arrancar el sistema, y el comando manual `thalyx graph build`.
+
+### Por qué el hook no bloquea
+
+Re-parsear dentro del hook obligaría a cada escritura del sistema a esperar al parser. Un `git checkout` o la descompresión de un paquete se arrastrarían, y un cuelgue del parser colgaría el filesystem entero. El precio de encolar es una ventana de milisegundos en la que el filesystem ya cambió y el grafo todavía no — ventana que el índice declara explícitamente en cada consulta.
+
+## Revisiones
+
+### 2026-08-01 — De batch puro a incremental por eventos del LSM
+**Antes:** se decretaba modo batch on-demand, sin daemon vigilante, con el argumento de que era más simple y determinista.
+**Ahora:** incremental dirigido por los eventos que intercepta `thalyx-lsm`, con batch reservado para arranque y comando manual.
+**Motivo:** el batch puro deja al agente razonando sobre un grafo que puede tener horas de atraso. Con el LSM decretado para Fase 1, interceptar es incremental en costo, y a diferencia de inotify no requiere un watch por directorio ni pierde eventos por overflow. Se conserva del decreto original la propiedad que lo hacía valioso: el parseo sigue siendo determinista y aislado, solo cambia qué lo dispara.
 
 ## Relacionado
 - [[FS-en-Grafo]]
+- [[Coherencia-Doble-Ruta]]
 - [[Criterio-de-Inclusion-de-Primitivas]]
