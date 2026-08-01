@@ -17,7 +17,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 |---|---|---|
 | Manifiesto `.thmod`: parseo y validación | `crates/thalyx-manifest` | Completo para el schema v1 |
 | Firma ed25519 sobre forma canónica | `crates/thalyx-manifest` | Completo |
-| Journal append-only con fsync | `crates/thalyx-journal` | Completo salvo el registro de intención |
+| Journal append-only con fsync | `crates/thalyx-journal` | Completo |
+| Registro de intención y reconciliación | `crates/thalyx-core/reconcile.rs` | Completo |
 | Lectura y desempaquetado seguro de bundles | `crates/thalyx-core/bundle.rs` | Completo |
 | Verificación de artefacto | `crates/thalyx-core/install.rs` | Completo |
 | Commit atómico | `crates/thalyx-core/commit.rs` | Completo |
@@ -40,12 +41,12 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - Los permisos solo tienen vigencia mientras el módulo sea la versión actual.
 - El journal declara su propio alcance al mostrarse.
 - Silencio no es consentimiento: sin terminal, la confirmación se rechaza.
+- Una operación interrumpida deja una intención sin resolver, no un vacío, y la reconciliación la resuelve contra el disco.
 
 ## No construido todavía
 
 | Pieza | Bloqueante para |
 |---|---|
-| Registro de intención en el journal | Cerrar el hueco de [[Fase-Commit-Atomico]] |
 | Índice en grafo y parser mecánico | [[FS-en-Grafo]], [[Parser-Mecanico]] |
 | `thalyx-lsm` | [[Permisos-JIT]] real; hoy los permisos se registran pero **no se aplican** |
 | `thalyx-permd` | Ídem |
@@ -62,7 +63,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ## Pruebas
 
-57 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+66 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

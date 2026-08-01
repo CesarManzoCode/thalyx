@@ -38,6 +38,15 @@ pub enum JournalError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    /// **Not an outcome yet.** Written *before* the commit: "I am about to
+    /// publish this". Every other variant is terminal and resolves it.
+    ///
+    /// This is what closes the gap where a crash immediately after the symlink
+    /// swap left a module installed with no record that it ever happened. The
+    /// intent is on disk before anything moves, so the worst case is an
+    /// unresolved intent — which reconciliation settles against the disk —
+    /// rather than a silent installation.
+    Intended,
     /// The operation completed and was committed.
     Success,
     /// Rejected before anything physical happened. Nothing to undo.
@@ -47,6 +56,14 @@ pub enum Outcome {
     NotCommitted { reason: String },
     /// A non-critical step failed and the operation continued without it.
     Degraded { reason: String },
+}
+
+impl Outcome {
+    /// Whether this outcome settles a request. `Intended` is the only one that
+    /// does not.
+    pub fn is_terminal(&self) -> bool {
+        !matches!(self, Outcome::Intended)
+    }
 }
 
 /// Where a contract field came from.
@@ -127,6 +144,29 @@ impl Journal {
         })?;
 
         Ok(())
+    }
+
+    /// Intents that were never settled by a terminal entry.
+    ///
+    /// Each one is an operation the process announced and then died in the
+    /// middle of. Whether it actually took effect is a question only the disk
+    /// can answer, which is what reconciliation is for.
+    pub fn unresolved_intents(&self) -> Result<Vec<Entry>, JournalError> {
+        let entries = self.entries()?;
+
+        let settled: std::collections::HashSet<&str> = entries
+            .iter()
+            .filter(|entry| entry.outcome.is_terminal())
+            .map(|entry| entry.request_id.as_str())
+            .collect();
+
+        Ok(entries
+            .iter()
+            .filter(|entry| {
+                entry.outcome == Outcome::Intended && !settled.contains(entry.request_id.as_str())
+            })
+            .cloned()
+            .collect())
     }
 
     pub fn entries(&self) -> Result<Vec<Entry>, JournalError> {

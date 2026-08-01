@@ -87,15 +87,32 @@ El rollback deja de significar "deshacer archivos parcialmente copiados" (frági
 
 La atomicidad es la afirmación central de Thalyx, y no se documenta sin evidencia. El invariante *publicado o no publicado, nunca a medias* se comprueba con tests de inyección de fallos que matan el proceso en cada punto intermedio del commit, incluido el instante entre los dos `rename`. Ver [[Estrategia-de-Pruebas]].
 
-## Hueco conocido: el journal se escribe después del commit
+## Registro de intención
 
-Si el proceso muere justo después del intercambio del enlace simbólico, el módulo queda **instalado y funcional, pero sin entrada en el journal**. El invariante de atomicidad se sostiene —el módulo está publicado, no a medias— pero el registro de la operación se pierde.
+El journal se escribe **alrededor** del commit, no dentro: una **intención** baja a disco antes de que nada se mueva, y una entrada terminal después.
 
-La solución es un **registro de intención previo al commit**: anotar "voy a publicar X versión Y" antes de tocar nada, y marcarlo como completado después. Al arrancar, una intención sin completar se reconcilia contra el estado real del disco.
+```
+Journal: intención  ("voy a publicar X versión Y")
+    ↓
+rename del directorio
+    ↓
+rename del symlink        ← el módulo queda instalado aquí
+    ↓
+Journal: entrada terminal (éxito)
+```
 
-Está pendiente y documentado como tal en [[Tareas-Pendientes]]. Registrarlo importa más que taparlo: un journal que a veces no registra una operación exitosa es peor que uno que declara cuándo puede fallar.
+Un proceso que muere en medio deja una intención sin resolver. **Eso no es una operación perdida: es una pregunta, y el disco tiene la respuesta.** La reconciliación la formula: ¿la versión que nombraba la intención es la actual? Si sí, el commit ocurrió y se escribe ahora la entrada que nunca se escribió. Si no, no hubo commit.
+
+Sin esto, un corte justo después del intercambio del symlink dejaba el módulo instalado y funcional **sin ningún registro de que hubiera ocurrido**. El invariante de atomicidad se sostenía, pero el journal mentía por omisión.
+
+La reconciliación es idempotente y se ejecuta sola al principio de cada instalación, así que un usuario que simplemente reintenta nunca necesita enterarse de que existe. También puede invocarse a mano con `thalyx store reconcile`.
 
 ## Revisiones
+
+### 2026-08-01 — Se añade el registro de intención
+**Antes:** el journal se escribía solo después del commit.
+**Ahora:** una intención se registra antes de que nada se mueva, y la reconciliación la resuelve contra el disco.
+**Motivo:** un corte entre el commit y la escritura del journal dejaba una instalación real y no registrada. Un journal que a veces omite una operación exitosa es peor que uno que declara cuándo puede fallar.
 
 ### 2026-08-01 — Se concreta el mecanismo y se corrige el área de staging
 **Antes:** la nota decretaba usar `rename` y advertía, como riesgo hipotético, que la atomicidad no estaría garantizada "si el commit involucra diferentes filesystems". Pero el trazado del caso canónico publicaba de `/tmp/build/` a `/opt/modules/`, que activa ese riesgo en la configuración por defecto de Alpine. Tampoco contemplaba que `rename` no puede publicar encima de un directorio existente.

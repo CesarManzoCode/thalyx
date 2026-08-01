@@ -13,7 +13,6 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
-- [ ] **Registro de intención en el journal.** Hoy el journal se escribe después del commit, así que un corte justo después del intercambio del symlink deja el módulo instalado y funcional pero sin registro de la operación. Falta anotar la intención antes de tocar nada y reconciliar al arrancar. Ver [[Fase-Commit-Atomico]].
 - [ ] **Enforcement de permisos.** Los permisos se registran correctamente pero **nadie los aplica** hasta que exista `thalyx-lsm`. Ver [[Estado-de-Implementacion]].
 
 ## Pendientes de decreto formal
@@ -43,6 +42,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Modelo de concurrencia** — ver [[Concurrencia]].
 - [x] **Criterio de salida de la Fase 1** — ver [[Criterio-de-Salida-Fase-1]].
 - [x] **Estrategia de pruebas** — ver [[Estrategia-de-Pruebas]].
+- [x] **Registro de intención en el journal** — implementado y probado. Ver [[Fase-Commit-Atomico]].
 - [x] **Ubicación de los permisos JIT (kernel vs userspace)** — ver [[Permisos-JIT]].
 - [x] **Modo de actualización del índice en grafo** — ver [[Parser-Mecanico]] y [[Coherencia-Doble-Ruta]].
 - [x] **FUSE dentro o fuera de Fase 1** — fuera. Ver [[Decision-Kernel-vs-Userspace]].

@@ -14,6 +14,7 @@ pub mod fault;
 pub mod install;
 pub mod keystore;
 pub mod permissions;
+pub mod reconcile;
 pub mod store;
 pub mod trusted_path;
 

@@ -75,6 +75,8 @@ enum StoreCommand {
     Status,
     /// Delete leftover staging directories and orphaned versions
     Clean,
+    /// Settle unresolved intents against what is actually on disk
+    Reconcile,
 }
 
 fn main() -> ExitCode {
@@ -104,6 +106,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Store(StoreCommand::Status) => {
             let store = Store::open(&root)?;
             render::store_status(&store)
+        }
+        Command::Store(StoreCommand::Reconcile) => {
+            let store = Store::open(&root)?;
+            let resolutions = thalyx_core::reconcile::reconcile(&store)?;
+            if resolutions.is_empty() {
+                println!("nothing to reconcile");
+            } else {
+                for resolution in resolutions {
+                    println!("{resolution}");
+                }
+            }
+            Ok(())
         }
         Command::Store(StoreCommand::Clean) => {
             let store = Store::open(&root)?;

@@ -166,6 +166,111 @@ fn an_interrupted_install_can_be_retried_and_succeeds() {
 }
 
 #[test]
+fn a_commit_interrupted_before_its_journal_entry_is_recovered_by_reconciliation() {
+    // The gap this closes: dying right after the symlink swap used to leave the
+    // module installed and functional with no record that it ever happened.
+    // The intent is written before anything moves, so what survives is an
+    // unresolved question rather than a silent installation.
+    let fixture = Fixture::new();
+    let status = fixture.install_with_fault(FaultPoint::PostCommit);
+    assert!(status.aborted());
+
+    // Installed, and the journal knows something was attempted.
+    assert!(fixture.store().is_installed(Fixture::MODULE_ID));
+    let before = fixture.run(&["store", "status"]).stdout();
+    assert!(
+        before.contains("intents   1 unresolved"),
+        "expected one unresolved intent, got: {before}"
+    );
+
+    // The disk answers the question.
+    let reconcile = fixture.run(&["store", "reconcile"]);
+    assert!(reconcile.success());
+    assert!(
+        reconcile.stdout().contains("the commit had happened"),
+        "reconciliation should conclude the commit happened: {}",
+        reconcile.stdout()
+    );
+
+    // The installation is now recorded, and nothing is left hanging.
+    let journal = fixture.run(&["journal"]).stdout();
+    assert!(journal.contains("settled by reconciliation"));
+    assert!(
+        fixture
+            .run(&["store", "status"])
+            .stdout()
+            .contains("intents   0 unresolved")
+    );
+}
+
+#[test]
+fn an_intent_for_a_commit_that_never_happened_is_settled_as_not_committed() {
+    let fixture = Fixture::new();
+    let status = fixture.install_with_fault(FaultPoint::MidCommit);
+    assert!(status.aborted());
+
+    // The intent went down before the commit was attempted at all.
+    assert!(!fixture.store().is_installed(Fixture::MODULE_ID));
+
+    let reconcile = fixture.run(&["store", "reconcile"]);
+    assert!(reconcile.success());
+    assert!(
+        reconcile.stdout().contains("no commit had happened"),
+        "expected the disk to say there was no commit: {}",
+        reconcile.stdout()
+    );
+    assert_invariant(&fixture, "reconciled mid-commit");
+}
+
+#[test]
+fn an_interrupted_install_still_pins_the_publisher_key() {
+    // Found by running the real thing after the intent log landed: `module
+    // list` said "publisher unpinned" for a module that was installed. Pinning
+    // used to happen after the commit, so a crash in between left the id with
+    // no key — and the next bundle offered for it, signed by anyone, would
+    // have been accepted as a first sighting. That is adversary 3 of the
+    // threat model, opened by an interruption rather than by an attack.
+    let fixture = Fixture::new();
+    fixture.install_with_fault(FaultPoint::PostCommit);
+    assert!(fixture.store().is_installed(Fixture::MODULE_ID));
+
+    let listing = fixture.run(&["module", "list"]).stdout();
+    assert!(
+        !listing.contains("unpinned"),
+        "an installed module must have its publisher key pinned: {listing}"
+    );
+
+    // And the pin actually holds against a different key.
+    let impostor = fixture.bundle_from_a_new_publisher("2.0.0");
+    let result = fixture.run(&["module", "install", impostor.to_str().unwrap(), "--yes"]);
+    assert!(
+        result
+            .stderr()
+            .contains("changed since it was first trusted"),
+        "key rotation should be refused after an interrupted install: {}",
+        result.stderr()
+    );
+}
+
+#[test]
+fn installing_settles_anything_a_previous_crash_left_hanging() {
+    // A user who just retries should never have to know reconciliation exists.
+    let fixture = Fixture::new();
+    fixture.install_with_fault(FaultPoint::PostCommit);
+
+    // The retry is refused as already installed, but it still settles the
+    // journal on its way through.
+    let retry = fixture.install();
+    assert!(retry.stderr().contains("already installed"));
+    assert!(
+        fixture
+            .run(&["store", "status"])
+            .stdout()
+            .contains("intents   0 unresolved")
+    );
+}
+
+#[test]
 fn an_interrupted_upgrade_leaves_the_previous_version_serving() {
     // The strongest form of the invariant: an interrupted upgrade must not
     // just avoid corruption, it must leave the machine working.

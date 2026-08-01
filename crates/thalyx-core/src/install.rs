@@ -14,6 +14,7 @@ use crate::commit;
 use crate::fault::{self, FaultPoint};
 use crate::keystore::Keystore;
 use crate::permissions::{PendingGrants, Registry};
+use crate::reconcile;
 use crate::store::Store;
 use crate::trusted_path::CapabilityPrompt;
 use crate::{CoreError, RUNTIME_VERSION, Result};
@@ -138,6 +139,10 @@ fn install_inner(
     request: &InstallRequest<'_>,
     confirmer: &mut dyn Confirmer,
 ) -> Result<InstallOutcome> {
+    // Settle anything a previous run left hanging before adding to it, so the
+    // journal never accumulates ambiguity.
+    reconcile::reconcile(store)?;
+
     // Step 4a — origin. A field sourced from untrusted content may never drive
     // an operation, no matter how well-formed the rest of the request is.
     if request.origin == Origin::UntrustedContent {
@@ -244,12 +249,40 @@ fn install_inner(
     let mut registry = Registry::load(store.permissions_path())?;
     registry.make_effective(&pending)?;
 
-    // Step 11 — the atomic commit. FaultPoint::MidCommit lives inside.
+    // Pin the publisher key here too, for a sharper reason.
+    //
+    // Pinning after the commit meant that a crash in between left the module
+    // installed with no key pinned to its id — so the next bundle offered for
+    // that id, signed by anyone, would be accepted as a first sighting. That is
+    // the publisher impersonation path the threat model names as adversary 3,
+    // opened by an interruption.
+    //
+    // Pinning here is safe: nothing reaches this point without a valid
+    // signature, a matching digest and human confirmation. An attacker who got
+    // this far already convinced the user, so recording which key they
+    // convinced them with costs nothing and closes the window.
+    keystore.pin(&manifest.id, &manifest.publisher_key)?;
+
+    // Step 11a — announce the intent before anything moves.
+    //
+    // If the process dies after the commit but before the terminal entry is
+    // written, this is what survives: an unresolved intent that reconciliation
+    // settles against the disk. Without it, the installation would be real and
+    // unrecorded.
+    let journal = Journal::open(store.journal_path())?;
+    reconcile::record_intent(
+        &journal,
+        "install_module",
+        &manifest.id,
+        &manifest.version,
+        &request.request_id,
+        request.origin,
+    )?;
+
+    // Step 11b — the atomic commit. FaultPoint::MidCommit lives inside.
     commit::publish(store, &staging, &manifest.id, &manifest.version)?;
 
     fault::checkpoint(FaultPoint::PostCommit)?;
-
-    keystore.pin(&manifest.id, &manifest.publisher_key)?;
 
     // A replaced version is only removed after the new one is live.
     if let Some(previous) = &replaced

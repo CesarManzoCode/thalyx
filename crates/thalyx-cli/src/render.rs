@@ -95,6 +95,7 @@ pub fn journal(store: &Store, limit: usize) -> Fallible {
 
     for entry in entries.iter().rev().take(limit).rev() {
         let (marker, detail) = match &entry.outcome {
+            Outcome::Intended => ("→   ", "  — about to commit".to_string()),
             Outcome::Success => ("ok  ", String::new()),
             Outcome::Rejected { reason } => ("rej ", format!("  — {reason}")),
             Outcome::NotCommitted { reason } => ("fail", format!("  — {reason}")),
@@ -171,7 +172,17 @@ pub fn store_status(store: &Store) -> Fallible {
         .map(|entries| entries.count())
         .unwrap_or(0);
 
+    let unresolved = Journal::open(store.journal_path())?.unresolved_intents()?;
+
     println!("staging   {staging} leftover director(ies)");
+    println!("intents   {} unresolved", unresolved.len());
+    for intent in &unresolved {
+        let subject = match (&intent.module_id, &intent.version) {
+            (Some(id), Some(version)) => format!("{id} {version}"),
+            _ => "—".to_string(),
+        };
+        println!("          {subject}  announced {}", intent.timestamp);
+    }
     println!(
         "orphans   {} version(s) not pointed at by `current`",
         orphans.len()
@@ -181,10 +192,16 @@ pub fn store_status(store: &Store) -> Fallible {
         println!("          {id} {version}");
     }
 
-    if orphans.is_empty() && staging == 0 {
+    if !unresolved.is_empty() {
+        println!();
+        println!("an unresolved intent is a question, not a lost operation: the disk");
+        println!("has the answer. `thalyx store reconcile` settles them.");
+    }
+
+    if orphans.is_empty() && staging == 0 && unresolved.is_empty() {
         println!();
         println!("store is consistent.");
-    } else {
+    } else if !orphans.is_empty() || staging > 0 {
         println!();
         println!("leftovers are inert: nothing points at them, so no module is");
         println!("half-installed. `thalyx store clean` reclaims the space.");

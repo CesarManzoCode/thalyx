@@ -59,6 +59,8 @@ Consecuencias:
 - Si muere después, el módulo y sus permisos son consistentes de inmediato, sin depender de ningún paso posterior.
 - Un registro inerte no se muestra nunca como permiso vigente. Mostrarlo sería mentirle al soberano sobre lo que autorizó.
 
+La clave del publicador se ancla en el mismo punto y por la misma razón: anclarla después del commit dejaba, ante un corte, un módulo instalado **sin clave anclada a su `id`** — de modo que el siguiente paquete ofrecido para ese identificador, firmado por cualquiera, se habría aceptado como primer avistamiento. Es la suplantación de publicador del [[Modelo-de-Amenaza]], abierta por una interrupción en vez de por un ataque.
+
 Ver [[Fase-Commit-Atomico]] y [[Estado-de-Implementacion]].
 
 ## Origen de esta distinción
