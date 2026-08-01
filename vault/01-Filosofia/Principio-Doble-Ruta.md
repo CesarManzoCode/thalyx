@@ -27,6 +27,19 @@ El agente es un acelerador y traductor de intención, nunca un intermediario obl
 5. **Estado y memoria de tareas** — el humano puede ver, editar o borrar el estado guardado por el agente en texto plano/JSON, sin depender de preguntarle.
 6. **Uso del agente en sí** — la ruta mediada, en lenguaje natural, para velocidad o cuando no se conoce el comando exacto.
 
+## Consecuencia: el sistema nunca tiene conocimiento completo
+
+Si el humano puede operar por fuera del agente, entonces el índice, el journal y la memoria persistente **no pueden pretender ser un registro completo del sistema**. Esto no es un defecto a corregir: es la consecuencia directa de este principio, y el diseño está obligado a asumirla en vez de ignorarla.
+
+Ver [[Coherencia-Doble-Ruta]] para los cinco decretos que resuelven esta tensión.
+
+## Revisiones
+
+### 2026-08-01 — Se deriva la consecuencia sobre la coherencia de estado
+**Motivo:** este principio y las primitivas de estado se habían decretado por separado, sin que ninguna nota reconociera que se rozan. Un rollback podía pisar trabajo humano que el journal nunca había presenciado.
+
 ## Relacionado
 - [[Filosofia-Fundacional]]
+- [[Coherencia-Doble-Ruta]]
+- [[Rollback-vs-Restore]]
 - [[Flujo-Canonico-Overview]]

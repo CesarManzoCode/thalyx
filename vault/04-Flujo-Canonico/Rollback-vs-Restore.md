@@ -1,0 +1,52 @@
+---
+tipo: especificacion
+estado: decretado
+fecha-decreto: 2026-08-01
+tags: [flujo, rollback, snapshots, cli]
+---
+
+# `rollback` y `restore` son dos operaciones distintas
+
+## La ambigüedad que resuelve
+
+[[Fase-Commit-Atomico|Build-then-commit]] protege las **instalaciones de módulos**: si la verificación falla, no hubo commit y no hay nada que deshacer.
+
+Pero la demostración de adopción #1 de [[Condiciones-de-Adopcion]] promete otra cosa: *"el usuario mueve 10 archivos, actualiza dependencias, y con un solo comando el sistema revierte TODO"*. Eso es trabajo del usuario, no un artefacto publicado por Thalyx, y revertirlo exige restaurar un snapshot del filesystem.
+
+Son dos operaciones con garantías, costos y riesgos completamente distintos, y la bóveda usaba una sola palabra para ambas.
+
+## Decreto
+
+### `thalyx rollback`
+
+Deshace un **commit registrado de Thalyx**.
+
+- Ámbito acotado: solo lo que Thalyx publicó.
+- Barato y rápido.
+- Garantizado por la arquitectura de commit atómico.
+- No tiene efecto sobre archivos que Thalyx no publicó.
+- No requiere confirmación adicional: no puede destruir trabajo del usuario.
+
+### `thalyx restore <snapshot>`
+
+Devuelve un subvolumen de Btrfs al estado de un snapshot.
+
+- Ámbito amplio: todo lo que haya en ese subvolumen.
+- **Destructivo.** Puede eliminar trabajo del usuario posterior al snapshot.
+- Exige la comprobación de estado del decreto 4 de [[Coherencia-Doble-Ruta]]: si hay cambios que Thalyx no originó, se detiene.
+- Exige confirmación explícita por el [[Camino-Confiable|camino confiable]], mostrando el diff de lo que se perderá.
+
+## Por qué dos nombres y no uno inteligente
+
+Se consideró un único comando que decidiera según el contexto. Se descartó: el usuario escribe una palabra esperando la operación barata y podría recibir la destructiva. En una herramienta que promete rollback como argumento de venta, esa confusión es exactamente la que arruina la confianza que la demostración pretende construir.
+
+## Consecuencia sobre las demostraciones de adopción
+
+La demostración #1 usa `restore`, no `rollback`. Decirlo en voz alta deja claro que la demostración más impactante del proyecto depende del comando peligroso, y por lo tanto de que la comprobación de estado previa funcione bien.
+
+## Relacionado
+- [[Coherencia-Doble-Ruta]]
+- [[Journal-y-Snapshots]]
+- [[Fase-Commit-Atomico]]
+- [[Ramas-de-Fallo]]
+- [[Condiciones-de-Adopcion]]

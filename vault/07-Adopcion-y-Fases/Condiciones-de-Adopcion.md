@@ -30,7 +30,9 @@ Esto corrige un error de secuencia detectado durante el diseño: inicialmente se
 
 ### Demostraciones decretadas
 
-1. **Rollback instantáneo de una refactorización compleja:** el usuario mueve 10 archivos, actualiza dependencias, y con un solo comando (`rollback last`) el sistema revierte TODO exactamente al estado anterior, en segundos. Esto no existe en ningún OS actual.
+1. **Rollback instantáneo de una refactorización compleja:** el usuario mueve 10 archivos, actualiza dependencias, y con un solo comando (`thalyx restore <snapshot>`) el sistema revierte TODO exactamente al estado anterior, en segundos. Esto no existe en ningún OS actual.
+
+   **Nota de precisión:** esta demostración usa `restore`, no `rollback` — son dos operaciones distintas con garantías distintas, ver [[Rollback-vs-Restore]]. `restore` es destructivo y depende de la comprobación de estado previa de [[Coherencia-Doble-Ruta]]. Es decir: la demostración más impactante del proyecto se apoya en el comando más peligroso, y por lo tanto en que esa comprobación funcione bien.
 
 2. **Memoria persistente entre sesiones:** el usuario le pide al agente "organiza mi carpeta de descargas", apaga la máquina, la enciende al día siguiente, y el agente recuerda exactamente lo que hizo y puede continuar sin perder contexto.
 
@@ -44,7 +46,16 @@ Esto corrige un error de secuencia detectado durante el diseño: inicialmente se
 - Contratos legibles por humanos con confirmación explícita antes de ejecutar.
 - Bug bounty (aunque sea pequeño: reconocimiento público, no dinero al principio) para quien encuentre una vulnerabilidad en el sandbox o en los permisos.
 
+## Revisiones
+
+### 2026-08-01 — Se precisa qué comando usa la demostración #1
+**Antes:** la demostración hablaba de `rollback last` para revertir trabajo del usuario, mezclando dos operaciones distintas bajo una sola palabra.
+**Ahora:** usa `thalyx restore`, con la advertencia de qué implica.
+**Motivo:** build-then-commit protege las publicaciones de Thalyx, no el trabajo del usuario. Revertir un refactor exige restaurar un snapshot, que es una operación destructiva con garantías completamente distintas. Ver [[Rollback-vs-Restore]].
+
 ## Relacionado
+- [[Rollback-vs-Restore]]
+- [[Criterio-de-Salida-Fase-1]]
 - [[Fases-de-Implementacion]]
 - [[Por-Que-Elegirian-Este-SO]]
 - [[Fase-Commit-Atomico]] — refuerza la demo #1
