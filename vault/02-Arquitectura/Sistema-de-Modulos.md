@@ -19,13 +19,21 @@ tags: [arquitectura, modulos, ecosistema]
 ## Aislamiento y rollback
 
 - **Aislamiento:** cada módulo se ejecuta en un sandbox con permisos estrictos, usando namespaces de Linux, cgroups y seccomp. Ver [[Sandbox-Ejecucion]].
-- **Rollback:** el sistema incluye snapshots (Btrfs/ZFS) que permiten revertir cualquier cambio realizado por un módulo o por el agente. Ver [[Journal-y-Snapshots]].
+- **Rollback:** el sistema incluye snapshots de Btrfs que permiten revertir cualquier cambio realizado por un módulo o por el agente. Ver [[Journal-y-Snapshots]] y [[Rollback-vs-Restore]].
 
-## Pendiente
-- [[Formato-Manifiesto-Osmod]] — formato exacto del manifiesto `.thmod` (pendiente de decreto)
+## Especificaciones relacionadas
+- [[Formato-Manifiesto-Thmod]] — formato exacto del manifiesto `.thmod`, decretado el 2026-08-01
+- [[Verificacion-y-Distribucion]] — en Fase 1 los módulos se distribuyen prebuildeados y firmados
 - [[Sistema-Reputacion-Sybil]] — problema de reputación anti-Sybil (pospuesto deliberadamente)
+
+## Revisiones
+
+### 2026-08-01 — Se cierra el pendiente del manifiesto
+**Antes:** el formato del manifiesto estaba pendiente de decreto y la nota apuntaba a una nota inexistente — el único enlace roto de la bóveda.
+**Ahora:** decretado en [[Formato-Manifiesto-Thmod]].
 
 ## Relacionado
 - [[Core-Nucleo]]
+- [[Core]]
 - [[Sandbox-Ejecucion]]
 - [[Debate-Core-Modules]]

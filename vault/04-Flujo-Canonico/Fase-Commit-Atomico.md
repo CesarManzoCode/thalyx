@@ -11,21 +11,39 @@ tags: [flujo, commit, seguridad, decision-clave]
 
 ## El problema que resuelve
 
-Originalmente, el [[Sandbox-Ejecucion|Sandbox]] escribía directo al sistema oficial (ej. `/opt/modules`). Esto significa que un fallo a medio camino dejaría archivos parciales en el sistema real — "rollback" se volvía "deshacer lo que alcanzaste a copiar", que es frágil y propenso a estados inconsistentes.
+Originalmente, el [[Sandbox-Ejecucion|Sandbox]] escribía directo al sistema oficial. Esto significa que un fallo a medio camino dejaría archivos parciales en el sistema real — "rollback" se volvía "deshacer lo que alcanzaste a copiar", que es frágil y propenso a estados inconsistentes.
 
 ## El decreto
 
 El Sandbox **nunca escribe directo al sistema oficial**. En su lugar:
 
 ```
-Sandbox → produce artefacto en /tmp/build/...
+Sandbox → produce artefacto en el área de staging
     ↓
-Core → verifica (firma, hash, dependencias, integridad)
+Core → verifica (firma, hash recalculado, dependencias, integridad)
     ↓
-Core → commit atómico (publica al destino real, ej. /opt/modules/...)
+Core → commit atómico (publica al destino real)
 ```
 
 Si la verificación falla, **no hay commit** — no hay nada físico que deshacer, simplemente no se publicó.
+
+## Mecanismo concreto del commit
+
+El área de staging **no es `/tmp`**. Es `/opt/thalyx/.staging/<uuid>/`, en el **mismo subvolumen Btrfs que el destino final**.
+
+La publicación son dos operaciones, ambas atómicas:
+
+1. `rename("/opt/thalyx/.staging/<uuid>", "/opt/thalyx/modules/<id>/<version>")`
+   El destino no existe todavía, así que no hay `ENOTEMPTY`.
+2. Intercambio del enlace simbólico: se crea `<id>/.current.tmp` apuntando a `<version>` y se hace `rename` sobre `<id>/current`.
+
+**El módulo está oficialmente instalado en el instante del paso 2, no antes.** Los permisos confirmados se vuelven efectivos en ese mismo instante — ver [[Permisos-JIT]].
+
+### Por qué así y no de otra forma
+
+`rename` es atómico dentro del mismo filesystem, pero falla con `EXDEV` cuando cruza filesystems — y también **entre subvolúmenes distintos de Btrfs**, no solo entre dispositivos. Un área de staging en `/tmp`, que en Alpine suele ser tmpfs, activa ese fallo siempre.
+
+Y `rename` sobre un directorio no vacío falla con `ENOTEMPTY`, así que publicar una actualización encima de una versión anterior no se puede hacer renombrando el directorio de destino. De ahí la indirección por enlace simbólico: `rename` sobre un symlink existente sí es atómico y sí lo reemplaza.
 
 ## El flujo completo con la etapa de commit
 
@@ -34,19 +52,18 @@ Usuario
   ↓
 Agente (resuelve intención — sub-tarea de consulta/lectura, no genera contrato todavía)
   ↓
-Contrato (se genera solo cuando hay una decisión concreta que ejecutar)
+Contrato (se genera solo cuando hay una decisión concreta que ejecutar,
+          con marcado de origen por campo)
   ↓
-Core: Validación (sintaxis, firma, permisos solicitados vs. política)
+Core: Validación (sintaxis, firma, origen de campos, permisos vs. manifiesto)
   ↓
-Core: Solicita permisos (JIT/sesión/persistente, con confirmación si aplica)
+Core: Solicita permisos (JIT/sesión/persistente, confirmación por camino confiable)
   ↓
-Core: Solicita ajuste de scheduling (si aplica; si falla, degrada, no aborta)
+Sandbox: Produce artefacto (en área de staging, NO en el sistema oficial)
   ↓
-Sandbox: Produce artefacto (en área temporal, NO en el sistema oficial)
+Core: Verificación final (firma, hash recalculado, dependencias, integridad)
   ↓
-Core: Verificación final (firma, hash, dependencias, integridad)
-  ↓
-Core: Commit atómico (publica el artefacto verificado al destino real;
+Core: Commit atómico (rename del directorio + rename del symlink;
                        si la verificación falla, no hay commit)
   ↓
 Journal (registra la operación y el snapshot pre-commit)
@@ -60,17 +77,20 @@ Respuesta al Usuario
 
 El rollback deja de significar "deshacer archivos parcialmente copiados" (frágil, propenso a estados inconsistentes) y pasa a significar simplemente **"el commit nunca ocurrió"** (robusto, atómico, predecible).
 
-Esto refuerza directamente una de las tres [[Condiciones-de-Adopcion|demostraciones dramáticas de adopción]] ya decretadas (rollback instantáneo).
+## Verificación obligatoria de esta propiedad
 
-## Supuesto técnico crítico: atomicidad real
+La atomicidad es la afirmación central de Thalyx, y no se documenta sin evidencia. El invariante *publicado o no publicado, nunca a medias* se comprueba con tests de inyección de fallos que matan el proceso en cada punto intermedio del commit, incluido el instante entre los dos `rename`. Ver [[Estrategia-de-Pruebas]].
 
-El commit atómico depende de que la operación de publicación sea **atómica a nivel de sistema de archivos** (`rename`, no copy+delete). En Linux, `rename` es atómico dentro del mismo filesystem.
+## Revisiones
 
-**Si el commit involucra diferentes filesystems o dispositivos**, esa atomicidad ya no está garantizada gratis por el kernel, y habría que resolverlo explícitamente (ej. con un journal adicional de tipo copiar + journal de intención).
-
-Nota para implementación: el Core debe usar `rename` para commits; si se necesitan cruzar filesystems, se implementa una capa de transacción adicional.
+### 2026-08-01 — Se concreta el mecanismo y se corrige el área de staging
+**Antes:** la nota decretaba usar `rename` y advertía, como riesgo hipotético, que la atomicidad no estaría garantizada "si el commit involucra diferentes filesystems". Pero el trazado del caso canónico publicaba de `/tmp/build/` a `/opt/modules/`, que activa ese riesgo en la configuración por defecto de Alpine. Tampoco contemplaba que `rename` no puede publicar encima de un directorio existente.
+**Ahora:** staging en el mismo subvolumen que el destino, publicación versionada, e intercambio atómico de enlace simbólico.
+**Motivo:** el mecanismo decretado no funcionaba en el propio caso de referencia. Dos fallos concretos: `EXDEV` por cruce de filesystems (incluido el cruce entre subvolúmenes de Btrfs, que no es obvio) y `ENOTEMPTY` al actualizar un módulo ya instalado.
 
 ## Relacionado
+- [[Verificacion-y-Distribucion]]
+- [[Estrategia-de-Pruebas]]
 - [[Flujo-Canonico-Overview]]
 - [[Ramas-de-Fallo]]
 - [[Tres-Categorias-de-Autorizacion]]
