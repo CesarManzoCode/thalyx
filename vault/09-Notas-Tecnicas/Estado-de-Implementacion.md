@@ -32,6 +32,10 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Identidad cgroup v2 del módulo | `crates/thalyx-sandbox/cgroup.rs` | Probado contra un montaje real |
 | Lanzamiento confinado (re-exec) | `crates/thalyx-sandbox/launch.rs` | Probado: el programa reporta su propio cgroup |
 | Orquestación de ejecución | `crates/thalyx-core/run.rs` | `thalyx module run`, ciclo completo |
+| Perfil `module_standard` | `crates/thalyx-sandbox/profile.rs` | Namespaces, seccomp y límites; falta user namespace |
+| Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente |
+| Límites de cgroup | `crates/thalyx-sandbox/limits.rs` | `memory.max`, `pids.max`, `cpu.max` |
+| Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
@@ -69,27 +73,27 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| Perfil `module_standard` completo (namespaces, seccomp, límites) | Aislamiento real del módulo |
+| Namespace de usuario y uid del módulo | Que un módulo no corra con el uid de Thalyx |
 | `thalyx-agent` | Todo el flujo conversacional |
 | Snapshots, `rollback` y `restore` | [[Rollback-vs-Restore]] |
 | Memoria persistente | [[Memoria-Persistente]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
 
-### La advertencia importante
+### Las advertencias que quedan
 
-**El ciclo de enforcement ya se cierra solo, pero el sandbox todavía no aísla.**
+**1. Un módulo corre con el uid con el que corre Thalyx.** El namespace de usuario está decretado y no implementado, a propósito: hacerlo de forma útil exige decidir con qué uid corre un módulo y de quién son los archivos del store, que es una decisión de política. Ver [[Sandbox-Ejecucion]].
 
-`thalyx module run` escribe la política, lanza el módulo dentro del cgroup al que esa política está atada, y retira ambos al terminar. Nadie tiene que invocar `thalyx enforce apply` a mano. Lo que falta es lo otro: el perfil `module_standard` decreta namespaces, un filtro seccomp por lista de permitidos y límites de recursos, y **nada de eso está implementado**.
+**2. Los límites de recursos no están probados contra un kernel.** El código los aplica y **rechaza correr el módulo si no se pueden aplicar**, que es la parte que importa. Pero el contenedor donde se desarrolló no delega ningún controlador de cgroup, así que la prueba que los demostraría reporta `NOT PROVEN`. Correrá en hardware.
 
-Un módulo lanzado hoy está contenido por `thalyx-lsm` y por nada más. Eso significa que las operaciones que el LSM engancha —red saliente, apertura de archivos— se deniegan si no fueron concedidas, y todo lo demás no está contenido en absoluto. No es aislamiento; es enforcement de permisos sobre un proceso que por lo demás corre como cualquier otro.
+**3. El sandbox no cambia el filesystem que ve el módulo.** Hay namespace de montaje, pero no hay `pivot_root`: el módulo ve el árbol del host. Lo que lo contiene ahí es `thalyx-lsm`, que engancha la apertura de archivos. Es contención real, pero es de una capa, no de dos.
 
-Decirlo así importa más que lo construido. La descripción cómoda —"los módulos corren en un sandbox"— sería falsa hoy, y el día que alguien la crea es el día que un módulo hace algo que nadie esperaba.
+**4. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
 
 ## Pruebas
 
-185 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+221 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; con `THALYX_REQUIRE_CGROUP_TESTS=1` el salto se convierte en fallo. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; con `THALYX_REQUIRE_CGROUP_TESTS=1` el salto se convierte en fallo. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

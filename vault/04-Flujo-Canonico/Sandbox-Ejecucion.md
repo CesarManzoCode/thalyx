@@ -43,13 +43,49 @@ Perfil `module_standard`:
 
 El perfil se declara en el contrato y lo aplica el Core, nunca el módulo.
 
-### Estado real: identidad y lanzamiento, todavía no aislamiento
+### Estado real: el perfil está construido menos el namespace de usuario
 
-De ese perfil está construida **la parte de la que cuelga todo lo demás**: el cgroup v2 que le da identidad al módulo y el lanzamiento que lo mete dentro. Ver `crates/thalyx-sandbox` y [[Estado-de-Implementacion]].
+Namespaces de montaje, PID, IPC, UTS y red; filtro seccomp por lista de permitidos; límites de cgroup. Todo implementado en `crates/thalyx-sandbox` y verificado **preguntándole al módulo**, no al sistema:
 
-Namespaces, seccomp y límites de recursos **no están implementados**. Un módulo lanzado hoy está contenido por [[Permisos-JIT|thalyx-lsm]] y por nada más.
+```
+                        adentro          afuera
+pid                     1                6878
+hostname                thalyx-module    vm
+procesos visibles       4                82
+interfaces de red       lo:              lo: eth0:
+socket()                SIGSYS           funciona
+unshare()               SIGSYS           funciona
+```
 
-Se escribe así, y no "el sandbox está en progreso", porque la frase cómoda —"los módulos corren en un sandbox"— sería falsa hoy, y el día que alguien la crea es el día que un módulo hace algo que nadie esperaba.
+Preguntarle al módulo y no a Thalyx es el punto. Toda la clase de defecto que este proyecto encuentra una y otra vez es el sistema reportando éxito de trabajo que no hizo.
+
+**Lo que falta: el namespace de usuario.** Hacerlo de forma útil implica decidir con qué uid corre un módulo y de quién son los archivos del store — una pregunta de política, no de implementación. Un user namespace que mapee root a root cumpliría la letra del decreto y no aislaría nada, y este proyecto no publica teatro llamándolo protección. Un módulo hoy corre con el uid con el que corre Thalyx.
+
+### El costo visible del allowlist
+
+`socket` está deliberadamente fuera de la lista: un módulo sin permiso de red no debería siquiera poder construir un socket para que se lo denieguen. El costo es real y queda anotado — `ls -l` se degrada, porque NSS quiere un socket unix para resolver nombres de usuario.
+
+Queda como **decisión abierta** si `module_standard` debería permitir sockets `AF_UNIX`. Es expresable en BPF clásico (se puede filtrar por el argumento `domain`), pero es una decisión de política, no de implementación.
+
+### Cómo se derivó la lista de syscalls permitidas
+
+Ejecutando programas reales bajo el filtro y leyendo **el syscall que el kernel nombra en su log de auditoría** cuando mata al proceso. Ese instrumento es mejor que `strace`: strace traza desde fuera del sandbox, mientras que la línea de auditoría dice exactamente qué llamada mató el filtro y en qué proceso.
+
+Así aparecieron `statfs`, `fadvise64`, `copy_file_range` y las lecturas de xattr. Ninguna estaba en la lista escrita de memoria.
+
+Una syscall denegada **mata** el proceso, no devuelve `EPERM`. Un programa que recibe `EPERM` de una llamada que no esperaba que fallara sigue adelante hacia un estado que nadie diseñó, y el fallo aparece en otro lado, mucho después. Un kill es ruidoso, inmediato y atribuible.
+
+### Las dos etapas
+
+`CLONE_NEWPID` **no mueve al que llama** a un namespace de PID nuevo: hace que sus *hijos* sean los primeros procesos de uno. Entonces tiene que haber un fork después del unshare, y el proceso que se convierte en el módulo no puede ser el que hizo unshare.
+
+```
+enter   entra al cgroup, verifica, hace unshare, lanza init
+  └─ init   (PID 1 del namespace nuevo)
+            monta /proc, pone el hostname, instala seccomp, exec del módulo
+```
+
+Partirlo no cuesta nada de lo que importa: el cgroup se hereda en el fork, así que `init` está adentro desde su primera instrucción, y los namespaces también. Lo que `init` agrega es todo lo que solo se puede hacer desde adentro — un `/proc` que refleje el namespace de PID nuevo, y un filtro seccomp que no debía restringir el trabajo de preparación que `enter` todavía tenía que hacer.
 
 ### La regla de orden
 
@@ -60,7 +96,7 @@ Las dos mitades importan por razones distintas:
 - El LSM **falla abierto** para un cgroup del que no tiene entrada. Tiene que hacerlo: si no, cualquier proceso de la máquina quedaría denegado de todo. Entonces un proceso que entra a su cgroup antes de que la política esté escrita corre sin contención durante ese rato.
 - Un proceso no puede entrar a un cgroup antes de existir. El hueco entre `fork` y la entrada es inevitable; lo evitable es que dentro de ese hueco corra código del módulo.
 
-La salida es que ese instante le pertenezca a Thalyx. El padre vuelve a ejecutar el binario `thalyx` con un argumento marcador; ese hijo entra al cgroup, **relee `cgroup.procs` para confirmar que de verdad es miembro**, y solo entonces *se convierte* en el módulo con `exec`. El proceso que entró y el proceso que corre el módulo son el mismo.
+La salida es que ese instante le pertenezca a Thalyx. El padre vuelve a ejecutar el binario `thalyx` con un argumento marcador; ese hijo (`enter`) entra al cgroup y **relee `cgroup.procs` para confirmar que de verdad es miembro**. El proceso que finalmente se convierte en el módulo es `init`, hijo de `enter` — y **hereda la pertenencia al cgroup en el fork**, así que está adentro desde su primera instrucción. Entre el ingreso al cgroup y el `exec` del módulo no corre ni una línea de código del módulo: todo lo de en medio es código de Thalyx.
 
 La relectura no es paranoia: escribir un pid en un archivo común tiene éxito y no contiene nada. Sin ella, un cgroup mal apuntado se vería idéntico a uno correcto hasta el momento en que el módulo hiciera algo que debía estar denegado.
 
@@ -81,6 +117,17 @@ Se evaluó apoyarse en bubblewrap, que ya resuelve este montaje y está auditado
 Esa exposición se compensa con los tests de nivel 2 de la [[Estrategia-de-Pruebas]].
 
 ## Revisiones
+
+### 2026-08-02 — Se implementa `module_standard` y se introduce `unsafe` contenido
+**Antes:** el perfil estaba decretado y no construido; el aislamiento era `thalyx-lsm` y nada más.
+**Ahora:** namespaces, seccomp y límites de cgroup, verificados contra el kernel real.
+**Lo que cambió en las reglas del repo:** namespaces, `mount` y `seccomp` no están envueltos por la biblioteca estándar de Rust, así que el proyecto tiene que llamar al kernel directo. Eso exige `unsafe`, y el workspace lo tenía **prohibido en todos lados**.
+
+La solución fue contenerlo, no relajarlo: un crate nuevo, `thalyx-syscall`, es el **único** lugar del workspace donde `unsafe` está permitido. Todos los demás conservan `unsafe_code = "forbid"`. Ahí está en `deny` y no en `forbid`, de modo que cada uno de los cinco bloques está marcado explícitamente y lleva un comentario de por qué es correcto. El crate entero son ~200 líneas y no contiene lógica, porque lógica ahí sería lógica que nadie puede revisar con la misma facilidad.
+
+Se escribieron los wrappers a mano en vez de tomar un crate de bindings. La razón no es el decreto de implementación propia —un binding a libc no es un sandbox ajeno— sino más estrecha: **el `unsafe` queda visible**. Una dependencia lo movería fuera de la vista sin quitarlo, y lo que hace defendible a este crate es que se puede leer.
+
+**Un defecto encontrado mientras se escribía la prueba que lo buscaba:** el padre ajustaba el perfil según lo que el módulo tenía concedido, y el hijo lo volvía a derivar desde el nombre del perfil — así que un módulo que **sí** tenía permiso de red terminaba igual en un namespace de red vacío. Silencioso, y solo visible preguntándole al módulo qué interfaces veía. Ahora la máscara efectiva viaja a través de la re-ejecución en vez de derivarse dos veces.
 
 ### 2026-08-02 — La decisión vive en el núcleo; el sandbox solo contiene y lanza
 **Antes:** el decreto decía que el Sandbox es una pieza separada del Core, sin precisar quién decide qué puede hacer un módulo al ejecutarlo.

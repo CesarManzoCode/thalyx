@@ -14,7 +14,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **Perfil `module_standard` completo** — namespaces, filtro seccomp por lista de permitidos y límites de recursos. Sin esto un módulo está contenido por `thalyx-lsm` y por nada más. Ver [[Sandbox-Ejecucion]].
+- [ ] **Probar los límites de recursos contra un kernel** — el código los aplica y rechaza correr si no puede; falta una máquina que delegue los controladores. Ver [[Sandbox-Ejecucion]].
+- [ ] **`pivot_root` para el módulo** — hay namespace de montaje pero el módulo sigue viendo el árbol del host; hoy lo contiene solo el LSM.
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para alimentar el grafo. Ver [[Coherencia-Doble-Ruta]].
@@ -28,6 +29,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Arquitectura del índice semántico a mayor escala** — SQLite alcanza para Fase 1; falta saber a partir de qué volumen deja de alcanzar.
 - [ ] **Sistema de reputación resistente a Sybil** — pospuesto deliberadamente. Ver [[Sistema-Reputacion-Sybil]].
 - [ ] **Dependencias entre módulos y resolver con backtracking** — pospuesto hasta que exista un módulo real que las necesite. Ver [[Resolucion-de-Versiones]].
+- [ ] **Namespace de usuario: con qué uid corre un módulo** — decretado, no implementado. Implica decidir de quién son los archivos del store. Un mapeo root→root cumpliría la letra y no aislaría nada. Ver [[Sandbox-Ejecucion]].
+- [ ] **Si `module_standard` debe permitir sockets `AF_UNIX`** — hoy `socket` está fuera del allowlist y `ls -l` se degrada. Es expresable filtrando por el argumento `domain`. Ver [[Sandbox-Ejecucion]].
 - [ ] **Condiciones para habilitar llamadas a modelos remotos** — las reglas ya están escritas; falta decidir cuándo se activan. Ver [[Agente-Conversacional]].
 
 ## Resueltos el 2026-08-01
@@ -60,6 +63,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-02
 
+- [x] **Perfil `module_standard`** — namespaces, seccomp y límites, verificados contra el kernel real. Ver [[Sandbox-Ejecucion]].
+- [x] **Dónde vive el `unsafe`** — en `thalyx-syscall` y en ningún otro lado. Ver [[Sandbox-Ejecucion]].
 - [x] **Cierre del ciclo de enforcement** — `thalyx module run` establece la contención sola. Ver [[Sandbox-Ejecucion]].
 - [x] **Identidad cgroup del módulo y orden de lanzamiento** — probados contra un montaje cgroup2 real.
 - [x] **Dónde vive el manifiesto de un módulo instalado** — junto al módulo, publicado por el mismo `rename`, re-verificado en cada lectura.
