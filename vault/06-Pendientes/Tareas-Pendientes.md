@@ -14,12 +14,11 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **Probar los límites de recursos contra un kernel** — el código los aplica y rechaza correr si no puede; falta una máquina que delegue los controladores. Ver [[Sandbox-Ejecucion]].
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para acotar la cuenta de mutaciones al árbol indexado. Necesita un consumidor que haga `mmap` del mapa; solo se puede escribir donde se pueda ejecutar. Ver [[FS-en-Grafo]].
 - [ ] **Ampliar los hooks del watcher** para cubrir escrituras por descriptor abierto. Sin eso el contador nunca podrá creerse.
-- [ ] **Montajes idmapped para las rutas concedidas** — sin ellos, una concesión de escritura sobre un directorio del humano se rechaza en vez de funcionar. `mount_setattr` con `MOUNT_ATTR_IDMAP`. Ver [[Sandbox-Ejecucion]].
+- [ ] **Probar los límites de recursos contra un kernel que delegue controladores** — `THALYX_REQUIRE_CONTROLLER_TESTS=1`.
 - [ ] **Ejecutar `make -C lsm load` con el contador nuevo** — el cambio al programa BPF no pudo compilarse ni verificarse en el contenedor de desarrollo.
 
 
@@ -63,6 +62,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-02
 
+- [x] **Montajes idmapped para las rutas concedidas** — implementados y verificados. Ver [[Sandbox-Ejecucion]].
 - [x] **Con qué uid corre un módulo** — uno por módulo, sin reutilizar nunca. Decretado **e implementado**. Ver [[Sandbox-Ejecucion]].
 - [x] **Sockets `AF_UNIX` en el sandbox** — se quedan fuera, y queda dicho que la decisión es reversible. Ver [[Sandbox-Ejecucion]].
 - [x] **Raíz propia del módulo (`pivot_root`)** — el módulo ya no ve el árbol del host. Ver [[Sandbox-Ejecucion]].

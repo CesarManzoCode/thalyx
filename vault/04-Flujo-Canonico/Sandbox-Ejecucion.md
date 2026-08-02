@@ -88,11 +88,21 @@ El descenso ocurre en `init`, después de todo lo que necesitaba privilegio —l
 
 Se usa `setresuid` y no `setuid`: `setuid` desde root deja el *saved set-user-id* en cero, y un proceso con saved uid cero puede volver. Y el uid efectivo **se relee** después: una llamada que reportara éxito y dejara el proceso como root le entregaría todo al módulo, y todos los pasos siguientes se ven idénticos en los dos casos.
 
-#### El costo, cobrado por adelantado
+#### El costo, y cómo se paga: montajes idmapped
 
-Un módulo que corre con su propio usuario **no puede escribir en un directorio del humano**. Enterarse de eso en el momento en que lo intenta es el peor momento posible: el humano confirmó el permiso, el registro lo tiene, el kernel lo aplica, y el filesystem dice que no.
+Un módulo que corre con su propio usuario **no puede tocar un directorio del humano** — ni escribirlo, ni leerlo si está en modo 0700. Cambiarle el dueño al directorio lo arreglaría y no es aceptable: Thalyx no reescribe el filesystem del humano para acomodarse.
 
-Entonces una concesión que el usuario del módulo no podría ejercer **se rechaza antes de arrancar**, nombrando la ruta. Es honesto, y es interino: la solución correcta son *idmapped mounts* (`mount_setattr` con `MOUNT_ATTR_IDMAP`, kernel 5.12+), que remapean la propiedad solo dentro del montaje del módulo — un archivo del humano se ve como propiedad del módulo adentro, y lo que el módulo escribe queda a nombre del humano afuera. Eso falta.
+La respuesta es un **montaje idmapped** (`mount_setattr` con `MOUNT_ATTR_IDMAP`). El módulo ve el directorio como propio; lo que escribe aterriza en disco a nombre de quien es dueño del directorio. En disco no cambia nada.
+
+Medido: un directorio en modo 0700 de root, concedido para escritura, un módulo corriendo como 700000. La escritura funciona y el archivo que aparece en el host es de root.
+
+**La dirección del mapeo es la contraria a la lectura obvia.** Una línea de `uid_map` es `<adentro> <afuera>`, y para un montaje idmapped el kernel trata el id **en disco** como el de adentro. La primera versión lo tenía invertido y *no falló*: montó limpio y el directorio apareció como propiedad de `nobody`, porque el id en disco no era un id válido de adentro en ese mapa. Ese es el fallo bueno — un id que no se puede traducir se vuelve nadie, y nadie no puede escribir nada.
+
+Las concesiones de **lectura** se remapean igual que las de escritura, y después se remontan de solo lectura: remapear vuelve al módulo el dueño aparente, lo que si no le daría permiso de escritura que nadie concedió. Las rutas de sistema no se remapean: son legibles por todo el mundo por diseño.
+
+##### Por qué hay un proceso auxiliar
+
+Un user namespace tiene que ser **habitado** para existir, y entrar en uno le cuesta al que llama sus privilegios — que el lanzador todavía necesita. Entonces un hijo efímero entra a uno y espera; el lanzador escribe su mapa desde afuera, donde sigue siendo root, y se queda con un descriptor al namespace. El namespace sobrevive al hijo porque el descriptor lo mantiene abierto.
 
 ### El filesystem que ve el módulo
 
@@ -113,7 +123,13 @@ Nada más existe para ser alcanzado. La raíz misma queda de solo lectura.
 
 Una ruta concedida que no existe **se rechaza**, nombrándola. Si no, el módulo correría con un permiso que el humano confirmó y que no puede usar, sin que nada lo diga. Es la misma regla de "una promesa que el sistema no puede cumplir", espejada.
 
-#### Tres defectos, los tres por ejecutarlo
+#### Tres defectos más, otra vez por ejecutarlo
+
+1. **`/proc` era el del namespace equivocado.** `enter` hace `unshare(CLONE_NEWPID)`, así que `init` es PID 1 de un namespace nuevo mientras `/proc` sigue siendo el del host. Escribir el `uid_map` de un hijo por `/proc/<pid>` apuntaba entonces a **otro proceso completamente distinto**. Falló con `EPERM`, que es el desenlace bueno; el malo estaba disponible.
+2. **La dirección del mapeo estaba invertida** — descrito arriba. Montó limpio y no aisló nada de lo que debía.
+3. **Un test reportó `NOT PROVEN` para una corrida que sí había funcionado.** El proceso auxiliar anunciaba su propia liberación como error en stderr, y la guarda del test coincidía con eso. Regla que sale: **una guarda de `NOT PROVEN` se ata a lo que dice el fallo real, no a una palabra que aparezca cerca.**
+
+#### Tres defectos del pivot, también por ejecutarlo
 
 1. **La raíz se ensamblaba sobre `/tmp`**, y el tmpfs tapaba el árbol del módulo cuando este vivía ahí. Se movió a `/run/thalyx/sandbox`, donde lo único que puede tapar es a sí mismo.
 2. **El `/tmp` del módulo se montaba después de los binds**, así que tapaba cualquier ruta concedida bajo `/tmp` — el módulo recibía "no such file or directory" por algo que el humano sí había confirmado. Regla que salió de ahí: **todo montaje que tape parte de la raíz va antes de que se monte nada debajo de él.** Se encontró por suerte, porque la ruta concedida de un test resultó ser un directorio temporal; ahora hay un test que lo busca a propósito.
