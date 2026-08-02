@@ -1,0 +1,15 @@
+[package]
+name = "thalyx-watch"
+description = "Reads the kernel's filesystem mutation counter for the semantic index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-graph.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

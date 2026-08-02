@@ -795,6 +795,7 @@ dependencies = [
  "thalyx-manifest",
  "thalyx-permd",
  "thalyx-sandbox",
+ "thalyx-watch",
  "toml",
 ]
 
@@ -904,6 +905,14 @@ name = "thalyx-syscall"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "thalyx-watch"
+version = "0.1.0"
+dependencies = [
+ "thalyx-graph",
+ "thiserror",
 ]
 
 [[package]]

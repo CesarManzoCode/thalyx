@@ -14,8 +14,10 @@
 
 mod schema;
 mod staleness;
+pub mod watch;
 
 pub use staleness::{Freshness, Staleness};
+pub use watch::{Coverage, MutationCounter, Trust, Verification, Watcher};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -391,6 +393,49 @@ impl Index {
             .query_map([tag], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Answer { rows, freshness })
+    }
+
+    /// Remember the mutation count the index was last built at.
+    ///
+    /// Persisted so a one-shot command can pick up where the previous one left
+    /// off. Without it every invocation would start with broken coverage and
+    /// the counter could never say anything.
+    pub fn set_mutation_baseline(&self, baseline: u64) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO meta (key, value) VALUES ('mutation_baseline', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [baseline.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The recorded baseline, if one was ever written.
+    ///
+    /// A value that cannot be parsed is treated as absent rather than as zero.
+    /// Zero would be a baseline the watcher could vouch for, and a corrupt
+    /// field must never turn into a claim.
+    pub fn mutation_baseline(&self) -> Result<Option<u64>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'mutation_baseline'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(stored.and_then(|value| value.parse().ok()))
+    }
+
+    /// Forget the baseline, so the next run starts with no coverage.
+    pub fn clear_mutation_baseline(&self) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM meta WHERE key = 'mutation_baseline'", [])?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn connection_for_tests(&self) -> &Connection {
+        &self.connection
     }
 
     pub fn node_count(&self) -> Result<usize> {

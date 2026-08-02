@@ -7,7 +7,8 @@
 
 use clap::Subcommand;
 use std::path::{Path, PathBuf};
-use thalyx_graph::{Freshness, Index};
+use thalyx_graph::{Coverage, Freshness, Index, MutationCounter, Watcher};
+use thalyx_watch::KernelCounter;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -56,6 +57,14 @@ pub enum GraphCommand {
         #[arg(long, default_value = ".")]
         tree: PathBuf,
     },
+    /// Check what the kernel's mutation counter says against the tree itself
+    ///
+    /// The experiment that decides whether the counter may ever be believed on
+    /// this machine. It asks both and reports whether they agreed.
+    Verify {
+        #[arg(default_value = ".")]
+        tree: PathBuf,
+    },
     /// Files carrying a tag
     Tagged {
         tag: String,
@@ -70,6 +79,15 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             let tree = tree.canonicalize()?;
             let mut index = open(store_root, &tree)?;
             let report = index.build()?;
+
+            // The counter's value at the moment the index matched the tree.
+            // Recorded here because this is the only instant it is true.
+            let counter = KernelCounter::default_map();
+            let mut watcher = Watcher::new(counter);
+            match watcher.rebuilt() {
+                Coverage::Unbroken { baseline } => index.set_mutation_baseline(baseline)?,
+                Coverage::Broken { .. } => index.clear_mutation_baseline()?,
+            }
 
             println!("indexed {}", tree.display());
             println!(
@@ -100,6 +118,7 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             println!("tree      {}", tree.display());
             println!("nodes     {}", index.node_count()?);
             println!("edges     {}", index.edge_count()?);
+            print_coverage(&index)?;
 
             match index.freshness()? {
                 Freshness::Current => {
@@ -128,6 +147,43 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                     println!("The filesystem is the truth; the index is a cache over it.");
                     println!("`thalyx graph build` brings it back into line.");
                 }
+            }
+            Ok(())
+        }
+
+        GraphCommand::Verify { tree } => {
+            let tree = tree.canonicalize()?;
+            let index = open(store_root, &tree)?;
+
+            let counter = KernelCounter::default_map();
+            if !counter.is_available() {
+                println!("the kernel mutation counter is NOT PRESENT");
+                println!("  {}", counter.map().display());
+                println!();
+                println!("Nothing to verify: without it the index walks the tree on every");
+                println!("query, which is correct and slow. `make -C lsm load` attaches it.");
+                return Ok(());
+            }
+
+            let mut watcher = match index.mutation_baseline()? {
+                Some(baseline) => Watcher::resuming_from(counter, baseline),
+                None => Watcher::new(counter),
+            };
+
+            let verification = watcher.verify(&index)?;
+
+            println!("counter said   {}", said(verification.counter_said_current));
+            println!("the tree says  {}", said(verification.walk_said_current));
+            println!("coverage       {}", verification.coverage.describe());
+            println!();
+            println!("{}", verification.describe());
+
+            if verification.found_a_coverage_hole() {
+                println!();
+                println!("The counter must not be believed on this machine. Something can");
+                println!("change a file without the kernel hooks seeing it, and the index");
+                println!("would answer `current` for a tree that had moved on.");
+                return Err("verification found a coverage hole".into());
             }
             Ok(())
         }
@@ -228,4 +284,49 @@ fn open(store_root: &Path, tree: &Path) -> Result<Index, Box<dyn std::error::Err
         .join("graph")
         .join(format!("{key}.db"));
     Ok(Index::open(&database, tree)?)
+}
+
+fn said(current: bool) -> &'static str {
+    if current {
+        "nothing changed"
+    } else {
+        "something changed"
+    }
+}
+
+/// What the kernel counter can and cannot say about this index.
+///
+/// Printed with the rest of the status because a shortcut that is off, and a
+/// shortcut that is on and wrong, look identical from the outside otherwise.
+fn print_coverage(index: &Index) -> Fallible {
+    let counter = KernelCounter::default_map();
+
+    if !counter.is_available() {
+        println!("watcher   not loaded; every freshness check walks the whole tree");
+        return Ok(());
+    }
+
+    let total = match counter.total() {
+        Ok(total) => total,
+        Err(error) => {
+            println!("watcher   present but unreadable: {error}");
+            return Ok(());
+        }
+    };
+
+    match index.mutation_baseline()? {
+        Some(baseline) => println!(
+            "watcher   {} mutation(s) seen, {} since this index was built",
+            total,
+            total.saturating_sub(baseline)
+        ),
+        None => println!("watcher   {total} mutation(s) seen; no baseline for this index"),
+    }
+
+    if !counter.claims_complete_coverage() {
+        println!("          the count is machine-wide and its hooks miss writes through");
+        println!("          an open descriptor, so it is reported and never believed");
+    }
+
+    Ok(())
 }

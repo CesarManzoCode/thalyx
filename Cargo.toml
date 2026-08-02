@@ -8,6 +8,7 @@ members = [
     "crates/thalyx-syscall",
     "crates/thalyx-sandbox",
     "crates/thalyx-graph",
+    "crates/thalyx-watch",
     "crates/thalyx-journal",
     "crates/thalyx-core",
     "crates/thalyx-cli",
@@ -28,6 +29,7 @@ thalyx-permd = { path = "crates/thalyx-permd" }
 thalyx-sandbox = { path = "crates/thalyx-sandbox" }
 thalyx-syscall = { path = "crates/thalyx-syscall" }
 thalyx-graph = { path = "crates/thalyx-graph" }
+thalyx-watch = { path = "crates/thalyx-watch" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }
 
