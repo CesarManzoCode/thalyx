@@ -34,7 +34,7 @@ PINDIR  := $(BPFFS)/thalyx
 # suspends the relevant warning around its own include.
 CFLAGS := -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_$(ARCH) -I.
 
-.PHONY: all hooks load unload enforce observe status clean
+.PHONY: all hooks load unload enforce observe status demo clean
 
 all: $(OBJS)
 
@@ -121,8 +121,18 @@ status:
 	@if [ -d $(PINDIR)/watch ]; then echo "watcher:     attached"; \
 	 else echo "watcher:     not attached"; fi
 	@echo
+	@# A pinned program that is not linked to a hook enforces nothing. The
+	@# pins prove it loaded; only a link proves it is in the path.
+	@echo "live LSM links:"
+	@sudo $(BPFTOOL) link list 2>/dev/null | grep -A1 lsm || echo "  (none — nothing is actually attached)"
+	@echo
 	@echo "policy entries:"
 	@sudo $(BPFTOOL) map dump pinned $(PINDIR)/lsm/thalyx_policy 2>/dev/null || echo "  (none)"
+
+# Prove enforcement denies something. Safe on a working machine: the policy
+# names one throwaway cgroup and everything else is untouched.
+demo:
+	@bash demo-enforcement.sh
 
 clean:
 	rm -f $(OBJS) $(VMLINUX)
