@@ -29,12 +29,13 @@ OBJS    := thalyx_lsm.bpf.o thalyx_watch.bpf.o
 
 BPFFS   := /sys/fs/bpf
 PINDIR  := $(BPFFS)/thalyx
+MAPDIR  := $(PINDIR)/maps
 
 # -Werror applies to this project's code. vmlinux.h is machine-generated and
 # suspends the relevant warning around its own include.
 CFLAGS := -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_$(ARCH) -I.
 
-.PHONY: all hooks load unload enforce observe status demo clean
+.PHONY: all hooks load unload enforce observe status demo diagnose clean
 
 all: $(OBJS)
 
@@ -79,13 +80,18 @@ load: $(OBJS)
 	@mountpoint -q $(BPFFS) || sudo mount -t bpf bpf $(BPFFS)
 	sudo mkdir -p $(PINDIR)
 	@echo "==> loading enforcement"
-	sudo $(BPFTOOL) prog loadall thalyx_lsm.bpf.o $(PINDIR)/lsm autoattach
+	@# Maps get an explicit pin directory. Left implicit, libbpf places them
+	@# under its own root while the loader places programs elsewhere, the two
+	@# fight, and the load fails with a message that names neither.
+	sudo $(BPFTOOL) prog loadall thalyx_lsm.bpf.o $(PINDIR)/lsm \
+	    pinmaps $(MAPDIR) autoattach
 	@# Observe first. Enforcing from the start would mean the first run of an
 	@# untested policy is also the one that can lock you out.
-	@sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
+	@sudo $(BPFTOOL) map update pinned $(MAPDIR)/thalyx_enforcing \
 	    key 0 0 0 0 value 0 0 0 0 2>/dev/null || true
 	@echo "==> loading the watcher (optional)"
-	@sudo $(BPFTOOL) prog loadall thalyx_watch.bpf.o $(PINDIR)/watch autoattach \
+	@sudo $(BPFTOOL) prog loadall thalyx_watch.bpf.o $(PINDIR)/watch \
+	    pinmaps $(MAPDIR) autoattach \
 	    && echo "    attached" \
 	    || echo "    not attached — this kernel does not expose one of its hooks. \
 Enforcement is unaffected; run 'make hooks' to see which."
@@ -96,15 +102,24 @@ Enforcement is unaffected; run 'make hooks' to see which."
 
 unload:
 	sudo rm -rf $(PINDIR)
+	@# Also sweep stray pins at the bpffs root. An earlier build declared its
+	@# maps LIBBPF_PIN_BY_NAME, which put them here rather than under $(PINDIR);
+	@# one left behind makes every later load fail with an error that points at
+	@# programs instead of at the map that is really in the way.
+	@for stray in thalyx_policy thalyx_denials thalyx_enforcing thalyx_mutations; do \
+	    if [ -e $(BPFFS)/$$stray ]; then \
+	        sudo rm -f $(BPFFS)/$$stray && echo "  removed stray pin $$stray"; \
+	    fi; \
+	done
 	@echo "detached"
 
 enforce:
-	sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
+	sudo $(BPFTOOL) map update pinned $(MAPDIR)/thalyx_enforcing \
 	    key 0 0 0 0 value 1 0 0 0
 	@echo "enforcing: denials are now real"
 
 observe:
-	sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
+	sudo $(BPFTOOL) map update pinned $(MAPDIR)/thalyx_enforcing \
 	    key 0 0 0 0 value 0 0 0 0
 	@echo "observing: denials are logged, not applied"
 
@@ -113,7 +128,7 @@ status:
 	@if [ -d $(PINDIR)/lsm ]; then \
 	    echo "enforcement: attached"; \
 	    printf 'mode:        '; \
-	    if sudo $(BPFTOOL) map dump pinned $(PINDIR)/lsm/thalyx_enforcing 2>/dev/null \
+	    if sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_enforcing 2>/dev/null \
 	        | grep -q '"value": \["0x01"'; then echo enforcing; else echo observing; fi; \
 	else \
 	    echo "enforcement: not attached"; \
@@ -127,7 +142,22 @@ status:
 	@sudo $(BPFTOOL) link list 2>/dev/null | grep -A1 lsm || echo "  (none — nothing is actually attached)"
 	@echo
 	@echo "policy entries:"
-	@sudo $(BPFTOOL) map dump pinned $(PINDIR)/lsm/thalyx_policy 2>/dev/null || echo "  (none)"
+	@sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_policy 2>/dev/null || echo "  (none)"
+
+# What a failing load actually said.
+#
+# bpftool reports "failed to pin all programs" for several unrelated causes.
+# libbpf's own debug output names the real one.
+diagnose: $(OBJS)
+	@echo "==> existing pins under $(BPFFS)"
+	@sudo find $(BPFFS) -maxdepth 3 2>/dev/null | sed 's|^|    |' || echo "    (none)"
+	@echo
+	@echo "==> loading with libbpf debug output"
+	-sudo $(BPFTOOL) -d prog loadall thalyx_lsm.bpf.o /sys/fs/bpf/thalyx-diagnose \
+	    pinmaps /sys/fs/bpf/thalyx-diagnose-maps autoattach
+	@echo
+	@echo "==> cleaning up the diagnostic pins"
+	@sudo rm -rf /sys/fs/bpf/thalyx-diagnose /sys/fs/bpf/thalyx-diagnose-maps
 
 # Prove enforcement denies something. Safe on a working machine: the policy
 # names one throwaway cgroup and everything else is untouched.

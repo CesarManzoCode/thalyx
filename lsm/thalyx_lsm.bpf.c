@@ -59,12 +59,17 @@ struct policy {
 //
 // `thalyx-permd` writes entries; this program only reads them. An absent key
 // means "not a Thalyx module", not "denied" — see the fail-open note below.
+//
+// Deliberately *not* declared LIBBPF_PIN_BY_NAME. That attribute makes libbpf
+// place the pin itself, at load time, under its own root — which fights with
+// the loader placing program pins somewhere else, and leaves stray pins behind
+// that make the next load fail. Where a pin lives is the loader's decision,
+// so the loader makes all of them.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4096);
     __type(key, __u64);            // cgroup id
     __type(value, struct policy);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } thalyx_policy SEC(".maps");
 
 // Denials, for the journal. Losing an event under load is acceptable: the
@@ -92,7 +97,6 @@ struct {
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u32);          // 0 = observe only, 1 = enforce
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } thalyx_enforcing SEC(".maps");
 
 static __always_inline int enforcing(void)

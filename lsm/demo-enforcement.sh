@@ -36,9 +36,9 @@ red()   { printf '\033[31m%s\033[0m\n' "$1"; }
 cleanup() {
     echo
     echo "==> cleaning up"
-    sudo "$(command -v bpftool)" map delete pinned "$PINDIR/lsm/thalyx_policy" \
+    sudo "$(command -v bpftool)" map delete pinned "$PINDIR/maps/thalyx_policy" \
         key hex $KEY_HEX 2>/dev/null && echo "    policy entry removed"
-    sudo "$(command -v bpftool)" map update pinned "$PINDIR/lsm/thalyx_enforcing" \
+    sudo "$(command -v bpftool)" map update pinned "$PINDIR/maps/thalyx_enforcing" \
         key 0 0 0 0 value 0 0 0 0 2>/dev/null && echo "    back to observe mode"
     sudo rmdir "$CGROUP" 2>/dev/null && echo "    cgroup removed"
 }
@@ -78,7 +78,7 @@ trap cleanup EXIT
 VALUE_HEX="$(u32_hex 6)$(u32_hex 0)$(u64_hex 0)"
 
 echo "==> writing the policy: filesystem allowed, network denied"
-sudo bpftool map update pinned "$PINDIR/lsm/thalyx_policy" \
+sudo bpftool map update pinned "$PINDIR/maps/thalyx_policy" \
     key hex $KEY_HEX value hex $VALUE_HEX || {
     red "could not write the policy"
     exit 1
@@ -95,7 +95,7 @@ echo "    inside the cgroup:  ${INSIDE_OBSERVING:-<no output>}"
 
 echo
 echo "==> turning enforcement ON"
-sudo bpftool map update pinned "$PINDIR/lsm/thalyx_enforcing" \
+sudo bpftool map update pinned "$PINDIR/maps/thalyx_enforcing" \
     key 0 0 0 0 value 1 0 0 0 || { red "could not enable enforcement"; exit 1; }
 
 INSIDE=$(sudo sh -c "echo \$\$ > $CGROUP/cgroup.procs; exec curl -s --max-time 3 http://$TARGET:$PORT/ 2>&1" 2>&1)
