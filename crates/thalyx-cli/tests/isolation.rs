@@ -751,3 +751,142 @@ fn current_uid() -> u32 {
         })
         .unwrap_or(u32::MAX)
 }
+
+#[test]
+fn a_write_grant_on_someone_elses_directory_works_through_an_idmapped_mount() {
+    // The whole cost of the one-uid-per-module decree, paid off. The directory
+    // belongs to somebody else and is not world-writable; the module runs as
+    // its own user; and the write still lands, owned by the directory's owner.
+    //
+    // Without the remapping this is exactly the case that fails.
+    let Some(arena) = arena("idmap") else { return };
+    let _cgroup = cgroup_in(&arena);
+
+    let target = tempfile::tempdir().unwrap();
+    set_mode(target.path(), 0o700); // not world-anything
+
+    let module = Module::with(&format!(
+        "touch {}/written 2>/dev/null && echo wrote || echo DENIED",
+        target.path().display()
+    ));
+
+    let rootfs = thalyx_sandbox::RootFs::for_module_as(
+        module.dir(),
+        &[grant(target.path(), "write")],
+        Some(thalyx_core::uids::FIRST_UID),
+    );
+
+    let rootfs = match rootfs {
+        Ok(rootfs) => rootfs,
+        Err(error) => panic!("{error}"),
+    };
+
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: Some(thalyx_core::uids::FIRST_UID),
+    };
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .output()
+        .expect("launch");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // Keyed on what the kernel refusing actually says, and nothing else. A
+    // looser match caught the helper's own goodbye and reported NOT PROVEN for
+    // a run that had worked.
+    if stderr.contains("the kernel refused to remap") {
+        eprintln!("NOT PROVEN: this kernel or filesystem refused the idmapped mount.");
+        eprintln!("  {}", stderr.trim());
+        eprintln!("  This test did not run. It did not pass.");
+        assert!(
+            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+            "{stderr}"
+        );
+        return;
+    }
+
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(stdout(&output), "wrote");
+
+    // And on the host the file is real, owned by whoever owns the directory —
+    // not by the module's user, which does not exist outside Thalyx.
+    let written = target.path().join("written");
+    assert!(written.exists(), "the write did not reach the host");
+
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        std::fs::metadata(&written).unwrap().uid(),
+        std::fs::metadata(target.path()).unwrap().uid(),
+        "the file landed owned by the module's user instead of the directory's owner"
+    );
+}
+
+#[test]
+fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
+    // Reads need the remapping as much as writes do: a directory the human
+    // keeps at mode 0700 is unreadable to uid 700000 however clearly the grant
+    // was confirmed. And remapping makes the module the apparent owner, which
+    // would hand it write access nobody granted — so the bind is remounted
+    // read-only afterwards.
+    let Some(arena) = arena("idmap-read") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let target = tempfile::tempdir().unwrap();
+    std::fs::write(target.path().join("secret"), "granted content\n").unwrap();
+    set_mode(target.path(), 0o700);
+
+    let module = Module::with(&format!(
+        "cat {dir}/secret; touch {dir}/more 2>/dev/null && echo WRITABLE || echo read-only",
+        dir = target.path().display()
+    ));
+
+    let rootfs = thalyx_sandbox::RootFs::for_module_as(
+        module.dir(),
+        &[grant(target.path(), "read")],
+        Some(thalyx_core::uids::FIRST_UID),
+    )
+    .expect("rootfs");
+
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: Some(thalyx_core::uids::FIRST_UID),
+    };
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .output()
+        .expect("launch");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if stderr.contains("the kernel refused to remap") {
+        eprintln!("NOT PROVEN: idmapped mounts refused here. This test did not pass.");
+        assert!(
+            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+            "{stderr}"
+        );
+        return;
+    }
+
+    assert!(output.status.success(), "{stderr}");
+    let seen = stdout(&output);
+    assert!(seen.contains("granted content"), "{seen}");
+    assert!(seen.contains("read-only"), "{seen}");
+    assert!(!target.path().join("more").exists());
+}

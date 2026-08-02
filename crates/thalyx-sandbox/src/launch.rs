@@ -100,12 +100,16 @@ pub enum Stage {
         spec: LaunchSpec,
         args: Vec<OsString>,
     },
+    /// A short-lived helper that exists only to hold a user namespace open
+    /// while the launcher writes its id map. See [`crate::idmap`].
+    Userns,
 }
 
 impl Stage {
-    pub fn spec(&self) -> &LaunchSpec {
+    pub fn spec(&self) -> Option<&LaunchSpec> {
         match self {
-            Stage::Enter { spec, .. } | Stage::Init { spec, .. } => spec,
+            Stage::Enter { spec, .. } | Stage::Init { spec, .. } => Some(spec),
+            Stage::Userns => None,
         }
     }
 }
@@ -139,6 +143,10 @@ where
     let _executable = input.next()?;
     let marker = input.next()?;
 
+    if marker == crate::idmap::USERNS_MARKER {
+        return Some(Stage::Userns);
+    }
+
     if marker != ENTER_MARKER && marker != INIT_MARKER {
         return None;
     }
@@ -161,6 +169,7 @@ pub fn run_stage(stage: &Stage) -> std::result::Result<u8, SandboxError> {
     match stage {
         Stage::Enter { spec, args } => enter(spec, args),
         Stage::Init { spec, args } => Err(init(spec, args)),
+        Stage::Userns => crate::idmap::run_userns_helper(),
     }
 }
 
@@ -241,6 +250,31 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
     };
     let namespaces = spec.namespaces;
 
+    // A `/proc` that matches this process's PID namespace, before anything
+    // that reads it.
+    //
+    // `enter` unshared `CLONE_NEWPID`, so this process is PID 1 of a new
+    // namespace while `/proc` is still the one the host mounted. Every pid in
+    // that `/proc` belongs to a different namespace — so `/proc/<child>` for a
+    // child of this process names *somebody else's* process entirely.
+    //
+    // That is not theoretical. The idmapped mounts below write a child's
+    // `uid_map` through `/proc`, and the first attempt wrote it for whatever
+    // unrelated process happened to hold that number on the host. It failed
+    // with `EPERM`, which is the good outcome; the bad one was available.
+    //
+    // Mounting here is invisible outside: `enter` already made the mount
+    // namespace private.
+    if namespaces.pid
+        && namespaces.mount
+        && let Err(source) = mount_private_proc()
+    {
+        return SandboxError::MountFailed {
+            what: format!("mount a {PROC} matching this PID namespace"),
+            source,
+        };
+    }
+
     // The root filesystem, before anything else that depends on paths.
     //
     // After this the host tree is gone: the module can only reach its own
@@ -262,21 +296,14 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
     // Only mountable from in here: the kernel binds a `proc` mount to the PID
     // namespace of the process that mounts it. Doing it in the outer stage
     // would have given the module a view of every process on the machine.
-    if namespaces.pid && namespaces.mount {
-        let flags =
-            thalyx_syscall::MS_NOSUID | thalyx_syscall::MS_NODEV | thalyx_syscall::MS_NOEXEC;
-        if let Err(source) = thalyx_syscall::mount(
-            Some(Path::new("proc")),
-            Path::new(PROC),
-            Some("proc"),
-            flags,
-            None,
-        ) {
-            return SandboxError::MountFailed {
-                what: format!("mount a fresh {PROC}"),
-                source,
-            };
-        }
+    if namespaces.pid
+        && namespaces.mount
+        && let Err(source) = mount_private_proc()
+    {
+        return SandboxError::MountFailed {
+            what: format!("mount a fresh {PROC} inside the module's root"),
+            source,
+        };
     }
 
     if namespaces.uts
@@ -396,6 +423,17 @@ fn exit_code(status: &std::process::ExitStatus) -> u8 {
     }
 }
 
+/// A `proc` bound to the calling process's PID namespace.
+fn mount_private_proc() -> std::io::Result<()> {
+    thalyx_syscall::mount(
+        Some(Path::new("proc")),
+        Path::new(PROC),
+        Some("proc"),
+        thalyx_syscall::MS_NOSUID | thalyx_syscall::MS_NODEV | thalyx_syscall::MS_NOEXEC,
+        None,
+    )
+}
+
 fn current_exe() -> Result<PathBuf> {
     std::env::current_exe().map_err(|source| SandboxError::Exec {
         program: PathBuf::from("<current executable>"),
@@ -437,13 +475,14 @@ mod tests {
             full.extend(argv(marker, &spec, &args).unwrap());
 
             let stage = parse_stage(full).expect("recognised");
-            assert_eq!(stage.spec(), &spec);
+            assert_eq!(stage.spec(), Some(&spec));
             assert_eq!(matches!(stage, Stage::Init { .. }), expected_init);
 
             match stage {
                 Stage::Enter { args: got, .. } | Stage::Init { args: got, .. } => {
                     assert_eq!(got, args);
                 }
+                Stage::Userns => panic!("a launch is not a namespace helper"),
             }
         }
     }

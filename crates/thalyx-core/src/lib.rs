@@ -159,19 +159,6 @@ pub enum CoreError {
     )]
     UidRangeExhausted { first: u32, last: u32 },
 
-    #[error(
-        "`{module_id}` was granted {action} access to `{path}`, and the user it runs as \
-         ({uid}) cannot use it.\n  \
-         Refusing to run: the module would be denied at the worst possible moment, holding \
-         a permission you confirmed."
-    )]
-    GrantUnusableByModuleUser {
-        module_id: String,
-        path: std::path::PathBuf,
-        action: String,
-        uid: u32,
-    },
-
     #[error(transparent)]
     Sandbox(#[from] thalyx_sandbox::SandboxError),
 

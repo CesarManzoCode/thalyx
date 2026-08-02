@@ -91,8 +91,12 @@ fn a_module_runs_inside_the_cgroup_thalyx_created_for_it() {
     if status.stderr().contains("policy map is not loaded") {
         eprintln!("NOT PROVEN: thalyx-lsm is not loaded, so no policy could be written.");
         eprintln!("  The confinement itself was not exercised. This test did not pass.");
+        // A different variable from the cgroup one on purpose. A machine can
+        // easily have cgroup2 and namespaces without the BPF side loaded, and
+        // one flag for both would mean the only way to demand the parts that
+        // *are* available is to demand the parts that are not.
         assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+            std::env::var_os("THALYX_REQUIRE_LSM_TESTS").is_none(),
             "{}",
             status.stderr()
         );

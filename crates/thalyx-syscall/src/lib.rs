@@ -92,6 +92,112 @@ pub fn umount2(target: &Path, flags: i32) -> io::Result<()> {
     check(result)
 }
 
+/// Clone a mount into a detached tree, returning a file descriptor for it.
+///
+/// A detached mount can be reconfigured before anyone can see it — which is the
+/// whole point: [`mount_setattr`] applies an id mapping to it, and only then is
+/// it attached with [`move_mount`]. There is no instant at which the mount
+/// exists in the tree with the wrong ownership.
+pub fn open_tree(path: &Path, flags: u32) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    let path = path_to_c(path)?;
+
+    // SAFETY: the pointer comes from a `CString` that outlives the call. There
+    // is no libc wrapper for this syscall.
+    #[allow(unsafe_code)]
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            flags as libc::c_ulong,
+        )
+    };
+
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: the kernel returned a fresh descriptor that nothing else owns.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as libc::c_int) })
+}
+
+/// What [`mount_setattr`] changes. Mirrors the kernel's `struct mount_attr`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MountAttr {
+    pub attr_set: u64,
+    pub attr_clr: u64,
+    pub propagation: u64,
+    pub userns_fd: u64,
+}
+
+/// Reconfigure a mount, including remapping the ids it presents.
+pub fn mount_setattr(
+    fd: std::os::fd::BorrowedFd<'_>,
+    flags: u32,
+    attr: &MountAttr,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let empty = CString::new("").expect("no interior NUL in an empty string");
+
+    // SAFETY: `attr` outlives the call and its size is passed explicitly, so
+    // the kernel reads exactly the structure that was handed to it. The path is
+    // the empty string with `AT_EMPTY_PATH`, meaning "the mount this descriptor
+    // refers to".
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            fd.as_raw_fd(),
+            empty.as_ptr(),
+            flags as libc::c_ulong,
+            attr as *const MountAttr,
+            std::mem::size_of::<MountAttr>(),
+        ) as libc::c_int
+    };
+    check(result)
+}
+
+/// Attach a detached mount to a place in the tree.
+pub fn move_mount(from: std::os::fd::BorrowedFd<'_>, to: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let empty = CString::new("").expect("no interior NUL in an empty string");
+    let to = path_to_c(to)?;
+
+    // SAFETY: both pointers come from `CString`s that outlive the call.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            fd_or_cwd(from.as_raw_fd()),
+            empty.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH as libc::c_ulong,
+        ) as libc::c_int
+    };
+    check(result)
+}
+
+fn fd_or_cwd(fd: libc::c_int) -> libc::c_int {
+    fd
+}
+
+/// Clone the mount and everything under it.
+pub const OPEN_TREE_CLONE: u32 = 1;
+/// Apply to the whole subtree.
+pub const AT_RECURSIVE: u32 = 0x8000;
+/// The path is empty; the descriptor is the target.
+pub const AT_EMPTY_PATH_U32: u32 = 0x1000;
+/// The mount presents ids translated through a user namespace.
+pub const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
+const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x0000_0004;
+
 /// Make `new_root` the process's root, and move the old one to `put_old`.
 ///
 /// The kernel requires `new_root` to be a mount point, `put_old` to be

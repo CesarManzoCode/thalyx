@@ -215,9 +215,7 @@ fn run_inner(
     let profile = thalyx_sandbox::profile::resolve(request.profile)?;
     let uid = if profile.own_user {
         let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
-        let uid = uids.assign(&manifest.id)?;
-        check_grants_are_usable(&manifest.id, &permissions, uid)?;
-        Some(uid)
+        Some(uids.assign(&manifest.id)?)
     } else {
         None
     };
@@ -261,44 +259,6 @@ fn run_inner(
         permissions,
         exit_code: status.code(),
     })
-}
-
-/// Refuse a grant the module's own user could never exercise.
-///
-/// A module that runs as its own user cannot write to a directory belonging to
-/// the human, and finding that out at the moment it tries is the worst
-/// possible time: the human confirmed the permission, the registry records it,
-/// the kernel enforces it, and the filesystem says no.
-///
-/// This is the cost of the one-uid-per-module decree, and it is paid up front
-/// and out loud rather than at runtime and in silence. The proper fix is an
-/// idmapped bind for granted paths, which is not built yet.
-fn check_grants_are_usable(
-    module_id: &str,
-    permissions: &[thalyx_manifest::Permission],
-    uid: u32,
-) -> Result<()> {
-    for permission in permissions {
-        if !permission.resource.starts_with('/') {
-            continue;
-        }
-        let writing = match permission.action.as_str() {
-            "write" => true,
-            "read" => false,
-            _ => continue,
-        };
-
-        let path = std::path::Path::new(&permission.resource);
-        if !crate::uids::usable_by(path, uid, writing)? {
-            return Err(CoreError::GrantUnusableByModuleUser {
-                module_id: module_id.to_string(),
-                path: path.to_path_buf(),
-                action: permission.action.clone(),
-                uid,
-            });
-        }
-    }
-    Ok(())
 }
 
 /// The deliberate, named exception: run with nothing enforcing.

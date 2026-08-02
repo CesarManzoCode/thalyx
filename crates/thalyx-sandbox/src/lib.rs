@@ -52,6 +52,7 @@
 //! else in the profile holds.
 
 pub mod cgroup;
+pub mod idmap;
 pub mod launch;
 pub mod limits;
 pub mod profile;
@@ -169,6 +170,15 @@ pub enum SandboxError {
          Refusing to run the module: every step after this looks the same either way."
     )]
     UserNotEffective { wanted: u32, actual: u32 },
+
+    #[error("could not remap ownership for the module's user: {reason}")]
+    Idmap { reason: String },
+
+    #[error(
+        "idmapped mounts are not available: {reason}\n  \
+         A granted write path owned by someone else cannot be made usable without them."
+    )]
+    IdmapUnavailable { reason: String },
 
     #[error("could not set the hostname inside the UTS namespace: {source}")]
     HostnameNotSet {
@@ -331,8 +341,13 @@ impl<'a> Confinement<'a> {
         uid: Option<u32>,
         args: &[std::ffi::OsString],
     ) -> Result<std::process::Child> {
+        let uid = if self.profile.own_user { uid } else { None };
         let rootfs = if self.profile.pivot_root {
-            Some(rootfs::RootFs::for_module(module_dir, &self.permissions)?)
+            Some(rootfs::RootFs::for_module_as(
+                module_dir,
+                &self.permissions,
+                uid,
+            )?)
         } else {
             None
         };
@@ -343,7 +358,7 @@ impl<'a> Confinement<'a> {
             namespaces: self.profile.namespaces,
             rootfs,
             program: program.to_path_buf(),
-            uid: if self.profile.own_user { uid } else { None },
+            uid,
         };
 
         launch::spawn(helper, &spec, args)

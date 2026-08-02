@@ -72,6 +72,14 @@ pub struct Bind {
     pub source: PathBuf,
     pub target: PathBuf,
     pub writable: bool,
+    /// Whether this is a path the human granted, rather than a system path the
+    /// module needs to start at all.
+    ///
+    /// Only granted paths are remapped for the module's user. The distinction
+    /// is kept explicitly rather than inferred from writability, because a
+    /// read grant needs remapping just as much as a write one.
+    #[serde(default)]
+    pub granted: bool,
 }
 
 /// What the module's root filesystem is made of.
@@ -81,6 +89,14 @@ pub struct RootFs {
     pub module_dir: PathBuf,
     /// System paths, granted paths and device nodes.
     pub binds: Vec<Bind>,
+    /// The user the module runs as, when its grants have to be remapped.
+    ///
+    /// A module running as its own uid cannot write to a directory belonging
+    /// to someone else. Rather than change the owner on disk — Thalyx
+    /// rewriting the human's filesystem to suit itself — the writable binds
+    /// are idmapped, so the module sees them as its own and what it writes
+    /// lands owned by whoever owns the directory. See [`crate::idmap`].
+    pub uid: Option<u32>,
 }
 
 impl RootFs {
@@ -91,6 +107,15 @@ impl RootFs {
     /// cannot use — the same "promise the system cannot keep" this project
     /// refuses everywhere else, only mirrored.
     pub fn for_module(module_dir: &Path, permissions: &[Permission]) -> Result<Self> {
+        Self::for_module_as(module_dir, permissions, None)
+    }
+
+    /// The same, for a module that runs as a user of its own.
+    pub fn for_module_as(
+        module_dir: &Path,
+        permissions: &[Permission],
+        uid: Option<u32>,
+    ) -> Result<Self> {
         let mut binds = Vec::new();
 
         for path in SYSTEM_PATHS {
@@ -102,6 +127,7 @@ impl RootFs {
                     source: source.clone(),
                     target: source,
                     writable: false,
+                    granted: false,
                 });
             }
         }
@@ -113,6 +139,7 @@ impl RootFs {
                     source: source.clone(),
                     target: source,
                     writable: false,
+                    granted: false,
                 });
             }
         }
@@ -137,6 +164,7 @@ impl RootFs {
                     source: path.clone(),
                     target: path,
                     writable,
+                    granted: true,
                 }),
             }
         }
@@ -144,6 +172,7 @@ impl RootFs {
         Ok(Self {
             module_dir: module_dir.to_path_buf(),
             binds,
+            uid,
         })
     }
 
@@ -216,7 +245,21 @@ impl RootFs {
 
         for entry in &self.binds {
             let target = assembly.join(entry.target.strip_prefix("/").unwrap_or(&entry.target));
-            bind(&entry.source, &target, entry.writable)?;
+
+            // A writable grant on a directory somebody else owns is the one
+            // case a plain bind cannot deliver: the mount would be writable
+            // and the module still would not be allowed. Remapping it is what
+            // makes the permission the human confirmed actually work.
+            match self.remapping_needed_for(entry)? {
+                Some((owner_uid, owner_gid)) => bind_remapped(
+                    &entry.source,
+                    &target,
+                    (owner_uid, owner_gid),
+                    self.uid,
+                    entry.writable,
+                )?,
+                None => bind(&entry.source, &target, entry.writable)?,
+            }
         }
 
         let old_root = assembly.join(OLD_ROOT.trim_start_matches('/'));
@@ -264,6 +307,70 @@ impl RootFs {
 
         Ok(())
     }
+}
+
+impl RootFs {
+    /// Whether this bind has to be remapped, and from which owner.
+    ///
+    /// Every granted path whose owner is not the module's user, readable or
+    /// writable. Reads need it as much as writes do: a directory the human
+    /// keeps at mode 0700 is unreadable to uid 700000 however clearly the
+    /// grant was confirmed.
+    ///
+    /// The system paths are not remapped — they are world-readable by design,
+    /// and remapping each one would cost a helper process and a namespace to
+    /// change nothing.
+    fn remapping_needed_for(&self, entry: &Bind) -> Result<Option<(u32, u32)>> {
+        let Some(uid) = self.uid else {
+            return Ok(None);
+        };
+        if !entry.granted {
+            return Ok(None);
+        }
+
+        let (owner_uid, owner_gid) = crate::idmap::owner_of(&entry.source)?;
+        Ok((owner_uid != uid).then_some((owner_uid, owner_gid)))
+    }
+}
+
+/// Bind a path with its ownership translated to the module's user.
+fn bind_remapped(
+    source: &Path,
+    target: &Path,
+    on_disk: (u32, u32),
+    uid: Option<u32>,
+    writable: bool,
+) -> Result<()> {
+    let uid = uid.expect("only called when the module has a user of its own");
+
+    create_dir(target)?;
+
+    let helper = std::env::current_exe().map_err(|source_error| SandboxError::Exec {
+        program: PathBuf::from("<current executable>"),
+        source: source_error,
+    })?;
+
+    let mapping = crate::idmap::IdMapping::translating(&helper, on_disk, uid)?;
+    crate::idmap::bind_idmapped(source, target, &mapping)?;
+
+    // A read grant is still a read grant. Remapping makes the module the
+    // apparent owner, which would otherwise hand it write access the human
+    // never confirmed.
+    if !writable {
+        mount_at(
+            None,
+            target,
+            None,
+            thalyx_syscall::MS_BIND
+                | thalyx_syscall::MS_REC
+                | thalyx_syscall::MS_REMOUNT
+                | thalyx_syscall::MS_RDONLY,
+            None,
+            &format!("make the remapped {} read-only", target.display()),
+        )?;
+    }
+
+    Ok(())
 }
 
 /// The path a permission grants, if it grants one.

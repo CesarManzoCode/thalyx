@@ -125,13 +125,16 @@ impl UidRegistry {
     }
 }
 
-/// Whether a uid could actually use a path the way a grant says it may.
+/// Whether a uid could use a path directly, without any remapping.
 ///
-/// Checked before the module runs, so a grant that would fail with "permission
-/// denied" at the worst possible moment is a refusal now instead. The module
-/// has no supplementary groups and its group is its own, so only the owner and
-/// other bits can apply — group access would need the path to belong to the
-/// module's own group, which nothing arranges.
+/// Kept for diagnosis rather than for the launch path: granted paths are bound
+/// through an idmapped mount, which is what makes a grant on somebody else's
+/// directory work at all. This answers the different question of whether the
+/// module could have reached it unaided — useful when explaining why a bind
+/// had to be remapped.
+///
+/// The module has no supplementary groups and its group is its own, so only
+/// the owner and other bits can apply.
 pub fn usable_by(path: &Path, uid: u32, writing: bool) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;

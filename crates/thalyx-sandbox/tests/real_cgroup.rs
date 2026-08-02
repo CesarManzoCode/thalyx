@@ -223,8 +223,11 @@ fn resource_limits_are_written_where_the_kernel_reads_them() {
         eprintln!("NOT PROVEN: this cgroup2 mount cannot hand down {needed:?}");
         eprintln!("  {error}");
         eprintln!("  Resource limits were not exercised. This test did not pass.");
+        // Its own flag: having a cgroup2 mount and having controllers
+        // delegated to you are different things, and a container commonly has
+        // the first without the second.
         assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+            std::env::var_os("THALYX_REQUIRE_CONTROLLER_TESTS").is_none(),
             "{error}"
         );
         return;
