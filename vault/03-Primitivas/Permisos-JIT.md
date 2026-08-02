@@ -79,6 +79,22 @@ La clave del publicador se ancla en el mismo punto y por la misma razón: anclar
 
 Ver [[Fase-Commit-Atomico]] y [[Estado-de-Implementacion]].
 
+## Estado: demostrado en hardware real
+
+El 1 de agosto de 2026, en un Ryzen 5 5600G con Fedora 43 (kernel 6.18), el enforcement denegó una conexión de red a un proceso que no tenía el permiso, y **solo a ese proceso**:
+
+```
+enforcement OFF   inside:   errno=111 Connection refused
+enforcement ON    inside:   errno=1   Operation not permitted
+                  outside:  errno=111 Connection refused
+```
+
+Mismo cgroup, misma política, mismo destino. Lo único que cambió entre las dos mediciones fue el flag de enforcement, y el fallo pasó de ECONNREFUSED a EPERM. Fuera del cgroup no cambió nada.
+
+Esa última línea es la que importa tanto como la denegación: una política que rompiera todo se vería idéntica a una que funciona si solo se mirara desde dentro. Reproducible con `make -C lsm demo`.
+
+**Esta es la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Las otras tres siguen siendo diseño.
+
 ## Origen de esta distinción
 
 Esta distinción de tres tipos no estaba en el diseño original — surgió al trazar el [[Caso-Instalar-Modulo|caso concreto de instalar un módulo]], cuando se descubrió que un permiso persistente (acceso a red, sin expiración) no encajaba en el modelo original de "JIT de 30 segundos". Es un ejemplo de por qué trazar casos concretos revela huecos que el diseño abstracto no muestra.

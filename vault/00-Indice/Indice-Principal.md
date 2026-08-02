@@ -103,7 +103,8 @@ El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la
 | Registro de intención en el journal | ✅ Implementado |
 | Índice en grafo y parser mecánico | ✅ Implementados |
 | Contrato con marcado de origen | ✅ Implementado |
-| `thalyx-lsm` (BPF LSM) y entorno de VM | ⚠️ Escritos, sin ejecutar |
+| Enforcement de permisos en el kernel | ✅ **Demostrado en hardware real** |
+| `thalyx-permd` (política → mapa BPF) | ⚠️ Pendiente: el kernel y el núcleo no se hablan |
 | Enforcement real de permisos | ⚠️ Se registran, todavía no se aplican |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |
