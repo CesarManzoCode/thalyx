@@ -43,7 +43,9 @@ cleanup() {
     sudo rmdir "$CGROUP" 2>/dev/null && echo "    cgroup removed"
 }
 
-if [ ! -d "$PINDIR/lsm" ]; then
+# `sudo test`, not `test`: bpffs is mode 700 and root-owned, so an
+# unprivileged check reports "not attached" for something that is attached.
+if ! sudo test -d "$PINDIR/lsm"; then
     red "thalyx-lsm is not attached. Run 'make load' first."
     exit 1
 fi

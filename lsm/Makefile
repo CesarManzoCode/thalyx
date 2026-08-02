@@ -73,6 +73,14 @@ hooks:
 	@echo "total attachable LSM hooks on this kernel: $$(grep -c ' bpf_lsm_' /proc/kallsyms 2>/dev/null || echo '?')"
 
 load: $(OBJS)
+	@# Refuse to load over a live attachment rather than failing halfway with
+	@# a message about pinning.
+	@if sudo test -d $(PINDIR)/lsm; then \
+	    echo "thalyx-lsm is already attached."; \
+	    echo "  make status    see what it is doing"; \
+	    echo "  make unload    detach it first, then load again"; \
+	    exit 1; \
+	fi
 	@grep -q bpf /sys/kernel/security/lsm || { \
 	    echo "bpf is not in the active LSM order: $$(cat /sys/kernel/security/lsm)"; \
 	    echo "The hooks exist but nothing can attach. Add bpf to lsm= and reboot."; \
@@ -125,7 +133,10 @@ observe:
 
 status:
 	@echo "LSM order:  $$(cat /sys/kernel/security/lsm)"
-	@if [ -d $(PINDIR)/lsm ]; then \
+	@# `sudo test`, not `test`: bpffs is mode 700 root-owned, so an unprivileged
+	@# check reports "not attached" for something that is very much attached —
+	@# a security tool reading as disarmed while it is armed.
+	@if sudo test -d $(PINDIR)/lsm; then \
 	    echo "enforcement: attached"; \
 	    printf 'mode:        '; \
 	    if sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_enforcing 2>/dev/null \
@@ -133,13 +144,13 @@ status:
 	else \
 	    echo "enforcement: not attached"; \
 	fi
-	@if [ -d $(PINDIR)/watch ]; then echo "watcher:     attached"; \
+	@if sudo test -d $(PINDIR)/watch; then echo "watcher:     attached"; \
 	 else echo "watcher:     not attached"; fi
 	@echo
 	@# A pinned program that is not linked to a hook enforces nothing. The
 	@# pins prove it loaded; only a link proves it is in the path.
-	@echo "live LSM links:"
-	@sudo $(BPFTOOL) link list 2>/dev/null | grep -A1 lsm || echo "  (none — nothing is actually attached)"
+	@printf 'live LSM links: '
+	@sudo $(BPFTOOL) link list 2>/dev/null | grep -c 'prog_type lsm' || echo 0
 	@echo
 	@echo "policy entries:"
 	@sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_policy 2>/dev/null || echo "  (none)"
