@@ -39,6 +39,26 @@ THALYX_FAULT_POINT=mid-commit ./target/debug/thalyx module install demo.thmod --
 ./target/debug/thalyx module install demo.thmod   # retry succeeds
 ```
 
+## Verifying it on a real machine
+
+Most of what Thalyx claims cannot be checked in a container. The BPF LSM needs
+a kernel with `bpf` in its LSM order, resource limits need delegated cgroup
+controllers, and "enforcement is real" means a connection actually gets denied.
+
+One command exercises all of it and reports what it managed to prove:
+
+```sh
+sudo ./dev/verify.sh
+```
+
+It never counts a check it could not make as a pass. Anything the machine
+cannot do is reported as `NOT PROVEN`, with the reason, and listed again in the
+summary — because a green run that exercised nothing looks exactly like a green
+run that exercised everything.
+
+It leaves nothing loaded: the LSM is detached on the way out, including on
+Ctrl-C.
+
 ## The idea
 
 On Windows, Linux and macOS, an AI agent is a guest. It has to simulate being a
