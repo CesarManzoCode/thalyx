@@ -61,6 +61,7 @@ pub fn module_list(store: &Store) -> Fallible {
 
     let keystore = Keystore::load(store.keystore_path())?;
     let registry = Registry::load(store.permissions_path())?;
+    let uids = thalyx_core::uids::UidRegistry::load(store.uids_path())?;
 
     for (id, version) in installed {
         let permissions = registry.effective(&id).len();
@@ -70,6 +71,10 @@ pub fn module_list(store: &Store) -> Fallible {
             .unwrap_or_else(|| "unpinned".to_string());
         println!("{id}  {version}");
         println!("  publisher {pinned}");
+        match uids.assigned(&id) {
+            Some(uid) => println!("  runs as user {uid}"),
+            None => println!("  runs as user (not assigned yet)"),
+        }
         println!("  {permissions} permission(s) in force");
     }
     Ok(())

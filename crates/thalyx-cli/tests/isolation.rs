@@ -85,6 +85,7 @@ fn launch(
         namespaces,
         rootfs,
         program: program.to_path_buf(),
+        uid: None,
     };
 
     Command::new(env!("CARGO_BIN_EXE_thalyx"))
@@ -328,6 +329,7 @@ fn a_program_launched_with_no_namespaces_at_all_still_lands_in_the_cgroup() {
         namespaces: Namespaces::NONE,
         rootfs: None,
         program: PathBuf::from("/bin/sh"),
+        uid: None,
     };
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
         .args(
@@ -625,4 +627,127 @@ fn a_granted_path_under_tmp_survives_the_module_getting_its_own_tmp() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(stdout(&output), "under tmp");
+}
+
+#[test]
+fn a_module_runs_as_a_user_of_its_own() {
+    // The decree: modules are isolated from each other, not only from the
+    // system. Asking the module who it is, because asking Thalyx whether it
+    // dropped privilege would prove nothing.
+    let Some(arena) = arena("uid") else { return };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with("id -u");
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), &[]).expect("rootfs");
+
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: Some(thalyx_core::uids::FIRST_UID),
+    };
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .output()
+        .expect("launch");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), thalyx_core::uids::FIRST_UID.to_string());
+
+    // The control: the launcher itself is root, so a module that had *not*
+    // dropped would have printed 0. Without this the assertion above would
+    // also pass on a machine where everything already runs unprivileged.
+    assert_eq!(
+        current_uid(),
+        0,
+        "this test only means something when the launcher is privileged"
+    );
+}
+
+#[test]
+fn dropping_to_its_own_user_is_what_stops_the_module_writing() {
+    // With a baseline and a control, because the first attempt at this test
+    // wrote to `/module` — which is bound read-only, so root would have been
+    // denied too and the test proved nothing about the user at all.
+    //
+    // Here the target is root-owned, mode 0755, and bound *writable*. The only
+    // thing standing between the module and that directory is who it is.
+    let Some(arena) = arena("uid-write") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let target = tempfile::tempdir().unwrap();
+    set_mode(target.path(), 0o755);
+
+    let module = Module::with(&format!(
+        "touch {}/written 2>/dev/null && echo wrote || echo denied",
+        target.path().display()
+    ));
+
+    let run_as = |uid: Option<u32>| -> String {
+        let rootfs =
+            thalyx_sandbox::RootFs::for_module(module.dir(), &[grant(target.path(), "write")])
+                .expect("rootfs");
+        let spec = thalyx_sandbox::LaunchSpec {
+            cgroup: arena.0.join("org.thalyx.demo"),
+            profile: profile::MODULE_STANDARD.to_string(),
+            namespaces: standard(),
+            rootfs: Some(rootfs),
+            program: module.program(),
+            uid,
+        };
+        let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+            .args(
+                thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                    .expect("argv"),
+            )
+            .output()
+            .expect("launch");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        stdout(&output)
+    };
+
+    // Baseline: as the user Thalyx runs as, the write goes through. Without
+    // this, "denied" could mean the bind was read-only, or the path was wrong,
+    // or the sandbox was broken in some way that has nothing to do with users.
+    assert_eq!(run_as(None), "wrote", "the baseline write should succeed");
+    std::fs::remove_file(target.path().join("written")).unwrap();
+
+    // And with a user of its own, the same write is refused.
+    assert_eq!(run_as(Some(thalyx_core::uids::FIRST_UID)), "denied");
+    assert!(!target.path().join("written").exists());
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// The uid this test process runs as.
+fn current_uid() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("Uid:"))
+                .and_then(|line| line.split_whitespace().nth(2))
+                .and_then(|uid| uid.parse().ok())
+        })
+        .unwrap_or(u32::MAX)
 }

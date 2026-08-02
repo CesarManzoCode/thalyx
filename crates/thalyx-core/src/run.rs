@@ -74,6 +74,8 @@ pub struct RunOutcome {
     /// Whether the profile in force actually isolated anything.
     pub isolated: bool,
     pub permissions: Vec<thalyx_manifest::Permission>,
+    /// The user the module ran as. `None` when it ran as Thalyx itself.
+    pub uid: Option<u32>,
     pub exit_code: Option<i32>,
 }
 
@@ -98,6 +100,9 @@ pub fn run(
                 Some(code) => format!("module exited with status {code}"),
                 None => "module was terminated by a signal".to_string(),
             }];
+            if let Some(uid) = outcome.uid {
+                notes.push(format!("ran as user {uid}"));
+            }
             notes.push(match outcome.cgroup_id {
                 Some(id) => format!(
                     "confined to cgroup {id} with allowed=0x{:x}",
@@ -203,8 +208,21 @@ fn run_inner(
         return run_unconfined(&manifest, &program, request, permissions);
     }
 
-    let parent = thalyx_sandbox::cgroup::parent()?;
+    // The user this module runs as, assigned once and kept forever.
+    //
+    // Before the confinement is established, so a module that cannot be given
+    // a user does not get a cgroup and a policy first.
     let profile = thalyx_sandbox::profile::resolve(request.profile)?;
+    let uid = if profile.own_user {
+        let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
+        let uid = uids.assign(&manifest.id)?;
+        check_grants_are_usable(&manifest.id, &permissions, uid)?;
+        Some(uid)
+    } else {
+        None
+    };
+
+    let parent = thalyx_sandbox::cgroup::parent()?;
     let confinement = Confinement::establish(
         policies,
         &parent,
@@ -220,7 +238,8 @@ fn run_inner(
     let isolation = confinement.profile().describe();
     let isolated = confinement.profile().isolates();
 
-    let mut child = confinement.spawn(&request.helper, &module_dir, &program, &request.args)?;
+    let mut child =
+        confinement.spawn(&request.helper, &module_dir, &program, uid, &request.args)?;
     let status = child
         .wait()
         .map_err(|source| CoreError::io(&request.helper, source))?;
@@ -238,9 +257,48 @@ fn run_inner(
         policy: Some(policy),
         isolation: Some(isolation),
         isolated,
+        uid,
         permissions,
         exit_code: status.code(),
     })
+}
+
+/// Refuse a grant the module's own user could never exercise.
+///
+/// A module that runs as its own user cannot write to a directory belonging to
+/// the human, and finding that out at the moment it tries is the worst
+/// possible time: the human confirmed the permission, the registry records it,
+/// the kernel enforces it, and the filesystem says no.
+///
+/// This is the cost of the one-uid-per-module decree, and it is paid up front
+/// and out loud rather than at runtime and in silence. The proper fix is an
+/// idmapped bind for granted paths, which is not built yet.
+fn check_grants_are_usable(
+    module_id: &str,
+    permissions: &[thalyx_manifest::Permission],
+    uid: u32,
+) -> Result<()> {
+    for permission in permissions {
+        if !permission.resource.starts_with('/') {
+            continue;
+        }
+        let writing = match permission.action.as_str() {
+            "write" => true,
+            "read" => false,
+            _ => continue,
+        };
+
+        let path = std::path::Path::new(&permission.resource);
+        if !crate::uids::usable_by(path, uid, writing)? {
+            return Err(CoreError::GrantUnusableByModuleUser {
+                module_id: module_id.to_string(),
+                path: path.to_path_buf(),
+                action: permission.action.clone(),
+                uid,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The deliberate, named exception: run with nothing enforcing.
@@ -263,6 +321,7 @@ fn run_unconfined(
         policy: None,
         isolation: None,
         isolated: false,
+        uid: None,
         permissions,
         exit_code: status.code(),
     })

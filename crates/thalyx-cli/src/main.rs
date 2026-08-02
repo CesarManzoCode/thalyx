@@ -236,6 +236,10 @@ fn run_module(
                 outcome.files.len(),
                 outcome.granted
             );
+            println!(
+                "  runs as user {}, which is this module's and no other's",
+                outcome.uid
+            );
             Ok(())
         }
         ModuleCommand::Run {

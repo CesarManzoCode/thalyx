@@ -320,6 +320,7 @@ fn diagnostic_argv(cgroup: &Path, program: &str, args: &[&str]) -> Vec<std::ffi:
         namespaces: thalyx_sandbox::profile::Namespaces::NONE,
         rootfs: None,
         program: PathBuf::from(program),
+        uid: None,
     };
     thalyx_sandbox::launch::argv(
         thalyx_sandbox::launch::ENTER_MARKER,

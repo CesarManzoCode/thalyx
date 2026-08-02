@@ -134,6 +134,48 @@ pub fn sethostname(name: &str) -> io::Result<()> {
     check(result)
 }
 
+/// Drop every supplementary group.
+///
+/// Must happen before [`set_gid`] and [`set_uid`]: once the process is no
+/// longer root it can no longer change its group list, and a module that kept
+/// the supplementary groups of whatever started Thalyx would carry access
+/// nobody granted it.
+pub fn drop_supplementary_groups() -> io::Result<()> {
+    // SAFETY: a count of zero with a NULL list is the documented way to clear
+    // the group list; the kernel reads no memory.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::setgroups(0, std::ptr::null()) };
+    check(result)
+}
+
+/// Become this group, irrevocably.
+pub fn set_gid(gid: u32) -> io::Result<()> {
+    // SAFETY: `setresgid` takes three integers and touches no memory. All three
+    // are set so no saved id is left behind for the process to return to.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::setresgid(gid, gid, gid) };
+    check(result)
+}
+
+/// Become this user, irrevocably.
+///
+/// `setresuid` rather than `setuid`: `setuid` from root leaves the saved
+/// set-user-id at zero, and a process with a saved uid of zero can go back.
+/// Setting all three closes that door.
+pub fn set_uid(uid: u32) -> io::Result<()> {
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::setresuid(uid, uid, uid) };
+    check(result)
+}
+
+/// The effective user this process is running as.
+pub fn effective_uid() -> u32 {
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::geteuid()
+    }
+}
+
 /// Forbid this process and its descendants from ever gaining privileges.
 ///
 /// Required before installing a seccomp filter without `CAP_SYS_ADMIN`, and

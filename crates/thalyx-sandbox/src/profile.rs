@@ -84,6 +84,11 @@ pub struct Profile {
     pub namespaces: Namespaces,
     pub limits: Limits,
     pub seccomp: Option<Allowlist>,
+    /// Whether the module drops to a user of its own before it runs.
+    ///
+    /// The uid itself comes from the core, which owns the assignment. A
+    /// profile only says whether the drop happens at all.
+    pub own_user: bool,
     /// Whether the module is pivoted into a root of its own.
     ///
     /// Separate from `namespaces.mount`, because a mount namespace on its own
@@ -155,6 +160,7 @@ pub fn module_standard() -> Profile {
         },
         seccomp: Some(crate::seccomp::module_standard()),
         pivot_root: true,
+        own_user: true,
         hostname: "thalyx-module",
     }
 }
@@ -166,6 +172,7 @@ fn diagnostic() -> Profile {
         limits: Limits::default(),
         seccomp: None,
         pivot_root: false,
+        own_user: false,
         hostname: "thalyx-module",
     }
 }
@@ -221,6 +228,12 @@ impl Profile {
             "own root filesystem".to_string()
         } else {
             "the host filesystem".to_string()
+        });
+
+        parts.push(if self.own_user {
+            "own unprivileged user".to_string()
+        } else {
+            "the user Thalyx runs as".to_string()
         });
 
         match &self.seccomp {
@@ -312,6 +325,7 @@ mod tests {
         assert!(profile.limits.memory_max.is_some(), "memory.max");
         assert!(profile.limits.pids_max.is_some(), "pids.max");
         assert!(profile.pivot_root, "a root filesystem of its own");
+        assert!(profile.own_user, "a user of its own");
         assert!(profile.isolates());
     }
 

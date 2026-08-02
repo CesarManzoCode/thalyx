@@ -68,6 +68,11 @@ impl Store {
         self.state_root().join("permissions.json")
     }
 
+    /// Which user each module runs as.
+    pub fn uids_path(&self) -> PathBuf {
+        self.state_root().join("uids.json")
+    }
+
     pub fn module_root(&self, id: &str) -> PathBuf {
         self.modules_root().join(id)
     }

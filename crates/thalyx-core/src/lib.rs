@@ -18,6 +18,7 @@ pub mod reconcile;
 pub mod run;
 pub mod store;
 pub mod trusted_path;
+pub mod uids;
 
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
 pub use run::{RunOutcome, RunRequest, run};
@@ -149,6 +150,26 @@ pub enum CoreError {
     NothingCanEnforce {
         module_id: String,
         permissions: usize,
+    },
+
+    #[error(
+        "no user ids left: Thalyx hands out {first}..{last} and has used them all.\n  \
+         Uids are never reused, so this means that many modules have been installed \
+         over the life of this system."
+    )]
+    UidRangeExhausted { first: u32, last: u32 },
+
+    #[error(
+        "`{module_id}` was granted {action} access to `{path}`, and the user it runs as \
+         ({uid}) cannot use it.\n  \
+         Refusing to run: the module would be denied at the worst possible moment, holding \
+         a permission you confirmed."
+    )]
+    GrantUnusableByModuleUser {
+        module_id: String,
+        path: std::path::PathBuf,
+        action: String,
+        uid: u32,
     },
 
     #[error(transparent)]

@@ -79,6 +79,12 @@ pub struct LaunchSpec {
     pub rootfs: Option<RootFs>,
     /// The entrypoint, as a path on the host.
     pub program: PathBuf,
+    /// The unprivileged user the module becomes before it runs.
+    ///
+    /// `None` leaves it as whatever Thalyx runs as. The number is assigned by
+    /// the core, which owns the map from module to user; the launcher only
+    /// applies it.
+    pub uid: Option<u32>,
 }
 
 /// What a re-executed `thalyx` was asked to do.
@@ -279,6 +285,37 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
         return SandboxError::HostnameNotSet { source };
     }
 
+    // Become the module's own user.
+    //
+    // After everything that needed privilege — the mounts, the hostname — and
+    // before the seccomp filter, which denies `setuid` outright so the module
+    // can never do this itself, in either direction.
+    //
+    // Groups first, then group, then user: once the process stops being root
+    // it can change none of them, so the order is the whole of the safety.
+    if let Some(uid) = spec.uid {
+        if let Err(source) = thalyx_syscall::drop_supplementary_groups() {
+            return SandboxError::UserNotDropped { uid, source };
+        }
+        if let Err(source) = thalyx_syscall::set_gid(uid) {
+            return SandboxError::UserNotDropped { uid, source };
+        }
+        if let Err(source) = thalyx_syscall::set_uid(uid) {
+            return SandboxError::UserNotDropped { uid, source };
+        }
+
+        // Read it back. A `setresuid` that reported success and left the
+        // process as root would hand the module everything, and every step
+        // after this looks identical either way.
+        let effective = thalyx_syscall::effective_uid();
+        if effective != uid {
+            return SandboxError::UserNotEffective {
+                wanted: uid,
+                actual: effective,
+            };
+        }
+    }
+
     // Last, because everything above needs syscalls the filter denies. From
     // here the process may only do what the allowlist permits — including the
     // `execve` on the next line, and nothing after it that the module has not
@@ -383,6 +420,7 @@ mod tests {
                 .unwrap(),
             ),
             program: PathBuf::from("/opt/thalyx/modules/org.thalyx.demo/1.0.0/bin/demo"),
+            uid: Some(700_000),
         }
     }
 

@@ -53,6 +53,9 @@ pub fn run(
             if let Some(isolation) = &outcome.isolation {
                 println!("  {isolation}");
             }
+            if let Some(uid) = outcome.uid {
+                println!("  ran as user {uid}, which is this module's and no other's");
+            }
             for permission in &outcome.permissions {
                 println!("    {}", permission.describe());
             }

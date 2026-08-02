@@ -154,6 +154,22 @@ pub enum SandboxError {
         source: std::io::Error,
     },
 
+    #[error(
+        "could not become user {uid}: {source}\n  \
+         Refusing to run the module: it would run as whatever Thalyx runs as."
+    )]
+    UserNotDropped {
+        uid: u32,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "asked to become user {wanted} and the process is still {actual}.\n  \
+         Refusing to run the module: every step after this looks the same either way."
+    )]
+    UserNotEffective { wanted: u32, actual: u32 },
+
     #[error("could not set the hostname inside the UTS namespace: {source}")]
     HostnameNotSet {
         #[source]
@@ -312,6 +328,7 @@ impl<'a> Confinement<'a> {
         helper: &Path,
         module_dir: &Path,
         program: &Path,
+        uid: Option<u32>,
         args: &[std::ffi::OsString],
     ) -> Result<std::process::Child> {
         let rootfs = if self.profile.pivot_root {
@@ -326,6 +343,7 @@ impl<'a> Confinement<'a> {
             namespaces: self.profile.namespaces,
             rootfs,
             program: program.to_path_buf(),
+            uid: if self.profile.own_user { uid } else { None },
         };
 
         launch::spawn(helper, &spec, args)

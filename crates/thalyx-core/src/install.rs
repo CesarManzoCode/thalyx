@@ -76,6 +76,8 @@ pub struct InstallOutcome {
     pub replaced: Option<String>,
     pub files: Vec<String>,
     pub granted: usize,
+    /// The unprivileged user this module will run as, from now on.
+    pub uid: u32,
 }
 
 /// Install a module from a `.thmod` bundle.
@@ -279,6 +281,18 @@ fn install_inner(
     let mut registry = Registry::load(store.permissions_path())?;
     registry.make_effective(&pending)?;
 
+    // The user this module will run as, assigned once and for all.
+    //
+    // Here rather than at first run, because the uid is part of what the
+    // module *is*: it is what makes the confirmation the human just gave apply
+    // to this module and no other. A module installed and never run still has
+    // an identity, and `thalyx module list` can show it.
+    //
+    // A uid assigned to an install that then fails costs nothing. It is never
+    // handed to a different module, and nothing ever ran as it.
+    let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
+    let uid = uids.assign(&manifest.id)?;
+
     // Pin the publisher key here too, for a sharper reason.
     //
     // Pinning after the commit meant that a crash in between left the module
@@ -328,6 +342,7 @@ fn install_inner(
         replaced,
         files,
         granted: pending.permissions().len(),
+        uid,
     })
 }
 
@@ -406,6 +421,12 @@ pub fn remove(store: &Store, module_id: &str, request_id: &str) -> Result<String
         Ok(version) => {
             let mut registry = Registry::load(store.permissions_path())?;
             registry.revoke_all(module_id)?;
+
+            // The user this module ran as is retired, never reused. It may own
+            // files in places Thalyx does not track, and handing the number to
+            // a different module later would give it all of them.
+            let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
+            uids.retire(module_id)?;
 
             journal.append(&Entry {
                 timestamp: thalyx_journal::now(),
