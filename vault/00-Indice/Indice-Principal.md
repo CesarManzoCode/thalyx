@@ -105,8 +105,10 @@ El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la
 | Contrato con marcado de origen | ✅ Implementado |
 | Enforcement de permisos en el kernel | ✅ **Demostrado en hardware real** |
 | `thalyx-permd` (política → mapa BPF) | ✅ Implementado |
-| Aplicación automática al instalar | ⚠️ Pendiente: hoy es un paso explícito |
-| Enforcement real de permisos | ⚠️ Se registran, todavía no se aplican |
+| Ciclo de enforcement cerrado (`module run`) | ✅ Implementado |
+| Identidad cgroup y orden de lanzamiento | ✅ Probados contra kernel real |
+| Manifiesto guardado junto al módulo | ✅ Implementado |
+| Aislamiento del sandbox (namespaces, seccomp, límites) | ⚠️ No implementado: hoy solo contiene el LSM |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |
 | Interpretabilidad: técnicas concretas | ⚠️ Abierto |

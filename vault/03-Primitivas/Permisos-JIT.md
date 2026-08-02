@@ -41,6 +41,16 @@ Flujo:
 3. `thalyx-lsm` lee el mapa en cada hook y permite o deniega.
 4. Al expirar, `thalyx-permd` retira la entrada del mapa. La revocación es inmediata: no hay proceso al que avisar.
 
+Desde el 2 de agosto de 2026 ese flujo **no requiere intervención**: `thalyx module run` escribe la política, lanza el módulo dentro del cgroup al que está atada, y retira ambos al terminar. Ver [[Sandbox-Ejecucion]] para la regla de orden que lo gobierna.
+
+### Regla que aparece al ejecutar de verdad
+
+**Un módulo cuyos permisos nada puede aplicar no se ejecuta.**
+
+Si el mapa del kernel no está cargado, correr el módulo de todas formas lo dejaría comportándose exactamente igual que uno contenido —hasta el momento en que hiciera algo que no debía poder hacer. Es el fallo sin síntoma otra vez, ahora en la ruta de ejecución.
+
+Se puede pedir explícitamente con `--unconfined`, y entonces el journal registra la corrida como **degradada**. La diferencia entre las dos no es de seguridad: es que una está nombrada y la otra no.
+
 ## Tipos de permiso (decretado — reemplaza el campo `duracion` simple)
 
 Se modela con un campo `type` en vez de solo duración, porque representan **políticas de seguridad distintas**, no solo diferencias de tiempo:
@@ -94,6 +104,8 @@ Mismo cgroup, misma política, mismo destino. Lo único que cambió entre las do
 Esa última línea es la que importa tanto como la denegación: una política que rompiera todo se vería idéntica a una que funciona si solo se mirara desde dentro. Reproducible con `make -C lsm demo`.
 
 **Esta es la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Las otras tres siguen siendo diseño.
+
+Lo que faltaba entonces era que alguien invocara el enforcement solo. Eso ya está: ver [[Sandbox-Ejecucion]] y [[Estado-de-Implementacion]].
 
 ### Regla que apareció al conectar el núcleo con el kernel
 

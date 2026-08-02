@@ -14,9 +14,10 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **Cierre del ciclo de enforcement** — `thalyx enforce apply` funciona, pero instalar un módulo no lo invoca. Falta que el sandbox cree el cgroup al ejecutar el módulo.
+- [ ] **Perfil `module_standard` completo** — namespaces, filtro seccomp por lista de permitidos y límites de recursos. Sin esto un módulo está contenido por `thalyx-lsm` y por nada más. Ver [[Sandbox-Ejecucion]].
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
+- [ ] **Consumir el ringbuf `thalyx_mutations`** para alimentar el grafo. Ver [[Coherencia-Doble-Ruta]].
 
 
 ## Pendientes de decreto formal
@@ -56,6 +57,12 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Zona gris del umbral de migración** — ver [[Decision-Kernel-vs-Userspace]].
 - [x] **Filesystem requerido** — Btrfs. Ver [[Journal-y-Snapshots]].
 - [x] **Alcance de la Fase 1** — ver [[Fases-de-Implementacion]].
+
+## Resueltos el 2026-08-02
+
+- [x] **Cierre del ciclo de enforcement** — `thalyx module run` establece la contención sola. Ver [[Sandbox-Ejecucion]].
+- [x] **Identidad cgroup del módulo y orden de lanzamiento** — probados contra un montaje cgroup2 real.
+- [x] **Dónde vive el manifiesto de un módulo instalado** — junto al módulo, publicado por el mismo `rename`, re-verificado en cada lectura.
 
 ## Resueltos antes (referencia histórica)
 
