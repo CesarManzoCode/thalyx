@@ -66,20 +66,33 @@ unshare()               SIGSYS                              funciona
 
 Preguntarle al módulo y no a Thalyx es el punto. Toda la clase de defecto que este proyecto encuentra una y otra vez es el sistema reportando éxito de trabajo que no hizo.
 
-**Lo que falta: el namespace de usuario.** Decretado el 2 de agosto de 2026, todavía no construido. Un módulo hoy corre con el uid con el que corre Thalyx.
-
 ### Decreto: un uid por módulo
 
-**Cada módulo corre con su propio uid sin privilegios.** Los módulos se aíslan del sistema *y entre sí*: un módulo no puede leer los archivos temporales ni los procesos de otro, aunque los dos estén instalados y confirmados.
+**Cada módulo corre con su propio uid sin privilegios.** Los módulos se aíslan del sistema *y entre sí*: un módulo no puede leer los archivos ni los procesos de otro, aunque los dos estén instalados y confirmados.
 
-Se evaluó y se descartó un uid compartido para todos los módulos: es mucho más simple, pero deja que dos módulos se lean mutuamente lo que dejen en `/tmp`, y la confirmación del humano fue por módulo, no por el conjunto.
+Se evaluó y se descartó un uid compartido para todos: es más simple, pero deja que dos módulos se lean mutuamente lo que dejen por ahí, y **la confirmación del humano fue por módulo, no por el conjunto**.
 
-Reglas que se derivan del decreto:
+**Implementado y verificado preguntándole al módulo:** imprime `700000` mientras el proceso que lo lanzó es root.
 
-- **Los uid no se reutilizan nunca.** Si un uid liberado al desinstalar se le diera a otro módulo, los archivos que el primero dejó por ahí quedarían accesibles para el segundo. Se asigna de forma monótona y el contador se persiste.
-- La asignación vive en el store y sobrevive a los reinicios: un módulo que cambiara de uid entre arranques perdería el acceso a lo que él mismo escribió.
+#### Los uid no se reutilizan nunca
 
-**El problema que hay que resolver para implementarlo:** si el módulo corre con su propio uid, no puede escribir en los directorios del humano — que son del uid del humano. Una concesión de escritura sobre `/home/user/docs` fallaría con "permiso denegado" aunque tú la hayas confirmado. Las salidas conocidas son *idmapped mounts* (`mount_setattr` con `MOUNT_ATTR_IDMAP`, kernel 5.12+), que remapean la propiedad solo dentro del montaje del módulo, o cambiar el dueño de la ruta concedida, que es destructivo. La primera es la correcta y es la que hay que construir.
+Un uid liberado al desinstalar se **retira**, no se recicla. Un módulo deja archivos en lugares que Thalyx no rastrea —un directorio concedido, un archivo que sobrevivió a la ejecución— y esos archivos quedan a nombre del número, no del módulo. Dárselo después a otro módulo le entregaría en silencio todo lo que el anterior dejó.
+
+La asignación es monótona, la marca de agua se persiste, y desinstalar quita la asignación sin bajar nunca el contador. Reinstalar el mismo módulo obtiene un número nuevo, por la misma razón.
+
+#### Dónde y en qué orden
+
+El uid se asigna **al instalar**, no en la primera ejecución: es parte de lo que el módulo *es*, y es lo que hace que tu confirmación aplique a ese módulo y a ningún otro.
+
+El descenso ocurre en `init`, después de todo lo que necesitaba privilegio —los montajes, el hostname— y **antes** del filtro seccomp, que deniega `setuid` de plano para que el módulo no pueda hacerlo él mismo en ninguna de las dos direcciones. Grupos suplementarios primero, luego grupo, luego usuario: en cuanto el proceso deja de ser root ya no puede cambiar ninguno.
+
+Se usa `setresuid` y no `setuid`: `setuid` desde root deja el *saved set-user-id* en cero, y un proceso con saved uid cero puede volver. Y el uid efectivo **se relee** después: una llamada que reportara éxito y dejara el proceso como root le entregaría todo al módulo, y todos los pasos siguientes se ven idénticos en los dos casos.
+
+#### El costo, cobrado por adelantado
+
+Un módulo que corre con su propio usuario **no puede escribir en un directorio del humano**. Enterarse de eso en el momento en que lo intenta es el peor momento posible: el humano confirmó el permiso, el registro lo tiene, el kernel lo aplica, y el filesystem dice que no.
+
+Entonces una concesión que el usuario del módulo no podría ejercer **se rechaza antes de arrancar**, nombrando la ruta. Es honesto, y es interino: la solución correcta son *idmapped mounts* (`mount_setattr` con `MOUNT_ATTR_IDMAP`, kernel 5.12+), que remapean la propiedad solo dentro del montaje del módulo — un archivo del humano se ve como propiedad del módulo adentro, y lo que el módulo escribe queda a nombre del humano afuera. Eso falta.
 
 ### El filesystem que ve el módulo
 

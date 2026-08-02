@@ -39,6 +39,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Contador de mutaciones del kernel | `crates/thalyx-watch` | Lectura por `bpftool`; no ejercitado sin BPF |
 | Límites de cgroup | `crates/thalyx-sandbox/limits.rs` | `memory.max`, `pids.max`, `cpu.max` |
 | Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
+| Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
@@ -76,7 +77,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| Namespace de usuario y uid del módulo | Que un módulo no corra con el uid de Thalyx |
+| Montajes idmapped para rutas concedidas | Que un módulo pueda escribir donde se le concedió |
 | `thalyx-agent` | Todo el flujo conversacional |
 | Snapshots, `rollback` y `restore` | [[Rollback-vs-Restore]] |
 | Memoria persistente | [[Memoria-Persistente]] |
@@ -84,7 +85,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ### Las advertencias que quedan
 
-**1. Un módulo corre con el uid con el que corre Thalyx.** El namespace de usuario está decretado y no implementado, a propósito: hacerlo de forma útil exige decidir con qué uid corre un módulo y de quién son los archivos del store, que es una decisión de política. Ver [[Sandbox-Ejecucion]].
+**1. Una concesión de escritura sobre un directorio del humano se rechaza.** El módulo corre con su propio usuario, así que no puede escribir ahí. Se rechaza antes de arrancar, nombrando la ruta, en vez de fallar a mitad de la ejecución. La solución correcta son *idmapped mounts* y falta construirla. Ver [[Sandbox-Ejecucion]].
 
 **2. Los límites de recursos no están probados contra un kernel.** El código los aplica y **rechaza correr el módulo si no se pueden aplicar**, que es la parte que importa. Pero el contenedor donde se desarrolló no delega ningún controlador de cgroup, así que la prueba que los demostraría reporta `NOT PROVEN`. Correrá en hardware.
 
@@ -94,7 +95,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ## Pruebas
 
-259 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+270 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; con `THALYX_REQUIRE_CGROUP_TESTS=1` el salto se convierte en fallo. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
