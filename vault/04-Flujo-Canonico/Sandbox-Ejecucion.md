@@ -48,18 +48,52 @@ El perfil se declara en el contrato y lo aplica el Core, nunca el módulo.
 Namespaces de montaje, PID, IPC, UTS y red; filtro seccomp por lista de permitidos; límites de cgroup. Todo implementado en `crates/thalyx-sandbox` y verificado **preguntándole al módulo**, no al sistema:
 
 ```
-                        adentro          afuera
-pid                     1                6878
-hostname                thalyx-module    vm
-procesos visibles       4                82
-interfaces de red       lo:              lo: eth0:
-socket()                SIGSYS           funciona
-unshare()               SIGSYS           funciona
+                        adentro                             afuera
+pid                     1                                   6878
+hostname                thalyx-module                       vm
+procesos visibles       4                                   82
+interfaces de red       lo:                                 lo: eth0:
+raíz                    bin dev etc lib lib64 module         todo el host
+                        proc sbin tmp usr
+escribir en /           denegado                            —
+escribir en /usr        denegado                            —
+escribir en /tmp        permitido                           —
+ruta concedida          legible con su mismo nombre         —
+ruta no concedida       no existe                           —
+socket()                SIGSYS                              funciona
+unshare()               SIGSYS                              funciona
 ```
 
 Preguntarle al módulo y no a Thalyx es el punto. Toda la clase de defecto que este proyecto encuentra una y otra vez es el sistema reportando éxito de trabajo que no hizo.
 
 **Lo que falta: el namespace de usuario.** Hacerlo de forma útil implica decidir con qué uid corre un módulo y de quién son los archivos del store — una pregunta de política, no de implementación. Un user namespace que mapee root a root cumpliría la letra del decreto y no aislaría nada, y este proyecto no publica teatro llamándolo protección. Un módulo hoy corre con el uid con el que corre Thalyx.
+
+### El filesystem que ve el módulo
+
+El namespace de montaje aísla la **tabla de montajes**, no los archivos. Un módulo tenía su propio namespace y el árbol entero del host adentro. Lo que lo mantenía fuera de `/etc/shadow` era `thalyx-lsm` y nada más: contención real, pero de una capa donde el diseño pide dos.
+
+Ahora el módulo se pivota (`pivot_root`) a una raíz que contiene:
+
+- su propio árbol en `/module`
+- las rutas de sistema que necesita para arrancar siquiera (`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`), **todas de solo lectura**
+- un puñado de nodos de dispositivo (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`)
+- un `/tmp` propio, escribible, que muere con la ejecución
+- un `/proc` atado a su propio namespace de PID
+- **exactamente las rutas que le fueron concedidas**, con su mismo nombre
+
+Nada más existe para ser alcanzado. La raíz misma queda de solo lectura.
+
+**Las dos capas dicen lo mismo desde direcciones opuestas.** El LSM deniega las aperturas que no le dijeron que permitiera; la raíz deniega porque no hay nada más presente. Las dos se derivan de los mismos permisos, así que no pueden contradecirse — y un error en cualquiera de las dos lo sigue atrapando la otra.
+
+Una ruta concedida que no existe **se rechaza**, nombrándola. Si no, el módulo correría con un permiso que el humano confirmó y que no puede usar, sin que nada lo diga. Es la misma regla de "una promesa que el sistema no puede cumplir", espejada.
+
+#### Tres defectos, los tres por ejecutarlo
+
+1. **La raíz se ensamblaba sobre `/tmp`**, y el tmpfs tapaba el árbol del módulo cuando este vivía ahí. Se movió a `/run/thalyx/sandbox`, donde lo único que puede tapar es a sí mismo.
+2. **El `/tmp` del módulo se montaba después de los binds**, así que tapaba cualquier ruta concedida bajo `/tmp` — el módulo recibía "no such file or directory" por algo que el humano sí había confirmado. Regla que salió de ahí: **todo montaje que tape parte de la raíz va antes de que se monte nada debajo de él.** Se encontró por suerte, porque la ruta concedida de un test resultó ser un directorio temporal; ahora hay un test que lo busca a propósito.
+3. **Sellar la raíz de solo lectura antes de borrar el punto de montaje de la raíz vieja** hacía fallar el borrado. Se sella al final.
+
+Un detalle que no perdona: **un bind de solo lectura son dos llamadas a `mount`.** Un solo `MS_BIND | MS_RDONLY` ignora la bandera en silencio y el bind hereda la escritura del origen. Es exactamente así como un contenedor termina con un `/usr` escribible que todo el mundo cree de solo lectura.
 
 ### El costo visible del allowlist
 

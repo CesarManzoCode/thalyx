@@ -15,7 +15,6 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
 - [ ] **Probar los límites de recursos contra un kernel** — el código los aplica y rechaza correr si no puede; falta una máquina que delegue los controladores. Ver [[Sandbox-Ejecucion]].
-- [ ] **`pivot_root` para el módulo** — hay namespace de montaje pero el módulo sigue viendo el árbol del host; hoy lo contiene solo el LSM.
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para alimentar el grafo. Ver [[Coherencia-Doble-Ruta]].
@@ -63,6 +62,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-02
 
+- [x] **Raíz propia del módulo (`pivot_root`)** — el módulo ya no ve el árbol del host. Ver [[Sandbox-Ejecucion]].
 - [x] **Perfil `module_standard`** — namespaces, seccomp y límites, verificados contra el kernel real. Ver [[Sandbox-Ejecucion]].
 - [x] **Dónde vive el `unsafe`** — en `thalyx-syscall` y en ningún otro lado. Ver [[Sandbox-Ejecucion]].
 - [x] **Cierre del ciclo de enforcement** — `thalyx module run` establece la contención sola. Ver [[Sandbox-Ejecucion]].
