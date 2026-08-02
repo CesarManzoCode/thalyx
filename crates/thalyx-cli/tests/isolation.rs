@@ -11,7 +11,7 @@
 //! than passing quietly. `THALYX_REQUIRE_CGROUP_TESTS=1` turns that into a
 //! failure.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use thalyx_sandbox::profile::{self, Namespaces};
 
@@ -58,14 +58,44 @@ fn not_proven(reason: &str) -> Option<Arena> {
 }
 
 /// Run a shell command inside the confinement, and return what it saw.
+///
+/// `/bin/sh` rather than a module of our own, and therefore no pivot: the
+/// root filesystem is exercised separately, by tests that build a module tree
+/// to be pivoted into.
 fn confined(arena: &Arena, namespaces: Namespaces, script: &str) -> Output {
+    launch(
+        arena,
+        namespaces,
+        None,
+        Path::new("/bin/sh"),
+        &["-c", script],
+    )
+}
+
+fn launch(
+    arena: &Arena,
+    namespaces: Namespaces,
+    rootfs: Option<thalyx_sandbox::RootFs>,
+    program: &Path,
+    args: &[&str],
+) -> Output {
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces,
+        rootfs,
+        program: program.to_path_buf(),
+    };
+
     Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .arg(thalyx_sandbox::launch::ENTER_MARKER)
-        .arg(arena.0.join("org.thalyx.demo"))
-        .arg(profile::MODULE_STANDARD)
-        .arg(namespaces.flags().to_string())
-        .arg("/bin/sh")
-        .args(["-c", script])
+        .args(
+            thalyx_sandbox::launch::argv(
+                thalyx_sandbox::launch::ENTER_MARKER,
+                &spec,
+                &thalyx_sandbox::launch::to_args(args),
+            )
+            .expect("argv"),
+        )
         .output()
         .expect("launch")
 }
@@ -292,13 +322,22 @@ fn a_program_launched_with_no_namespaces_at_all_still_lands_in_the_cgroup() {
     };
     let cgroup = cgroup_in(&arena);
 
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: cgroup.path().to_path_buf(),
+        profile: profile::DIAGNOSTIC.to_string(),
+        namespaces: Namespaces::NONE,
+        rootfs: None,
+        program: PathBuf::from("/bin/sh"),
+    };
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .arg(thalyx_sandbox::launch::ENTER_MARKER)
-        .arg(cgroup.path())
-        .arg(profile::DIAGNOSTIC)
-        .arg("0")
-        .arg("/bin/sh")
-        .args(["-c", "grep '^0::' /proc/self/cgroup"])
+        .args(
+            thalyx_sandbox::launch::argv(
+                thalyx_sandbox::launch::ENTER_MARKER,
+                &spec,
+                &thalyx_sandbox::launch::to_args(&["-c", "grep '^0::' /proc/self/cgroup"]),
+            )
+            .expect("argv"),
+        )
         .output()
         .expect("launch");
 
@@ -308,4 +347,282 @@ fn a_program_launched_with_no_namespaces_at_all_still_lands_in_the_cgroup() {
         "ran in `{}`, not in its cgroup",
         stdout(&output)
     );
+}
+
+/// A module tree with a script that reports what it can see.
+struct Module {
+    directory: tempfile::TempDir,
+}
+
+impl Module {
+    fn with(script: &str) -> Self {
+        let directory = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(directory.path().join("bin")).unwrap();
+        let program = directory.path().join("bin/probe");
+        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::fs::write(directory.path().join("data.txt"), "the module's own file\n").unwrap();
+        Self { directory }
+    }
+
+    fn dir(&self) -> &Path {
+        self.directory.path()
+    }
+
+    fn program(&self) -> PathBuf {
+        self.directory.path().join("bin/probe")
+    }
+}
+
+/// Launch a module pivoted into a root of its own.
+fn pivoted(
+    arena: &Arena,
+    module: &Module,
+    grants: &[thalyx_manifest::Permission],
+) -> std::io::Result<Output> {
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), grants)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(launch(
+        arena,
+        standard(),
+        Some(rootfs),
+        &module.program(),
+        &[],
+    ))
+}
+
+fn grant(path: &Path, action: &str) -> thalyx_manifest::Permission {
+    thalyx_manifest::Permission {
+        resource: path.display().to_string(),
+        action: action.to_string(),
+        kind: thalyx_manifest::PermissionKind::Persistent,
+    }
+}
+
+#[test]
+fn a_pivoted_module_cannot_reach_the_host_tree() {
+    // The gap this closes: a mount namespace isolates the mount *table*, not
+    // the files. Before the pivot the module had a namespace of its own and
+    // the entire host filesystem inside it.
+    let Some(arena) = arena("pivot") else { return };
+    let _cgroup = cgroup_in(&arena);
+
+    let canary = tempfile::tempdir().unwrap();
+    let secret = canary.path().join("secret");
+    std::fs::write(&secret, "should be unreachable").unwrap();
+
+    let module = Module::with(&format!(
+        "ls / | tr '\\n' ' '; echo; \
+         [ -e {secret} ] && echo CANARY-REACHABLE || echo canary-gone",
+        secret = secret.display()
+    ));
+
+    let output = pivoted(&arena, &module, &[]).expect("rootfs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let seen = stdout(&output);
+    assert!(seen.contains("canary-gone"), "{seen}");
+    assert!(
+        !seen.contains("home"),
+        "the host's /home is visible: {seen}"
+    );
+    assert!(
+        !seen.contains("root "),
+        "the host's /root is visible: {seen}"
+    );
+    assert!(
+        seen.contains("module"),
+        "the module's own tree is missing: {seen}"
+    );
+}
+
+#[test]
+fn a_pivoted_module_finds_its_own_files_under_a_stable_path() {
+    // The module's host path carries a version number. Nothing inside should
+    // have to know it, so the tree appears at /module whatever version it is.
+    let Some(arena) = arena("pivot-own") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with("cat /module/data.txt");
+    let output = pivoted(&arena, &module, &[]).expect("rootfs");
+
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), "the module's own file");
+}
+
+#[test]
+fn a_granted_path_is_reachable_inside_under_its_own_name() {
+    let Some(arena) = arena("pivot-grant") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let granted = tempfile::tempdir().unwrap();
+    std::fs::write(granted.path().join("note"), "granted content\n").unwrap();
+
+    let module = Module::with(&format!("cat {}/note", granted.path().display()));
+    let output = pivoted(&arena, &module, &[grant(granted.path(), "read")]).expect("rootfs");
+
+    assert!(
+        output.status.success(),
+        "a granted path was not reachable: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), "granted content");
+}
+
+#[test]
+fn a_path_that_was_not_granted_simply_does_not_exist_inside() {
+    // The control for the test above. Without it, "the granted path works"
+    // would also be true of a sandbox that bound everything.
+    let Some(arena) = arena("pivot-ungranted") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("note"), "not granted\n").unwrap();
+
+    let module = Module::with(&format!(
+        "[ -e {}/note ] && echo REACHABLE || echo absent",
+        elsewhere.path().display()
+    ));
+    let output = pivoted(&arena, &module, &[]).expect("rootfs");
+
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), "absent");
+}
+
+#[test]
+fn a_path_granted_only_for_reading_cannot_be_written_to() {
+    // Two mechanisms say this: the LSM refuses the open, and the bind is
+    // mounted read-only. This tests the second, which is the one that holds
+    // even where the LSM is not loaded.
+    let Some(arena) = arena("pivot-ro") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let granted = tempfile::tempdir().unwrap();
+    let module = Module::with(&format!(
+        "touch {}/written 2>/dev/null && echo WRITABLE || echo read-only",
+        granted.path().display()
+    ));
+
+    let output = pivoted(&arena, &module, &[grant(granted.path(), "read")]).expect("rootfs");
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), "read-only");
+    assert!(!granted.path().join("written").exists());
+}
+
+#[test]
+fn a_path_granted_for_writing_can_be_written_to() {
+    // The control for the one above, and the check that the read-only remount
+    // is applied per bind rather than to everything.
+    let Some(arena) = arena("pivot-rw") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let granted = tempfile::tempdir().unwrap();
+    let module = Module::with(&format!(
+        "touch {}/written && echo wrote || echo DENIED",
+        granted.path().display()
+    ));
+
+    let output = pivoted(&arena, &module, &[grant(granted.path(), "write")]).expect("rootfs");
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), "wrote");
+    assert!(
+        granted.path().join("written").exists(),
+        "the write did not reach the host path that was granted"
+    );
+}
+
+#[test]
+fn the_root_and_the_system_paths_are_read_only_but_tmp_is_not() {
+    let Some(arena) = arena("pivot-seal") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with(
+        "touch /nope       2>/dev/null && echo ROOT-WRITABLE || echo root-sealed; \
+         touch /usr/nope   2>/dev/null && echo USR-WRITABLE  || echo usr-sealed; \
+         touch /module/x   2>/dev/null && echo MOD-WRITABLE  || echo module-sealed; \
+         touch /tmp/ok     2>/dev/null && echo tmp-writable  || echo TMP-SEALED",
+    );
+
+    let output = pivoted(&arena, &module, &[]).expect("rootfs");
+    assert!(output.status.success());
+
+    let seen = stdout(&output);
+    assert!(seen.contains("root-sealed"), "{seen}");
+    assert!(seen.contains("usr-sealed"), "{seen}");
+    assert!(seen.contains("module-sealed"), "{seen}");
+    assert!(seen.contains("tmp-writable"), "{seen}");
+}
+
+#[test]
+fn the_old_root_is_detached_and_leaves_no_way_back() {
+    // Between `pivot_root` and the unmount, the host tree is still reachable
+    // through the parked mount point. If that step were skipped everything
+    // above would still pass and the sandbox would be a door with no lock.
+    let Some(arena) = arena("pivot-old") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with(
+        "[ -e /.old-root ] && echo OLD-ROOT-PRESENT || echo detached; \
+         ls / | tr '\n' ' '",
+    );
+
+    let output = pivoted(&arena, &module, &[]).expect("rootfs");
+    assert!(output.status.success());
+
+    let seen = stdout(&output);
+    assert!(seen.contains("detached"), "{seen}");
+    assert!(
+        !seen.contains("old-root"),
+        "the parked old root is still there: {seen}"
+    );
+}
+
+#[test]
+fn a_granted_path_under_tmp_survives_the_module_getting_its_own_tmp() {
+    // The regression this exists for: the module's writable `/tmp` was mounted
+    // after the binds, so it covered any granted path underneath it. The
+    // module got "no such file or directory" for something the human had
+    // confirmed — and it was found only because a test's granted path happened
+    // to be a temporary directory.
+    let Some(arena) = arena("pivot-tmp-grant") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let granted = PathBuf::from(format!("/tmp/thalyx-grant-{}", std::process::id()));
+    std::fs::create_dir_all(&granted).unwrap();
+    std::fs::write(granted.join("note"), "under tmp\n").unwrap();
+
+    let module = Module::with(&format!("cat {}/note", granted.display()));
+    let output = pivoted(&arena, &module, &[grant(&granted, "read")]).expect("rootfs");
+
+    let _ = std::fs::remove_dir_all(&granted);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), "under tmp");
 }

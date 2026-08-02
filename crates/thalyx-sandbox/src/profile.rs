@@ -17,7 +17,7 @@ use thalyx_manifest::Permission;
 ///
 /// A struct of booleans rather than a bitmask so that reading it says what it
 /// means. The mask is derived once, in [`Namespaces::flags`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Namespaces {
     pub mount: bool,
     pub pid: bool,
@@ -84,6 +84,13 @@ pub struct Profile {
     pub namespaces: Namespaces,
     pub limits: Limits,
     pub seccomp: Option<Allowlist>,
+    /// Whether the module is pivoted into a root of its own.
+    ///
+    /// Separate from `namespaces.mount`, because a mount namespace on its own
+    /// isolates the mount *table* and not the files. Having them as one flag
+    /// invited exactly the confusion that let the sandbox ship with a mount
+    /// namespace and the whole host tree inside it.
+    pub pivot_root: bool,
     /// What the module sees as the hostname, inside its UTS namespace.
     ///
     /// Fixed rather than inherited: the real hostname is information about the
@@ -147,6 +154,7 @@ pub fn module_standard() -> Profile {
             cpu_max: None,
         },
         seccomp: Some(crate::seccomp::module_standard()),
+        pivot_root: true,
         hostname: "thalyx-module",
     }
 }
@@ -157,6 +165,7 @@ fn diagnostic() -> Profile {
         namespaces: Namespaces::NONE,
         limits: Limits::default(),
         seccomp: None,
+        pivot_root: false,
         hostname: "thalyx-module",
     }
 }
@@ -207,6 +216,12 @@ impl Profile {
         } else {
             parts.push(format!("namespaces: {}", namespaces.join("+")));
         }
+
+        parts.push(if self.pivot_root {
+            "own root filesystem".to_string()
+        } else {
+            "the host filesystem".to_string()
+        });
 
         match &self.seccomp {
             Some(allowlist) => parts.push(format!("seccomp: {} syscalls allowed", allowlist.len())),
@@ -296,6 +311,7 @@ mod tests {
         assert!(profile.seccomp.is_some(), "seccomp allowlist");
         assert!(profile.limits.memory_max.is_some(), "memory.max");
         assert!(profile.limits.pids_max.is_some(), "pids.max");
+        assert!(profile.pivot_root, "a root filesystem of its own");
         assert!(profile.isolates());
     }
 

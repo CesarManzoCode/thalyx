@@ -39,7 +39,8 @@
 //! mechanism exists to prevent.
 
 use crate::cgroup::Cgroup;
-use crate::profile::{Namespaces, Profile};
+use crate::profile::Namespaces;
+use crate::rootfs::RootFs;
 use crate::{Result, SandboxError};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -57,112 +58,93 @@ pub const INIT_MARKER: &str = "__thalyx_sandbox_init";
 /// Where a fresh `proc` is mounted inside the module's mount namespace.
 const PROC: &str = "/proc";
 
+/// Everything the re-executed process needs to build the confinement.
+///
+/// Carried as one JSON argument rather than a growing row of positional ones.
+/// The row worked while there were three things to say; it stopped working the
+/// moment the root filesystem had to travel too, and a launch protocol that is
+/// awkward to extend is a launch protocol that will be extended wrongly.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LaunchSpec {
+    pub cgroup: PathBuf,
+    pub profile: String,
+    /// The namespace mask the parent settled on, after adjusting the named
+    /// profile for what the module was actually granted.
+    ///
+    /// Travels explicitly because the child must not re-derive it: the parent
+    /// already adjusted for the grants, and a second derivation from the
+    /// profile name alone silently disagreed.
+    pub namespaces: Namespaces,
+    /// The root to pivot into. `None` leaves the module in the host tree.
+    pub rootfs: Option<RootFs>,
+    /// The entrypoint, as a path on the host.
+    pub program: PathBuf,
+}
+
 /// What a re-executed `thalyx` was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stage {
     /// Outer: join the cgroup and detach into namespaces.
     Enter {
-        cgroup: PathBuf,
-        profile: String,
-        /// The namespace mask the parent settled on, after adjusting the named
-        /// profile for what the module was actually granted.
-        namespaces: Namespaces,
-        program: PathBuf,
+        spec: LaunchSpec,
         args: Vec<OsString>,
     },
     /// Inner: finish the confinement from inside, then become the module.
     Init {
-        profile: String,
-        namespaces: Namespaces,
-        program: PathBuf,
+        spec: LaunchSpec,
         args: Vec<OsString>,
     },
 }
 
-/// The argument vector for the outer stage.
-///
-/// The namespace mask travels explicitly. The child must not re-derive it: the
-/// parent already adjusted the profile for what the module was granted, and a
-/// second derivation from the profile name alone silently disagreed.
-pub fn enter_argv(
-    cgroup: &Path,
-    profile: &str,
-    namespaces: Namespaces,
-    program: &Path,
-    args: &[OsString],
-) -> Vec<OsString> {
-    let mut argv = vec![
-        OsString::from(ENTER_MARKER),
-        cgroup.as_os_str().to_os_string(),
-        OsString::from(profile),
-        OsString::from(namespaces.flags().to_string()),
-        program.as_os_str().to_os_string(),
-    ];
-    argv.extend(args.iter().cloned());
-    argv
+impl Stage {
+    pub fn spec(&self) -> &LaunchSpec {
+        match self {
+            Stage::Enter { spec, .. } | Stage::Init { spec, .. } => spec,
+        }
+    }
 }
 
-/// The argument vector for the inner stage.
-pub fn init_argv(
-    profile: &str,
-    namespaces: Namespaces,
-    program: &Path,
-    args: &[OsString],
-) -> Vec<OsString> {
-    let mut argv = vec![
-        OsString::from(INIT_MARKER),
-        OsString::from(profile),
-        OsString::from(namespaces.flags().to_string()),
-        program.as_os_str().to_os_string(),
-    ];
+/// Build the argument vector for a re-execution.
+///
+/// The module's own arguments stay as trailing `OsString`s rather than going
+/// into the JSON: JSON cannot carry a non-UTF-8 argument, and silently mangling
+/// what a caller passed through is not a trade worth making for tidiness.
+pub fn argv(marker: &str, spec: &LaunchSpec, args: &[OsString]) -> Result<Vec<OsString>> {
+    let encoded = serde_json::to_string(spec).map_err(|source| SandboxError::Spec {
+        direction: "encoded",
+        source,
+    })?;
+
+    let mut argv = vec![OsString::from(marker), OsString::from(encoded)];
     argv.extend(args.iter().cloned());
-    argv
+    Ok(argv)
 }
 
 /// Recognise a re-execution, given the process's full argv.
 ///
 /// Returns `None` for every ordinary invocation, so the caller falls through to
 /// normal argument parsing.
-pub fn parse_stage<I>(argv: I) -> Option<Stage>
+pub fn parse_stage<I>(input: I) -> Option<Stage>
 where
     I: IntoIterator,
     I::Item: Into<OsString>,
 {
-    let mut argv = argv.into_iter().map(Into::into);
-    let _executable = argv.next()?;
-    let marker = argv.next()?;
+    let mut input = input.into_iter().map(Into::into);
+    let _executable = input.next()?;
+    let marker = input.next()?;
+
+    if marker != ENTER_MARKER && marker != INIT_MARKER {
+        return None;
+    }
+
+    let spec: LaunchSpec = serde_json::from_str(input.next()?.to_str()?).ok()?;
+    let args: Vec<OsString> = input.collect();
 
     if marker == ENTER_MARKER {
-        let cgroup = PathBuf::from(argv.next()?);
-        let profile = argv.next()?.into_string().ok()?;
-        let namespaces = parse_namespaces(&argv.next()?)?;
-        let program = PathBuf::from(argv.next()?);
-        return Some(Stage::Enter {
-            cgroup,
-            profile,
-            namespaces,
-            program,
-            args: argv.collect(),
-        });
+        Some(Stage::Enter { spec, args })
+    } else {
+        Some(Stage::Init { spec, args })
     }
-
-    if marker == INIT_MARKER {
-        let profile = argv.next()?.into_string().ok()?;
-        let namespaces = parse_namespaces(&argv.next()?)?;
-        let program = PathBuf::from(argv.next()?);
-        return Some(Stage::Init {
-            profile,
-            namespaces,
-            program,
-            args: argv.collect(),
-        });
-    }
-
-    None
-}
-
-fn parse_namespaces(field: &OsStr) -> Option<Namespaces> {
-    Some(Namespaces::from_flags(field.to_str()?.parse().ok()?))
 }
 
 /// Run whichever stage this process was re-executed as.
@@ -171,32 +153,16 @@ fn parse_namespaces(field: &OsStr) -> Option<Namespaces> {
 /// on failure — on success `exec` has already replaced the process.
 pub fn run_stage(stage: &Stage) -> std::result::Result<u8, SandboxError> {
     match stage {
-        Stage::Enter {
-            cgroup,
-            profile,
-            namespaces,
-            program,
-            args,
-        } => enter(cgroup, profile, *namespaces, program, args),
-        Stage::Init {
-            profile,
-            namespaces,
-            program,
-            args,
-        } => Err(init(profile, *namespaces, program, args)),
+        Stage::Enter { spec, args } => enter(spec, args),
+        Stage::Init { spec, args } => Err(init(spec, args)),
     }
 }
 
 /// Outer stage: get into the cgroup, detach, hand off.
-fn enter(
-    cgroup_path: &Path,
-    profile_name: &str,
-    namespaces: Namespaces,
-    program: &Path,
-    args: &[OsString],
-) -> std::result::Result<u8, SandboxError> {
-    let profile = crate::profile::resolve(profile_name)?;
-    let cgroup = Cgroup::attach(cgroup_path)?;
+fn enter(spec: &LaunchSpec, args: &[OsString]) -> std::result::Result<u8, SandboxError> {
+    let profile = crate::profile::resolve(&spec.profile)?;
+    let namespaces = spec.namespaces;
+    let cgroup = Cgroup::attach(&spec.cgroup)?;
 
     let pid = std::process::id();
     cgroup.join(pid)?;
@@ -206,7 +172,7 @@ fn enter(
     // cgroup at all — every earlier step would have reported success.
     if !cgroup.contains(pid)? {
         return Err(SandboxError::JoinNotEffective {
-            cgroup: cgroup_path.to_path_buf(),
+            cgroup: spec.cgroup.clone(),
             pid,
         });
     }
@@ -242,15 +208,15 @@ fn enter(
     // The child is the first process of the new PID namespace, and inherits
     // the cgroup and every other namespace already established.
     let mut child = std::process::Command::new(current_exe()?)
-        .args(init_argv(profile_name, namespaces, program, args))
+        .args(argv(INIT_MARKER, spec, args)?)
         .spawn()
         .map_err(|source| SandboxError::Exec {
-            program: program.to_path_buf(),
+            program: spec.program.clone(),
             source,
         })?;
 
     let status = child.wait().map_err(|source| SandboxError::Exec {
-        program: program.to_path_buf(),
+        program: spec.program.clone(),
         source,
     })?;
 
@@ -260,18 +226,30 @@ fn enter(
 /// Inner stage: PID 1 of the module's namespace.
 ///
 /// Only returns on failure; on success it has become the module.
-fn init(
-    profile_name: &str,
-    namespaces: Namespaces,
-    program: &Path,
-    args: &[OsString],
-) -> SandboxError {
+fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
     use std::os::unix::process::CommandExt;
 
-    let profile = match crate::profile::resolve(profile_name) {
+    let profile = match crate::profile::resolve(&spec.profile) {
         Ok(profile) => profile,
         Err(error) => return error,
     };
+    let namespaces = spec.namespaces;
+
+    // The root filesystem, before anything else that depends on paths.
+    //
+    // After this the host tree is gone: the module can only reach its own
+    // files, the read-only system paths it needs to start, and exactly what it
+    // was granted.
+    let mut program = spec.program.clone();
+    if let Some(rootfs) = &spec.rootfs {
+        if let Err(error) = rootfs.pivot() {
+            return error;
+        }
+        match rootfs.program_inside(&spec.program) {
+            Ok(inside) => program = inside,
+            Err(error) => return error,
+        }
+    }
 
     // A `/proc` that reflects this PID namespace rather than the host's.
     //
@@ -311,30 +289,18 @@ fn init(
         return SandboxError::Seccomp(error);
     }
 
-    let error = std::process::Command::new(program).args(args).exec();
+    let error = std::process::Command::new(&program).args(args).exec();
 
     SandboxError::Exec {
-        program: program.to_path_buf(),
+        program,
         source: error,
     }
 }
 
 /// The parent half: start the outer stage.
-pub fn spawn(
-    helper: &Path,
-    cgroup: &Cgroup,
-    profile: &Profile,
-    program: &Path,
-    args: &[OsString],
-) -> Result<std::process::Child> {
+pub fn spawn(helper: &Path, spec: &LaunchSpec, args: &[OsString]) -> Result<std::process::Child> {
     std::process::Command::new(helper)
-        .args(enter_argv(
-            cgroup.path(),
-            profile.name,
-            profile.namespaces,
-            program,
-            args,
-        ))
+        .args(argv(ENTER_MARKER, spec, args)?)
         .spawn()
         .map_err(|source| SandboxError::Exec {
             program: helper.to_path_buf(),
@@ -404,69 +370,59 @@ fn current_exe() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_enter_invocation_round_trips() {
-        // The two halves of the launch have to agree on this format exactly.
-        // They are built and parsed by the same module for that reason, and
-        // this is what keeps them in step.
-        let expected = crate::profile::module_standard().namespaces;
-        let argv = enter_argv(
-            Path::new("/sys/fs/cgroup/thalyx/org.thalyx.demo"),
-            crate::profile::MODULE_STANDARD,
-            expected,
-            Path::new("/opt/thalyx/modules/org.thalyx.demo/current/bin/demo"),
-            &to_args(&["--flag", "value with spaces"]),
-        );
-
-        let mut full = vec![OsString::from("/usr/bin/thalyx")];
-        full.extend(argv);
-
-        match parse_stage(full).expect("recognised") {
-            Stage::Enter {
-                cgroup,
-                profile,
-                namespaces,
-                program,
-                args,
-            } => {
-                assert_eq!(cgroup, Path::new("/sys/fs/cgroup/thalyx/org.thalyx.demo"));
-                assert_eq!(profile, crate::profile::MODULE_STANDARD);
-                assert_eq!(namespaces, expected);
-                assert_eq!(
-                    program,
-                    Path::new("/opt/thalyx/modules/org.thalyx.demo/current/bin/demo")
-                );
-                assert_eq!(args, to_args(&["--flag", "value with spaces"]));
-            }
-            other => panic!("parsed as {other:?}"),
+    fn spec() -> LaunchSpec {
+        LaunchSpec {
+            cgroup: PathBuf::from("/sys/fs/cgroup/thalyx/org.thalyx.demo"),
+            profile: crate::profile::MODULE_STANDARD.to_string(),
+            namespaces: crate::profile::module_standard().namespaces,
+            rootfs: Some(
+                crate::rootfs::RootFs::for_module(
+                    Path::new("/opt/thalyx/modules/org.thalyx.demo/1.0.0"),
+                    &[],
+                )
+                .unwrap(),
+            ),
+            program: PathBuf::from("/opt/thalyx/modules/org.thalyx.demo/1.0.0/bin/demo"),
         }
     }
 
     #[test]
-    fn an_init_invocation_round_trips() {
-        let expected = crate::profile::module_standard().namespaces;
-        let argv = init_argv(
-            crate::profile::MODULE_STANDARD,
-            expected,
-            Path::new("/bin/demo"),
-            &to_args(&["-x"]),
-        );
+    fn a_re_execution_round_trips_with_everything_it_carries() {
+        // The two halves of the launch have to agree on this exactly. They are
+        // built and parsed by the same module for that reason, and this is
+        // what keeps them in step as the spec grows.
+        let spec = spec();
+        let args = to_args(&["--flag", "value with spaces"]);
+
+        for (marker, expected_init) in [(ENTER_MARKER, false), (INIT_MARKER, true)] {
+            let mut full = vec![OsString::from("/usr/bin/thalyx")];
+            full.extend(argv(marker, &spec, &args).unwrap());
+
+            let stage = parse_stage(full).expect("recognised");
+            assert_eq!(stage.spec(), &spec);
+            assert_eq!(matches!(stage, Stage::Init { .. }), expected_init);
+
+            match stage {
+                Stage::Enter { args: got, .. } | Stage::Init { args: got, .. } => {
+                    assert_eq!(got, args);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn module_arguments_survive_even_when_they_are_not_utf8() {
+        // They travel outside the JSON for exactly this reason. Mangling what a
+        // caller passed through would be a silent corruption of the module's
+        // own input.
+        use std::os::unix::ffi::OsStringExt;
+        let odd = OsString::from_vec(vec![0xff, 0xfe, b'a']);
 
         let mut full = vec![OsString::from("/usr/bin/thalyx")];
-        full.extend(argv);
+        full.extend(argv(ENTER_MARKER, &spec(), std::slice::from_ref(&odd)).unwrap());
 
         match parse_stage(full).expect("recognised") {
-            Stage::Init {
-                profile,
-                namespaces,
-                program,
-                args,
-            } => {
-                assert_eq!(profile, crate::profile::MODULE_STANDARD);
-                assert_eq!(namespaces, expected);
-                assert_eq!(program, Path::new("/bin/demo"));
-                assert_eq!(args, to_args(&["-x"]));
-            }
+            Stage::Enter { args, .. } => assert_eq!(args, vec![odd]),
             other => panic!("parsed as {other:?}"),
         }
     }
@@ -493,18 +449,22 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_re_execution_is_refused_rather_than_guessed() {
+    fn a_malformed_re_execution_is_refused_rather_than_guessed() {
+        // Every one of these would, if guessed at, produce a launch with less
+        // confinement than the parent asked for.
         assert!(parse_stage(vec!["thalyx", ENTER_MARKER]).is_none());
-        assert!(parse_stage(vec!["thalyx", ENTER_MARKER, "/cgroup"]).is_none());
-        assert!(parse_stage(vec!["thalyx", ENTER_MARKER, "/cgroup", "profile"]).is_none());
-        assert!(parse_stage(vec!["thalyx", ENTER_MARKER, "/cgroup", "profile", "0"]).is_none());
         assert!(parse_stage(vec!["thalyx", INIT_MARKER]).is_none());
-        assert!(parse_stage(vec!["thalyx", INIT_MARKER, "profile"]).is_none());
-        assert!(parse_stage(vec!["thalyx", INIT_MARKER, "profile", "0"]).is_none());
-
-        // A mask that is not a number is refused rather than read as zero:
-        // zero means "no namespaces", which would silently run unisolated.
-        assert!(parse_stage(vec!["thalyx", INIT_MARKER, "profile", "x", "/bin/sh"]).is_none());
+        assert!(parse_stage(vec!["thalyx", ENTER_MARKER, "not json"]).is_none());
+        assert!(parse_stage(vec!["thalyx", ENTER_MARKER, "{}"]).is_none());
+        assert!(
+            parse_stage(vec![
+                "thalyx",
+                ENTER_MARKER,
+                r#"{"cgroup":"/c","profile":"module_standard","program":"/bin/sh"}"#
+            ])
+            .is_none(),
+            "a spec missing the namespace mask must not be read as no namespaces"
+        );
     }
 
     #[test]

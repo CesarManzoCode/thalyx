@@ -25,11 +25,10 @@ fn the_canonical_case_end_to_end() {
             .contains("Thalyx — capability authorisation")
     );
     assert!(install.stdout().contains("outbound network access"));
-    assert!(
-        install
-            .stdout()
-            .contains("read access to /home/user/projects")
-    );
+    assert!(install.stdout().contains(&format!(
+        "read access to {}",
+        fixture.granted_path().display()
+    )));
 
     // The module is current and its payload is in place.
     let store = fixture.store();

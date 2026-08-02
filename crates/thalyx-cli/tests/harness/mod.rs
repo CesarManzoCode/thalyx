@@ -56,6 +56,10 @@ impl Fixture {
 
         std::fs::create_dir_all(base.join("store")).unwrap();
         std::fs::create_dir_all(base.join("payload/bin")).unwrap();
+        // A granted path the fixture owns. Granting one it does not own would
+        // make the tests depend on the machine they run on — and a grant on a
+        // path that is not there is refused, on purpose.
+        std::fs::create_dir_all(base.join("granted")).unwrap();
         std::fs::write(base.join("payload/bin/demo"), "#!/bin/sh\necho demo\n").unwrap();
         std::fs::write(base.join("payload/README"), "demo module\n").unwrap();
 
@@ -107,6 +111,11 @@ impl Fixture {
         registry.effective(Self::MODULE_ID).len()
     }
 
+    /// The directory the fixture's module is granted read access to.
+    pub fn granted_path(&self) -> PathBuf {
+        self.base().join("granted")
+    }
+
     /// Pack a signed bundle at the given version.
     pub fn build_bundle(&self, version: &str) -> PathBuf {
         let manifest_path = self.base().join(format!("manifest-{version}.toml"));
@@ -136,7 +145,7 @@ action   = "outbound"
 type     = "persistent"
 
 [[permissions]]
-resource = "/home/user/projects"
+resource = "{granted}"
 action   = "read"
 type     = "persistent"
 
@@ -144,6 +153,7 @@ type     = "persistent"
 run = "bin/demo"
 "#,
                 id = Self::MODULE_ID,
+                granted = self.granted_path().display(),
             ),
         )
         .unwrap();
@@ -261,7 +271,11 @@ run = "bin/demo"
 
     fn pack_with_key(&self, key: &Path, version: &str, id: &str) -> PathBuf {
         let manifest_path = self.base().join(format!("manifest-alt-{version}.toml"));
-        std::fs::write(&manifest_path, manifest_source(id, version)).unwrap();
+        std::fs::write(
+            &manifest_path,
+            manifest_source(id, version, &self.granted_path()),
+        )
+        .unwrap();
 
         let out = self.base().join(format!("alt-{version}.thmod"));
         let result = Command::new(binary())
@@ -302,7 +316,8 @@ run = "bin/demo"
     }
 }
 
-fn manifest_source(id: &str, version: &str) -> String {
+fn manifest_source(id: &str, version: &str, granted: &Path) -> String {
+    let granted = granted.display();
     format!(
         r#"
 format_version = 1
@@ -327,7 +342,7 @@ action   = "outbound"
 type     = "persistent"
 
 [[permissions]]
-resource = "/home/user/projects"
+resource = "{granted}"
 action   = "read"
 type     = "persistent"
 

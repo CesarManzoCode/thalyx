@@ -213,12 +213,11 @@ fn the_launch_helper_puts_the_program_inside_the_cgroup_before_it_runs() {
     let cgroup = thalyx_sandbox::Cgroup::ensure(&arena.0, "org.thalyx.demo").expect("cgroup");
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .arg(thalyx_sandbox::launch::ENTER_MARKER)
-        .arg(cgroup.path())
-        .arg(thalyx_sandbox::profile::DIAGNOSTIC)
-        .arg("0")
-        .arg("/bin/sh")
-        .args(["-c", "cat /proc/self/cgroup"])
+        .args(diagnostic_argv(
+            cgroup.path(),
+            "/bin/sh",
+            &["-c", "cat /proc/self/cgroup"],
+        ))
         .output()
         .expect("helper");
 
@@ -254,13 +253,11 @@ fn the_helper_refuses_to_run_the_program_when_it_cannot_confine_it() {
     let marker = directory.path().join("the-program-ran");
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .arg(thalyx_sandbox::launch::ENTER_MARKER)
-        .arg(&not_a_cgroup)
-        .arg(thalyx_sandbox::profile::DIAGNOSTIC)
-        .arg("0")
-        .arg("/bin/sh")
-        .arg("-c")
-        .arg(format!("touch {}", marker.display()))
+        .args(diagnostic_argv(
+            &not_a_cgroup,
+            "/bin/sh",
+            &["-c", &format!("touch {}", marker.display())],
+        ))
         .output()
         .expect("helper");
 
@@ -313,4 +310,21 @@ fn an_installed_module_is_actually_executable() {
         "an unenforced run must say so:\n{}",
         status.stdout()
     );
+}
+
+/// Re-execution arguments for the diagnostic profile: cgroup only.
+fn diagnostic_argv(cgroup: &Path, program: &str, args: &[&str]) -> Vec<std::ffi::OsString> {
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: cgroup.to_path_buf(),
+        profile: thalyx_sandbox::profile::DIAGNOSTIC.to_string(),
+        namespaces: thalyx_sandbox::profile::Namespaces::NONE,
+        rootfs: None,
+        program: PathBuf::from(program),
+    };
+    thalyx_sandbox::launch::argv(
+        thalyx_sandbox::launch::ENTER_MARKER,
+        &spec,
+        &thalyx_sandbox::launch::to_args(args),
+    )
+    .expect("argv")
 }

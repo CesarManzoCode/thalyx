@@ -220,7 +220,7 @@ fn run_inner(
     let isolation = confinement.profile().describe();
     let isolated = confinement.profile().isolates();
 
-    let mut child = confinement.spawn(&request.helper, &program, &request.args)?;
+    let mut child = confinement.spawn(&request.helper, &module_dir, &program, &request.args)?;
     let status = child
         .wait()
         .map_err(|source| CoreError::io(&request.helper, source))?;

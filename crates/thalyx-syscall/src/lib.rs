@@ -27,7 +27,12 @@ use std::path::Path;
 pub use libc::{
     CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
-pub use libc::{MS_NODEV, MS_NOEXEC, MS_NOSUID, MS_PRIVATE, MS_RDONLY, MS_REC};
+pub use libc::{
+    MS_BIND, MS_NODEV, MS_NOEXEC, MS_NOSUID, MS_PRIVATE, MS_RDONLY, MS_REC, MS_REMOUNT,
+};
+
+/// Unmount lazily: detach now, let the kernel clean up when the last user goes.
+pub use libc::MNT_DETACH;
 
 /// Detach the calling process into new namespaces.
 ///
@@ -74,6 +79,48 @@ pub fn mount(
                 .map_or(std::ptr::null(), |s| s.as_ptr().cast()),
         )
     };
+    check(result)
+}
+
+/// Detach a filesystem.
+pub fn umount2(target: &Path, flags: i32) -> io::Result<()> {
+    let target = path_to_c(target)?;
+    // SAFETY: the pointer comes from a `CString` that outlives the call and is
+    // NUL-terminated by construction. The kernel only reads it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::umount2(target.as_ptr(), flags) };
+    check(result)
+}
+
+/// Make `new_root` the process's root, and move the old one to `put_old`.
+///
+/// The kernel requires `new_root` to be a mount point, `put_old` to be
+/// underneath it, and neither to be on a shared mount. Getting any of that
+/// wrong returns `EINVAL` rather than half-succeeding, which is the one thing
+/// that makes this syscall pleasant to use.
+pub fn pivot_root(new_root: &Path, put_old: &Path) -> io::Result<()> {
+    let new_root = path_to_c(new_root)?;
+    let put_old = path_to_c(put_old)?;
+
+    // SAFETY: both pointers come from `CString`s that outlive the call. There
+    // is no libc wrapper for this syscall, so it goes through `syscall(2)`.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(libc::SYS_pivot_root, new_root.as_ptr(), put_old.as_ptr()) as libc::c_int
+    };
+    check(result)
+}
+
+/// Change the working directory.
+///
+/// Needed straight after [`pivot_root`], which leaves the process's cwd
+/// pointing into the old root — a directory the module must not keep a handle
+/// on.
+pub fn chdir(path: &Path) -> io::Result<()> {
+    let path = path_to_c(path)?;
+    // SAFETY: the pointer comes from a `CString` that outlives the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::chdir(path.as_ptr()) };
     check(result)
 }
 

@@ -55,12 +55,14 @@ pub mod cgroup;
 pub mod launch;
 pub mod limits;
 pub mod profile;
+pub mod rootfs;
 pub mod seccomp;
 
 pub use cgroup::Cgroup;
-pub use launch::{Stage, parse_stage, run_stage};
+pub use launch::{LaunchSpec, Stage, parse_stage, run_stage};
 pub use limits::Limits;
 pub use profile::Profile;
+pub use rootfs::RootFs;
 
 use std::path::{Path, PathBuf};
 use thalyx_manifest::Permission;
@@ -120,6 +122,20 @@ pub enum SandboxError {
 
     #[error("`{0}` is not a sandbox profile Thalyx knows")]
     UnknownProfile(String),
+
+    #[error(
+        "`{path}` was granted for {action} and is not there.\n  \
+         Refusing to run: the module would hold a permission it cannot use, and \
+         nothing would say so. Create the path, or remove the grant."
+    )]
+    GrantedPathMissing { path: PathBuf, action: String },
+
+    #[error("the launch specification could not be {direction}: {source}")]
+    Spec {
+        direction: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
 
     #[error(
         "could not detach into the namespaces `{profile}` requires: {source}\n  \
@@ -195,6 +211,7 @@ pub struct Confinement<'a> {
     cgroup_id: u64,
     applied: thalyx_permd::Policy,
     profile: Profile,
+    permissions: Vec<Permission>,
 }
 
 impl<'a> Confinement<'a> {
@@ -262,6 +279,7 @@ impl<'a> Confinement<'a> {
             cgroup_id,
             applied,
             profile,
+            permissions: permissions.to_vec(),
         })
     }
 
@@ -284,13 +302,33 @@ impl<'a> Confinement<'a> {
     }
 
     /// Start a module inside this confinement.
+    ///
+    /// The root filesystem is built here rather than by the caller, from the
+    /// same permissions the policy was written from. Two mechanisms, one
+    /// source: the LSM refuses opens it was not told to allow, and the root
+    /// contains nothing else to open.
     pub fn spawn(
         &self,
         helper: &Path,
+        module_dir: &Path,
         program: &Path,
         args: &[std::ffi::OsString],
     ) -> Result<std::process::Child> {
-        launch::spawn(helper, &self.cgroup, &self.profile, program, args)
+        let rootfs = if self.profile.pivot_root {
+            Some(rootfs::RootFs::for_module(module_dir, &self.permissions)?)
+        } else {
+            None
+        };
+
+        let spec = launch::LaunchSpec {
+            cgroup: self.cgroup.path().to_path_buf(),
+            profile: self.profile.name.to_string(),
+            namespaces: self.profile.namespaces,
+            rootfs,
+            program: program.to_path_buf(),
+        };
+
+        launch::spawn(helper, &spec, args)
     }
 
     /// Withdraw the policy and remove the cgroup, in that order.
