@@ -66,7 +66,20 @@ unshare()               SIGSYS                              funciona
 
 Preguntarle al módulo y no a Thalyx es el punto. Toda la clase de defecto que este proyecto encuentra una y otra vez es el sistema reportando éxito de trabajo que no hizo.
 
-**Lo que falta: el namespace de usuario.** Hacerlo de forma útil implica decidir con qué uid corre un módulo y de quién son los archivos del store — una pregunta de política, no de implementación. Un user namespace que mapee root a root cumpliría la letra del decreto y no aislaría nada, y este proyecto no publica teatro llamándolo protección. Un módulo hoy corre con el uid con el que corre Thalyx.
+**Lo que falta: el namespace de usuario.** Decretado el 2 de agosto de 2026, todavía no construido. Un módulo hoy corre con el uid con el que corre Thalyx.
+
+### Decreto: un uid por módulo
+
+**Cada módulo corre con su propio uid sin privilegios.** Los módulos se aíslan del sistema *y entre sí*: un módulo no puede leer los archivos temporales ni los procesos de otro, aunque los dos estén instalados y confirmados.
+
+Se evaluó y se descartó un uid compartido para todos los módulos: es mucho más simple, pero deja que dos módulos se lean mutuamente lo que dejen en `/tmp`, y la confirmación del humano fue por módulo, no por el conjunto.
+
+Reglas que se derivan del decreto:
+
+- **Los uid no se reutilizan nunca.** Si un uid liberado al desinstalar se le diera a otro módulo, los archivos que el primero dejó por ahí quedarían accesibles para el segundo. Se asigna de forma monótona y el contador se persiste.
+- La asignación vive en el store y sobrevive a los reinicios: un módulo que cambiara de uid entre arranques perdería el acceso a lo que él mismo escribió.
+
+**El problema que hay que resolver para implementarlo:** si el módulo corre con su propio uid, no puede escribir en los directorios del humano — que son del uid del humano. Una concesión de escritura sobre `/home/user/docs` fallaría con "permiso denegado" aunque tú la hayas confirmado. Las salidas conocidas son *idmapped mounts* (`mount_setattr` con `MOUNT_ATTR_IDMAP`, kernel 5.12+), que remapean la propiedad solo dentro del montaje del módulo, o cambiar el dueño de la ruta concedida, que es destructivo. La primera es la correcta y es la que hay que construir.
 
 ### El filesystem que ve el módulo
 
@@ -99,7 +112,13 @@ Un detalle que no perdona: **un bind de solo lectura son dos llamadas a `mount`.
 
 `socket` está deliberadamente fuera de la lista: un módulo sin permiso de red no debería siquiera poder construir un socket para que se lo denieguen. El costo es real y queda anotado — `ls -l` se degrada, porque NSS quiere un socket unix para resolver nombres de usuario.
 
-Queda como **decisión abierta** si `module_standard` debería permitir sockets `AF_UNIX`. Es expresable en BPF clásico (se puede filtrar por el argumento `domain`), pero es una decisión de política, no de implementación.
+### Decreto: `socket` queda fuera, y es reversible
+
+**Decidido el 2 de agosto de 2026:** se queda como está — un módulo sin permiso de red no puede construir ningún socket, ni siquiera local.
+
+**Explícitamente no es una decisión final.** Se toma sabiendo que el costo es que algunas herramientas se degradan adentro, y con la intención de revisarla cuando exista un módulo real que la necesite. El mecanismo para cambiarla ya se conoce: BPF clásico puede filtrar por el argumento `domain` de `socket()`, así que permitir solo `AF_UNIX` es un cambio acotado al filtro, sin tocar manifiesto ni permisos.
+
+La tercera opción —un tipo de permiso `ipc` que el manifiesto declare y el humano confirme— sigue sobre la mesa y es la que corresponde si los módulos llegan a hablar entre sí.
 
 ### Cómo se derivó la lista de syscalls permitidas
 

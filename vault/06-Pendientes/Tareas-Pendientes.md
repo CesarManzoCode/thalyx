@@ -17,7 +17,10 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Probar los límites de recursos contra un kernel** — el código los aplica y rechaza correr si no puede; falta una máquina que delegue los controladores. Ver [[Sandbox-Ejecucion]].
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
-- [ ] **Consumir el ringbuf `thalyx_mutations`** para alimentar el grafo. Ver [[Coherencia-Doble-Ruta]].
+- [ ] **Consumir el ringbuf `thalyx_mutations`** para acotar la cuenta de mutaciones al árbol indexado. Necesita un consumidor que haga `mmap` del mapa; solo se puede escribir donde se pueda ejecutar. Ver [[FS-en-Grafo]].
+- [ ] **Ampliar los hooks del watcher** para cubrir escrituras por descriptor abierto. Sin eso el contador nunca podrá creerse.
+- [ ] **Namespace de usuario con un uid por módulo** — decretado el 2026-08-02. Falta resolver la escritura en rutas del humano; la salida correcta son *idmapped mounts*. Ver [[Sandbox-Ejecucion]].
+- [ ] **Ejecutar `make -C lsm load` con el contador nuevo** — el cambio al programa BPF no pudo compilarse ni verificarse en el contenedor de desarrollo.
 
 
 ## Pendientes de decreto formal
@@ -28,8 +31,6 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Arquitectura del índice semántico a mayor escala** — SQLite alcanza para Fase 1; falta saber a partir de qué volumen deja de alcanzar.
 - [ ] **Sistema de reputación resistente a Sybil** — pospuesto deliberadamente. Ver [[Sistema-Reputacion-Sybil]].
 - [ ] **Dependencias entre módulos y resolver con backtracking** — pospuesto hasta que exista un módulo real que las necesite. Ver [[Resolucion-de-Versiones]].
-- [ ] **Namespace de usuario: con qué uid corre un módulo** — decretado, no implementado. Implica decidir de quién son los archivos del store. Un mapeo root→root cumpliría la letra y no aislaría nada. Ver [[Sandbox-Ejecucion]].
-- [ ] **Si `module_standard` debe permitir sockets `AF_UNIX`** — hoy `socket` está fuera del allowlist y `ls -l` se degrada. Es expresable filtrando por el argumento `domain`. Ver [[Sandbox-Ejecucion]].
 - [ ] **Condiciones para habilitar llamadas a modelos remotos** — las reglas ya están escritas; falta decidir cuándo se activan. Ver [[Agente-Conversacional]].
 
 ## Resueltos el 2026-08-01
@@ -62,6 +63,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-02
 
+- [x] **Con qué uid corre un módulo** — uno por módulo, sin reutilizar nunca. Decretado, falta construirlo. Ver [[Sandbox-Ejecucion]].
+- [x] **Sockets `AF_UNIX` en el sandbox** — se quedan fuera, y queda dicho que la decisión es reversible. Ver [[Sandbox-Ejecucion]].
 - [x] **Raíz propia del módulo (`pivot_root`)** — el módulo ya no ve el árbol del host. Ver [[Sandbox-Ejecucion]].
 - [x] **Perfil `module_standard`** — namespaces, seccomp y límites, verificados contra el kernel real. Ver [[Sandbox-Ejecucion]].
 - [x] **Dónde vive el `unsafe`** — en `thalyx-syscall` y en ningún otro lado. Ver [[Sandbox-Ejecucion]].

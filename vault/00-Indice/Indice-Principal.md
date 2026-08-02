@@ -110,8 +110,9 @@ El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la
 | Manifiesto guardado junto al módulo | ✅ Implementado |
 | Perfil `module_standard` (namespaces, seccomp, límites) | ✅ Implementado y verificado contra el kernel |
 | Raíz propia del módulo (`pivot_root`) | ✅ Implementada y verificada |
-| Namespace de usuario y uid del módulo | ⚠️ Decisión de política abierta |
-| Sockets `AF_UNIX` dentro del sandbox | ⚠️ Decisión de política abierta |
+| Disciplina de cobertura del índice | ✅ Implementada y probada |
+| uid por módulo | ✅ Decretado — ⚠️ falta construirlo |
+| Sockets `AF_UNIX` | ✅ Decretado: fuera, reversible |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |
 | Interpretabilidad: técnicas concretas | ⚠️ Abierto |
