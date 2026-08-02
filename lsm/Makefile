@@ -1,11 +1,9 @@
 # Build and load thalyx-lsm.
 #
-# Run this inside the development guest, never on the host. A policy that
-# denies the wrong thing locks the machine until reboot.
-#
-#   make            compile the BPF object
-#   make load       attach it to the LSM hooks
-#   make unload     detach it
+#   make            compile both objects
+#   make hooks      list which LSM hooks this kernel actually exposes
+#   make load       attach enforcement (and the watcher, if its hooks exist)
+#   make unload     detach everything
 #   make enforce    switch from observing to denying
 #   make observe    log what would be denied, deny nothing
 #   make status     what is attached and what it is doing
@@ -13,23 +11,32 @@
 # `make load` deliberately lands in observe mode. A security policy should be
 # measurable before it is binding: run the system, see what it *would* have
 # denied, and only then turn it on.
+#
+# Two objects, loaded independently:
+#
+#   thalyx_lsm    enforcement. Required.
+#   thalyx_watch  filesystem events for the semantic index. Best effort — it
+#                 denies nothing, and which filesystem hooks a kernel exposes
+#                 depends on how it was configured, so it must not be able to
+#                 stop enforcement from loading.
 
 CLANG   ?= clang
 BPFTOOL ?= bpftool
 ARCH    := $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/')
 
-OBJ     := thalyx_lsm.bpf.o
-SRC     := thalyx_lsm.bpf.c
 VMLINUX := vmlinux.h
+OBJS    := thalyx_lsm.bpf.o thalyx_watch.bpf.o
 
 BPFFS   := /sys/fs/bpf
 PINDIR  := $(BPFFS)/thalyx
 
+# -Werror applies to this project's code. vmlinux.h is machine-generated and
+# suspends the relevant warning around its own include.
 CFLAGS := -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_$(ARCH) -I.
 
-.PHONY: all load unload enforce observe status clean
+.PHONY: all hooks load unload enforce observe status clean
 
-all: $(OBJ)
+all: $(OBJS)
 
 # Generated from the running kernel's own BTF, so the program compiles against
 # the exact structure layouts it will run on. This is what makes one object
@@ -42,21 +49,46 @@ $(VMLINUX):
 	    exit 1; }
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX)
 
-$(OBJ): $(SRC) $(VMLINUX)
-	$(CLANG) $(CFLAGS) -c $(SRC) -o $(OBJ)
+%.bpf.o: %.bpf.c $(VMLINUX)
+	$(CLANG) $(CFLAGS) -c $< -o $@
 
-load: $(OBJ)
+# Which hooks this kernel exposes.
+#
+# A BPF LSM program can only attach where the kernel provides a bpf_lsm_<hook>
+# symbol, and that set depends on how the kernel was configured. Asking first
+# is faster than discovering it from a verifier error.
+hooks:
+	@echo "LSM order: $$(cat /sys/kernel/security/lsm 2>/dev/null || echo unknown)"
+	@echo
+	@echo "hooks this build needs:"
+	@for hook in socket_connect file_open inode_unlink inode_create inode_rename; do \
+	    if grep -q " bpf_lsm_$$hook$$" /proc/kallsyms 2>/dev/null; then \
+	        printf '  \033[32mavailable\033[0m  %s\n' "$$hook"; \
+	    else \
+	        printf '  \033[31mmissing\033[0m    %s\n' "$$hook"; \
+	    fi; \
+	done
+	@echo
+	@echo "total attachable LSM hooks on this kernel: $$(grep -c ' bpf_lsm_' /proc/kallsyms 2>/dev/null || echo '?')"
+
+load: $(OBJS)
 	@grep -q bpf /sys/kernel/security/lsm || { \
 	    echo "bpf is not in the active LSM order: $$(cat /sys/kernel/security/lsm)"; \
 	    echo "The hooks exist but nothing can attach. Add bpf to lsm= and reboot."; \
 	    exit 1; }
 	@mountpoint -q $(BPFFS) || sudo mount -t bpf bpf $(BPFFS)
 	sudo mkdir -p $(PINDIR)
-	sudo $(BPFTOOL) prog loadall $(OBJ) $(PINDIR) autoattach
+	@echo "==> loading enforcement"
+	sudo $(BPFTOOL) prog loadall thalyx_lsm.bpf.o $(PINDIR)/lsm autoattach
 	@# Observe first. Enforcing from the start would mean the first run of an
 	@# untested policy is also the one that can lock you out.
-	@sudo $(BPFTOOL) map update pinned $(PINDIR)/thalyx_enforcing \
+	@sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
 	    key 0 0 0 0 value 0 0 0 0 2>/dev/null || true
+	@echo "==> loading the watcher (optional)"
+	@sudo $(BPFTOOL) prog loadall thalyx_watch.bpf.o $(PINDIR)/watch autoattach \
+	    && echo "    attached" \
+	    || echo "    not attached — this kernel does not expose one of its hooks. \
+Enforcement is unaffected; run 'make hooks' to see which."
 	@echo
 	@echo "attached, observing. Nothing is denied yet."
 	@echo "  make status    see what it would deny"
@@ -67,28 +99,30 @@ unload:
 	@echo "detached"
 
 enforce:
-	sudo $(BPFTOOL) map update pinned $(PINDIR)/thalyx_enforcing \
+	sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
 	    key 0 0 0 0 value 1 0 0 0
 	@echo "enforcing: denials are now real"
 
 observe:
-	sudo $(BPFTOOL) map update pinned $(PINDIR)/thalyx_enforcing \
+	sudo $(BPFTOOL) map update pinned $(PINDIR)/lsm/thalyx_enforcing \
 	    key 0 0 0 0 value 0 0 0 0
 	@echo "observing: denials are logged, not applied"
 
 status:
 	@echo "LSM order:  $$(cat /sys/kernel/security/lsm)"
-	@if [ -d $(PINDIR) ]; then \
-	    echo "attached:   yes"; \
-	    printf 'mode:       '; \
-	    if sudo $(BPFTOOL) map dump pinned $(PINDIR)/thalyx_enforcing 2>/dev/null \
+	@if [ -d $(PINDIR)/lsm ]; then \
+	    echo "enforcement: attached"; \
+	    printf 'mode:        '; \
+	    if sudo $(BPFTOOL) map dump pinned $(PINDIR)/lsm/thalyx_enforcing 2>/dev/null \
 	        | grep -q '"value": \["0x01"'; then echo enforcing; else echo observing; fi; \
-	    echo; \
-	    echo "policy entries:"; \
-	    sudo $(BPFTOOL) map dump pinned $(PINDIR)/thalyx_policy 2>/dev/null || echo "  (none)"; \
 	else \
-	    echo "attached:   no"; \
+	    echo "enforcement: not attached"; \
 	fi
+	@if [ -d $(PINDIR)/watch ]; then echo "watcher:     attached"; \
+	 else echo "watcher:     not attached"; fi
+	@echo
+	@echo "policy entries:"
+	@sudo $(BPFTOOL) map dump pinned $(PINDIR)/lsm/thalyx_policy 2>/dev/null || echo "  (none)"
 
 clean:
-	rm -f $(OBJ) $(VMLINUX)
+	rm -f $(OBJS) $(VMLINUX)

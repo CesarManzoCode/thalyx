@@ -29,7 +29,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Contrato con marcado de origen | `crates/thalyx-contract` | Schema v1, procedencia por campo, contención |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
-| `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | Escrito, **sin probar**: requiere kernel real |
+| `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | Enforcement. Compila; falta cargarlo |
+| `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Eventos para el grafo. Best-effort, no bloquea |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
 | CLI `thalyx` | `crates/thalyx-cli` | `module`, `journal`, `permissions`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
