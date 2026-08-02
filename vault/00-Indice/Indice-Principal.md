@@ -104,7 +104,8 @@ El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la
 | Índice en grafo y parser mecánico | ✅ Implementados |
 | Contrato con marcado de origen | ✅ Implementado |
 | Enforcement de permisos en el kernel | ✅ **Demostrado en hardware real** |
-| `thalyx-permd` (política → mapa BPF) | ⚠️ Pendiente: el kernel y el núcleo no se hablan |
+| `thalyx-permd` (política → mapa BPF) | ✅ Implementado |
+| Aplicación automática al instalar | ⚠️ Pendiente: hoy es un paso explícito |
 | Enforcement real de permisos | ⚠️ Se registran, todavía no se aplican |
 | Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |

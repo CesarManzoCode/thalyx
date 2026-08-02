@@ -1,0 +1,16 @@
+[package]
+name = "thalyx-permd"
+description = "The permission broker: turns granted permissions into kernel policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-manifest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

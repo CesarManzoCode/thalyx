@@ -793,6 +793,7 @@ dependencies = [
  "thalyx-graph",
  "thalyx-journal",
  "thalyx-manifest",
+ "thalyx-permd",
  "toml",
 ]
 
@@ -870,6 +871,15 @@ name = "thalyx-parser"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "thalyx-permd"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thalyx-manifest",
+ "thiserror",
 ]
 
 [[package]]

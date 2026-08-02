@@ -14,10 +14,10 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **`thalyx-permd`** — conectar el registro de permisos al mapa BPF.
+- [ ] **Cierre del ciclo de enforcement** — `thalyx enforce apply` funciona, pero instalar un módulo no lo invoca. Falta que el sandbox cree el cgroup al ejecutar el módulo.
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
 - [ ] **Memoria persistente.**
-- [ ] **Enforcement de permisos.** Los permisos se registran correctamente pero **nadie los aplica** hasta que exista `thalyx-lsm`. Ver [[Estado-de-Implementacion]].
+
 
 ## Pendientes de decreto formal
 
@@ -48,6 +48,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Estrategia de pruebas** — ver [[Estrategia-de-Pruebas]].
 - [x] **Registro de intención en el journal** — implementado y probado. Ver [[Fase-Commit-Atomico]].
 - [x] **Contrato estructurado y marcado de origen** — implementados y probados de punta a punta.
+- [x] **`thalyx-permd`** — traducción de permisos a política de kernel, implementada y probada.
 - [x] **Índice en grafo y parser mecánico** — implementados. Ver [[Estado-de-Implementacion]].
 - [x] **Ubicación de los permisos JIT (kernel vs userspace)** — ver [[Permisos-JIT]].
 - [x] **Modo de actualización del índice en grafo** — ver [[Parser-Mecanico]] y [[Coherencia-Doble-Ruta]].

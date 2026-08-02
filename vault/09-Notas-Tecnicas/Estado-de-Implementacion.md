@@ -27,6 +27,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Camino confiable | `crates/thalyx-core/trusted_path.rs` | Completo para autorización de capacidades |
 | Puntos de inyección de fallos | `crates/thalyx-core/fault.rs` | Cuatro puntos sobre la ruta de instalación |
 | Contrato con marcado de origen | `crates/thalyx-contract` | Schema v1, procedencia por campo, contención |
+| `thalyx-permd` (política → mapa BPF) | `crates/thalyx-permd` | Traducción, codificación y escritura |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
@@ -59,7 +60,6 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| `thalyx-permd` | Conectar la política al mapa BPF; hoy los permisos se registran pero **no se aplican** |
 | `thalyx-sandbox` | Ejecución de módulos en runtime |
 | `thalyx-agent` | Todo el flujo conversacional |
 | Snapshots, `rollback` y `restore` | [[Rollback-vs-Restore]] |
@@ -68,13 +68,13 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ### La advertencia importante
 
-**El enforcement funciona, pero todavía no está conectado al resto.** `thalyx-lsm` deniega correctamente cuando alguien escribe una política en su mapa a mano. Lo que falta es `thalyx-permd`: el registro de permisos que llena el núcleo al instalar un módulo no llega al mapa por sí solo.
+**Aplicar la política sigue siendo un paso explícito.** `thalyx enforce apply` lleva los permisos de un módulo al kernel, pero nadie lo invoca solo: instalar un módulo no lo enforcea. Falta que el sandbox cree el cgroup del módulo al ejecutarlo y que el ciclo se cierre sin intervención.
 
-Es decir: el kernel puede aplicar permisos, y el núcleo sabe cuáles debería aplicar, y esas dos cosas todavía no se hablan. El registro de permisos es contabilidad honesta, no enforcement: hasta que exista `thalyx-lsm`, un módulo instalado no está contenido por nada. Es esperable en esta etapa, pero no debe describirse como si el sistema ya protegiera algo.
+Hasta entonces `thalyx enforce status` lo dice sin rodeos cuando el registro y el kernel no coinciden. Un permiso que se muestra como concedido mientras nada lo aplica es el fallo sin síntoma, y la única defensa es decirlo en voz alta. El registro de permisos es contabilidad honesta, no enforcement: hasta que exista `thalyx-lsm`, un módulo instalado no está contenido por nada. Es esperable en esta etapa, pero no debe describirse como si el sistema ya protegiera algo.
 
 ## Pruebas
 
-129 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+147 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

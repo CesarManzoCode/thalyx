@@ -5,6 +5,7 @@
 //! Everything the agent will be able to do, a human can do here first.
 
 mod dev;
+mod enforce;
 mod graph;
 mod render;
 
@@ -49,6 +50,10 @@ enum Command {
 
     /// Show granted permissions
     Permissions,
+
+    /// Push granted permissions into the kernel, and see what is enforced
+    #[command(subcommand)]
+    Enforce(enforce::EnforceCommand),
 
     /// Inspect and repair the store
     #[command(subcommand)]
@@ -112,6 +117,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let store = Store::open(&root)?;
             render::permissions(&store)
         }
+        Command::Enforce(command) => enforce::run(&root, command),
         Command::Store(StoreCommand::Status) => {
             let store = Store::open(&root)?;
             render::store_status(&store)

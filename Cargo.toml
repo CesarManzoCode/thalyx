@@ -4,6 +4,7 @@ members = [
     "crates/thalyx-manifest",
     "crates/thalyx-parser",
     "crates/thalyx-contract",
+    "crates/thalyx-permd",
     "crates/thalyx-graph",
     "crates/thalyx-journal",
     "crates/thalyx-core",
@@ -21,6 +22,7 @@ repository = "https://github.com/CesarManzoCode/thalyx"
 thalyx-manifest = { path = "crates/thalyx-manifest" }
 thalyx-parser = { path = "crates/thalyx-parser" }
 thalyx-contract = { path = "crates/thalyx-contract" }
+thalyx-permd = { path = "crates/thalyx-permd" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }

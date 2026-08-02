@@ -17,6 +17,7 @@ thalyx-journal.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
 thalyx-contract.workspace = true
+thalyx-permd.workspace = true
 clap.workspace = true
 sha2.workspace = true
 hex.workspace = true

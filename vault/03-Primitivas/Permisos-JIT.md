@@ -95,6 +95,14 @@ Esa última línea es la que importa tanto como la denegación: una política qu
 
 **Esta es la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Las otras tres siguen siendo diseño.
 
+### Regla que apareció al conectar el núcleo con el kernel
+
+**Un permiso que el kernel no puede expresar se rechaza, nunca se descarta en silencio.**
+
+Si una concesión no se puede traducir a algo que el LSM sepa aplicar, la traducción falla y quien la pidió tiene que enfrentarlo. La alternativa —traducir lo que encaja y descartar el resto— dejaría al humano habiendo confirmado por el camino confiable un permiso que nada aplica. Una promesa que el sistema no puede cumplir es peor que una negativa, porque solo una de las dos es visible.
+
+Por la misma razón, una concesión con varios permisos donde uno no es expresable **no se aplica parcialmente**: el módulo correría con un subconjunto que al usuario nunca se le mostró.
+
 ## Origen de esta distinción
 
 Esta distinción de tres tipos no estaba en el diseño original — surgió al trazar el [[Caso-Instalar-Modulo|caso concreto de instalar un módulo]], cuando se descubrió que un permiso persistente (acceso a red, sin expiración) no encajaba en el modelo original de "JIT de 30 segundos". Es un ejemplo de por qué trazar casos concretos revela huecos que el diseño abstracto no muestra.
