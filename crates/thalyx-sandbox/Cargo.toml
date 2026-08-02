@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 thalyx-manifest.workspace = true
 thalyx-permd.workspace = true
+thalyx-syscall.workspace = true
+libc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -889,10 +889,19 @@ dependencies = [
 name = "thalyx-sandbox"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "tempfile",
  "thalyx-manifest",
  "thalyx-permd",
+ "thalyx-syscall",
  "thiserror",
+]
+
+[[package]]
+name = "thalyx-syscall"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

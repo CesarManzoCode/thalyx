@@ -32,19 +32,35 @@
 //! its directory would silently become the policy of whatever cgroup is
 //! created next. **The policy is withdrawn before the cgroup is removed.**
 //!
-//! ## What is not here yet
+//! ## The `module_standard` profile
 //!
-//! The `module_standard` profile decrees namespaces, a seccomp allowlist and
-//! cgroup resource limits. None of those are implemented. This crate delivers
-//! the identity and the launch ordering the kernel policy hangs on, and
-//! nothing more — a module launched through it is contained by `thalyx-lsm`
-//! and by nothing else.
+//! On top of the cgroup, a confined module gets what
+//! `vault/04-Flujo-Canonico/Sandbox-Ejecucion.md` decrees: mount, PID, IPC and
+//! UTS namespaces, an empty network namespace unless it was granted outbound
+//! network, a seccomp allowlist, and cgroup resource limits. See [`profile`].
+//!
+//! ## What is still not here
+//!
+//! **The user namespace.** The decree names it and this does not implement it,
+//! because doing it usefully means deciding which uid a module runs as and who
+//! owns the files in the module store — a policy question, not an
+//! implementation one. A user namespace that mapped root to root would satisfy
+//! the letter of the decree and isolate nothing, and this project does not
+//! ship theatre and call it protection.
+//!
+//! A module today therefore still runs as the uid Thalyx runs as. Everything
+//! else in the profile holds.
 
 pub mod cgroup;
 pub mod launch;
+pub mod limits;
+pub mod profile;
+pub mod seccomp;
 
 pub use cgroup::Cgroup;
-pub use launch::{EnterRequest, enter_and_exec, parse_enter};
+pub use launch::{Stage, parse_stage, run_stage};
+pub use limits::Limits;
+pub use profile::Profile;
 
 use std::path::{Path, PathBuf};
 use thalyx_manifest::Permission;
@@ -102,6 +118,58 @@ pub enum SandboxError {
         source: std::io::Error,
     },
 
+    #[error("`{0}` is not a sandbox profile Thalyx knows")]
+    UnknownProfile(String),
+
+    #[error(
+        "could not detach into the namespaces `{profile}` requires: {source}\n  \
+         Refusing to run the module: it would be isolated by less than the profile says."
+    )]
+    NamespacesUnavailable {
+        profile: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not {what}: {source}")]
+    MountFailed {
+        what: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not set the hostname inside the UTS namespace: {source}")]
+    HostnameNotSet {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(transparent)]
+    Seccomp(#[from] crate::seccomp::SeccompError),
+
+    #[error(
+        "`{cgroup}` cannot hand down the controller(s) {missing:?} that this profile needs.\n  \
+         It has: {available:?}\n  \
+         Without them the limits would not apply, and the module would look bounded and not be."
+    )]
+    ControllersUnavailable {
+        cgroup: PathBuf,
+        missing: Vec<String>,
+        available: Vec<String>,
+    },
+
+    #[error(
+        "could not set {limit}={value} on `{cgroup}`: {source}\n  \
+         Refusing to run the module unbounded."
+    )]
+    LimitNotApplied {
+        limit: String,
+        value: String,
+        cgroup: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Permd(#[from] thalyx_permd::PermdError),
 }
@@ -126,6 +194,7 @@ pub struct Confinement<'a> {
     policy_store: &'a dyn PolicyStore,
     cgroup_id: u64,
     applied: thalyx_permd::Policy,
+    profile: Profile,
 }
 
 impl<'a> Confinement<'a> {
@@ -144,12 +213,30 @@ impl<'a> Confinement<'a> {
         policy_store: &'a dyn PolicyStore,
         parent: &Path,
         name: &str,
+        profile: Profile,
         permissions: &[Permission],
         now_ns: u64,
         jit_lifetime_ns: u64,
     ) -> Result<Self> {
+        let profile = profile.for_permissions(permissions);
+
+        // Before the cgroup exists, so a parent that cannot hand down what the
+        // profile needs fails without leaving anything behind.
+        limits::delegate(parent, &profile.limits.controllers())?;
+
         let cgroup = Cgroup::ensure(parent, name)?;
         let cgroup_id = cgroup.id()?;
+
+        // Limits go on before the policy and long before anything joins. A
+        // module is never briefly unbounded, and a limit that will not apply
+        // is discovered while there is still nothing to clean up but an empty
+        // cgroup.
+        if let Err(error) = profile.limits.apply(cgroup.path()) {
+            if cgroup.is_empty().unwrap_or(false) {
+                let _ = cgroup.remove();
+            }
+            return Err(error);
+        }
 
         let applied = match thalyx_permd::apply(
             policy_store,
@@ -174,6 +261,7 @@ impl<'a> Confinement<'a> {
             policy_store,
             cgroup_id,
             applied,
+            profile,
         })
     }
 
@@ -190,6 +278,11 @@ impl<'a> Confinement<'a> {
         self.applied
     }
 
+    /// The profile in force, after it was adjusted for what was granted.
+    pub fn profile(&self) -> &Profile {
+        &self.profile
+    }
+
     /// Start a module inside this confinement.
     pub fn spawn(
         &self,
@@ -197,7 +290,7 @@ impl<'a> Confinement<'a> {
         program: &Path,
         args: &[std::ffi::OsString],
     ) -> Result<std::process::Child> {
-        launch::spawn(helper, &self.cgroup, program, args)
+        launch::spawn(helper, &self.cgroup, &self.profile, program, args)
     }
 
     /// Withdraw the policy and remove the cgroup, in that order.
@@ -259,6 +352,7 @@ mod tests {
             &store,
             &parent,
             "org.thalyx.demo",
+            crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
             &[permission("net", "outbound")],
             0,
             0,
@@ -289,6 +383,7 @@ mod tests {
             &store,
             &parent,
             "org.thalyx.demo",
+            crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
             &[permission("net", "outbound"), permission("camera", "read")],
             0,
             0,
@@ -315,6 +410,7 @@ mod tests {
             &store,
             &parent,
             "org.thalyx.demo",
+            crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
             &[permission("net", "outbound")],
             0,
             0,

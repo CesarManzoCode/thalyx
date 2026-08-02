@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use thalyx_manifest::{Permission, PermissionKind};
 use thalyx_permd::{MemoryStore, PolicyStore};
-use thalyx_sandbox::{Cgroup, Confinement, cgroup};
+use thalyx_sandbox::{Cgroup, Confinement, cgroup, profile};
 
 /// A scratch cgroup to create children under, or a reason there is none.
 struct Arena(PathBuf);
@@ -142,6 +142,7 @@ fn a_confinement_is_released_only_once_it_is_empty() {
         &policies,
         &arena.0,
         "org.thalyx.demo",
+        profile::resolve(profile::DIAGNOSTIC).unwrap(),
         &[permission("net", "outbound")],
         0,
         0,
@@ -163,6 +164,7 @@ fn a_confinement_is_released_only_once_it_is_empty() {
             &policies,
             &arena.0,
             "org.thalyx.demo",
+            profile::resolve(profile::DIAGNOSTIC).unwrap(),
             &[permission("net", "outbound")],
             0,
             0,
@@ -207,4 +209,40 @@ fn reusing_a_module_cgroup_keeps_the_same_identity() {
 fn inode(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).expect("metadata").ino()
+}
+
+#[test]
+fn resource_limits_are_written_where_the_kernel_reads_them() {
+    // Needs the controllers delegated, which a container often does not have.
+    // Where they are missing this reports NOT PROVEN rather than passing: the
+    // whole point of the limit is that it is really there.
+    let Some(arena) = arena("limits") else { return };
+
+    let needed = ["memory", "pids"];
+    if let Err(error) = thalyx_sandbox::limits::delegate(&arena.0, &needed) {
+        eprintln!("NOT PROVEN: this cgroup2 mount cannot hand down {needed:?}");
+        eprintln!("  {error}");
+        eprintln!("  Resource limits were not exercised. This test did not pass.");
+        assert!(
+            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+            "{error}"
+        );
+        return;
+    }
+
+    let cgroup = Cgroup::ensure(&arena.0, "org.thalyx.demo").expect("create");
+    let limits = thalyx_sandbox::Limits {
+        memory_max: Some(64 << 20),
+        pids_max: Some(32),
+        cpu_max: None,
+    };
+    limits.apply(cgroup.path()).expect("apply");
+
+    // Read back through the kernel, not through our own struct.
+    let memory = std::fs::read_to_string(cgroup.path().join("memory.max")).unwrap();
+    assert_eq!(memory.trim(), (64 << 20).to_string());
+    let pids = std::fs::read_to_string(cgroup.path().join("pids.max")).unwrap();
+    assert_eq!(pids.trim(), "32");
+
+    cgroup.remove().expect("remove");
 }

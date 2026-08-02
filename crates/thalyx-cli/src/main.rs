@@ -82,6 +82,9 @@ enum ModuleCommand {
     /// Run an installed module under the permissions it was granted
     Run {
         module_id: String,
+        /// Sandbox profile to confine it with
+        #[arg(long, default_value = thalyx_sandbox::profile::MODULE_STANDARD)]
+        profile: String,
         /// Which of the module's declared entrypoints to start
         #[arg(long, default_value = thalyx_core::run::DEFAULT_ENTRYPOINT)]
         entrypoint: String,
@@ -111,12 +114,17 @@ fn main() -> ExitCode {
     // `thalyx_sandbox::launch`. It has to be recognised positionally, ahead of
     // anything that could interpret the module's own arguments, and it has no
     // business appearing in `--help`.
-    if let Some(request) = thalyx_sandbox::parse_enter(std::env::args_os()) {
-        // Only returns on failure. Failing here means the module does not run
-        // at all, which is the point: running it outside its cgroup would
-        // leave it unconfined.
-        eprintln!("thalyx: {}", thalyx_sandbox::enter_and_exec(&request));
-        return ExitCode::FAILURE;
+    if let Some(stage) = thalyx_sandbox::parse_stage(std::env::args_os()) {
+        return match thalyx_sandbox::run_stage(&stage) {
+            Ok(code) => ExitCode::from(code),
+            // Failing here means the module does not run at all, which is the
+            // point: running it less confined than the profile says would be
+            // the outcome the whole mechanism exists to prevent.
+            Err(error) => {
+                eprintln!("thalyx: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
 
     let cli = Cli::parse();
@@ -232,12 +240,14 @@ fn run_module(
         }
         ModuleCommand::Run {
             module_id,
+            profile,
             entrypoint,
             unconfined,
             args,
         } => run::run(
             root,
             &module_id,
+            &profile,
             &entrypoint,
             args,
             unconfined,

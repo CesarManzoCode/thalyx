@@ -1,0 +1,27 @@
+[package]
+name = "thalyx-syscall"
+description = "The only crate in Thalyx that contains unsafe code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+
+# NOT `[lints] workspace = true`, on purpose.
+#
+# Every other crate in this workspace inherits `unsafe_code = "forbid"`, and
+# that stays true. Isolation needs syscalls the standard library does not wrap —
+# `unshare`, `mount`, `seccomp` — so the unsafe has to live somewhere. It lives
+# here, in one crate, small enough to read in a sitting and audit on its own.
+#
+# `deny` rather than `forbid` so a block can be allowed explicitly. Each one
+# carries a SAFETY comment saying why it is sound. A crate that had to argue
+# that for a hundred call sites would not be auditable; this one has a dozen.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

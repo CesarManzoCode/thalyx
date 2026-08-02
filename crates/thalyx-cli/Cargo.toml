@@ -28,6 +28,7 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
 
 [lints]

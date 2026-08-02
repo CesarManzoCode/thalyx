@@ -5,6 +5,7 @@ members = [
     "crates/thalyx-parser",
     "crates/thalyx-contract",
     "crates/thalyx-permd",
+    "crates/thalyx-syscall",
     "crates/thalyx-sandbox",
     "crates/thalyx-graph",
     "crates/thalyx-journal",
@@ -25,6 +26,7 @@ thalyx-parser = { path = "crates/thalyx-parser" }
 thalyx-contract = { path = "crates/thalyx-contract" }
 thalyx-permd = { path = "crates/thalyx-permd" }
 thalyx-sandbox = { path = "crates/thalyx-sandbox" }
+thalyx-syscall = { path = "crates/thalyx-syscall" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }
@@ -46,6 +48,7 @@ tempfile = "3"
 semver = "1"
 rusqlite = "0.37"
 walkdir = "2"
+libc = "0.2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [workspace.lints.rust]

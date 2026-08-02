@@ -47,6 +47,12 @@ pub struct RunRequest<'a> {
     pub helper: PathBuf,
     pub request_id: String,
     pub origin: Origin,
+    /// The sandbox profile to run under.
+    ///
+    /// Named by the caller rather than read from the module: a module choosing
+    /// its own isolation is a module choosing not to be isolated. See
+    /// `vault/04-Flujo-Canonico/Sandbox-Ejecucion.md`.
+    pub profile: &'a str,
     /// Run even though nothing can enforce the module's permissions.
     ///
     /// Exists so that the state can be reached deliberately and named in the
@@ -62,6 +68,11 @@ pub struct RunOutcome {
     /// `None` when the module ran unconfined.
     pub cgroup_id: Option<u64>,
     pub policy: Option<thalyx_permd::Policy>,
+    /// How the module was isolated, as it ended up after the grant-dependent
+    /// adjustments. `None` when it ran unconfined.
+    pub isolation: Option<String>,
+    /// Whether the profile in force actually isolated anything.
+    pub isolated: bool,
     pub permissions: Vec<thalyx_manifest::Permission>,
     pub exit_code: Option<i32>,
 }
@@ -94,6 +105,9 @@ pub fn run(
                 ),
                 None => "RAN UNCONFINED: no kernel policy was in force".to_string(),
             });
+            if let Some(isolation) = &outcome.isolation {
+                notes.push(isolation.clone());
+            }
 
             journal.append(&Entry {
                 timestamp: thalyx_journal::now(),
@@ -102,13 +116,18 @@ pub fn run(
                 version: Some(outcome.version.clone()),
                 // The module having exited non-zero is the module's business.
                 // What succeeded or failed here is Thalyx's part: launching it
-                // under the policy it was granted.
-                outcome: if outcome.confined() {
-                    Outcome::Success
-                } else {
-                    Outcome::Degraded {
+                // under the policy it was granted, with the isolation the
+                // profile promised. Anything less is degraded and says so —
+                // a run nobody can tell apart from a confined one is the
+                // failure this project keeps arranging against.
+                outcome: match (outcome.confined(), outcome.isolated) {
+                    (true, true) => Outcome::Success,
+                    (true, false) => Outcome::Degraded {
+                        reason: "ran under a profile that isolates nothing".to_string(),
+                    },
+                    (false, _) => Outcome::Degraded {
                         reason: "ran without kernel enforcement".to_string(),
-                    }
+                    },
                 },
                 request_id: request.request_id.clone(),
                 origin: request.origin,
@@ -185,10 +204,12 @@ fn run_inner(
     }
 
     let parent = thalyx_sandbox::cgroup::parent()?;
+    let profile = thalyx_sandbox::profile::resolve(request.profile)?;
     let confinement = Confinement::establish(
         policies,
         &parent,
         &manifest.id,
+        profile,
         &permissions,
         thalyx_permd::boot_ns(),
         thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
@@ -196,6 +217,8 @@ fn run_inner(
 
     let cgroup_id = confinement.cgroup_id();
     let policy = confinement.policy();
+    let isolation = confinement.profile().describe();
+    let isolated = confinement.profile().isolates();
 
     let mut child = confinement.spawn(&request.helper, &program, &request.args)?;
     let status = child
@@ -213,6 +236,8 @@ fn run_inner(
         program,
         cgroup_id: Some(cgroup_id),
         policy: Some(policy),
+        isolation: Some(isolation),
+        isolated,
         permissions,
         exit_code: status.code(),
     })
@@ -236,6 +261,8 @@ fn run_unconfined(
         program: program.to_path_buf(),
         cgroup_id: None,
         policy: None,
+        isolation: None,
+        isolated: false,
         permissions,
         exit_code: status.code(),
     })

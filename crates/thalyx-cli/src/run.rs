@@ -14,6 +14,7 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 pub fn run(
     root: &std::path::Path,
     module_id: &str,
+    profile: &str,
     entrypoint: &str,
     args: Vec<OsString>,
     unconfined: bool,
@@ -32,6 +33,7 @@ pub fn run(
         &policies,
         thalyx_core::RunRequest {
             module_id,
+            profile,
             entrypoint,
             args,
             helper,
@@ -48,11 +50,19 @@ pub fn run(
     match (outcome.cgroup_id, outcome.policy) {
         (Some(id), Some(policy)) => {
             println!("  confined to cgroup {id}, allowed=0x{:x}", policy.allowed);
+            if let Some(isolation) = &outcome.isolation {
+                println!("  {isolation}");
+            }
             for permission in &outcome.permissions {
                 println!("    {}", permission.describe());
             }
             if outcome.permissions.is_empty() {
                 println!("    (no permissions; every guarded operation is denied)");
+            }
+            if !outcome.isolated {
+                println!();
+                println!("  WARNING: this profile isolates nothing beyond the cgroup.");
+                println!("  The journal records this run as degraded.");
             }
         }
         _ => {
