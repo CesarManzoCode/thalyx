@@ -119,7 +119,8 @@ pub fn install(
                 | CoreError::RuntimeTooOld { .. }
                 | CoreError::SourceDistributionUnsupported { .. }
                 | CoreError::UnsafeArchivePath { .. }
-                | CoreError::UnsafeArchiveEntry { .. } => Outcome::NotCommitted {
+                | CoreError::UnsafeArchiveEntry { .. }
+                | CoreError::ReservedArchivePath { .. } => Outcome::NotCommitted {
                     reason: error.to_string(),
                 },
                 _ => Outcome::Rejected {
@@ -246,6 +247,19 @@ fn install_inner(
         }
     };
 
+    // The manifest travels with the module.
+    //
+    // Written into staging, so the same `rename` that publishes the files
+    // publishes the record of what they are: there is no ordering in which a
+    // version exists without its manifest. The runtime needs it to know the
+    // module's entrypoint, and the signature is kept alongside so that the
+    // record can be checked again later against the pinned publisher key
+    // rather than believed because it is on our own disk.
+    if let Err(error) = write_record(&staging, &bundle) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
     fault::checkpoint(FaultPoint::PostStage)?;
 
     let replaced = store.installed_version(&manifest.id);
@@ -315,6 +329,73 @@ fn install_inner(
         files,
         granted: pending.permissions().len(),
     })
+}
+
+/// Write Thalyx's own record into a staged module tree.
+fn write_record(staging: &Path, bundle: &Bundle) -> Result<()> {
+    let reserved = staging.join(bundle::RESERVED_DIR);
+    std::fs::create_dir_all(&reserved).map_err(|e| CoreError::io(&reserved, e))?;
+
+    let manifest_path = reserved.join(bundle::MANIFEST_MEMBER);
+    std::fs::write(&manifest_path, &bundle.manifest_source)
+        .map_err(|e| CoreError::io(&manifest_path, e))?;
+
+    let signature_path = reserved.join(bundle::SIGNATURE_MEMBER);
+    std::fs::write(&signature_path, &bundle.signature_source)
+        .map_err(|e| CoreError::io(&signature_path, e))?;
+
+    Ok(())
+}
+
+/// The manifest of the version of a module that is currently installed.
+///
+/// Re-verified on every read, against the key pinned for that id, rather than
+/// trusted because it came off our own disk. The threat model does not grant
+/// the store integrity — an attacker who can write to it could otherwise widen
+/// a module's declared permissions or point its entrypoint elsewhere, and
+/// nothing downstream would notice.
+pub fn installed_manifest(store: &Store, module_id: &str) -> Result<Manifest> {
+    let version = store
+        .installed_version(module_id)
+        .ok_or_else(|| CoreError::NotInstalled {
+            module_id: module_id.to_string(),
+        })?;
+
+    let unavailable = |reason: String| CoreError::ManifestUnavailable {
+        module_id: module_id.to_string(),
+        reason,
+    };
+
+    let manifest_path = store.manifest_path(module_id, &version);
+    let source = std::fs::read_to_string(&manifest_path).map_err(|e| unavailable(e.to_string()))?;
+    let manifest = Manifest::parse(&source)?;
+
+    let signature_path = store.manifest_signature_path(module_id, &version);
+    let signature_source =
+        std::fs::read_to_string(&signature_path).map_err(|e| unavailable(e.to_string()))?;
+    let signature = thalyx_manifest::Signature::parse(&signature_source)
+        .map_err(|e| unavailable(e.to_string()))?;
+
+    manifest
+        .verify_signature(&signature)
+        .map_err(|_| CoreError::SignatureRejected {
+            module_id: module_id.to_string(),
+        })?;
+
+    // The signature only says *someone* vouched for these bytes. The keystore
+    // says which someone was accepted for this id, and that is the check that
+    // makes re-verification worth anything.
+    let keystore = Keystore::load(store.keystore_path())?;
+    keystore.check(&manifest.id, &manifest.publisher_key)?;
+
+    if manifest.id != module_id || manifest.version != version {
+        return Err(unavailable(format!(
+            "stored manifest describes `{}` {}, not `{module_id}` {version}",
+            manifest.id, manifest.version
+        )));
+    }
+
+    Ok(manifest)
 }
 
 /// Remove a module and revoke everything it held.

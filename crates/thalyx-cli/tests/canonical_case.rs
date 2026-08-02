@@ -247,3 +247,67 @@ fn the_journal_states_its_own_scope() {
             .contains("not a complete record of what happened to the system")
     );
 }
+
+#[test]
+fn the_manifest_is_kept_with_the_module_and_re_verified_on_every_read() {
+    let fixture = Fixture::new();
+    assert!(fixture.install().success());
+
+    let store = fixture.store();
+    let manifest = thalyx_core::installed_manifest(&store, Fixture::MODULE_ID).expect("manifest");
+
+    assert_eq!(manifest.id, Fixture::MODULE_ID);
+    assert_eq!(manifest.version, Fixture::VERSION);
+    assert_eq!(
+        manifest.entrypoints.get("run").map(String::as_str),
+        Some("bin/demo")
+    );
+}
+
+#[test]
+fn a_tampered_stored_manifest_is_refused_rather_than_believed() {
+    // The store is on our own disk, which is not the same as trustworthy. An
+    // attacker who can write there could widen a module's declared permissions
+    // or point its entrypoint at something else; re-verifying against the
+    // pinned publisher key is what makes that visible instead of silent.
+    let fixture = Fixture::new();
+    assert!(fixture.install().success());
+
+    let store = fixture.store();
+    let path = store.manifest_path(Fixture::MODULE_ID, Fixture::VERSION);
+    let source = std::fs::read_to_string(&path).unwrap();
+    let forged = source.replace(r#"run = "bin/demo""#, r#"run = "bin/sh""#);
+    assert_ne!(forged, source, "the test did not actually change anything");
+    std::fs::write(&path, forged).unwrap();
+
+    let result = thalyx_core::installed_manifest(&store, Fixture::MODULE_ID);
+    assert!(
+        matches!(
+            result,
+            Err(thalyx_core::CoreError::SignatureRejected { .. })
+        ),
+        "expected the forged manifest to be refused, got {result:?}"
+    );
+}
+
+#[test]
+fn a_module_cannot_ship_its_own_copy_of_the_reserved_directory() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.base().join("payload/.thalyx")).unwrap();
+    std::fs::write(
+        fixture.base().join("payload/.thalyx/manifest.toml"),
+        "id = \"whatever.i.want\"\n",
+    )
+    .unwrap();
+
+    let bundle = fixture.build_bundle("2.0.0");
+    let status = fixture.install_bundle_at(&bundle);
+
+    assert!(!status.success());
+    assert!(
+        status.stderr().contains("reserved"),
+        "expected a reserved-path refusal, got: {}",
+        status.stderr()
+    );
+    assert!(!fixture.store().is_installed(Fixture::MODULE_ID));
+}

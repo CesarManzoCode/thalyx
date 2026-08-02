@@ -22,11 +22,28 @@ pub const MANIFEST_MEMBER: &str = "manifest.toml";
 pub const SIGNATURE_MEMBER: &str = "manifest.sig";
 pub const ARTIFACT_MEMBER: &str = "artifact.tar.gz";
 
+/// Directory inside an installed module reserved for Thalyx's own records.
+///
+/// The manifest is kept there, alongside the files the module shipped. An
+/// artifact that tried to write into it could replace the record of what the
+/// module was allowed to do with one of its own choosing, so entries under this
+/// name are refused rather than overwritten.
+pub const RESERVED_DIR: &str = ".thalyx";
+
 /// A bundle read into memory, not yet trusted in any way.
 pub struct Bundle {
     pub manifest: Manifest,
     pub signature: Signature,
     pub artifact: Vec<u8>,
+    /// The manifest exactly as it arrived.
+    ///
+    /// Kept verbatim rather than re-serialised from [`Bundle::manifest`], so
+    /// that the stored copy is still the bytes the signature covers. A
+    /// round-trip through a serialiser would produce something equivalent to a
+    /// reader and unverifiable to a verifier.
+    pub manifest_source: String,
+    /// The detached signature, likewise verbatim.
+    pub signature_source: String,
 }
 
 impl Bundle {
@@ -82,6 +99,8 @@ impl Bundle {
             manifest,
             signature,
             artifact,
+            manifest_source: manifest_src,
+            signature_source: signature_src,
         })
     }
 }
@@ -153,12 +172,16 @@ pub fn unpack_artifact(artifact: &[u8], destination: &Path) -> Result<Vec<String
     Ok(written)
 }
 
-/// Reject absolute paths, `..` traversal, and anything with a root or prefix.
+/// Reject absolute paths, `..` traversal, anything with a root or prefix, and
+/// anything that would land in Thalyx's own reserved directory.
 fn check_contained(path: &Path) -> Result<()> {
     let display = path.to_string_lossy().into_owned();
     if path.is_absolute() {
         return Err(CoreError::UnsafeArchivePath { path: display });
     }
+    let mut normal = path
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir));
     for component in path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
@@ -166,6 +189,17 @@ fn check_contained(path: &Path) -> Result<()> {
                 return Err(CoreError::UnsafeArchivePath { path: display });
             }
         }
+    }
+    // Staying inside the tree is not enough: the reserved directory is inside
+    // it, and that is where the record of what this module may do is kept.
+    if normal
+        .next()
+        .is_some_and(|first| first.as_os_str() == RESERVED_DIR)
+    {
+        return Err(CoreError::ReservedArchivePath {
+            path: display,
+            reserved: RESERVED_DIR.to_string(),
+        });
     }
     Ok(())
 }
@@ -293,6 +327,34 @@ mod tests {
             unpack_artifact(&artifact, dir.path()),
             Err(CoreError::UnsafeArchiveEntry { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_entries_that_write_into_the_reserved_directory() {
+        // Contained, well-formed, and still refused: this is where the record
+        // of what the module may do is kept, so a module that could write
+        // there could rewrite its own permissions and entrypoint.
+        let dir = tempfile::tempdir().unwrap();
+        for name in [".thalyx/manifest.toml", ".thalyx/anything", "./.thalyx/x"] {
+            let artifact = tar_gz_with(&[(name, b"forged")]);
+            assert!(
+                matches!(
+                    unpack_artifact(&artifact, dir.path()),
+                    Err(CoreError::ReservedArchivePath { .. })
+                ),
+                "`{name}` should be refused as reserved"
+            );
+        }
+        assert!(!dir.path().join(RESERVED_DIR).exists());
+    }
+
+    #[test]
+    fn a_reserved_name_deeper_in_the_tree_is_fine() {
+        // Only the top level is reserved. Refusing the name everywhere would
+        // be a rule the module author cannot predict from anything visible.
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = tar_gz_with(&[("data/.thalyx/notes", b"harmless")]);
+        assert!(unpack_artifact(&artifact, dir.path()).is_ok());
     }
 
     #[test]

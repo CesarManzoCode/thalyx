@@ -8,11 +8,12 @@
 //!
 //! ```text
 //! <root>/
-//!   .staging/<uuid>/          build area, same subvolume as modules/
-//!   modules/<id>/<version>/   published versions
-//!   modules/<id>/current      symlink -> <version>
-//!   state/keys.json           pinned publisher keys
-//!   state/permissions.json    granted permissions
+//!   .staging/<uuid>/                     build area, same subvolume as modules/
+//!   modules/<id>/<version>/              published versions
+//!   modules/<id>/<version>/.thalyx/      Thalyx's record, not the module's files
+//!   modules/<id>/current                 symlink -> <version>
+//!   state/keys.json                      pinned publisher keys
+//!   state/permissions.json               granted permissions
 //!   journal.jsonl
 //! ```
 //!
@@ -80,6 +81,35 @@ impl Store {
     /// pointed at is an interrupted commit, not an installation.
     pub fn current_link(&self, id: &str) -> PathBuf {
         self.module_root(id).join("current")
+    }
+
+    /// Thalyx's own directory inside a module tree.
+    ///
+    /// Written by the core during staging, so it is published by the same
+    /// `rename` as the module's files. There is no moment at which a version
+    /// directory exists without its record — which is what lets the runtime
+    /// treat a missing manifest as corruption rather than as a normal state.
+    pub fn reserved_dir(&self, id: &str, version: &str) -> PathBuf {
+        self.version_dir(id, version)
+            .join(crate::bundle::RESERVED_DIR)
+    }
+
+    /// The manifest as it arrived, kept beside the module it describes.
+    pub fn manifest_path(&self, id: &str, version: &str) -> PathBuf {
+        self.reserved_dir(id, version)
+            .join(crate::bundle::MANIFEST_MEMBER)
+    }
+
+    /// The detached signature over that manifest.
+    pub fn manifest_signature_path(&self, id: &str, version: &str) -> PathBuf {
+        self.reserved_dir(id, version)
+            .join(crate::bundle::SIGNATURE_MEMBER)
+    }
+
+    /// The directory of the version currently published, if any.
+    pub fn current_dir(&self, id: &str) -> Option<PathBuf> {
+        self.installed_version(id)
+            .map(|version| self.version_dir(id, &version))
     }
 
     /// A fresh staging directory, in the same subvolume as the destination.

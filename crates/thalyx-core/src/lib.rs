@@ -18,7 +18,7 @@ pub mod reconcile;
 pub mod store;
 pub mod trusted_path;
 
-pub use install::{InstallOutcome, InstallRequest, install, remove};
+pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
 pub use store::Store;
 
 /// The permissions a module actually holds right now.
@@ -112,6 +112,19 @@ pub enum CoreError {
 
     #[error("archive entry `{path}` escapes the module tree")]
     UnsafeArchivePath { path: String },
+
+    #[error(
+        "archive entry `{path}` writes into `{reserved}/`, which is reserved for Thalyx's own \
+         record of the module.\n  \
+         A module that could write there could rewrite what it is allowed to do."
+    )]
+    ReservedArchivePath { path: String, reserved: String },
+
+    #[error(
+        "`{module_id}` is installed but its stored manifest is missing or unreadable: {reason}.\n  \
+         Reinstall it; there is no way to know what it was allowed to do without it."
+    )]
+    ManifestUnavailable { module_id: String, reason: String },
 
     #[error("archive entry `{path}` is a {kind}; only regular files and directories are accepted")]
     UnsafeArchiveEntry { path: String, kind: String },

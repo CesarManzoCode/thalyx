@@ -12,7 +12,7 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use thalyx_core::Store;
 use thalyx_core::permissions::Registry;
-use thalyx_permd::{BpftoolStore, PolicyStore};
+use thalyx_permd::BpftoolStore;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 

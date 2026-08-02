@@ -180,6 +180,10 @@ run = "bin/demo"
         self.install_bundle(bundle, Some(point))
     }
 
+    pub fn install_bundle_at(&self, bundle: &Path) -> RunStatus {
+        self.install_bundle(bundle, None)
+    }
+
     fn install_bundle(&self, bundle: &Path, fault: Option<FaultPoint>) -> RunStatus {
         let mut command = Command::new(binary());
         command

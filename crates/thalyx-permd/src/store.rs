@@ -8,7 +8,7 @@
 
 use crate::Policy;
 use crate::encoding::{as_hex_args, cgroup_key_bytes, policy_bytes};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
@@ -202,11 +202,6 @@ impl PolicyStore for MemoryStore {
             .get(&cgroup)
             .copied())
     }
-}
-
-/// Where the LSM pins its policy map, for callers that want to check first.
-pub fn default_map_path() -> &'static Path {
-    Path::new(BpftoolStore::DEFAULT_MAP)
 }
 
 #[cfg(test)]
