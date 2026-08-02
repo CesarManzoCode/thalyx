@@ -43,6 +43,30 @@ pub const NET_OUTBOUND: u32 = 1 << 0;
 pub const FS_READ: u32 = 1 << 1;
 pub const FS_WRITE: u32 = 1 << 2;
 
+/// How long a JIT grant lasts before the kernel stops honouring it.
+pub const DEFAULT_JIT_LIFETIME_NS: u64 = 30 * 1_000_000_000;
+
+/// Boot-relative nanoseconds, matching `bpf_ktime_get_boot_ns()` in the LSM.
+///
+/// Read from `/proc/uptime` rather than a wall clock. The kernel compares
+/// expiries against its own boot-relative clock, and a wall clock drifts from
+/// it across suspend — silently extending or cutting short every JIT grant.
+///
+/// Every caller uses this one function, so the deadline written into the map is
+/// always on the same clock as the comparison that enforces it.
+pub fn boot_ns() -> u64 {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .split_whitespace()
+                .next()
+                .and_then(|seconds| seconds.parse::<f64>().ok())
+        })
+        .map(|seconds| (seconds * 1_000_000_000.0) as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PermdError {
     #[error(

@@ -8,8 +8,10 @@ mod dev;
 mod enforce;
 mod graph;
 mod render;
+mod run;
 
 use clap::{Parser, Subcommand};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use thalyx_contract::{Contract, Operation, Origin, Origins};
@@ -77,6 +79,19 @@ enum ModuleCommand {
     List,
     /// Remove a module and revoke its permissions
     Remove { module_id: String },
+    /// Run an installed module under the permissions it was granted
+    Run {
+        module_id: String,
+        /// Which of the module's declared entrypoints to start
+        #[arg(long, default_value = thalyx_core::run::DEFAULT_ENTRYPOINT)]
+        entrypoint: String,
+        /// Run even though nothing can enforce its permissions
+        #[arg(long)]
+        unconfined: bool,
+        /// Arguments passed through to the module
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -90,6 +105,20 @@ enum StoreCommand {
 }
 
 fn main() -> ExitCode {
+    // Checked before any argument parsing, and deliberately not a clap
+    // subcommand. This is the internal re-execution that puts a process into a
+    // module's cgroup before it becomes the module — see
+    // `thalyx_sandbox::launch`. It has to be recognised positionally, ahead of
+    // anything that could interpret the module's own arguments, and it has no
+    // business appearing in `--help`.
+    if let Some(request) = thalyx_sandbox::parse_enter(std::env::args_os()) {
+        // Only returns on failure. Failing here means the module does not run
+        // at all, which is the point: running it outside its cgroup would
+        // leave it unconfined.
+        eprintln!("thalyx: {}", thalyx_sandbox::enter_and_exec(&request));
+        return ExitCode::FAILURE;
+    }
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -201,6 +230,19 @@ fn run_module(
             );
             Ok(())
         }
+        ModuleCommand::Run {
+            module_id,
+            entrypoint,
+            unconfined,
+            args,
+        } => run::run(
+            root,
+            &module_id,
+            &entrypoint,
+            args,
+            unconfined,
+            new_request_id(),
+        ),
         ModuleCommand::List => render::module_list(&store),
         ModuleCommand::Remove { module_id } => {
             let version = thalyx_core::remove(&store, &module_id, &new_request_id())?;

@@ -27,6 +27,16 @@ pub trait PolicyStore {
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError>;
     fn remove(&self, cgroup: u64) -> Result<(), StoreError>;
     fn get(&self, cgroup: u64) -> Result<Option<Policy>, StoreError>;
+
+    /// Whether writing here would actually reach something that enforces.
+    ///
+    /// Callers about to run module code have to ask, because the answer
+    /// decides between confining it and refusing to start it. Defaults to
+    /// `true` for stores that are always writable; [`BpftoolStore`] overrides
+    /// it, since its map only exists while the kernel side is loaded.
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 /// Writes policy through `bpftool`.
@@ -62,18 +72,6 @@ impl BpftoolStore {
     pub fn with_bpftool(mut self, path: impl Into<PathBuf>) -> Self {
         self.bpftool = path.into();
         self
-    }
-
-    /// Whether the map the kernel side pinned is actually there.
-    ///
-    /// Checked through the same privilege the writes use: bpffs is mode 700,
-    /// so an unprivileged existence check reports "missing" for a map that is
-    /// present — the same mistake that once made the tooling read as disarmed
-    /// while it was armed.
-    pub fn is_available(&self) -> bool {
-        self.command(&["map", "show", "pinned", &self.map.to_string_lossy()])
-            .map(|output| output.status.success())
-            .unwrap_or(false)
     }
 
     fn command(&self, args: &[&str]) -> Result<std::process::Output, StoreError> {
@@ -120,6 +118,18 @@ fn running_as_root() -> bool {
 }
 
 impl PolicyStore for BpftoolStore {
+    /// Whether the map the kernel side pinned is actually there.
+    ///
+    /// Checked through the same privilege the writes use: bpffs is mode 700,
+    /// so an unprivileged existence check reports "missing" for a map that is
+    /// present — the same mistake that once made the tooling read as disarmed
+    /// while it was armed.
+    fn is_available(&self) -> bool {
+        self.command(&["map", "show", "pinned", &self.map.to_string_lossy()])
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError> {
         let map = self.map.to_string_lossy().into_owned();
         let key = as_hex_args(&cgroup_key_bytes(cgroup));
@@ -161,14 +171,30 @@ impl PolicyStore for BpftoolStore {
 }
 
 /// An in-memory store, for tests.
-#[derive(Default)]
 pub struct MemoryStore {
     entries: Mutex<std::collections::BTreeMap<u64, Policy>>,
+    available: bool,
 }
 
 impl MemoryStore {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            entries: Mutex::default(),
+            available: true,
+        }
+    }
+
+    /// A store that reports it cannot enforce, so the refusal path can be
+    /// exercised without unloading the kernel side.
+    ///
+    /// Hand-written rather than derived alongside `Default`: a derived
+    /// `Default` would leave `available` false, quietly making every test that
+    /// used it exercise the refusal path instead of the one it named.
+    pub fn unavailable() -> Self {
+        Self {
+            entries: Mutex::default(),
+            available: false,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -180,7 +206,17 @@ impl MemoryStore {
     }
 }
 
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolicyStore for MemoryStore {
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError> {
         self.entries
             .lock()

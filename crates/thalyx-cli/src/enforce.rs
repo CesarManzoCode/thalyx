@@ -12,12 +12,9 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use thalyx_core::Store;
 use thalyx_core::permissions::Registry;
-use thalyx_permd::BpftoolStore;
+use thalyx_permd::{BpftoolStore, PolicyStore};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
-
-/// How long a JIT grant lasts before the kernel stops honouring it.
-const JIT_LIFETIME_NS: u64 = 30 * 1_000_000_000;
 
 #[derive(Subcommand)]
 pub enum EnforceCommand {
@@ -70,7 +67,13 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
                 .collect();
 
             let id = thalyx_permd::cgroup_id(&cgroup)?;
-            let policy = thalyx_permd::apply(&kernel, id, &permissions, now_ns(), JIT_LIFETIME_NS)?;
+            let policy = thalyx_permd::apply(
+                &kernel,
+                id,
+                &permissions,
+                thalyx_permd::boot_ns(),
+                thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
+            )?;
 
             println!("{module_id} → cgroup {id}");
             for permission in &permissions {
@@ -125,9 +128,12 @@ fn status(store: &Store, kernel: &BpftoolStore) -> Fallible {
     }
 
     if recorded > 0 {
-        println!("Recorded permissions are not automatically enforced: each module");
-        println!("needs its cgroup bound to a policy with `thalyx enforce apply`.");
-        println!("Until then the registry is bookkeeping, not protection.");
+        println!("`thalyx module run` establishes a module's confinement itself:");
+        println!("it writes the policy, then launches the module inside the cgroup");
+        println!("that policy is keyed on, and withdraws both when it exits.");
+        println!();
+        println!("`apply` and `revoke` below are for binding a cgroup by hand —");
+        println!("for inspection and for processes Thalyx did not start.");
     }
 
     Ok(())
@@ -138,22 +144,4 @@ fn require_kernel(kernel: &BpftoolStore) -> Fallible {
         return Ok(());
     }
     Err("the kernel policy map is not present; run `make -C lsm load` first".into())
-}
-
-/// Boot-relative nanoseconds, matching `bpf_ktime_get_boot_ns()` in the LSM.
-///
-/// Read from `/proc/uptime` rather than a wall clock: the kernel compares
-/// against its own boot-relative clock, and a wall clock would drift from it
-/// across suspend — silently extending or cutting short every JIT grant.
-fn now_ns() -> u64 {
-    std::fs::read_to_string("/proc/uptime")
-        .ok()
-        .and_then(|contents| {
-            contents
-                .split_whitespace()
-                .next()
-                .and_then(|seconds| seconds.parse::<f64>().ok())
-        })
-        .map(|seconds| (seconds * 1_000_000_000.0) as u64)
-        .unwrap_or(0)
 }

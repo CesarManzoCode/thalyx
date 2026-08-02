@@ -15,10 +15,12 @@ pub mod install;
 pub mod keystore;
 pub mod permissions;
 pub mod reconcile;
+pub mod run;
 pub mod store;
 pub mod trusted_path;
 
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
+pub use run::{RunOutcome, RunRequest, run};
 pub use store::Store;
 
 /// The permissions a module actually holds right now.
@@ -137,6 +139,20 @@ pub enum CoreError {
 
     #[error("the user did not confirm the requested capabilities")]
     ConfirmationDenied,
+
+    #[error(
+        "refusing to run `{module_id}`: the kernel policy map is not loaded, so none of its \
+         {permissions} permission(s) would be enforced.\n  \
+         Load it with `make -C lsm load`, or pass --unconfined to run it anyway and have the \
+         journal say so."
+    )]
+    NothingCanEnforce {
+        module_id: String,
+        permissions: usize,
+    },
+
+    #[error(transparent)]
+    Sandbox(#[from] thalyx_sandbox::SandboxError),
 
     #[error("fault injected at {0:?}")]
     InjectedFault(fault::FaultPoint),

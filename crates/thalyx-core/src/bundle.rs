@@ -165,11 +165,45 @@ pub fn unpack_artifact(artifact: &[u8], destination: &Path) -> Result<Vec<String
         }
         let mut out = std::fs::File::create(&target).map_err(|e| CoreError::io(&target, e))?;
         std::io::copy(&mut entry, &mut out).map_err(|e| CoreError::io(&target, e))?;
+
+        let declared = entry.header().mode().unwrap_or(0o644);
+        set_mode(&target, safe_mode(declared))?;
+
         written.push(display);
     }
 
     written.sort();
     Ok(written)
+}
+
+/// The permission bits an unpacked file is allowed to keep.
+///
+/// The archive's mode has to be honoured at all — without it every entrypoint
+/// installs unrunnable, which is how this was found: by installing a module and
+/// trying to run it.
+///
+/// But it is honoured through a mask, never verbatim. `0o755` drops setuid,
+/// setgid and the sticky bit, and drops write for group and other. A setuid
+/// binary shipped inside a module would be a privilege escalation that walks
+/// straight past every permission the human was asked about — the manifest
+/// would say "read access to /home/user" and the module would be root.
+///
+/// Owner read is forced on: a file the installer cannot read is of no use to
+/// anyone and only makes the module look broken.
+fn safe_mode(declared: u32) -> u32 {
+    (declared & 0o755) | 0o400
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| CoreError::io(path, e))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
 }
 
 /// Reject absolute paths, `..` traversal, anything with a root or prefix, and
@@ -217,15 +251,30 @@ mod tests {
     }
 
     fn tar_gz_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        tar_gz_with_modes(
+            &entries
+                .iter()
+                .map(|(n, c)| (*n, *c, 0o644))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn tar_gz_with_modes(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
-        for (name, contents) in entries {
+        for (name, contents, mode) in entries {
             let mut header = tar::Header::new_gnu();
             header.set_size(contents.len() as u64);
-            header.set_mode(0o644);
+            header.set_mode(*mode);
             header.set_cksum();
             builder.append_data(&mut header, name, *contents).unwrap();
         }
         gzip(&builder.into_inner().unwrap())
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
     /// Build a tar archive by hand, so a hostile entry name can be used.
@@ -355,6 +404,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let artifact = tar_gz_with(&[("data/.thalyx/notes", b"harmless")]);
         assert!(unpack_artifact(&artifact, dir.path()).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_executable_entry_installs_executable() {
+        // Found by installing a module and trying to run it: every file was
+        // being created with the default mode, so no entrypoint could ever be
+        // executed. Every test passed while the system could not run anything.
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = tar_gz_with_modes(&[
+            ("bin/demo", b"#!/bin/sh\n".as_slice(), 0o755),
+            ("README", b"hello".as_slice(), 0o644),
+        ]);
+        unpack_artifact(&artifact, dir.path()).unwrap();
+
+        assert_eq!(mode_of(&dir.path().join("bin/demo")), 0o755);
+        assert_eq!(mode_of(&dir.path().join("README")), 0o644);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_setuid_entry_installs_without_setuid() {
+        // A setuid binary inside a module walks straight past every permission
+        // the human was asked about: the manifest would say "read access to
+        // /home/user" and the module would be root.
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = tar_gz_with_modes(&[
+            ("bin/root", b"".as_slice(), 0o4755),
+            ("bin/sgid", b"".as_slice(), 0o2755),
+            ("bin/sticky", b"".as_slice(), 0o1777),
+        ]);
+        unpack_artifact(&artifact, dir.path()).unwrap();
+
+        assert_eq!(mode_of(&dir.path().join("bin/root")), 0o755);
+        assert_eq!(mode_of(&dir.path().join("bin/sgid")), 0o755);
+        assert_eq!(mode_of(&dir.path().join("bin/sticky")), 0o755);
+    }
+
+    #[test]
+    fn the_mode_mask_keeps_execute_and_drops_everything_dangerous() {
+        assert_eq!(safe_mode(0o755), 0o755);
+        assert_eq!(safe_mode(0o644), 0o644);
+        assert_eq!(safe_mode(0o4755), 0o755, "setuid must not survive");
+        assert_eq!(safe_mode(0o2755), 0o755, "setgid must not survive");
+        assert_eq!(safe_mode(0o1755), 0o755, "the sticky bit must not survive");
+        assert_eq!(safe_mode(0o777), 0o755, "group and other write are dropped");
+        assert_eq!(safe_mode(0o000), 0o400, "owner read is always kept");
     }
 
     #[test]

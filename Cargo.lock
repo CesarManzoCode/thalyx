@@ -794,6 +794,7 @@ dependencies = [
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-permd",
+ "thalyx-sandbox",
  "toml",
 ]
 
@@ -824,6 +825,8 @@ dependencies = [
  "thalyx-contract",
  "thalyx-journal",
  "thalyx-manifest",
+ "thalyx-permd",
+ "thalyx-sandbox",
  "thiserror",
  "uuid",
 ]
@@ -879,6 +882,16 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thalyx-manifest",
+ "thiserror",
+]
+
+[[package]]
+name = "thalyx-sandbox"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thalyx-manifest",
+ "thalyx-permd",
  "thiserror",
 ]
 

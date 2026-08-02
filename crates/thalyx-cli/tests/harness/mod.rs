@@ -288,6 +288,18 @@ run = "bin/demo"
         command.args(["--root"]).arg(self.root()).args(args);
         RunStatus(command.output().expect("command"))
     }
+
+    /// Run with the cgroup hierarchy pointed at a scratch directory, so a test
+    /// never creates cgroups under the name Thalyx uses in production.
+    pub fn run_with_cgroup_root(&self, cgroup_root: &Path, args: &[&str]) -> RunStatus {
+        let mut command = Command::new(binary());
+        command
+            .args(["--root"])
+            .arg(self.root())
+            .args(args)
+            .env(thalyx_sandbox::cgroup::MOUNT_ENV, cgroup_root);
+        RunStatus(command.output().expect("command"))
+    }
 }
 
 fn manifest_source(id: &str, version: &str) -> String {

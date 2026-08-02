@@ -1,0 +1,19 @@
+[package]
+name = "thalyx-sandbox"
+description = "Confined execution of module code: cgroup identity, policy, launch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-manifest.workspace = true
+thalyx-permd.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -5,6 +5,7 @@ members = [
     "crates/thalyx-parser",
     "crates/thalyx-contract",
     "crates/thalyx-permd",
+    "crates/thalyx-sandbox",
     "crates/thalyx-graph",
     "crates/thalyx-journal",
     "crates/thalyx-core",
@@ -23,6 +24,7 @@ thalyx-manifest = { path = "crates/thalyx-manifest" }
 thalyx-parser = { path = "crates/thalyx-parser" }
 thalyx-contract = { path = "crates/thalyx-contract" }
 thalyx-permd = { path = "crates/thalyx-permd" }
+thalyx-sandbox = { path = "crates/thalyx-sandbox" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-core = { path = "crates/thalyx-core" }
