@@ -103,6 +103,28 @@ nada entre arranques. PID 1 monta los tres subvolúmenes; **no los crea**, porqu
 una máquina que se fabrica un store nuevo cada vez que no encuentra el viejo
 nunca podría avisarte de que lo perdió.
 
+**El disco se hace una sola vez, al construir.** `sudo make -C image store` lo
+formatea con Btrfs, crea los tres subvolúmenes e instala el primer módulo
+adentro. Corre en una máquina que tiene btrfs-progs porque **la imagen no lo
+tiene y no puede tenerlo**: lleva un programa. Es la misma forma que el problema
+de `bpftool`, con la misma respuesta — el trabajo se mueve al momento de
+construir, no se mueve un segundo binario a la imagen.
+
+**PID 1 no adivina cuál es el disco.** El parámetro `thalyx.store=` del kernel
+lo nombra. La alternativa —probar `/dev/vda`, luego `/dev/sda`, luego lo que
+parezca— es una heurística que acierta con el disco equivocado exactamente una
+vez, y ese fallo es Thalyx escribiendo su store encima del filesystem de otro.
+Cuando el parámetro no está, eso se reporta como su propio hecho y no como un
+disco ausente.
+
+**Y el subvolumen `modules` no se monta en `/opt/thalyx/modules`.** Se monta en
+`/opt/thalyx/data`. Ponerlo donde su nombre sugiere se lee más ordenado y rompe
+todos los commits atómicos de la máquina: `rename(2)` devuelve `EXDEV` al cruzar
+subvolúmenes de Btrfs, así que el área de staging y su destino tienen que estar
+en el mismo. Es el fallo que [[Fase-Commit-Atomico]] ya registra una vez. Lo que
+va en `modules` son los datos que un módulo escribe, que es lo que un snapshot
+tendría que poder revertir.
+
 ### Cómo se cuenta
 
 El decreto se escribió para ser contable, y esto es lo que cuenta:
@@ -126,9 +148,10 @@ se decida en vez de aparecer:
   llamarlo. La máquina arranca y lo dice —"enforcement absent"— con las mismas
   palabras que usa `thalyx session` en cualquier máquina que no lo tenga. Es
   honesto y es el agujero más grande que queda.
-- **Crear los subvolúmenes del store la primera vez.** PID 1 los monta y no los
-  crea; falta decidir quién los hace y cuándo.
-- **Qué pasa al apagar.**
+- **Qué pasa al apagar.** Ya hay una respuesta parcial: `apagar` en la sesión
+  le pide al kernel que corte la corriente. Lo que falta decidir es qué se
+  sincroniza antes, y qué hace la máquina cuando alguien corta la corriente sin
+  avisar.
 - **Que el binario sea estático de verdad.** Hoy enlaza glibc dinámicamente. El
   `Makefile` lo comprueba y se niega si no lo es, pero nunca se ha corrido.
 
@@ -137,6 +160,24 @@ se decida en vez de aparecer:
 QEMU, mientras dure la Fase 1. El paso 1 del [[Criterio-de-Salida-Fase-1]] es
 arrancar la imagen; el soporte de hardware real llega cuando el sistema
 justifique correr fuera de una máquina virtual.
+
+## Revisiones
+
+### 2026-08-03 — el store se construye, y `modules` no va donde su nombre dice
+**Antes:** "Crear los subvolúmenes del store la primera vez. PID 1 los monta y
+no los crea; falta decidir quién los hace y cuándo" figuraba entre lo que
+quedaba por decidir. El disco `store.qcow2` se creaba vacío y nadie lo tocaba
+nunca; PID 1 tampoco lo montaba, aunque su propio comentario decía que sí.
+**Ahora:** `sudo make -C image store` formatea el disco, crea los tres
+subvolúmenes e instala el primer módulo; PID 1 lo monta por el nombre que le da
+`thalyx.store=` y nunca lo crea. El subvolumen `modules` se monta en
+`/opt/thalyx/data`.
+**Motivo:** sin store, instalar un módulo dentro de la máquina era imposible y
+el único lugar donde el `greeter` había corrido era la Fedora de Cesar. Y la
+ubicación de `modules` no es cosmética: `/opt/thalyx/modules` habría roto todos
+los commits atómicos por `EXDEV`, que es el fallo que [[Fase-Commit-Atomico]] ya
+registra. Hay una prueba que lo comprueba y una etapa de `verify.sh` que lo
+ejerce en un disco real, con línea base y control.
 
 ## Historial: lo que esta nota decretaba antes, y por qué era falso
 

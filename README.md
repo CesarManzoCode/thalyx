@@ -22,9 +22,12 @@ sovereign.
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
 > restored. **The image boots**: on 2026-08-03 a kernel built from `allnoconfig`
 > came up in QEMU with one program inside it, mounted its seven filesystems, and
-> said out loud what it does and does not have. Missing: the conversational
-> agent, enforcement inside the image, and any use by a person outside the
-> project — which is what actually ends Phase 1.
+> said out loud what it does and does not have. It now has a store of its own —
+> a Btrfs disk made at build time, because `mkfs.btrfs` cannot live in an image
+> that holds one program — with the first module installed on it, and a session
+> that can list it and run it. Missing: the conversational agent, enforcement
+> inside the image, and any use by a person outside the project — which is what
+> actually ends Phase 1.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.

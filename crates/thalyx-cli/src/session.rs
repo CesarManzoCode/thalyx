@@ -315,14 +315,31 @@ fn list_modules(store: &Store) {
     println!();
 }
 
-/// Run an installed module, confined, from the session.
+/// The word that makes running without enforcement a thing somebody typed.
+const UNCONFINED_WORD: &str = "sin-confinar";
+
+/// Run an installed module from the session.
 ///
 /// The whole run goes through `thalyx_core::run` by way of the same CLI code
 /// `thalyx module run` uses. `Coherencia-Doble-Ruta.md` is the reason it is not
 /// written a second time here: two orchestrations of the same operation drift,
 /// and the drift shows up as the human's route and the agent's route leaving
 /// the machine in different states.
-fn start_module(store: &Store, id: &str) {
+///
+/// ## Why there is no fallback
+///
+/// Confined is the default and the core refuses it outright when nothing can
+/// enforce a permission. A session that noticed the refusal and quietly ran the
+/// module unconfined would be doing the one thing `RunRequest::unconfined` was
+/// written to prevent: reaching the degraded state by accident instead of
+/// deliberately. So the refusal is printed, the word that means it is named,
+/// and the human types it or does not.
+fn start_module(store: &Store, rest: &str) {
+    let (id, unconfined) = match rest.split_once(' ') {
+        Some((id, tail)) => (id.trim(), tail.trim() == UNCONFINED_WORD),
+        None => (rest, false),
+    };
+
     if id.is_empty() {
         println!();
         println!("  Which one. `modulos` lists them.");
@@ -337,19 +354,31 @@ fn start_module(store: &Store, id: &str) {
         return;
     }
 
-    if let Err(error) = crate::run::run(
+    let Err(error) = crate::run::run(
         store.root(),
         id,
         "default",
         thalyx_core::run::DEFAULT_ENTRYPOINT,
         Vec::new(),
-        false,
+        unconfined,
         crate::new_request_id(),
-    ) {
+    ) else {
+        return;
+    };
+
+    println!();
+    println!("  {id} did not run: {error}");
+    if !unconfined {
         println!();
-        println!("  {id} did not run: {error}");
+        println!("  If that is the kernel side being absent, it is the known gap and");
+        println!("  not this module: nothing here can enforce a permission yet, and");
+        println!("  Thalyx will not pretend to. To run it anyway, knowing that:");
         println!();
+        println!("      correr {id} {UNCONFINED_WORD}");
+        println!();
+        println!("  The journal records that run as degraded, because it is.");
     }
+    println!();
 }
 
 pub fn run(store: &Store, once: bool) -> Fallible {
@@ -419,6 +448,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         Standing::AProgram { .. } => {
             println!("  `modulos`, `correr <id>`, `estado`. `salir` to leave.");
         }
+    }
+    // Said wherever it is true, and nowhere it is not. Both standings hit the
+    // same wall — the core refuses a confined run with no policy map — and a
+    // machine with the LSM attached must not be told its enforcement is
+    // missing, which is the kind of hardcoded sentence this file exists not to
+    // have.
+    if matches!(enforcement(), Outcome::Absent(_)) {
+        println!("  Nothing here enforces a permission yet, so `correr` will say");
+        println!("  so and stop. `correr <id> {UNCONFINED_WORD}` runs it anyway.");
     }
     println!();
 
