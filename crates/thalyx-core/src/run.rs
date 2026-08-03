@@ -53,10 +53,13 @@ pub struct RunRequest<'a> {
     /// its own isolation is a module choosing not to be isolated. See
     /// `vault/04-Flujo-Canonico/Sandbox-Ejecucion.md`.
     pub profile: &'a str,
-    /// Run even though nothing can enforce the module's permissions.
+    /// Run with no confinement at all: no kernel policy, no sandbox.
     ///
-    /// Exists so that the state can be reached deliberately and named in the
-    /// journal, rather than being reached by accident and named nothing.
+    /// Honoured whether or not the kernel side is available. It exists so the
+    /// state can be reached deliberately and named in the journal, rather than
+    /// reached by accident and named nothing — and a flag that quietly did
+    /// nothing on a capable machine would be that same failure wearing the
+    /// opposite hat.
     pub unconfined: bool,
 }
 
@@ -198,14 +201,23 @@ fn run_inner(
             })
             .collect();
 
-    if !policies.is_available() {
-        if !request.unconfined {
-            return Err(CoreError::NothingCanEnforce {
-                module_id: manifest.id.clone(),
-                permissions: permissions.len(),
-            });
-        }
+    // `--unconfined` means what it says, always.
+    //
+    // It used to apply only when the kernel side happened to be missing, so on
+    // a machine where enforcement worked the flag silently did nothing. A flag
+    // that does nothing is the same failure as a permission that enforces
+    // nothing: the system does something other than what it was told, and says
+    // so nowhere. Asking for an unconfined run gets one, and the journal
+    // records it as degraded.
+    if request.unconfined {
         return run_unconfined(&manifest, &program, request, permissions);
+    }
+
+    if !policies.is_available() {
+        return Err(CoreError::NothingCanEnforce {
+            module_id: manifest.id.clone(),
+            permissions: permissions.len(),
+        });
     }
 
     // The user this module runs as, assigned once and kept forever.

@@ -41,7 +41,17 @@ fn arena(label: &str) -> Option<Arena> {
     let _ = std::fs::remove_dir(&path);
 
     match std::fs::create_dir(&path) {
-        Ok(()) => Some(Arena(path)),
+        Ok(()) => {
+            // Hand the controllers down.
+            //
+            // A real system has systemd delegating these at the root, so the
+            // `thalyx` cgroup created under it inherits them. A scratch arena
+            // is a hierarchy nobody set up, and without this the resource
+            // limits fail — reporting a defect in Thalyx for something the
+            // test harness had not done.
+            let _ = std::fs::write(path.join("cgroup.subtree_control"), "+memory +pids");
+            Some(Arena(path))
+        }
         Err(error) => unavailable(&format!("cannot create {}: {error}", path.display())),
     }
 }
@@ -137,14 +147,18 @@ fn running_without_the_kernel_side_is_refused_rather_than_silently_unenforced() 
     let fixture = Fixture::new();
     assert!(fixture.install().success());
 
-    let status = fixture.run(&["module", "run", Fixture::MODULE_ID]);
-
-    if status.success() {
-        eprintln!("NOT PROVEN: the kernel policy map is present, so the refusal path was");
-        eprintln!("  not reached. This test did not exercise what it names.");
+    // The precondition, checked directly. Inferring it from "the run failed"
+    // meant that a run failing for any *other* reason was read as the refusal
+    // this test is looking for — and on a machine with the LSM loaded it read
+    // as a failure of Thalyx.
+    if std::path::Path::new(thalyx_permd::BpftoolStore::DEFAULT_MAP).exists() {
+        eprintln!("NOT PROVEN: the kernel policy map is present, so the refusal path");
+        eprintln!("  cannot be reached here. This test did not exercise what it names.");
         return;
     }
 
+    let status = fixture.run(&["module", "run", Fixture::MODULE_ID]);
+    assert!(!status.success());
     assert!(
         status.stderr().contains("would be enforced"),
         "expected a refusal naming the missing enforcement, got: {}",

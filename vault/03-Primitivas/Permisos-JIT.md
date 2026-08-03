@@ -105,6 +105,8 @@ Esa última línea es la que importa tanto como la denegación: una política qu
 
 **Esta es la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Las otras tres siguen siendo diseño.
 
+Reproducido el 2 de agosto de 2026 en Fedora 43 con kernel 7.0, ya no como demostración aislada sino dentro de `dev/verify.sh`, junto con el resto del sandbox.
+
 Lo que faltaba entonces era que alguien invocara el enforcement solo. Eso ya está: ver [[Sandbox-Ejecucion]] y [[Estado-de-Implementacion]].
 
 ### Regla que apareció al conectar el núcleo con el kernel

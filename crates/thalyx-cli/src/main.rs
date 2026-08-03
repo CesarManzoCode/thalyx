@@ -88,7 +88,7 @@ enum ModuleCommand {
         /// Which of the module's declared entrypoints to start
         #[arg(long, default_value = thalyx_core::run::DEFAULT_ENTRYPOINT)]
         entrypoint: String,
-        /// Run even though nothing can enforce its permissions
+        /// Run with no confinement at all, and have the journal say so
         #[arg(long)]
         unconfined: bool,
         /// Arguments passed through to the module

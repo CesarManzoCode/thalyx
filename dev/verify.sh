@@ -166,14 +166,15 @@ else
     failed "cargo fmt --all --check reports differences"
 fi
 
-if cargo clippy --all-targets --quiet 2>&1 | grep -q '^error'; then
-    failed "clippy found problems (run: cargo clippy --all-targets)"
-else
+if cargo clippy --all-targets --quiet > "$WORK/clippy.log" 2>&1; then
     proven "clippy is clean, with warnings denied"
+else
+    failed "clippy found problems (see $WORK/clippy.log)"
 fi
 
-if cargo build --quiet 2>&1 | tee "$WORK/build.log" | grep -q '^error'; then
+if ! cargo build --quiet > "$WORK/build.log" 2>&1; then
     failed "the workspace does not build (see $WORK/build.log)"
+    tail -20 "$WORK/build.log"
     exit 1
 fi
 proven "the workspace builds"
@@ -184,7 +185,15 @@ THALYX="$CARGO_TARGET_DIR/debug/thalyx"
 if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
     step "3. the kernel side compiles and attaches"
 
-    if make -C lsm hooks 2>&1 | tee "$WORK/hooks.log" | grep -q "available"; then
+    # The log first, the grep afterwards.
+    #
+    # `... | tee log | grep -q pattern` looks obvious and is wrong under
+    # `pipefail`: grep exits the moment it matches, the write end gets SIGPIPE,
+    # and the pipeline's status is the failure of a command that had already
+    # done its job. It reported the enforcement demo as not having proven
+    # denial in a run whose log said ENFORCEMENT IS REAL.
+    make -C lsm hooks > "$WORK/hooks.log" 2>&1
+    if grep -q "available" "$WORK/hooks.log"; then
         proven "$(grep -c available "$WORK/hooks.log") LSM hook(s) attachable on this kernel"
     fi
     grep -q "missing" "$WORK/hooks.log" && \
@@ -218,8 +227,10 @@ if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
     step "4. enforcement actually denies"
 
     if [ "$LOADED" = 1 ]; then
-        if make -C lsm demo 2>&1 | tee "$WORK/demo.log" | grep -q "ENFORCEMENT IS REAL"; then
+        make -C lsm demo > "$WORK/demo.log" 2>&1
+        if grep -q "ENFORCEMENT IS REAL" "$WORK/demo.log"; then
             proven "a connection was denied inside the cgroup and allowed outside it"
+            sed -n '/enforcement OFF/,/outside:/p' "$WORK/demo.log" | sed 's/^/     /'
         else
             failed "the enforcement demo did not prove denial; see $WORK/demo.log"
             tail -25 "$WORK/demo.log"

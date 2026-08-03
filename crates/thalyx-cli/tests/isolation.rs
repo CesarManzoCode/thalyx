@@ -41,7 +41,17 @@ fn arena(label: &str) -> Option<Arena> {
     let _ = std::fs::remove_dir(&path);
 
     match std::fs::create_dir(&path) {
-        Ok(()) => Some(Arena(path)),
+        Ok(()) => {
+            // Hand the controllers down.
+            //
+            // A real system has systemd delegating these at the root, so the
+            // `thalyx` cgroup created under it inherits them. A scratch arena
+            // is a hierarchy nobody set up, and without this the resource
+            // limits fail — reporting a defect in Thalyx for something the
+            // test harness had not done.
+            let _ = std::fs::write(path.join("cgroup.subtree_control"), "+memory +pids");
+            Some(Arena(path))
+        }
         Err(error) => not_proven(&format!("cannot create {}: {error}", path.display())),
     }
 }

@@ -29,6 +29,7 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+thalyx-permd.workspace = true
 thalyx-core.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
