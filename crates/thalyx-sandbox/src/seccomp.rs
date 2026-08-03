@@ -199,9 +199,21 @@ fn ret(action: u32) -> Instruction {
 /// `ptrace`, `bpf`, `kexec_load`, `init_module`, `keyctl`, and every other
 /// call whose purpose is to change the shape of the sandbox itself.
 ///
-/// Also absent: `socket`. Network access is denied by the network namespace
-/// and by `thalyx-lsm`; leaving the syscall out means a module without network
-/// permission cannot even construct a socket to be denied on.
+/// Also absent: `socket`, `connect` and `bind`. Network access is denied by the
+/// network namespace and by `thalyx-lsm`; leaving the syscalls out means a
+/// module without network permission cannot even construct a socket to be
+/// denied on.
+///
+/// `recvfrom` and `sendto` **are** present, and the distinction is the whole
+/// point. They act on a descriptor the module already holds and cannot create
+/// one, so with `socket` absent the only socket a module can ever have is the
+/// channel Thalyx handed it — which is the one thing it must be able to use.
+///
+/// They were missing at first, and the way that showed up is worth recording:
+/// every module up to then had been a shell script, and `/bin/sh` never touched
+/// a socket. The first module written against the internal API died on `SIGSYS`
+/// at its first answer, because a Rust `UnixStream` reads with `recv(2)` rather
+/// than `read(2)` — which is invisible from the source and obvious in a trace.
 pub fn module_standard() -> Allowlist {
     Allowlist::new().allow_all([
         // Process lifecycle
@@ -290,6 +302,11 @@ pub fn module_standard() -> Allowlist {
         libc::SYS_dup,
         libc::SYS_dup2,
         libc::SYS_dup3,
+        // The channel to Thalyx. A Unix socket is read with `recv` and written
+        // with `send`, not with `read` and `write`, so without these two a
+        // module cannot answer or be answered — see the note above the list.
+        libc::SYS_recvfrom,
+        libc::SYS_sendto,
         libc::SYS_pipe,
         libc::SYS_pipe2,
         libc::SYS_fsync,
@@ -522,5 +539,31 @@ mod tests {
             long.compile(),
             Err(SeccompError::TooManySyscalls(_))
         ));
+    }
+
+    #[test]
+    fn a_module_may_use_the_socket_it_was_given_and_may_not_make_another() {
+        // The pair of claims that lets a module talk to Thalyx without letting
+        // it talk to anything else. `recvfrom` and `sendto` act on a descriptor
+        // it already holds; `socket`, `connect` and `bind` are what it would
+        // need to obtain one, and they are absent.
+        //
+        // Written as one test because separating them would let either half
+        // pass alone, and either half alone is wrong: without the first the
+        // channel is dead, without the second the channel is a hole.
+        let allowlist = module_standard();
+
+        for syscall in [libc::SYS_recvfrom, libc::SYS_sendto] {
+            assert!(
+                allowlist.contains(syscall),
+                "syscall {syscall} is missing, so a module cannot answer Thalyx"
+            );
+        }
+        for syscall in [libc::SYS_socket, libc::SYS_connect, libc::SYS_bind] {
+            assert!(
+                !allowlist.contains(syscall),
+                "syscall {syscall} would let a module make a socket of its own"
+            );
+        }
     }
 }

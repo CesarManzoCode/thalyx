@@ -46,7 +46,7 @@ excepto Thalyx. **Diseñada y construida el 2026-08-03** en
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real. Desde
-entonces: **509 pruebas**, el agente mínimo que lleva un enunciado hasta un
+entonces: **510 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
 construye para sí mismo.
 
@@ -236,6 +236,37 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (12) — dos fallos en hardware, y ninguno era de Thalyx en el sentido esperado
+La corrida en la máquina de Cesar dio `proven 59 · failed 2`. Los dos se
+arreglaron y los dos enseñaron algo.
+
+**El primero era del arnés.** `verify.sh` activaba
+`THALYX_REQUIRE_BTRFS_TESTS` porque había btrfs-progs, y nunca ponía
+`THALYX_BTRFS_SCRATCH`, que es lo que ese test necesita para crear un
+subvolumen. Exigió una comprobación y le negó su entrada. El error de fondo:
+**tener la herramienta y tener dónde usarla son dos hechos**, y en Fedora se
+separan de inmediato porque `/tmp` es tmpfs. Ahora se establecen los dos, y el
+segundo creando un subvolumen de verdad — `stat -f` dice btrfs también para un
+montaje de solo lectura. Séptima vez que el culpable es el instrumento.
+
+**El segundo era real y estaba en el `allowlist` de seccomp.** El módulo moría
+con `SIGSYS` en su primera respuesta. La causa la dio `strace` en tres minutos y
+no la habría dado leer el código: **un `UnixStream` de Rust lee con `recv(2)` y
+escribe con `send(2)`**, no con `read` y `write`. `recvfrom` y `sendto` no
+estaban en la lista.
+
+Lo que lo explica es más interesante que el arreglo: el `allowlist` se derivó
+empíricamente corriendo módulos reales, que es el método correcto — pero **todos
+esos módulos eran scripts de shell, y `/bin/sh` no toca un socket**. El método
+cubre exactamente los programas que se usaron para derivarlo. De ahí la regla
+nueva de [[Estrategia-de-Pruebas]]: **un sustituto que nunca ejerció el
+mecanismo no lo probó.**
+
+`recvfrom` y `sendto` entran; `socket`, `connect` y `bind` siguen fuera. Un
+módulo puede **usar** el socket que le dieron y no puede **fabricarse** otro, y
+la prueba afirma las dos mitades juntas a propósito: separadas, cada una pasaría
+sola y una sola no sirve.
 
 ### 2026-08-03 (11) — hay un módulo, y habla
 `dev.thalyx.greeter` existe: el primer módulo desde que se borró el que era un

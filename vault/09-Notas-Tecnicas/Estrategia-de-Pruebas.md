@@ -367,6 +367,38 @@ lo que hacía. Lo encontró correr la secuencia y mirar la salida — la regla 1
 `CLAUDE.md` otra vez, ahora aplicada a una herramienta de construcción y no al
 sistema.
 
+## Regla derivada: un sustituto que nunca ejerció el mecanismo no lo probó
+
+El `allowlist` de seccomp se derivó empíricamente, corriendo módulos reales y
+agregando lo que de verdad usaban. Estaba bien hecho y aun así le faltaban dos
+syscalls, porque **todos los módulos que se usaron para derivarlo eran scripts
+de shell**, y `/bin/sh` no toca un socket en su vida.
+
+El primer módulo escrito contra la API interna murió con `SIGSYS` en su primera
+respuesta: un `UnixStream` de Rust lee con `recv(2)` y escribe con `send(2)`,
+no con `read` y `write`. Desde el código fuente eso es invisible —dice
+`stream.read(...)`— y en una traza es obvio a la primera línea.
+
+La generalización, y es incómoda: **un `allowlist` derivado de correr programas
+solo cubre lo que esos programas hacían.** El método es correcto y su alcance
+es exactamente el conjunto de programas que se usaron. Un `/bin/sh` que pasa
+por el filtro no dice nada sobre un binario de Rust, ni sobre uno de Go, ni
+sobre uno que use E/S asíncrona.
+
+Tres consecuencias:
+
+1. **Cuando aparezca una clase nueva de programa, el filtro se vuelve a
+   derivar contra ella**, no se asume heredado. El costo de no hacerlo es un
+   módulo que muere sin explicación en la primera operación que importa.
+2. **La traza antes que la lectura.** Tres minutos de `strace` contestaron lo
+   que leer el código no contestaba, porque la syscall real y la función que
+   se escribe no se llaman igual.
+3. **Permitir usar y permitir crear son permisos distintos.** `recvfrom` y
+   `sendto` entran; `socket`, `connect` y `bind` siguen fuera. La prueba que
+   lo sostiene afirma las dos mitades juntas a propósito: sin la primera el
+   canal está muerto, sin la segunda el canal es un agujero, y separadas cada
+   una pasaría sola.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
