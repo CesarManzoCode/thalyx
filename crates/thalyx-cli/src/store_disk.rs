@@ -330,6 +330,31 @@ mod tests {
     }
 
     #[test]
+    fn no_line_the_shell_runs_carries_a_backtick() {
+        // Twice in one afternoon a help message was written as
+        // `echo "run \`sudo make store\`"`, and inside double quotes a backtick
+        // is command substitution: the message explaining what to run would
+        // have run it. Comment lines are exempt because the shell discards them
+        // without expanding anything, and the prose has to be able to quote a
+        // command.
+        for (number, line) in image_makefile().lines().enumerate() {
+            let Some(recipe) = line.strip_prefix('\t') else {
+                continue;
+            };
+            if recipe.trim_start_matches(['@', '-', '+']).starts_with('#') {
+                continue;
+            }
+            assert!(
+                !recipe.contains('`'),
+                "image/Makefile:{}: a backtick on a line the shell runs — \
+                 that is command substitution, not quoting: {}",
+                number + 1,
+                recipe.trim()
+            );
+        }
+    }
+
+    #[test]
     fn staticness_is_checked_against_the_elf_and_not_against_a_sentence() {
         // `file … | grep 'statically linked'` refused a binary that was
         // perfectly static: Rust links musl as static-pie and file(1) calls

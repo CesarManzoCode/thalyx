@@ -199,8 +199,19 @@ ID 256 gen 8 top level 5 path system
 ID 257 gen 9 top level 5 path modules
 ID 258 gen 9 top level 5 path user
 
+  the disk file belongs to uid 1000; what is inside it is root's
+
   store: .../image/build/store.img — three subvolumes, one module installed
+  now:   make -C image run
 ```
+
+**Son dos propiedades distintas y las dos importan.** Los archivos *dentro* del
+filesystem son de root, porque esos son los ids que ve la máquina y ahí Thalyx
+es uid 0. El archivo que *contiene* el filesystem es de quien lo pidió, para que
+`make run` no necesite privilegio — un `run` con sudo pondría QEMU, el invitado
+entero y todos los `make` siguientes bajo root sin motivo. Confundirlas da un
+store que o QEMU no puede abrir o la máquina no puede poseer; las dos cosas ya
+pasaron.
 
 Los números de `ID` y `gen` van a ser otros; lo que importa son los tres
 `path`. `store-stage` falla solo si el módulo no salió estático o si el bundle
@@ -216,6 +227,7 @@ un mensaje que habla de lo que se está construyendo, no del disco.
 | `NOT STATIC — the module asks for a dynamic loader` | El `greeter` enlazó dinámico. Mismo arreglo que el paso 2. |
 | `the module did not install into the stage` | El bundle no verificó o el commit no se publicó. Pégame la salida completa: es un fallo del core, no del disco. |
 | `mount: ... unknown filesystem type 'btrfs'` | Tu kernel no trae Btrfs. En Fedora 43 lo trae; si sale esto, algo raro pasa y quiero verlo. |
+| `store.img is there and this user cannot write to it` | El disco quedó de root. El mensaje trae el `chown` exacto. Los store hechos antes del 2026-08-03 salen así. |
 
 ## Paso 5 — arrancar
 

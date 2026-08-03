@@ -339,8 +339,23 @@ store:
 	chown -R 0:0 $(MNT)/system $(MNT)/modules $(MNT)/user
 	btrfs subvolume list $(MNT)
 	umount $(MNT)
+	@# Two ownerships, and they are not the same question.
+	@#
+	@# Inside the filesystem: root, done above, because those are the ids the
+	@# machine sees and Thalyx is uid 0 there. The file holding the filesystem
+	@# is the host's business, and it belongs to whoever asked for it — `make
+	@# run` needs to open it read-write, and a `run` that needed sudo would put
+	@# QEMU, the whole guest, and every future `make` under root for no reason.
+	@#
+	@# Conflating the two gives you a store that either QEMU cannot open or the
+	@# machine cannot own. Both have now happened.
+	@if [ -n "$(SUDO_UID)" ]; then \
+	    chown $(SUDO_UID):$(SUDO_GID) $(STORE); \
+	    echo "  the disk file belongs to uid $(SUDO_UID); what is inside it is root's"; \
+	fi
 	@echo
 	@echo "  store: $(STORE) — three subvolumes, one module installed"
+	@echo "  now:   make -C image run"
 
 # ────────────────────────────────────────────────────────────────────── boot
 #
@@ -361,9 +376,12 @@ store:
 # to want; it is `make run STORELESS=1`, and then the machine's own message is
 # the answer rather than a mystery.
 #
-# The disk is checked for readability, not just existence. `sudo make store`
-# leaves it owned by root, and QEMU started as an ordinary user would fail to
-# open it with an error about the file rather than about the permission.
+# The disk is checked for *writability*, not existence and not readability.
+# QEMU opens a drive read-write, because a store the machine cannot write to is
+# not a store. Checking `-r` let a root-owned 0644 disk through and turned the
+# refusal into QEMU's own "Permission denied", which names the file and not the
+# reason — the same shape of mistake as grepping file(1) for a phrase: a proxy
+# for the property instead of the property.
 
 run: $(BZIMAGE) $(INITRAMFS)
 	@if [ -z "$(STORELESS)" ] && [ ! -f $(STORE) ]; then \
@@ -375,10 +393,14 @@ run: $(BZIMAGE) $(INITRAMFS)
 	    echo "  To boot without one on purpose:  make -C image run STORELESS=1"; \
 	    exit 1; \
 	fi
-	@if [ -f $(STORE) ] && [ ! -r $(STORE) ]; then \
-	    echo "  $(STORE) is there and this user cannot read it."; \
-	    echo "  sudo make store leaves it owned by root. Either run QEMU with"; \
-	    echo "  sudo, or: sudo chown $$(id -un) $(STORE)"; \
+	@if [ -f $(STORE) ] && [ ! -w $(STORE) ]; then \
+	    echo "  $(STORE) is there and this user cannot write to it."; \
+	    echo "  QEMU opens the disk read-write: a store the machine cannot"; \
+	    echo "  write to is not a store."; \
+	    echo; \
+	    echo "      sudo chown $$(id -un):$$(id -gn) $(STORE)"; \
+	    echo; \
+	    echo "  A sudo make store from before 2026-08-03 left it root's."; \
 	    exit 1; \
 	fi
 	qemu-system-x86_64 \
@@ -386,7 +408,7 @@ run: $(BZIMAGE) $(INITRAMFS)
 	    -smp 2 \
 	    -kernel $(BZIMAGE) \
 	    -initrd $(INITRAMFS) \
-	    $$(test -z "$(STORELESS)" && test -r $(STORE) \
+	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
 	    -append "console=ttyS0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
