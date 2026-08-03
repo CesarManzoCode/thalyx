@@ -509,6 +509,38 @@ La forma general: **si la precondición la escribió quien también escribió la
 implementación, probablemente comprueba la implementación.** Se nota preguntando
 si otra implementación correcta la pasaría.
 
+## Regla derivada: lo escrito a mano en lugar de lo generado descansa en una propiedad invisible
+
+**Cuando algo generado se sustituye por algo escrito a mano, lo que lo vuelve
+correcto casi nunca se ve en el archivo. Eso se prueba, no se recuerda.**
+
+`lsm/vmlinux.h` eran cien mil líneas que producía `bpftool` desde el BTF del
+kernel corriendo. Escribirlo a mano —nueve structs, que es lo que los dos
+programas tocan— quitó `bpftool`, `CONFIG_DEBUG_INFO_BTF` y el permiso de leer
+`/sys/kernel/btf/vmlinux` de lo que hace falta para **construir** Thalyx.
+Ninguna de las tres hace falta para correrlo, y las tres son sitios donde se
+atora la máquina de otra persona.
+
+Los offsets de ese header están mal. Da igual, y ese «da igual» es toda la
+cuestión: `preserve_access_index` hace que clang emita una reubicación CO-RE con
+el **nombre** del campo en vez de un offset, y el cargador parcha el offset real
+del kernel que está corriendo.
+
+Quitar esa línea no rompe nada visible. El programa compila, carga, pasa el
+verificador, corre — y lee para siempre el offset que un archivo se inventó.
+**Sin síntoma.** Y no hace falta quitarla: basta con declarar un `struct` debajo
+del `pop`, que es exactamente la forma de un acomodo inocente.
+
+Así que hay una prueba que lee el header y exige que todo `struct` con campos
+esté bajo el `pragma`. Se comprobó moviendo `struct path` debajo del `pop`:
+falló, nombrándolo. Y otras dos que impiden que la primera se vuelva vacía —
+que los structs que los programas leen estén de verdad ahí, y que el archivo no
+sea el generado otra vez.
+
+La forma general: **un sustituto escrito a mano es correcto por un motivo, y ese
+motivo hay que poder romperlo en una prueba.** Si no se puede, lo que se tiene
+es la esperanza de que nadie ordene el archivo.
+
 ## Regla derivada: la limpieza de una prueba puede destruir más que la prueba
 
 **Si una prueba monta algo, su limpieza tiene que desmontarlo antes de borrar, y

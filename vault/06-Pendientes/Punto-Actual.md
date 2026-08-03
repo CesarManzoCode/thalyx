@@ -131,6 +131,20 @@ tags: [continuidad, punto-actual, sesiones]
 > hace falta: **responder que no no instala.** Sin eso, una sesión que
 > instalara pase lo que pase pasaría todas las demás comprobaciones.
 >
+> ## Y construir esto ya no necesita bpftool — 2026-08-03
+>
+> Cesar decidió mandarle la máquina a una persona ajena **cuando los seis pasos
+> sean reales**, no antes. Eso convirtió cada dependencia de construcción en un
+> sitio donde esa persona se atora, y la peor era `bpftool`: en Ubuntu y
+> derivados —Linux Mint, en este caso— viene en `linux-tools-$(uname -r)`, un
+> paquete por versión de kernel cuyo nombre a menudo no coincide con el que está
+> corriendo. Y se topaba con eso **después** de compilar un kernel entero.
+>
+> `lsm/vmlinux.h` ahora está escrito a mano: nueve structs, que es lo que los dos
+> programas tocan, en vez de las cien mil líneas que generaba bpftool. Ver
+> [[Cargador-BPF-Propio]] y la regla nueva en [[Estrategia-de-Pruebas]] — porque
+> esto abrió una forma de mentir sin síntoma, y hay una prueba que la muerde.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y

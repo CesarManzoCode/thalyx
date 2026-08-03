@@ -50,17 +50,21 @@ CFLAGS := -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_$(ARCH) -I.
 
 all: $(OBJS)
 
-# Generated from the running kernel's own BTF, so the program compiles against
-# the exact structure layouts it will run on. This is what makes one object
-# file work across kernel versions (CO-RE) instead of needing a rebuild per
-# kernel.
-$(VMLINUX):
-	@echo "==> generating vmlinux.h from the running kernel"
-	@test -f /sys/kernel/btf/vmlinux || { \
-	    echo "no kernel BTF at /sys/kernel/btf/vmlinux — this kernel cannot run CO-RE programs"; \
-	    exit 1; }
-	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX)
-
+# `vmlinux.h` is written by hand and is part of the repository. It used to be
+# generated here, with bpftool, from /sys/kernel/btf/vmlinux — which made three
+# things a requirement of *building*: bpftool on the build machine, a kernel
+# built with CONFIG_DEBUG_INFO_BTF, and permission to read that file.
+#
+# None of the three is needed to run anything, and on Ubuntu and its derivatives
+# bpftool ships in `linux-tools-$(uname -r)` — a package per kernel version,
+# whose name routinely does not match the kernel actually booted. A person
+# outside this project would hit that after downloading and compiling a kernel,
+# for a reason that has nothing to do with Thalyx.
+#
+# The offsets in the hand-written header are wrong and it does not matter:
+# `preserve_access_index` makes clang emit a CO-RE relocation naming the field
+# instead of baking an offset, and the loader patches the running kernel's real
+# offset in. See the long comment at the top of vmlinux.h.
 %.bpf.o: %.bpf.c $(VMLINUX)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
@@ -243,4 +247,7 @@ demo:
 	@bash demo-enforcement.sh
 
 clean:
-	rm -f $(OBJS) $(VMLINUX)
+	@# Not $(VMLINUX). It was generated here once and `clean` removed it; it is
+	@# now written by hand and part of the repository, so removing it would be
+	@# `make clean` deleting source.
+	rm -f $(OBJS)

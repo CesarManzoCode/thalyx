@@ -8,19 +8,19 @@ already gone wrong in this project more than once.
 
 Produced on 2026-08-03 with:
 
-    clang -O2 -g -Wall -target bpf -D__TARGET_ARCH_x86 -I. \
-        -c lsm/thalyx_lsm.bpf.c -o thalyx_lsm.bpf.o
+    make -C lsm thalyx_lsm.bpf.o
 
-using clang 18.1.3 and `vmlinux-stub.h`, which is beside it. The stub exists
-because the development container has no kernel BTF to generate a real
-`vmlinux.h` from. **It does not make the object wrong**: CO-RE relocations are
-resolved against the kernel's BTF at load time, so what the local header has to
-get right is the field *names*, and `preserve_access_index` is what makes clang
-emit the relocation rather than a fixed offset.
+and copied here verbatim. **It is the object that gets loaded**, byte for byte.
 
-What this object is not: the one that gets loaded. That one is built by
-`make -C lsm` against the real `vmlinux.h`, on a machine that has bpftool. This
-one is for the parser to be checked against something clang actually wrote.
+That was not always true. Until `lsm/vmlinux.h` was written by hand, this
+fixture was compiled against a stub that lived beside it, because the
+development container has no kernel BTF for `bpftool` to generate a real
+`vmlinux.h` from — so the object the tests read and the object the machine
+loaded were two different files built from two different headers, and nothing
+compared them. Now there is one header, so there can be one object.
+
+Regenerate it the same way whenever the C or the header changes. An object left
+behind is a test that keeps passing about a program nobody runs.
 
 ## `kernelish.btf`
 

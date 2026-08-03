@@ -163,7 +163,9 @@ cautelosa, nunca la rápida.
 `crates/thalyx-bpf/tests/captured/` tiene dos muestras, las dos salida real de
 clang y ninguna escrita a mano:
 
-- `thalyx_lsm.bpf.o` — el objeto de verdad, compilado del `.c` de verdad.
+- `thalyx_lsm.bpf.o` — **el objeto que se carga**, byte por byte. Antes eran
+  dos archivos, compilados contra dos headers distintos, y nada los comparaba;
+  desde que el header está escrito a mano hay uno solo.
 - `kernelish.btf` — un sustituto del BTF de un kernel, donde `f_flags` está en
   el byte **20** detrás de tres campos que el header del objeto no tiene, y
   `sa_family` sigue en **0**.
@@ -178,12 +180,30 @@ campos en vez de con dos máquinas.
 - **`thalyx_watch`**, el contador de mutaciones, se sigue cargando con bpftool.
   Diez hooks en vez de dos y ninguna reubicación CO-RE nueva, así que el mismo
   cargador debería servir; no se ha intentado.
-- **Quitar `vmlinux.h` de la construcción.** Hoy `make -C lsm` necesita bpftool
-  para generarlo. Un header escrito a mano con `preserve_access_index` produciría
-  el mismo objeto —CO-RE resuelve los offsets al cargar, así que lo único que el
-  header local tiene que acertar son los **nombres**—, y eso quitaría bpftool
-  también del lado de construir. No está hecho y no es urgente: construir no es
-  arrancar.
+- ~~**Quitar `vmlinux.h` de la construcción.**~~ **Hecho el 2026-08-03.** Estaba
+  marcado «no urgente» con el argumento de que construir no es arrancar. Dejó de
+  serlo en cuanto el objetivo pasó a ser que **una persona ajena** arranque esto:
+  en Ubuntu y derivados `bpftool` viene en `linux-tools-$(uname -r)`, un paquete
+  por versión de kernel cuyo nombre a menudo no coincide con el kernel que está
+  corriendo, y esa persona se topa con eso **después** de haber descargado y
+  compilado un kernel, por un motivo que no tiene nada que ver con Thalyx.
+
+  El header ahora está escrito a mano: nueve structs, que es lo que los dos
+  programas tocan. Sus offsets están mal y no se usan. Lo que sí tiene que
+  acertar son los **nombres** y los **tipos** de los campos —el tipo decide
+  cuántos bytes se leen—, y un nombre equivocado no lee bytes equivocados: el
+  cargador no lo encuentra y se niega, que es la respuesta cautelosa de la regla
+  9.
+
+  Eso abrió una forma de mentir que antes no existía, y por eso hay una prueba:
+  **un `struct` declarado fuera del `pragma` compila, carga, pasa el verificador,
+  corre, y lee el offset que este archivo se inventó.** Sin síntoma. La prueba lee
+  el header y exige que todo struct con campos esté bajo `preserve_access_index`;
+  se comprobó moviendo `struct path` debajo del `pop`, y falló nombrándolo.
+
+  Efecto secundario que vale: el objeto capturado de las pruebas y el que se
+  carga son ahora **el mismo archivo**. Antes eran dos, compilados contra dos
+  headers distintos, y nada los comparaba.
 
 ## Relacionado
 - [[Filosofia-Fundacional]] — el decreto que esto hace cumplir

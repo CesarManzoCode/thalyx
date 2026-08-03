@@ -70,6 +70,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | El disco del store | `crates/thalyx-cli/store_disk.rs`, `image/Makefile` | Tres subvolúmenes Btrfs; PID 1 los monta por `thalyx.store=` y **nunca los crea**. **Arrancó con el disco montado el 2026-08-03.** Lleva el módulo en un repositorio y **sin instalar**, para que instalarlo sea el paso 2 del [[Criterio-de-Salida-Fase-1]] |
 | Lo que dijo el kernel | `crates/thalyx-syscall` (`kernel_messages`) | PID 1 baja el volumen de la consola antes de la sesión; `nucleo` lee el ring buffer entero. Sin shell no hay `dmesg`, así que callar sin devolver la vista sería esconder |
 | Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
+| El header del kernel para BPF | `lsm/vmlinux.h` | Escrito a mano, nueve structs. Quita `bpftool`, `CONFIG_DEBUG_INFO_BTF` y `/sys/kernel/btf/vmlinux` de lo que hace falta para **construir**. Una prueba exige que todo struct esté bajo `preserve_access_index`, porque sin él el programa lee para siempre un offset inventado y no falla nunca |
 | Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Ejecutados: 6.12.101 compila y la imagen arranca en QEMU** — procedimiento en [[Primer-Arranque]] |
 
 ### Decretos que el código ya hace cumplir
