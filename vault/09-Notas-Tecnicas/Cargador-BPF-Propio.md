@@ -7,9 +7,12 @@ tags: [bpf, lsm, kernel, imagen, fase-1]
 
 # El cargador de BPF propio
 
-> **Estado: escrito y sin ejercer.** El contenedor de desarrollo no tiene BPF
-> LSM. La etapa 14 de `verify.sh` es donde se comprueba en hardware; hasta que
-> corra, esta nota describe código, no un hecho.
+> **Estado: probado en hardware el 2026-08-03**, después de un fallo que vale
+> la pena leer. La primera corrida de la etapa 14 rechazó el programa con
+> `bpf_lsm_socket_connect() is not modifiable`: `BPF_LSM_MAC` estaba escrito
+> como 26, que es `BPF_MODIFY_RETURN`, la entrada anterior del mismo `enum`. El
+> kernel aplicó la comprobación equivocada y lo dijo con esas palabras. Ver la
+> regla sobre constantes capturadas en [[Estrategia-de-Pruebas]].
 
 ## Qué problema resuelve
 

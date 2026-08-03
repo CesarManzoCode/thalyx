@@ -399,6 +399,38 @@ Tres consecuencias:
    canal está muerto, sin la segunda el canal es un agujero, y separadas cada
    una pasaría sola.
 
+## Regla derivada: una constante de otro proyecto se captura, no se recuerda
+
+**Un número que vive en el header de otro proyecto se copia de ahí y se
+comprueba contra esa copia. Escribirlo de memoria es inventarse un fixture, con
+la diferencia de que nadie lo va a leer dos veces.**
+
+`BPF_LSM_MAC` es 27. Se escribió 26, que es `BPF_MODIFY_RETURN` — la entrada
+inmediatamente anterior en el mismo `enum`. El programa cargó, el kernel aplicó
+la comprobación de modify-return a un hook de LSM, y lo rechazó diciendo
+`bpf_lsm_socket_connect() is not modifiable`.
+
+Tres cosas de ese fallo valen la pena:
+
+1. **El mensaje era bueno.** Nombraba la función y la comprobación exacta. Aun
+   así costó una corrida en hardware real, porque nada del lado de Thalyx podía
+   contradecir un número inventado.
+2. **Un `enum` sin valores explícitos hace que un error de uno sea silencioso**
+   hasta el momento del uso. No hay compilador que lo vea; los dos son `u32`.
+3. **La regla de los fixtures inventados ya cubría esto y no se aplicó**, porque
+   una constante no parece un fixture. Lo es: es una afirmación sobre el formato
+   de otro programa.
+
+El arreglo: `crates/thalyx-bpf/tests/captured/bpf-uapi-enums.h` es el `enum`
+copiado verbatim del header de Linux, y la prueba **cuenta las entradas** en vez
+de comparar con un número escrito. Si alguien recorta ese archivo "para dejar lo
+interesante", las posiciones dejan de ser los números y hay una prueba que se
+niega a eso también.
+
+Generaliza a cualquier número que no sea nuestro: valores de `errno`, banderas
+de `mount`, `enum`s de uapi, códigos de un protocolo. Si el número viene de otro
+lado, la copia viene de otro lado con él.
+
 ## Regla derivada: una comprobación sobre la prosa de otra herramienta comprueba la prosa
 
 **Cuando lo que importa es una propiedad, compruébala donde vive, no en la

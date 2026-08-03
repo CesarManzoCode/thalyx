@@ -962,7 +962,18 @@ mod bpf_cmd {
 pub const BPF_PROG_TYPE_LSM: u32 = 29;
 
 /// `BPF_LSM_MAC`, the expected attach type for a mandatory-access-control hook.
-pub const BPF_LSM_MAC: u32 = 26;
+///
+/// **27, and it was written as 26 first.** 26 is `BPF_MODIFY_RETURN`, which is
+/// the entry immediately before it, so the kernel applied the modify-return
+/// check to an LSM hook and refused with `bpf_lsm_socket_connect() is not
+/// modifiable`. That message is better than most and it still took a run on
+/// real hardware to see, because nothing here can check an enum value against
+/// a kernel that is not present.
+///
+/// So it is checked against a captured copy of the uapi header instead:
+/// `crates/thalyx-bpf/tests/captured/bpf-uapi-enums.h`, and the test counts
+/// the entries rather than comparing to a number somebody typed.
+pub const BPF_LSM_MAC: u32 = 27;
 
 /// Make the call. Returns the kernel's result, which for the commands here is a
 /// file descriptor or a negative error.
