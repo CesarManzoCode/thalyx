@@ -15,7 +15,11 @@
 //! 1. Picks up the channel Thalyx left on descriptor 3, and gives up if there
 //!    is nothing there — which is what happens everywhere except inside Thalyx.
 //! 2. Asks who it is. It does not know its own name; Thalyx does.
-//! 3. Reads a file it was granted, and reports what it found.
+//! 3. Reads a file it was granted, and reports what it found. Which file is
+//!    named on the command line, or — when nothing is — taken from the grants
+//!    that came back in step 2. A module discovering what it may touch by
+//!    asking is the arrangement working; being told by an argument is a
+//!    convenience for whoever is testing it.
 //! 4. Tries to read `/etc/shadow`, which it was not granted, and reports the
 //!    refusal. A module that only ever did permitted things would demonstrate
 //!    nothing about permissions.
@@ -44,17 +48,9 @@ fn main() -> std::process::ExitCode {
 
     let mut thalyx = Channel::new(stream);
 
-    let Some(wanted) = std::env::args().nth(1) else {
-        let _ = thalyx.request(&Request::Notify {
-            level: Level::Error,
-            text: format!("greeter: nothing to read. Usage: {USAGE}"),
-        });
-        return std::process::ExitCode::from(64);
-    };
-
     // Who am I? The module does not know and cannot know: its own identity
     // lives in a signed manifest it never sees.
-    match thalyx.request(&Request::Identify) {
+    let identity = match thalyx.request(&Request::Identify) {
         Ok(Response::Identity(identity)) => {
             let _ = thalyx.request(&Request::Notify {
                 level: Level::Info,
@@ -66,9 +62,21 @@ fn main() -> std::process::ExitCode {
                     identity.grants.len()
                 ),
             });
+            identity
         }
         other => return complain(&mut thalyx, "could not establish my own identity", other),
-    }
+    };
+
+    let Some(wanted) = std::env::args()
+        .nth(1)
+        .or_else(|| readable_grant(&identity))
+    else {
+        let _ = thalyx.request(&Request::Notify {
+            level: Level::Error,
+            text: format!("greeter: nothing to read, and nothing granted. Usage: {USAGE}"),
+        });
+        return std::process::ExitCode::from(64);
+    };
 
     // Something it may do.
     match thalyx.request(&Request::ReadFile {
@@ -126,6 +134,27 @@ fn main() -> std::process::ExitCode {
     }
 
     std::process::ExitCode::SUCCESS
+}
+
+/// The first thing Thalyx said this module may read.
+///
+/// Used when nobody named a file. `net` is a grant too and is not a path, so
+/// the leading `/` is checked rather than assumed — a module that sent `net` to
+/// `ReadFile` would get a refusal it had earned and report it as a denial it
+/// had not.
+///
+/// Nothing is opened here and nothing is stat'd: this module has no syscalls of
+/// its own. If the grant names a directory, the read fails and the failure is
+/// reported as what it is, which is why the manifest that ships in the image
+/// grants the file and not the directory around it.
+fn readable_grant(identity: &thalyx_abi::Identity) -> Option<String> {
+    identity
+        .grants
+        .iter()
+        .find(|grant| {
+            grant.resource.starts_with('/') && matches!(grant.action.as_str(), "read" | "write")
+        })
+        .map(|grant| grant.resource.clone())
 }
 
 /// Say what went wrong over the channel, if the channel still works.

@@ -53,6 +53,14 @@ cleanup() {
         bold "── detaching thalyx-lsm "
         make -C "$ROOT/lsm" unload >/dev/null 2>&1 && echo "   done" || red "   could not unload; run: sudo make -C lsm unload"
     fi
+    # Before the rm, always. Stage 13 loop-mounts a disk inside $WORK, and an
+    # interrupted run that left it mounted would turn this line into `rm -rf`
+    # through a mount point — deleting the contents of a filesystem instead of
+    # the file holding it.
+    if [ -n "${SMNT:-}" ] && mountpoint -q "$SMNT" 2>/dev/null; then
+        umount "$SMNT" 2>/dev/null || red "   could not unmount $SMNT; not deleting $WORK"
+        mountpoint -q "$SMNT" 2>/dev/null && return
+    fi
     rm -rf "${WORK:-/nonexistent}"
 }
 trap cleanup EXIT INT TERM
@@ -1201,6 +1209,145 @@ else
         failed "$CHANNEL_GAP"
     else
         unproven "$CHANNEL_GAP"
+    fi
+fi
+
+step "13. the store is a real Btrfs disk, and a module installs onto it"
+
+# The claim from Construccion-del-ISO.md: persistent state lives on its own
+# disk, three subvolumes, made once at build time because the image has no
+# mkfs.btrfs and cannot have one.
+#
+# This builds the same disk `make -C image store` builds — a raw file, mkfs,
+# loop mount, three subvolumes — and then installs and runs the real module on
+# it. What it does not use is the image's musl build of anything: the point here
+# is the disk and the layout, and using the host binaries keeps the failure
+# readable when the layout is what is wrong.
+#
+# It is also the only place the EXDEV claim gets exercised. `store_disk.rs`
+# refuses to put the `modules` subvolume at /opt/thalyx/modules because a rename
+# from .staging/ would then cross subvolumes; the check below is that crossing
+# really does fail, so the refusal is protecting against something real rather
+# than repeating a story.
+
+# Two requirements, two conditions, checked separately — rule 3, and the same
+# mistake this script has already made once. btrfs-progs writes the format and
+# the kernel reads it, and they are not the same fact: this project's own
+# development container has btrfs-progs and a kernel with no Btrfs in it, where
+# a single guard on the tool would mkfs successfully, fail to mount, and report
+# Thalyx broken for something the machine simply cannot do.
+modprobe btrfs > /dev/null 2>&1
+STORE_GAP=""
+if ! command -v mkfs.btrfs > /dev/null; then
+    STORE_GAP="the store disk has not been built; mkfs.btrfs is not installed here"
+elif ! grep -qw btrfs /proc/filesystems 2>/dev/null; then
+    STORE_GAP="the store disk has not been built; this kernel has no Btrfs, so a disk formatted here could not be mounted"
+fi
+
+if [ -n "$STORE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then
+        failed "$STORE_GAP"
+    else
+        unproven "$STORE_GAP"
+    fi
+else
+    SDISK="$WORK/store.img"
+    SMNT="$WORK/store-mnt"
+    mkdir -p "$SMNT"
+    truncate -s 2G "$SDISK"
+
+    if ! mkfs.btrfs -q -L thalyx-store "$SDISK" > "$WORK/store-mkfs.log" 2>&1; then
+        failed "mkfs.btrfs would not format the store disk"
+        tail -10 "$WORK/store-mkfs.log" | sed 's/^/     /'
+    elif ! mount -o loop "$SDISK" "$SMNT" > "$WORK/store-mount.log" 2>&1; then
+        # Separate from the mkfs failure: one means btrfs-progs cannot write the
+        # format, the other means this kernel cannot read it. Told apart because
+        # they send you to different halves of the machine.
+        failed "the store disk formatted and this kernel would not mount it"
+        tail -10 "$WORK/store-mount.log" | sed 's/^/     /'
+    else
+        SMOUNTED=1
+        MADE=1
+        for subvol in system modules user; do
+            btrfs subvolume create "$SMNT/$subvol" > /dev/null 2>&1 || MADE=0
+        done
+
+        if [ "$MADE" = 1 ]; then
+            proven "the store disk carries the three decreed subvolumes"
+        else
+            failed "the store disk would not take its three subvolumes"
+        fi
+
+        # The reason the layout is what it is. Baseline first: a rename inside
+        # one subvolume works. Then the control: the same rename across two.
+        # Without the baseline, a python that could not rename anything would
+        # look exactly like Btrfs refusing to cross.
+        mkdir -p "$SMNT/system/.staging/x" "$SMNT/system/modules"
+        if python3 -c "import os,sys; os.rename('$SMNT/system/.staging/x','$SMNT/system/modules/x')" 2>/dev/null; then
+            proven "a rename inside one subvolume is atomic, which is what the commit needs"
+
+            mkdir -p "$SMNT/system/.staging/y"
+            if python3 -c "import os,sys; os.rename('$SMNT/system/.staging/y','$SMNT/modules/y')" 2>/dev/null; then
+                failed "a rename across two subvolumes succeeded; the layout is built on a claim that is false here"
+            else
+                proven "a rename across two subvolumes fails, so the store root must be one subvolume"
+            fi
+        else
+            failed "a rename inside one subvolume failed; nothing below can be concluded"
+        fi
+
+        # A module, installed on the disk and run from it. The granted path is
+        # on the `modules` subvolume, which is where a module's own data goes.
+        rm -rf "$SMNT/system/.staging" "$SMNT/system/modules"
+        mkdir -p "$SMNT/modules/greeter"
+        echo "this file lives on the store" > "$SMNT/modules/greeter/notes.txt"
+
+        SPAY="$WORK/store-payload"
+        mkdir -p "$SPAY/bin"
+        if [ ! -x "$GREETER" ]; then
+            failed "the greeter module was not built, so nothing can be installed on the store"
+        else
+            cp "$GREETER" "$SPAY/bin/greeter"
+            "$THALYX" dev keygen --out "$WORK/store.key" > /dev/null 2>&1
+            sed -e "s|^resource = .*|resource = \"$SMNT/modules/greeter/notes.txt\"|" \
+                "$WORK/greeter-manifest.toml" > "$WORK/store-manifest.toml"
+            "$THALYX" dev pack "$SPAY" --manifest "$WORK/store-manifest.toml" \
+                --key "$WORK/store.key" --out "$WORK/store-greeter.thmod" \
+                > "$WORK/store-pack.log" 2>&1
+
+            if THALYX_ROOT="$SMNT/system" "$THALYX" module install \
+                    "$WORK/store-greeter.thmod" --yes > "$WORK/store-install.log" 2>&1; then
+                proven "a module installed onto a Btrfs subvolume, staging and all"
+            else
+                failed "the module would not install onto the store"
+                tail -15 "$WORK/store-install.log" | sed 's/^/     /'
+            fi
+
+            # No argument. On the machine the session starts a module with none,
+            # so the only way it can know what to read is to have asked Thalyx —
+            # and that is the half of the API this stage exists to reach.
+            if THALYX_ROOT="$SMNT/system" "$THALYX" module run dev.thalyx.greeter \
+                    --unconfined > "$WORK/store-run.log" 2>&1 \
+               && grep -q "this file lives on the store" "$WORK/store-run.log"; then
+                proven "a module told nothing found its file by asking, and read it off the store"
+            else
+                failed "the module did not read from the store; see $WORK/store-run.log"
+                tail -20 "$WORK/store-run.log" | sed 's/^/     /'
+            fi
+
+            # It survives the disk being taken away and brought back. This is
+            # the whole reason the store exists, and nothing else in this script
+            # checks that anything outlives the process that wrote it.
+            umount "$SMNT" && mount -o loop "$SDISK" "$SMNT" 2>/dev/null
+            if THALYX_ROOT="$SMNT/system" "$THALYX" module list 2>/dev/null \
+                    | grep -q dev.thalyx.greeter; then
+                proven "the module was still installed after the disk was unmounted and mounted again"
+            else
+                failed "the module did not survive a remount; the store is not persisting anything"
+            fi
+        fi
+
+        [ "${SMOUNTED:-0}" = 1 ] && umount "$SMNT" 2>/dev/null
     fi
 fi
 
