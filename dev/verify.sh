@@ -100,9 +100,29 @@ fi
 # tests in the Rust harness skipped in silence while this script proved the same
 # ground its own way. Three of the four skip variables were demanded and the
 # fourth was not, which is rule 3 leaking inside the tool that enforces it.
+#
+# And having btrfs-progs is not the same fact as having somewhere to use it.
+# Demanding the snapshot tests on the strength of the tool alone set
+# THALYX_REQUIRE_BTRFS_TESTS without ever setting THALYX_BTRFS_SCRATCH, so the
+# test correctly reported that it could not make a subvolume and the demand
+# turned that into a failure of Thalyx. Nothing was wrong with Thalyx: this
+# script asked for a check and withheld what the check needed. Two facts, two
+# conditions, and the scratch path is proven by making a subvolume rather than
+# by reading a filesystem type — `stat -f` says btrfs for a read-only mount too.
+BTRFS_SCRATCH=""
 if command -v btrfs > /dev/null; then
-    proven "btrfs-progs is installed, so the snapshot tests will be demanded"
-    HAVE_BTRFS=1
+    BTRFS_BASE="$(dirname "$ROOT")"
+    BTRFS_PROBE="$BTRFS_BASE/.thalyx-verify-btrfs-probe"
+    btrfs subvolume delete "$BTRFS_PROBE" > /dev/null 2>&1
+    if btrfs subvolume create "$BTRFS_PROBE" > /dev/null 2>&1; then
+        btrfs subvolume delete "$BTRFS_PROBE" > /dev/null 2>&1
+        BTRFS_SCRATCH="$BTRFS_BASE"
+        proven "btrfs-progs is installed and $BTRFS_BASE takes subvolumes, so the snapshot tests will be demanded"
+        HAVE_BTRFS=1
+    else
+        unproven "btrfs-progs is installed, but $BTRFS_BASE is not on Btrfs; snapshot tests cannot be demanded"
+        HAVE_BTRFS=0
+    fi
 else
     unproven "btrfs-progs is not installed; snapshot tests cannot be demanded"
     HAVE_BTRFS=0
@@ -268,7 +288,9 @@ step "5. the test suite, with every skip this machine can afford forbidden"
 SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 [ "$HAVE_CONTROLLERS" = 1 ] && SUITE_ENV+=(THALYX_REQUIRE_CONTROLLER_TESTS=1)
 [ "$LOADED" = 1 ]           && SUITE_ENV+=(THALYX_REQUIRE_LSM_TESTS=1)
-[ "$HAVE_BTRFS" = 1 ]       && SUITE_ENV+=(THALYX_REQUIRE_BTRFS_TESTS=1)
+# The requirement and the thing it requires, together. Setting one without the
+# other is what made this stage fail for a machine that could do everything.
+[ "$HAVE_BTRFS" = 1 ]       && SUITE_ENV+=(THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH")
 
 echo "   ${SUITE_ENV[*]}"
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
@@ -283,7 +305,7 @@ fi
 # anything about. Naming them is the point.
 [ "$HAVE_CONTROLLERS" = 0 ] && unproven "resource limits (memory.max, pids.max) — no delegated controllers"
 [ "$LOADED" = 0 ]           && unproven "kernel policy enforcement — the LSM is not attached"
-[ "$HAVE_BTRFS" = 0 ]       && unproven "snapshots and restore — btrfs-progs is not installed"
+[ "$HAVE_BTRFS" = 0 ]       && unproven "snapshots and restore — no Btrfs filesystem this script may write to"
 
 # ------------------------------------------------- 6. a module, end to end
 
@@ -1132,14 +1154,29 @@ fi
 if [ "${LOADED:-0}" = 1 ]; then
     GCONF="$WORK/greeter-store-confined"
     mkdir -p "$GCONF"
-    if THALYX_ROOT="$GCONF" "$THALYX" module install "$WORK/greeter.thmod" --yes \
-            > /dev/null 2>&1 &&
-       THALYX_ROOT="$GCONF" "$THALYX" module run dev.thalyx.greeter \
-            -- "$GRANTED_DIR/notes.txt" > "$WORK/greeter-confined.log" 2>&1 &&
-       grep -q "the vault is the authority" "$WORK/greeter-confined.log"; then
-        proven "the channel survives the sandbox: two exec stages and a seccomp filter"
+    if ! THALYX_ROOT="$GCONF" "$THALYX" module install "$WORK/greeter.thmod" --yes \
+            > "$WORK/greeter-confined-install.log" 2>&1; then
+        # Said separately because "it would not install" and "it installed and
+        # could not talk" are different failures, and a single message covering
+        # both sends the reader to the wrong half of the system.
+        failed "the module would not install for the confined run"
+        tail -15 "$WORK/greeter-confined-install.log" | sed 's/^/     /'
     else
-        failed "the module could not talk to Thalyx from inside the sandbox; see $WORK/greeter-confined.log"
+        THALYX_ROOT="$GCONF" "$THALYX" module run dev.thalyx.greeter \
+            -- "$GRANTED_DIR/notes.txt" > "$WORK/greeter-confined.log" 2>&1
+        GSTATUS=$?
+        if grep -q "the vault is the authority" "$WORK/greeter-confined.log"; then
+            proven "the channel survives the sandbox: two exec stages and a seccomp filter"
+        else
+            failed "the module could not talk to Thalyx from inside the sandbox (exit $GSTATUS)"
+            # 159 is 128+31: killed by SIGSYS, which is the seccomp filter and
+            # nothing else. Naming it here saves the next reader from suspecting
+            # the channel when the filter is what stopped the module.
+            if [ "$GSTATUS" = 159 ]; then
+                echo "     killed by SIGSYS: a syscall the allowlist does not permit"
+            fi
+            tail -20 "$WORK/greeter-confined.log" | sed 's/^/     /'
+        fi
     fi
 else
     CHANNEL_GAP="the module's channel has not been tried through the sandbox; that needs the LSM attached, and Thalyx refuses to run a module nothing can enforce"
