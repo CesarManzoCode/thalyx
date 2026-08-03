@@ -264,6 +264,12 @@ fn the_seccomp_filter_kills_a_module_that_creates_a_socket() {
     };
     let _cgroup = cgroup_in(&arena);
 
+    if !which("python3") {
+        eprintln!("NOT PROVEN: python3 is not installed, and it is what asks for a socket here.");
+        eprintln!("  This test did not run. It did not pass.");
+        return;
+    }
+
     let inside = confined(
         &arena,
         standard(),
@@ -302,25 +308,70 @@ fn the_seccomp_filter_kills_a_module_that_tries_to_change_its_own_confinement() 
 fn ordinary_programs_still_run_under_the_filter() {
     // An allowlist that denied everything would pass every denial test above
     // and be useless. This is the control for all of them.
+    //
+    // "Runs under the filter" means the filter did not kill it — not that it
+    // exited zero. The first version asserted success, and one of its scripts
+    // was `grep -q . /etc/hostname`: `-q` turns an error opening the file into
+    // exit 1, indistinguishable from "no lines matched", and the test reported
+    // the seccomp filter for something that was not the filter at all. That is
+    // the `curl -s` mistake from the LSM demo, in a different costume.
     let Some(arena) = arena("usable") else { return };
     let _cgroup = cgroup_in(&arena);
 
-    for script in [
+    // Self-contained wherever possible: a script that reads a host file is a
+    // script whose result depends on the machine it runs on.
+    let mut scripts = vec![
         "echo hello",
-        "cat /etc/hostname",
-        "ls /etc >/dev/null && echo listed",
-        "echo x > /tmp/thalyx-test && cat /tmp/thalyx-test",
-        "grep -q . /etc/hostname && echo matched",
-        "python3 -c 'print(sum(range(100)))'",
-    ] {
+        "echo x > /tmp/thalyx-probe && cat /tmp/thalyx-probe",
+        "printf 'a\nb\n' > /tmp/thalyx-lines && grep b /tmp/thalyx-lines",
+        "mkdir -p /tmp/thalyx-dir && ls /tmp/thalyx-dir",
+        "cat /etc/passwd > /dev/null",
+        "ls /etc > /dev/null",
+    ];
+    if which("python3") {
+        scripts.push("python3 -c 'print(sum(range(100)))'");
+    }
+
+    for script in scripts {
         let inside = confined(&arena, standard(), script);
+
         assert!(
-            inside.status.success(),
-            "`{script}` failed under the filter: {:?}\n{}",
+            !killed_by_signal(&inside),
+            "the filter killed `{script}`: {:?}\n{}",
             inside.status,
             String::from_utf8_lossy(&inside.stderr)
         );
+
+        // A non-zero exit is not a filter problem, but it does mean this
+        // script proved less than it was meant to — so it is reported with
+        // everything the program said, rather than swallowed.
+        assert!(
+            inside.status.success(),
+            "`{script}` ran under the filter and exited {:?}.\n  \
+             stdout: {}\n  stderr: {}\n  \
+             The filter did not kill it, so this is the script or the machine, \
+             not seccomp.",
+            inside.status.code(),
+            stdout(&inside),
+            String::from_utf8_lossy(&inside.stderr).trim()
+        );
     }
+}
+
+/// Whether a process was killed by a signal, and by which.
+///
+/// The distinction the control tests rest on: `SIGSYS` means the seccomp
+/// filter refused a syscall, and any ordinary non-zero exit means the program
+/// ran to completion and disagreed with something.
+fn killed_by_signal(output: &Output) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    output.status.signal().is_some()
+}
+
+fn which(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+        .unwrap_or(false)
 }
 
 #[test]
