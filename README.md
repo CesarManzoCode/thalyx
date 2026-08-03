@@ -25,9 +25,10 @@ sovereign.
 > said out loud what it does and does not have. It now has a store of its own —
 > a Btrfs disk made at build time, because `mkfs.btrfs` cannot live in an image
 > that holds one program — with the first module installed on it, and a session
-> that can list it and run it. Missing: the conversational agent, enforcement
-> inside the image, and any use by a person outside the project — which is what
-> actually ends Phase 1.
+> that can list it and run it. It also carries its own BPF loader — no bpftool,
+> no second file — though that has not been exercised on hardware yet. Missing:
+> the conversational agent, and any use by a person outside the project, which
+> is what actually ends Phase 1.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.

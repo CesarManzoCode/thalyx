@@ -143,11 +143,10 @@ La versión anterior heredó de Alpine cosas que nadie eligió — el login en t
 fue la más visible, no la única. Lo que sigue abierto se escribe aquí para que
 se decida en vez de aparecer:
 
-- **Cargar `thalyx-lsm` desde dentro de Thalyx.** Es el hueco grande. El cargador
-  invocaba `bpftool`, y no hay bpftool en la imagen ni shell desde donde
-  llamarlo. La máquina arranca y lo dice —"enforcement absent"— con las mismas
-  palabras que usa `thalyx session` en cualquier máquina que no lo tenga. Es
-  honesto y es el agujero más grande que queda.
+- ~~**Cargar `thalyx-lsm` desde dentro de Thalyx.**~~ **Escrito el 2026-08-03**,
+  y sin ejercer todavía. El objeto BPF viaja dentro del binario y Thalyx hace
+  las llamadas al kernel él mismo. Ver [[Cargador-BPF-Propio]]. La etapa 14 de
+  `verify.sh` es donde se comprueba.
 - **Qué pasa al apagar.** Ya hay una respuesta parcial: `apagar` en la sesión
   le pide al kernel que corte la corriente. Lo que falta decidir es qué se
   sincroniza antes, y qué hace la máquina cuando alguien corta la corriente sin
@@ -162,6 +161,17 @@ arrancar la imagen; el soporte de hardware real llega cuando el sistema
 justifique correr fuera de una máquina virtual.
 
 ## Revisiones
+
+### 2026-08-03 — el objeto BPF va dentro del binario, no junto a él
+**Antes:** cargar `thalyx-lsm` figuraba como "el hueco grande", y el cargador
+buscaba `/lib/thalyx/thalyx_lsm.bpf.o` invocando `bpftool`.
+**Ahora:** el objeto se compila al construir, `build.rs` lo incrusta en el
+binario, y `thalyx-bpf` hace las cuatro llamadas `bpf(2)`. Ver
+[[Cargador-BPF-Propio]].
+**Motivo:** un segundo archivo y un segundo programa, los dos prohibidos por
+[[Filosofia-Fundacional]] en una imagen que lleva uno. El mensaje que imprimía
+el cargador al no encontrar el archivo sugería que alguien lo pusiera ahí — o
+sea, sugería romper el decreto que estaba reportando.
 
 ### 2026-08-03 — el store se construye, y `modules` no va donde su nombre dice
 **Antes:** "Crear los subvolúmenes del store la primera vez. PID 1 los monta y

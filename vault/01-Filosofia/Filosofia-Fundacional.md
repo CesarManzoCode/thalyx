@@ -49,15 +49,18 @@ sería una consigna; éste se puede contradecir con un número.
 make -C image count
 ```
 
-### Qué invalida, hoy
+### Qué invalidó, y qué sigue invalidando
 
-Dos decretos anteriores dan por supuesto un userland que ya no existe, y los dos
-tienen que resolverse en vez de dejarse:
+Dos decretos anteriores daban por supuesto un userland que ya no existe. **Uno
+está resuelto; el otro sigue abierto.**
 
-1. **`CLAUDE.md` prefiere invocar `bpftool` a enlazar una librería.** Buena regla
-   —sin dependencia de headers del kernel, cada paso reproducible a mano— y
-   ahora imposible: no hay bpftool en la imagen ni shell desde donde llamarlo.
-   Hoy `thalyx-lsm` no se carga en el arranque y la máquina lo dice.
+1. ~~**`CLAUDE.md` prefiere invocar `bpftool` a enlazar una librería.**~~
+   **Resuelto el 2026-08-03, y sin ejercer todavía.** La regla era buena —sin
+   dependencia de headers del kernel, cada paso reproducible a mano— y en la
+   imagen era imposible. La respuesta no fue enlazar una librería: Thalyx lee el
+   objeto BPF y hace las llamadas al kernel él mismo, y el objeto viaja dentro
+   del binario en vez de junto a él. Ver [[Cargador-BPF-Propio]]. La regla de
+   `CLAUDE.md` sigue valiendo para `btrfs`, que sí existe donde se usa.
 2. **[[Gamas-de-Modelo]] decreta `llama.cpp` invocado como proceso.** Eso es un
    segundo programa. La respuesta probablemente sea que el modelo del agente es
    **un módulo**, enlazado contra la API como cualquier otro, que es justo lo que
