@@ -9,6 +9,13 @@ tags: [indice, moc, punto-de-entrada]
 
 Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de tiempo, o una IA a la que le compartes esta bóveda como contexto, **empieza por aquí**.
 
+> **¿Retomando después de una pausa? Lee primero [[Punto-Actual]].** Dice dónde
+> quedó el proyecto, qué fue lo último que se verificó en hardware y cuál es el
+> siguiente paso. Esta nota explica el *diseño*; esa dice el *estado*.
+>
+> Si eres una IA trabajando en el repo, `CLAUDE.md` en la raíz explica cómo se
+> trabaja aquí y quién decide.
+
 ## Resumen en una frase
 
 **Thalyx** es un sistema operativo de código abierto, diseñado desde el núcleo hacia afuera, donde la IA es ciudadana de primera clase — no una aplicación más — y el humano sigue siendo el soberano.
@@ -55,6 +62,7 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 - [[Debates-Overview]] — mapa de todos los debates resueltos
 
 ### 7. Pendientes (qué falta)
+- [[Punto-Actual]] — **dónde quedó el proyecto y qué sigue**; se actualiza cada vez que se termina algo
 - [[Tareas-Pendientes]] — lista viva, revisar antes de retomar el proyecto
 
 ### 8. Adopción y fases (cuándo y cómo se construye/lanza)
@@ -75,9 +83,9 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]
 
-## Estado global del proyecto (snapshot al 1 de agosto de 2026)
+## Estado global del proyecto (snapshot al 3 de agosto de 2026)
 
-El proyecto salió de la fase de puro diseño: existe código en `crates/`, y la ruta de instalación de módulos funciona de punta a punta con la atomicidad respaldada por pruebas de inyección de fallos. Ver [[Estado-de-Implementacion]].
+Las cuatro primitivas y el flujo canónico están construidos y **verificados en hardware real**: 392 pruebas y 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs, sin nada por probar y sin fallos. Falta el agente y el ISO. Ver [[Punto-Actual]] para el detalle vivo y [[Estado-de-Implementacion]] por crate.
 
 | Área | Estado |
 |---|---|

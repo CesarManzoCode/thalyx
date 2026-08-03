@@ -11,6 +11,10 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 **No confundir con [[Tareas-Pendientes]]**, que lista decisiones sin cerrar. Aquí se lista código.
 
+> Esta nota dice **qué está construido**. Para saber **dónde quedó el proyecto,
+> qué fue lo último verificado en hardware y cuál es el siguiente paso**, ver
+> [[Punto-Actual]].
+
 ## Construido
 
 | Pieza | Dónde | Estado |

@@ -4,10 +4,15 @@ An open-source operating system designed from the kernel outward, where AI is a
 first-class citizen rather than one more application, and the human stays
 sovereign.
 
-> **Status: early Phase 1.** The module install path works end to end —
-> manifest parsing, signature verification, publisher key pinning, atomic
-> commit, journal, permission grants — and the atomicity claim is backed by
-> fault-injection tests rather than asserted. No agent, no LSM, no sandbox yet.
+> **Status: Phase 1, everything but the agent.** The four base primitives and
+> the canonical flow are built and **verified on real hardware** — 392 tests
+> and 44 checks on a machine with a BPF LSM, cgroup v2 and Btrfs, with nothing
+> left unproven. Modules install atomically, run confined, and can be rolled
+> back; the kernel LSM actually denies; subvolumes can be snapshotted and
+> restored. What is missing is the conversational agent and the bootable image.
+>
+> Nothing here is claimed without a check that could have failed. Anything a
+> machine cannot verify is reported as `NOT PROVEN`, never as a pass.
 
 ## Try it
 
@@ -25,6 +30,34 @@ export THALYX_ROOT=/tmp/thalyx-demo
 ./target/debug/thalyx module list
 ./target/debug/thalyx permissions
 ./target/debug/thalyx journal
+
+# Undo the install. Narrow and cheap: it takes back only what Thalyx published.
+./target/debug/thalyx rollback --dry-run
+./target/debug/thalyx rollback
+```
+
+The semantic index, and letting the kernel tell it when it is still current:
+
+```sh
+thalyx graph build ./crates
+thalyx graph dependents thalyx-core/src/commit.rs
+thalyx graph watcher                    # what the kernel's watcher can see
+thalyx graph trust ./crates --counter   # earn the fast path, or be refused
+```
+
+What the agent will remember between sessions, driven by hand until it exists:
+
+```sh
+thalyx memory remember refactor "moved login() to auth.rs" --about src/auth.rs
+thalyx memory recall refactor           # re-checked against the files, now
+```
+
+Snapshots, and the destructive command that returns to one:
+
+```sh
+thalyx snapshot take ~/work --label before-upgrade
+thalyx snapshot list ~/work
+thalyx restore <name> ~/work            # shows what it would destroy, then asks
 ```
 
 To watch the atomic commit survive being killed in its most dangerous instant —
@@ -98,9 +131,21 @@ contract does. The core revalidates everything it produces.
 ```
 crates/
   thalyx-manifest/  .thmod parsing, validation, ed25519 signatures
+  thalyx-contract/  structured contracts with per-field provenance
+  thalyx-parser/    mechanical parser: Rust, Python, JS/TS, C, Go
+  thalyx-graph/     the semantic index, and the discipline around its freshness
+  thalyx-watch/     reads the kernel's mutation counter
+  thalyx-memory/    persistent memory, with its own vector store
+  thalyx-permd/     permissions translated into kernel policy
+  thalyx-sandbox/   namespaces, seccomp, pivot_root, idmapped mounts, cgroups
+  thalyx-syscall/   the only crate where `unsafe` is permitted
+  thalyx-snapshot/  Btrfs subvolumes and snapshots
   thalyx-journal/   append-only operation journal
-  thalyx-core/      verification, staging, atomic commit, permissions
+  thalyx-core/      verification, staging, atomic commit, permissions, rollback
   thalyx-cli/       the `thalyx` binary
+
+lsm/            BPF LSM programs: enforcement, and the filesystem watcher
+dev/            verify.sh — one command that checks every claim on real hardware
 
 vault/          Design vault (Obsidian, Spanish)
   00-Indice/            Entry point — start here
@@ -119,6 +164,8 @@ vault/          Design vault (Obsidian, Spanish)
 
 Start at `vault/00-Indice/Indice-Principal.md`. It carries the reading order and
 a snapshot of what is decided and what is still open.
+`vault/06-Pendientes/Punto-Actual.md` says where the project stands right now
+and what the next step is; it is updated whenever something is finished.
 
 The vault is written in Spanish. Everything else — code, schemas, identifiers,
 commit messages, CLI output — is in English.

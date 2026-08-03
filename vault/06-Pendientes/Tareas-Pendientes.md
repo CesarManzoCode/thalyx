@@ -10,6 +10,8 @@ tags: [pendientes, tareas, roadmap-decisiones]
 Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el estado en el frontmatter de cada nota enlazada conforme se resuelvan.
 
 > Para saber **qué está construido** en vez de qué está decidido, ver [[Estado-de-Implementacion]].
+>
+> Para saber **dónde quedó el proyecto y qué sigue ahora mismo**, ver [[Punto-Actual]].
 
 ## Pendientes de implementación
 
