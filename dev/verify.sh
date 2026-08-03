@@ -93,6 +93,21 @@ else
     HAVE_CONTROLLERS=0
 fi
 
+# Btrfs is detected here, early, and not where the snapshots are exercised.
+#
+# It used to be checked only at stage 8, which meant the suite ran without
+# `THALYX_REQUIRE_BTRFS_TESTS` even on a machine that has Btrfs: the snapshot
+# tests in the Rust harness skipped in silence while this script proved the same
+# ground its own way. Three of the four skip variables were demanded and the
+# fourth was not, which is rule 3 leaking inside the tool that enforces it.
+if command -v btrfs > /dev/null; then
+    proven "btrfs-progs is installed, so the snapshot tests will be demanded"
+    HAVE_BTRFS=1
+else
+    unproven "btrfs-progs is not installed; snapshot tests cannot be demanded"
+    HAVE_BTRFS=0
+fi
+
 if [ -r /sys/kernel/security/lsm ]; then
     LSM_ORDER="$(cat /sys/kernel/security/lsm)"
     if printf '%s' "$LSM_ORDER" | tr ',' '\n' | grep -qx bpf; then
@@ -253,6 +268,7 @@ step "5. the test suite, with every skip this machine can afford forbidden"
 SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 [ "$HAVE_CONTROLLERS" = 1 ] && SUITE_ENV+=(THALYX_REQUIRE_CONTROLLER_TESTS=1)
 [ "$LOADED" = 1 ]           && SUITE_ENV+=(THALYX_REQUIRE_LSM_TESTS=1)
+[ "$HAVE_BTRFS" = 1 ]       && SUITE_ENV+=(THALYX_REQUIRE_BTRFS_TESTS=1)
 
 echo "   ${SUITE_ENV[*]}"
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
@@ -267,6 +283,7 @@ fi
 # anything about. Naming them is the point.
 [ "$HAVE_CONTROLLERS" = 0 ] && unproven "resource limits (memory.max, pids.max) — no delegated controllers"
 [ "$LOADED" = 0 ]           && unproven "kernel policy enforcement — the LSM is not attached"
+[ "$HAVE_BTRFS" = 0 ]       && unproven "snapshots and restore — btrfs-progs is not installed"
 
 # ------------------------------------------------- 6. a module, end to end
 
@@ -762,6 +779,40 @@ if "$THALYX" memory search "login" > "$WORK/mem-search.log" 2>&1; then
     fi
 else
     failed "search failed; see $WORK/mem-search.log"
+fi
+
+# ----------------------------------------------------------- 10. the agent
+
+step "10. the agent, against a model that misbehaves on purpose"
+
+# Stage 5 counts tests but not which ones. If the agent's hostile-model checks
+# stopped being compiled — the crate dropped from the workspace, a module left
+# unreferenced — the total would fall by thirty-nine and nothing would say which
+# thirty-nine went missing. So they are named here and run on their own.
+if cargo test -p thalyx-agent --quiet > "$WORK/agent.log" 2>&1; then
+    AGENT_COUNT="$(grep -Eo '^test result: ok\. [0-9]+' "$WORK/agent.log" | awk '{s+=$4} END {print s}')"
+    proven "${AGENT_COUNT:-?} agent checks pass: no misbehaviour of the fake produces a contract"
+else
+    failed "the agent checks did not pass; see $WORK/agent.log"
+    tail -30 "$WORK/agent.log"
+fi
+
+# And the part none of that touches.
+#
+# Everything above runs against a fake. The claims that need a real model — that
+# the GBNF grammar is one llama.cpp accepts, and what each tier actually gets
+# right — have never been checked by anything, and a stage that stayed quiet
+# about it would be reporting the absence of a test as the absence of a risk.
+if command -v llama-server > /dev/null || command -v llama-cli > /dev/null; then
+    AGENT_GAP="llama.cpp is installed, but the real model path is not implemented yet: no tier has ever run"
+else
+    AGENT_GAP="llama.cpp is not installed, and the real model path is not implemented yet either"
+fi
+
+if [ "${THALYX_REQUIRE_AGENT_TESTS:-0}" = 1 ]; then
+    failed "$AGENT_GAP"
+else
+    unproven "$AGENT_GAP"
 fi
 
 # ---------------------------------------------------------------- summary

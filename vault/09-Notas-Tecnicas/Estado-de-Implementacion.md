@@ -54,6 +54,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
+| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Sin modelo real; el único `Model` del crate existe para portarse mal |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
 
@@ -86,7 +87,10 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| `thalyx-agent` | Todo el flujo conversacional |
+| El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
+| La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
+| Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
+| Memoria de conversación del agente | Paso 6 del [[Criterio-de-Salida-Fase-1]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
 
 ### Las advertencias que quedan
@@ -102,19 +106,25 @@ el uid de Thalyx. Ver [[Sandbox-Ejecucion]].
 
 **3. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
 
-**4. `verify.sh` no exige las pruebas de Btrfs aunque haya Btrfs.** Activa
-`THALYX_REQUIRE_CGROUP_TESTS`, `_CONTROLLER_TESTS` y `_LSM_TESTS`, pero no
-`_BTRFS_TESTS`; comprueba los snapshots en etapas propias y deja que las del
-arnés de Rust se salten en silencio. Es el hueco de la regla 3 dentro de la
-herramienta que existe para hacerla cumplir.
+**4. El agente nunca ha visto un modelo.** El router, la atribución y el
+ensamblado están probados contra un falso que se porta mal a propósito, y eso
+cubre lo que el agente hace con lo que el modelo le entrega. Lo que no está
+probado por nada es la otra mitad: que la gramática GBNF sea una que `llama.cpp`
+acepte, y qué acierta cada gama. `verify.sh` lo reporta como `NOT PROVEN` en su
+etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
+[[Agente-Minimo]].
 
 ## Pruebas
 
-392 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+431 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+del agente corren además en su propia etapa de `verify.sh`, para que si el crate
+desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay cuatro variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS` y `_BTRFS_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay cinco variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS` y `_AGENT_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
-De las cuatro, `verify.sh` solo activa tres: ver la advertencia 4 más arriba.
+`verify.sh` activa las cuatro primeras cuando la máquina las soporta. La quinta
+es distinta por naturaleza: no hay máquina que la satisfaga todavía, porque lo
+que le falta al agente no es hardware sino código.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

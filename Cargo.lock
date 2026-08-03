@@ -779,6 +779,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-agent"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "thalyx-contract",
+ "thalyx-manifest",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-cli"
 version = "0.1.0"
 dependencies = [

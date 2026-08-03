@@ -105,8 +105,48 @@ Escrito para que no se lea como una versión coja de algo, sino como su alcance:
 - No llama a modelos remotos, y en Fase 1 no puede.
 - No compone las confirmaciones: las genera y las muestra el núcleo.
 
+## Revisión del 2026-08-03 — dos cosas que aparecieron al construirlo
+
+El decreto decía **quién** escribe la procedencia (el ensamblador, no el
+modelo). No decía **cómo**. Al implementarlo apareció la regla, y con ella dos
+consecuencias que no estaban previstas.
+
+### La regla: un valor hereda la procedencia de donde aparece
+
+El ensamblador no interpreta nada. Busca el valor propuesto en los segmentos que
+el agente recibió y le da la procedencia del canal donde lo encuentra. Si
+aparece en varios, gana el menos confiable.
+
+**Consecuencia no prevista: la alucinación deja de ser una cuestión de grado.**
+Un valor que no aparece en *nada* de lo que se le dijo al agente no puede
+recibir procedencia, y se rechaza. El modelo puede elegir entre las cosas que se
+le dijeron; no puede agregar cosas nuevas. Eso no se buscó — salió de la misma
+regla que contiene la inyección.
+
+### La segunda: una operación no se puede atribuir buscándola
+
+Un objetivo es un valor copiado del transcript y se puede buscar. Una
+*operación* no: es una conclusión sacada de todo el transcript. Así que se
+atribuye por lo que la conclusión pudo haber leído.
+
+- Por el router, solo se lee lo que el humano tecleó. La conclusión es suya.
+- Por el modelo, todo el transcript estuvo enfrente, y una conclusión sacada
+  mientras se leía una página hostil es una conclusión que esa página tuvo
+  oportunidad de moldear.
+
+**De ahí sale una propiedad que el decreto no anticipó y que conviene decir en
+voz alta: en cuanto hay texto ajeno en el transcript, el modelo ya no puede
+originar una acción.** El humano sigue pudiendo instalar lo que quiera
+tecleándolo, porque eso toma el camino del router y no se ve afectado.
+
+Esa asimetría es el [[Principio-Doble-Ruta]] haciendo el trabajo para el que
+existe: la ruta directa sigue abierta **precisamente** para que la ruta inferida
+se pueda cerrar sin dejar a nadie sin salida. Sin doble ruta, esta defensa sería
+inaceptable; con ella, no le cuesta nada al usuario.
+
 ## Relacionado
 - [[Gamas-de-Modelo]] — qué modelo, cómo corre, qué garantiza la gramática
+- [[Principio-Doble-Ruta]] — por qué se puede cerrar la ruta inferida
 - [[Agente-Conversacional]] — el agente completo al que este apunta
 - [[Caso-Instalar-Modulo]] — el caso trazado que implementa
 - [[Marcado-de-Origen]] · [[Camino-Confiable]] · [[Contrato-Estructurado]]

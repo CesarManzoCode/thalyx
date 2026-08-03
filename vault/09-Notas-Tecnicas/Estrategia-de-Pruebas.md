@@ -155,6 +155,43 @@ Resultado: un watcher que estaba contando perfectamente se reportó ilegible.
 
 Y el corolario, que es la quinta vez que este proyecto lo aprende en otra capa: **un fallo al leer se reportó como un fallo al existir.** `thalyx graph watcher` trataba cualquier error como "el watcher no está cargado", así que mandaba al humano a recargar algo que llevaba todo el rato funcionando. Ahora distingue las dos cosas y dice cuál es: una es algo que ir a arreglar afuera, la otra es un defecto de Thalyx.
 
+## Regla derivada: dos defensas que se solapan hacen que la prueba grande no pruebe ninguna
+
+El agente mínimo tiene una prueba que parece la importante: nueve formas de
+portarse mal del modelo falso, contra un transcript con una página hostil
+adentro, y ninguna produce un contrato. Pasaba.
+
+Después se rompió cada mecanismo a propósito, para ver cuáles pruebas lo
+notaban:
+
+| Lo que se rompió | Pruebas que fallaron | ¿Falló la prueba grande? |
+|---|---|---|
+| La atribución confía siempre | 8 | **No** |
+| La atribución toma la fuente más confiable | 1 | **No** |
+| La regla de la ruta desactivada | 1 | **No** |
+
+**La prueba grande no falló ni una sola vez.** Las dos defensas se solapan: con
+cualquiera de las dos apagada, la otra sigue deteniendo el ataque. Así que esa
+prueba demuestra que el ataque no pasa —que es verdad y vale— pero **no
+demuestra que ninguno de los dos mecanismos funcione**, y si mañana alguien
+quita uno, seguirá en verde.
+
+Regla:
+
+> **Cuando dos defensas cubren el mismo caso, cada una necesita una prueba que
+> desactive la otra.** Si no existe, la que queda sostiene sola una prueba que
+> parece cubrir ambas, y su desaparición es invisible.
+
+En la práctica: `attribution_alone_refuses_an_injected_target_without_help_from_the_path_rule`
+fuerza el camino determinista para quitar la regla de la ruta de en medio, y
+`the_model_cannot_act_once_it_has_read_something_foreign` mira la regla de la
+ruta directamente. Cada una falla cuando su mecanismo se rompe; la grande no.
+
+Y el método, que es lo transferible: **romper el mecanismo a propósito y contar
+qué pruebas lo notan.** Una prueba que no puede fallar no prueba nada, y la
+única forma barata de saber si puede fallar es hacerla fallar. Este ejercicio
+costó tres minutos y encontró un hueco que 39 pruebas en verde escondían.
+
 ## Regla derivada: una afirmación de ausencia caduca sola, y nadie la revisa
 
 Una revisión externa leyó la bóveda y encontró que `Estado-de-Implementacion`

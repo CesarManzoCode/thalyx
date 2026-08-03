@@ -30,6 +30,12 @@ verificados en hardware real**: 392 pruebas, 44 comprobaciones en máquina real,
 proven 44 · not proven 0 · failed 0
 ```
 
+> **La próxima corrida no dará `not proven 0`, y eso es correcto.** `verify.sh`
+> tiene ahora una etapa 10 para el agente, y la mitad que necesita un modelo
+> real no la ha comprobado nada. Esperar `proven 46 · not proven 1`. Un número
+> verde que se conserva escondiendo lo que no se probó es exactamente la clase
+> de instrumento que este proyecto existe para no construir.
+
 Es la primera vez que todo lo que Thalyx afirma se comprueba en una sola
 máquina y se sostiene. Reproducirla:
 
@@ -71,6 +77,16 @@ inferencias costaría mucho más que un ISO retrasado, y la regla 1 de
 Alcance: router de reglas más un modelo con decodificación restringida por
 gramática, sobre **un solo caso de uso** —instalar un módulo—, no un agente
 general.
+
+**Construida ya la mitad que no necesita un modelo** (`crates/thalyx-agent`, 39
+pruebas). Lo que falta, en orden:
+
+1. El `Model` real que invoca `llama.cpp` como proceso.
+2. La gramática GBNF, que no se puede validar sin `llama.cpp`.
+3. El banco de las cuatro gamas, para sustituir las cifras estimadas.
+
+Los tres necesitan tu máquina: aquí no hay `llama.cpp` y la política de red del
+entorno bloquea `huggingface.co`.
 
 **El decreto que lo bloqueaba ya está escrito:** [[Gamas-de-Modelo]]. No un
 modelo anclado sino **cuatro gamas de una sola familia** que el usuario elige
@@ -150,6 +166,25 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (3) — el agente mínimo, contra un modelo que miente a propósito
+Se decretó [[Gamas-de-Modelo]] —cuatro gamas de una familia, `llama.cpp` como
+proceso, gramática restringida, y **el modelo nunca escribe la procedencia**— y
+se construyó `crates/thalyx-agent` hasta donde este contenedor puede
+comprobarlo: router, atribución, ensamblado y un falso hostil con nueve formas
+de portarse mal. 39 pruebas.
+
+Al construirlo aparecieron dos cosas que el decreto no anticipaba, ya escritas
+como revisión en [[Agente-Minimo]]: atribuir un valor por **dónde aparece**
+también detecta las alucinaciones, y una *operación* no se puede atribuir
+buscándola, así que se atribuye por lo que la conclusión pudo leer — de donde
+sale que **en cuanto hay texto ajeno en el transcript, el modelo ya no puede
+originar una acción**, y el humano sí, tecleándola.
+
+Y una regla nueva de [[Estrategia-de-Pruebas]], encontrada rompiendo cada
+mecanismo a propósito para ver qué pruebas lo notaban: **dos defensas que se
+solapan hacen que la prueba grande no pruebe ninguna**. La prueba de las nueve
+malas conductas no falló con ninguno de los tres mutantes.
 
 ### 2026-08-03 (2) — una revisión externa encontró que la bóveda se contradecía
 Una lectura externa del repo —solo código y documentación, sin el contexto de
