@@ -70,6 +70,31 @@ tags: [continuidad, punto-actual, sesiones]
 > **Nada de esto se ha ejercido.** El contenedor no tiene BPF LSM. La etapa 14
 > de `verify.sh` es donde se comprueba, y es lo siguiente que hay que correr.
 >
+> ## Y el cargador funciona — 2026-08-03, dos fallos después
+>
+> La etapa 14 en la máquina de Cesar: **cargó, atachó, dejó los mapas donde
+> `permd` los busca y se soltó limpio.** El cargador propio es real.
+>
+> Los dos fallos que costó están en [[Cargador-BPF-Propio]]. El segundo importa
+> más que el primero porque no era del cargador: **la demo de denegación se negó
+> a correr contra enforcement que estaba vivo**, tres líneas después de que la
+> misma etapa demostrara que lo estaba. Preguntaba por un directorio que solo
+> crea `bpftool`.
+>
+> Y tirando de ahí apareció algo peor, que llevaba puesto desde antes: **la
+> sesión reportaba enforcement preguntándole a `bpftool` si había un mapa
+> fijado.** Dos errores en una línea — la imagen no tiene `bpftool`, así que
+> adentro contestaba «no» pasara lo que pasara; y un mapa fijado es un lugar
+> donde poner permisos, no algo que los lea. Una máquina con todo fijado y nada
+> atachado habría reportado enforcement.
+>
+> Ahora Thalyx le pregunta al kernel qué programas suyos corre un enlace vivo, y
+> lo hace con llamadas `bpf(2)` propias, así que **funciona dentro de la imagen**.
+> Hay una respuesta más que antes: *parte de los hooks vivos*, que se nombra
+> aparte porque es peor que ninguno.
+>
+> **Falta una corrida en la que la etapa 14 salga verde entera.**
+>
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
 

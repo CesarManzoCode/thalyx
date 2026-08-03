@@ -397,6 +397,13 @@ que reporta verde porque nadie preguntó.
 de una imagen que tiene que tener uno. El mensaje es cierto y el arreglo que
 sugiere es el equivocado — el objeto BPF va incrustado en el binario.
 
+**La línea de `enforcement` de arriba ya no dice eso.** Decía *«the policy map
+is not loaded»*, que se averiguaba invocando `bpftool` —que la imagen no
+tiene— y que además no es la pregunta: un mapa fijado es un lugar donde poner
+permisos, no algo que los lea. Ahora dice cuántos hooks de thalyx-lsm corre un
+enlace vivo, y lo averigua con llamadas al kernel propias. Ver
+[[Cargador-BPF-Propio]].
+
 ## Qué contestar cuando llegue la salida
 
 Por orden de prioridad:

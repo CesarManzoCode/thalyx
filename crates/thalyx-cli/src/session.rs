@@ -193,15 +193,39 @@ fn cgroup2() -> Outcome {
     }
 }
 
+/// Is anything actually enforcing?
+///
+/// This used to answer by asking whether the **policy map** was pinned, through
+/// `bpftool` — wrong twice over. The image has no `bpftool`, so inside the
+/// machine the answer was always "absent" whatever the truth was; and a pinned
+/// map is a place to put permissions, not something that reads them. A machine
+/// with every map pinned and no program linked would have reported enforcement.
+///
+/// The honest question is which of thalyx-lsm's programs a live **link** runs,
+/// and `thalyx_bpf::attachment` asks the kernel exactly that. The names come
+/// out of the same object this binary carries, so there is no second list to
+/// drift.
 fn enforcement() -> Outcome {
-    use thalyx_permd::PolicyStore;
-    let store = thalyx_permd::BpftoolStore::default_map();
-    if store.is_available() {
-        Outcome::Found("the kernel holds the policy map".to_string())
-    } else {
-        Outcome::Absent(
-            "the policy map is not loaded, so no permission would be enforced".to_string(),
-        )
+    let Some(object) = crate::init::embedded::OBJECT else {
+        return Outcome::Absent(
+            "no BPF object was built into me, so there is nothing to attach".to_string(),
+        );
+    };
+
+    match thalyx_bpf::attachment(object) {
+        Ok(state) if state.is_absent() => Outcome::Absent(format!(
+            "{}, so no permission would be enforced",
+            state.describe()
+        )),
+        // A partial attachment is Found rather than Absent because something
+        // *is* in the decision path — and `describe` says in as many words that
+        // it enforces less than it looks like it does.
+        Ok(state) => Outcome::Found(state.describe()),
+        // Listing the kernel's links needs CAP_SYS_ADMIN. Unreadable, not
+        // absent: a session run by a human who is not root would otherwise
+        // report a machine with no enforcement, which is the same lie in the
+        // opposite direction.
+        Err(error) => Outcome::Unreadable(error.to_string()),
     }
 }
 

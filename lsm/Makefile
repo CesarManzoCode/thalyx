@@ -22,6 +22,17 @@
 
 CLANG   ?= clang
 BPFTOOL ?= bpftool
+
+# Thalyx itself, which is what answers "is enforcement live?" — by walking the
+# kernel's links, not by looking for a directory in bpffs.
+#
+# Resolved to an absolute path here rather than left to PATH, because every
+# use of it below goes through `sudo`, and `sudo` resets PATH out from under a
+# binary installed in ~/.cargo/bin. That failure has already cost this project
+# a session: `sudo make -C image store` reported that rustup did not exist on
+# a machine where it plainly did.
+THALYX  ?= $(shell command -v thalyx 2>/dev/null || echo $(HOME)/.cargo/bin/thalyx)
+
 ARCH    := $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/')
 
 VMLINUX := vmlinux.h
@@ -91,8 +102,11 @@ hooks:
 
 load: $(OBJS)
 	@# Refuse to load over a live attachment rather than failing halfway with
-	@# a message about pinning.
-	@if sudo test -d $(PINDIR)/lsm; then \
+	@# a message about pinning. The question is whether hooks are live, not
+	@# whether a pin directory exists: loading over enforcement Thalyx attached
+	@# would leave two sets of links on the same hooks, and detaching one of
+	@# them would change nothing anybody could see.
+	@if sudo $(THALYX) enforce attached --any 2>/dev/null; then \
 	    echo "thalyx-lsm is already attached."; \
 	    echo "  make status    see what it is doing"; \
 	    echo "  make unload    detach it first, then load again"; \
@@ -137,6 +151,15 @@ unload:
 	        sudo rm -f $(BPFFS)/$$stray && echo "  removed stray pin $$stray"; \
 	    fi; \
 	done
+	@# Checked rather than announced. Removing a pin drops a reference, and a
+	@# link somebody else still holds a descriptor for stays live — so "detached"
+	@# printed unconditionally is a claim this can make while enforcement is
+	@# still in the decision path.
+	@if sudo $(THALYX) enforce attached --any 2>/dev/null; then \
+	    echo "STILL ATTACHED: the pins are gone and the hooks are live."; \
+	    echo "Something else holds a descriptor for them. 'make status' shows what."; \
+	    exit 1; \
+	fi
 	@echo "detached"
 
 enforce:
@@ -151,21 +174,33 @@ observe:
 
 status:
 	@echo "LSM order:  $$(cat /sys/kernel/security/lsm)"
-	@# `sudo test`, not `test`: bpffs is mode 700 root-owned, so an unprivileged
-	@# check reports "not attached" for something that is very much attached —
-	@# a security tool reading as disarmed while it is armed.
-	@if sudo test -d $(PINDIR)/lsm; then \
+	@# Asked of the kernel's links rather than of a directory in bpffs. The
+	@# directory this used to test for is the one `bpftool prog loadall`
+	@# creates, so enforcement attached by Thalyx's own loader read as absent —
+	@# a security tool reporting itself disarmed while it is armed, which is the
+	@# failure this file has a comment about four lines below.
+	@#
+	@# `sudo`, and by absolute path: bpffs is mode 700 root-owned, and sudo
+	@# resets PATH out from under a binary installed in ~/.cargo/bin.
+	@if sudo $(THALYX) enforce attached 2>/dev/null; then \
 	    echo "enforcement: attached"; \
 	    printf 'mode:        '; \
 	    if sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_enforcing 2>/dev/null \
 	        | grep -q '"value": \["0x01"'; then echo enforcing; else echo observing; fi; \
 	else \
-	    echo "enforcement: not attached"; \
+	    echo "enforcement: $$(sudo $(THALYX) enforce attached 2>&1 | head -1 | sed 's/^thalyx: //')"; \
 	fi
 	@# Which of the watcher's programs are actually pinned. The load is
 	@# all-or-nothing, so this is normally all or none — it is printed because
 	@# "the watcher is attached" and "the watcher sees everything" are
 	@# different claims, and only the second one lets the index skip a walk.
+	@#
+	@# Still the weak check, and knowingly: this counts pins, not links, so it
+	@# would say "attached" for ten programs in nobody's path. Thalyx does not
+	@# carry the watcher's object, so it cannot be asked about it the way
+	@# enforcement is above. What keeps the index honest meanwhile is that
+	@# `thalyx graph status` proves the counter by measurement — it moves, or
+	@# the tree gets walked.
 	@if sudo test -d $(PINDIR)/watch; then \
 	    echo "watcher:     attached ($$(sudo ls $(PINDIR)/watch | wc -l)/$(words $(WATCH_HOOKS)) hooks)"; \
 	    echo "             thalyx graph status  shows what it has counted"; \
@@ -173,8 +208,16 @@ status:
 	@echo
 	@# A pinned program that is not linked to a hook enforces nothing. The
 	@# pins prove it loaded; only a link proves it is in the path.
+	@#
+	@# Every LSM link on the machine, which is both objects and anybody else's:
+	@# the line above is the one that says how many are this enforcement's.
 	@printf 'live LSM links: '
-	@sudo $(BPFTOOL) link list 2>/dev/null | grep -c 'prog_type lsm' || echo 0
+	@# `|| true`, not `|| echo 0`: `grep -c` prints 0 and *exits 1* when it
+	@# matches nothing, so the fallback fired on the empty case and the line
+	@# read "0" twice. Dropping the fallback entirely fails the recipe instead,
+	@# because that same exit 1 is the last status in the rule. The instrument,
+	@# again — twice in four lines.
+	@sudo $(BPFTOOL) link list 2>/dev/null | grep -c 'prog_type lsm' || true
 	@echo
 	@echo "policy entries:"
 	@sudo $(BPFTOOL) map dump pinned $(MAPDIR)/thalyx_policy 2>/dev/null || echo "  (none)"

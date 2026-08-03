@@ -71,8 +71,36 @@ cleanup() {
     sudo rmdir "$CGROUP" 2>/dev/null && echo "    cgroup removed"
 }
 
-if ! sudo test -d "$PINDIR/lsm"; then
-    red "thalyx-lsm is not attached. Run 'make load' first."
+# Is enforcement live? Asked of the kernel, through Thalyx, and not by looking
+# for a directory in bpffs.
+#
+# This check used to be `test -d $PINDIR/lsm` — the directory `bpftool prog
+# loadall` happens to create. Thalyx's own loader pins in a different shape, so
+# the demo refused to run against enforcement that was attached and working,
+# printing "not attached" at a machine where two hooks were live. The verifier
+# stage that found it had already proven the links existed on the line above.
+#
+# `enforce attached` follows the kernel's links to the programs they run and
+# compares the names against the object. It answers the same for either loader,
+# because it is about the kernel rather than about who wrote to bpffs.
+#
+# By absolute path, because `sudo` resets PATH and `thalyx` lives in the
+# installing user's ~/.cargo/bin. That is not a hypothetical: the image build
+# failed exactly this way, with `sudo make store` reporting that rustup did not
+# exist on a machine where it plainly did.
+THALYX="${THALYX:-$(command -v thalyx || echo "$HOME/.cargo/bin/thalyx")}"
+if [ ! -x "$THALYX" ]; then
+    red "this needs the thalyx binary, and $THALYX is not one."
+    echo "    cargo install --path crates/thalyx-cli"
+    exit 1
+fi
+
+if ! sudo "$THALYX" enforce attached 2>/dev/null; then
+    red "thalyx-lsm is not attached, or not all of it is."
+    sudo "$THALYX" enforce status 2>&1 | sed 's/^/    /' | head -3
+    echo
+    echo "  make load                     attach it with bpftool"
+    echo "  sudo thalyx enforce attach    attach it with Thalyx's own loader"
     exit 1
 fi
 

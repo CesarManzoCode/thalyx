@@ -459,6 +459,56 @@ había arrancado con ese mismo binario como `/init`. Uno dinámico habría dado
 comprobación contradice algo que la máquina ya demostró, **la comprobación es la
 sospechosa** — la quinta regla de esta nota, otra vez, y van siete.
 
+## Regla derivada: una precondición comprueba un artefacto de quien la escribió
+
+**Cuando una prueba empieza con "¿está puesto X?", esa pregunta suele estar
+contestada por un rastro que dejó una implementación concreta, y no por X.**
+
+La etapa 14 probó que el cargador propio de Thalyx cargó, que **tres enlaces
+estaban vivos** y que los mapas quedaron donde `permd` los busca. Después la
+demo de denegación se negó a correr: *«thalyx-lsm is not attached. Run 'make
+load' first.»* Sobre una máquina donde acababa de demostrarse, tres líneas más
+arriba, que sí lo estaba.
+
+La precondición era `test -d /sys/fs/bpf/thalyx/lsm` — el directorio que crea
+`bpftool prog loadall` y **nadie más**. El cargador de Thalyx fija en otra forma,
+decretada y con motivo, así que la demo contestaba por el cargador que no estaba
+usando.
+
+Tres comprobaciones distintas tenían la misma enfermedad, y todas contestaban
+que sí a cosas que no aplican nada:
+
+| Quién | Qué preguntaba | Qué contesta eso |
+|---|---|---|
+| `thalyx session` | ¿está fijado el **mapa** de política? | que un cargador corrió |
+| `make status`, la demo | ¿existe un **directorio** en bpffs? | que corrió *bpftool* |
+| `dev/verify.sh` | ¿hay ≥2 enlaces LSM en la máquina? | que alguien tiene enlaces |
+
+La tercera es la más fea porque *pasó*: imprimió **3** para un objeto de dos
+programas, y los diez del vigilante de archivos la habrían satisfecho con el
+enforcement sin atacharse.
+
+Lo que de verdad importa es lo que esta nota lleva diciendo desde que existe:
+**un pin no es un enlace.** Un programa cargado, fijado y en el camino de
+decisión de nadie se lista idéntico a uno vivo. La respuesta honesta es
+enumerar los enlaces del kernel, seguir cada uno hasta el programa que corre y
+comparar los nombres contra el objeto — que es lo que hace `thalyx enforce
+attached`, sin bpftool, y por eso contesta igual para cualquiera de los dos
+cargadores.
+
+Dos detalles que solo aparecen al hacerlo:
+
+- **El kernel guarda quince caracteres de nombre.** `thalyx_socket_connect` son
+  veintiuno. Comparar el nombre completo contra el truncado no encuentra nada, y
+  la respuesta habría sido «no está atachado» en una máquina donde sí — el mismo
+  fallo, entrando por el arreglo.
+- **Un nombre no basta.** Cualquiera puede llamar a su programa
+  `thalyx_file_open`; la comparación exige también el tipo de programa.
+
+La forma general: **si la precondición la escribió quien también escribió la
+implementación, probablemente comprueba la implementación.** Se nota preguntando
+si otra implementación correcta la pasaría.
+
 ## Regla derivada: la limpieza de una prueba puede destruir más que la prueba
 
 **Si una prueba monta algo, su limpieza tiene que desmontarlo antes de borrar, y

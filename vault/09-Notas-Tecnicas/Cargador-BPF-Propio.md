@@ -7,12 +7,21 @@ tags: [bpf, lsm, kernel, imagen, fase-1]
 
 # El cargador de BPF propio
 
-> **Estado: probado en hardware el 2026-08-03**, después de un fallo que vale
-> la pena leer. La primera corrida de la etapa 14 rechazó el programa con
-> `bpf_lsm_socket_connect() is not modifiable`: `BPF_LSM_MAC` estaba escrito
-> como 26, que es `BPF_MODIFY_RETURN`, la entrada anterior del mismo `enum`. El
-> kernel aplicó la comprobación equivocada y lo dijo con esas palabras. Ver la
-> regla sobre constantes capturadas en [[Estrategia-de-Pruebas]].
+> **Estado: el cargador funciona en hardware desde el 2026-08-03.** Carga,
+> atacha, deja los mapas donde `permd` los busca y se suelta limpio. Le costó
+> dos fallos, y los dos valen la pena:
+>
+> 1. **`BPF_LSM_MAC` estaba escrito como 26**, que es `BPF_MODIFY_RETURN`, la
+>    entrada anterior del mismo `enum`. El kernel aplicó la comprobación
+>    equivocada y lo dijo con esas palabras: `bpf_lsm_socket_connect() is not
+>    modifiable`. Ver la regla sobre constantes capturadas en
+>    [[Estrategia-de-Pruebas]].
+> 2. **La demo de denegación se negó a correr contra enforcement que estaba
+>    vivo**, porque preguntaba por un directorio que solo crea `bpftool`. No era
+>    un fallo del cargador: era el arnés contestando por otra implementación.
+>    Ver "Cómo se pregunta si está puesto" abajo.
+>
+> Falta una corrida en la que la etapa 14 salga verde entera.
 
 ## Qué problema resuelve
 
@@ -103,6 +112,37 @@ equivocado.
 Un programa puede estar cargado, fijado y en el camino de nadie, y se lista
 idéntico a uno vivo. Es exactamente cómo una herramienta de seguridad se lee
 como armada estando desarmada. La etapa 14 cuenta **enlaces**.
+
+## Cómo se pregunta si está puesto
+
+Hasta que el cargador existió, había un solo cargador, y toda la casa daba por
+hecho su forma. Cuando apareció el segundo, tres comprobaciones distintas
+contestaron mal — y todas en la misma dirección, diciendo que sí a cosas que no
+aplican nada. La tabla está en [[Estrategia-de-Pruebas]].
+
+La pregunta correcta es **qué programas de este objeto corre un enlace vivo**, y
+la contesta `thalyx enforce attached`:
+
+1. Enumerar los enlaces del kernel (`BPF_LINK_GET_NEXT_ID`).
+2. De cada uno, sacar el programa (`BPF_OBJ_GET_INFO_BY_FD`).
+3. Comparar nombre **y tipo de programa** contra los del objeto incrustado.
+
+Sin bpftool, así que también funciona dentro de la imagen — que es donde más
+falta hacía: la sesión reportaba enforcement preguntándole a un `bpftool` que la
+imagen no tiene, o sea reportaba «no» pasara lo que pasara.
+
+Los nombres salen **del objeto**, nunca de una lista al lado. Dos listas que
+tienen que coincidir, guardadas en dos lugares, terminan por no coincidir, y
+aquí el desacuerdo sería una máquina reportando enforcement que no tiene.
+
+Tres respuestas, no dos: **todo vivo**, **nada vivo**, y **parte vivo** — que se
+nombra aparte porque es peor que nada. Enforcement con uno de sus dos hooks
+puestos revisa archivos y no revisa conexiones, y un solo número lo dejaría leer
+como que funciona.
+
+Y una cuarta que no es una respuesta: **no se pudo leer**. Enumerar enlaces pide
+`CAP_SYS_ADMIN`; sin él, contestar «no hay nada atachado» sería la misma mentira
+al revés.
 
 ## Qué se rechaza en vez de adivinarse
 

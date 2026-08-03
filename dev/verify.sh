@@ -240,6 +240,15 @@ fi
 proven "the workspace builds"
 THALYX="$CARGO_TARGET_DIR/debug/thalyx"
 
+# Exported so `make -C lsm` uses the binary this run just built rather than
+# whatever `cargo install` left on PATH. The Makefile takes it with `?=`.
+#
+# Without this the run would be checking two different binaries and saying one
+# name: `make load` would ask an installed Thalyx whether enforcement is live
+# while every claim in this script came from the one in target/. They agree
+# right up until the moment a change matters.
+export THALYX
+
 # ------------------------------------------------------------ 3. the kernel
 
 if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
@@ -1397,11 +1406,16 @@ else
         # A pin is not a link. A program can be loaded, pinned and in nobody's
         # decision path, and it lists identically to one that is live — which is
         # exactly how a security tool reads as armed while disarmed.
-        LIVE="$(bpftool link list 2>/dev/null | grep -c 'prog_type lsm' || echo 0)"
-        if [ "$LIVE" -ge 2 ]; then
-            proven "$LIVE LSM link(s) live in the kernel, which is what enforces rather than what is pinned"
+        #
+        # Asked about *this object's* programs, by name. This used to count
+        # every LSM link on the machine with `bpftool link list | grep -c`,
+        # which also counts the ten the file watcher owns: two programs were
+        # attached and it printed three, and `-ge 2` would have been satisfied
+        # by the watcher alone with enforcement attaching nothing at all.
+        if LIVE="$("$THALYX" enforce attached 2>&1)"; then
+            proven "every hook of thalyx-lsm is live in the kernel, which is what enforces rather than what is pinned"
         else
-            failed "only $LIVE LSM link(s) are live; the programs loaded and are in nobody's path"
+            failed "not every hook is live; the programs loaded and are in nobody's path — $LIVE"
         fi
 
         # The maps permd needs, by the names permd looks them up under. A
@@ -1431,11 +1445,19 @@ else
         # Taken back down by the same command, because a stage that left the
         # machine attached would make every later run start from a state the
         # first one did not.
+        #
+        # Both halves are checked, and they are different claims: the pins are
+        # gone, *and* nothing of it is left in the kernel's decision path.
+        # Removing a pin only drops a reference — a link something else still
+        # holds a descriptor for stays live, and a check that stopped at the
+        # empty directory would call that a clean detach.
         if "$THALYX" enforce detach > "$WORK/loader-detach.log" 2>&1 \
-           && [ ! -d /sys/fs/bpf/thalyx/links ]; then
-            proven "detaching removed every pin it made"
+           && [ ! -d /sys/fs/bpf/thalyx/links ] \
+           && ! "$THALYX" enforce attached --any 2>/dev/null; then
+            proven "detaching removed every pin it made, and left no hook live"
         else
             failed "Thalyx did not detach cleanly; see $WORK/loader-detach.log"
+            "$THALYX" enforce attached --any 2>&1 | sed 's/^/     /'
         fi
     fi
 fi

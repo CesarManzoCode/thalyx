@@ -138,7 +138,7 @@ fn mount_all() -> Boot {
 ///
 /// `None` when `make -C lsm` had not been run when this was compiled. That is a
 /// different fact from a kernel that cannot load it, and the boot says which.
-mod embedded {
+pub mod embedded {
     include!(concat!(env!("OUT_DIR"), "/lsm_object.rs"));
 }
 

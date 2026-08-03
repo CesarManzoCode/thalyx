@@ -20,6 +20,21 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 pub enum EnforceCommand {
     /// Report whether the kernel is enforcing, and for whom
     Status,
+    /// Say nothing; exit 0 only if every hook is live
+    ///
+    /// The check `lsm/demo-enforcement.sh` and `make status` need. They used to
+    /// test whether a directory existed in bpffs, which answered for the loader
+    /// that happens to create that directory — so enforcement Thalyx attached
+    /// itself read as not attached, and the demo refused to run against it.
+    Attached {
+        /// Exit 0 if *any* hook is live, not only if all of them are.
+        ///
+        /// Two different questions. A demo about to test a denial needs every
+        /// hook; a loader about to attach needs to know whether it would be
+        /// stacking on top of something, and one live hook is enough for that.
+        #[arg(long)]
+        any: bool,
+    },
     /// Push a module's granted permissions into the kernel
     Apply {
         module_id: String,
@@ -44,11 +59,19 @@ pub enum EnforceCommand {
 }
 
 pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
+    // Before the store is opened, because this asks the kernel a question that
+    // has nothing to do with what is installed — and a machine with no store
+    // still has hooks, or does not, and should be able to say which.
+    if let EnforceCommand::Attached { any } = command {
+        return attached_quietly(any);
+    }
+
     let store = Store::open(store_root)?;
     let kernel = BpftoolStore::default_map();
 
     match command {
         EnforceCommand::Status => status(&store, &kernel),
+        EnforceCommand::Attached { .. } => unreachable!("returned above"),
 
         EnforceCommand::Attach => attach(),
         EnforceCommand::Detach => detach(),
@@ -109,8 +132,42 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
     }
 }
 
+/// What of thalyx-lsm is in the kernel's decision path right now.
+///
+/// Two separate readings, deliberately, because they fail apart: the maps can
+/// be pinned with nothing attached (a loader ran and stopped), and hooks can be
+/// live with the policy map missing (enforcement that no permission can be
+/// written into). One line saying "loaded" would hide both.
+fn attachment() -> Result<thalyx_bpf::Attachment, String> {
+    let Some(object) = embedded::OBJECT else {
+        return Err(format!(
+            "no BPF object was built into this binary; `make -C lsm` produces {}",
+            embedded::ORIGIN
+        ));
+    };
+    thalyx_bpf::attachment(object).map_err(|error| error.to_string())
+}
+
+/// Exit 0 when every hook is live, and print nothing.
+///
+/// For the scripts that used to test whether a directory existed in bpffs —
+/// which answered for the loader that made that directory and no other, and so
+/// reported enforcement Thalyx had attached as absent.
+fn attached_quietly(any: bool) -> Fallible {
+    match attachment() {
+        Ok(state) if state.is_complete() || (any && !state.is_absent()) => Ok(()),
+        Ok(state) => Err(state.describe().into()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn status(store: &Store, kernel: &BpftoolStore) -> Fallible {
     let available = kernel.is_available();
+
+    match attachment() {
+        Ok(state) => println!("enforcement:       {}", state.describe()),
+        Err(error) => println!("enforcement:       COULD NOT BE READ — {error}"),
+    }
 
     println!(
         "kernel policy map: {}",

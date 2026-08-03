@@ -951,11 +951,20 @@ const SYS_BPF: libc::c_long = 321;
 const SYS_BPF: libc::c_long = 280;
 
 /// The commands used here, by their number in `enum bpf_cmd`.
-mod bpf_cmd {
+///
+/// Public so that `thalyx-bpf` can check every one of them against a captured
+/// copy of the uapi header. Written from memory these are exactly the kind of
+/// constant that is wrong by one and says nothing about it — which has already
+/// happened once here, to `BPF_LSM_MAC`.
+pub mod bpf_cmd {
     pub const MAP_CREATE: u32 = 0;
     pub const PROG_LOAD: u32 = 5;
     pub const OBJ_PIN: u32 = 6;
+    pub const PROG_GET_FD_BY_ID: u32 = 13;
+    pub const OBJ_GET_INFO_BY_FD: u32 = 15;
     pub const RAW_TRACEPOINT_OPEN: u32 = 17;
+    pub const LINK_GET_FD_BY_ID: u32 = 30;
+    pub const LINK_GET_NEXT_ID: u32 = 31;
 }
 
 /// `BPF_PROG_TYPE_LSM`.
@@ -1204,6 +1213,231 @@ pub fn bpf_obj_pin(object: BorrowedFd<'_>, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct IdAttr {
+    /// `start_id` walking, `id` fetching. One field, two names, one union.
+    id: u32,
+    /// Written by the kernel, not by this side.
+    next_id: u32,
+    open_flags: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ObjInfoAttr {
+    bpf_fd: u32,
+    info_len: u32,
+    info: u64,
+}
+
+/// The prefix of `struct bpf_link_info` that is the same for every link type.
+///
+/// Everything past `prog_id` is a union of one structure per kind of link, so
+/// this deliberately stops here — and the kernel copies out only the bytes it
+/// is asked for, which makes a short structure the supported way to read a
+/// prefix rather than a trick.
+///
+/// `link_type` is never read. It is here because removing it would move the two
+/// fields that are read by four bytes each, and the kernel would fill them from
+/// the wrong place while every one of these tests still passed.
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct LinkInfo {
+    link_type: u32,
+    id: u32,
+    prog_id: u32,
+}
+
+/// `struct bpf_prog_info` up to and including `name`.
+///
+/// The offsets are not guessable and getting one wrong does not fail: `name`
+/// would be read from the middle of some other field and the program would be
+/// reported as called whatever those bytes spell. So the layout is checked
+/// against a captured copy of the header in `thalyx-bpf`, which computes the
+/// offsets rather than comparing them to numbers somebody typed.
+///
+/// Only `prog_type` and `name` are ever read. Every other field is here to put
+/// those two where the kernel writes them, so none of them may be deleted.
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct ProgInfo {
+    prog_type: u32,
+    id: u32,
+    tag: [u8; 8],
+    jited_prog_len: u32,
+    xlated_prog_len: u32,
+    jited_prog_insns: u64,
+    xlated_prog_insns: u64,
+    load_time: u64,
+    created_by_uid: u32,
+    nr_map_ids: u32,
+    map_ids: u64,
+    name: [u8; 16],
+}
+
+/// Where this crate believes the fields it reads live.
+///
+/// Exposed so that `thalyx-bpf` can check them against a captured copy of the
+/// uapi header rather than against a number somebody typed twice. Getting
+/// `name` wrong does not fail: it reads sixteen bytes of another field and
+/// reports a program called whatever those bytes spell, and Thalyx would then
+/// say enforcement is absent on a machine where it is live.
+pub mod info_layout {
+    use super::{LinkInfo, ProgInfo};
+
+    pub const PROG_NAME_OFFSET: usize = std::mem::offset_of!(ProgInfo, name);
+    pub const PROG_PREFIX_LEN: usize = std::mem::size_of::<ProgInfo>();
+    pub const LINK_PROG_ID_OFFSET: usize = std::mem::offset_of!(LinkInfo, prog_id);
+    pub const LINK_PREFIX_LEN: usize = std::mem::size_of::<LinkInfo>();
+}
+
+/// One link that is live in the kernel right now, and the program it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveLink {
+    pub link_id: u32,
+    pub program_id: u32,
+    pub program_type: u32,
+    /// As the kernel holds it: at most fifteen characters.
+    pub program: String,
+}
+
+/// Every BPF link the kernel currently has, with the program each one runs.
+///
+/// This is the only honest answer to "is enforcement attached?". A pinned map
+/// says a loader ran. A pinned program says it loaded. Neither says the program
+/// is in a decision path, and a program that is loaded and unlinked lists
+/// identically to one that is live — which is exactly how a security tool reads
+/// as armed while it is disarmed.
+///
+/// Needs `CAP_SYS_ADMIN`. Without it the walk fails with `EPERM` on the first
+/// step, and that is returned as an error rather than as an empty list: a
+/// failure to read is not a failure to exist, and reporting "nothing is
+/// attached" to a process that was not allowed to look would be the same lie in
+/// the other direction.
+pub fn live_links() -> io::Result<Vec<LiveLink>> {
+    use std::os::fd::AsFd;
+
+    let mut out = Vec::new();
+    let mut cursor = 0u32;
+
+    loop {
+        // Mutable, because this is the one command here whose argument
+        // structure the kernel writes into: `next_id` is an output. Passing it
+        // through the shared-reference path every other command uses would have
+        // the kernel writing through a `&`, which is not something this
+        // language lets you take back later.
+        let mut attr = IdAttr {
+            id: cursor,
+            ..Default::default()
+        };
+        match bpf_writing(bpf_cmd::LINK_GET_NEXT_ID, as_bytes_mut(&mut attr)) {
+            Ok(_) => {}
+            // The documented end of the walk, and the only error that means
+            // "there are no more" rather than "something went wrong".
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => break,
+            Err(error) => return Err(error),
+        }
+        cursor = attr.next_id;
+
+        let link = match bpf(
+            bpf_cmd::LINK_GET_FD_BY_ID,
+            as_bytes(&IdAttr {
+                id: cursor,
+                ..Default::default()
+            }),
+        ) {
+            Ok(descriptor) => owned(descriptor),
+            // A link that went away between being listed and being opened is
+            // not an error: something detached while this was looking, and the
+            // rest of the walk is still true.
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => continue,
+            Err(error) => return Err(error),
+        };
+
+        let mut info = LinkInfo::default();
+        object_info(link.as_fd(), &mut info)?;
+
+        let program = match bpf(
+            bpf_cmd::PROG_GET_FD_BY_ID,
+            as_bytes(&IdAttr {
+                id: info.prog_id,
+                ..Default::default()
+            }),
+        ) {
+            Ok(descriptor) => owned(descriptor),
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => continue,
+            Err(error) => return Err(error),
+        };
+
+        let mut program_info = ProgInfo::default();
+        object_info(program.as_fd(), &mut program_info)?;
+
+        out.push(LiveLink {
+            link_id: info.id,
+            program_id: info.prog_id,
+            program_type: program_info.prog_type,
+            program: from_kernel_name(&program_info.name),
+        });
+    }
+
+    Ok(out)
+}
+
+/// Ask the kernel to fill in an info structure for an open object.
+fn object_info<T>(object: BorrowedFd<'_>, info: &mut T) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let attr = ObjInfoAttr {
+        bpf_fd: object.as_raw_fd() as u32,
+        info_len: std::mem::size_of::<T>() as u32,
+        info: std::ptr::from_mut(info) as u64,
+    };
+    bpf(bpf_cmd::OBJ_GET_INFO_BY_FD, as_bytes(&attr))?;
+    Ok(())
+}
+
+/// The name the kernel holds, which is at most fifteen characters and NUL-padded.
+fn from_kernel_name(bytes: &[u8; 16]) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// What a name will look like once the kernel has it.
+///
+/// Callers compare the names in an object against the names the kernel reports,
+/// and `thalyx_socket_connect` is twenty-one characters. Comparing the full
+/// name to the truncated one finds nothing, and "enforcement is not attached"
+/// would be the answer on a machine where it is.
+pub fn kernel_visible_name(name: &str) -> String {
+    from_kernel_name(&kernel_name(name))
+}
+
+/// Make the call with a buffer the kernel is allowed to write back into.
+///
+/// Separate from `bpf` so that the commands with no output field keep taking a
+/// shared reference: which of them writes back is a property worth being able
+/// to see in the signature.
+fn bpf_writing(command: u32, attr: &mut [u8]) -> io::Result<i32> {
+    // SAFETY: the same contract as `bpf`, with the one difference that the
+    // kernel writes up to `attr.len()` bytes back. The pointer is derived from
+    // a `&mut` that outlives the call, so nothing else can be reading it.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(
+            SYS_BPF,
+            command as libc::c_long,
+            attr.as_mut_ptr(),
+            attr.len() as libc::c_long,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(result as i32)
+}
+
 /// The bytes of an argument structure, exactly as long as the structure is.
 fn as_bytes<T>(value: &T) -> &[u8] {
     // SAFETY: `T` is one of the `repr(C)` argument structures above, all of
@@ -1214,6 +1448,21 @@ fn as_bytes<T>(value: &T) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             std::ptr::from_ref(value).cast::<u8>(),
+            std::mem::size_of::<T>(),
+        )
+    }
+}
+
+/// The bytes of an argument structure the kernel may write into.
+fn as_bytes_mut<T>(value: &mut T) -> &mut [u8] {
+    // SAFETY: `T` is a `repr(C)` argument structure of plain data, built by
+    // zeroing, and the slice borrows `value` exclusively for as long as it
+    // exists — so nothing else can observe the bytes while the kernel changes
+    // them.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            std::ptr::from_mut(value).cast::<u8>(),
             std::mem::size_of::<T>(),
         )
     }
