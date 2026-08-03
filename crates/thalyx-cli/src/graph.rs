@@ -65,6 +65,14 @@ pub enum GraphCommand {
         #[arg(default_value = ".")]
         tree: PathBuf,
     },
+    /// What the kernel's watcher can see, with no index involved
+    ///
+    /// Separate from `status` because "can this counter be believed" is a
+    /// question about the machine, not about any one index. It is also the
+    /// only way to watch the count move while doing something to a file,
+    /// which is how the hook set gets checked against reality rather than
+    /// against its own list of hooks.
+    Watcher,
     /// Files carrying a tag
     Tagged {
         tag: String,
@@ -148,6 +156,59 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                     println!("`thalyx graph build` brings it back into line.");
                 }
             }
+            Ok(())
+        }
+
+        GraphCommand::Watcher => {
+            let counter = KernelCounter::default_map();
+
+            match counter.total() {
+                Ok(total) => println!("mutations {total}"),
+                Err(_) => {
+                    // Deliberately not a `mutations` line with a word where the
+                    // number goes. Anything reading this for a count must come
+                    // away with nothing, not with something that parses.
+                    println!("watcher   not loaded");
+                    println!("  {}", counter.map().display());
+                    println!();
+                    println!("Every freshness check walks the whole tree until it is.");
+                    println!("`make -C lsm load` attaches it.");
+                    return Ok(());
+                }
+            }
+
+            match counter.missing_hooks() {
+                Ok(missing) if missing.is_empty() => {
+                    println!(
+                        "hooks     all {} attached",
+                        thalyx_watch::REQUIRED_HOOKS.len()
+                    );
+                    println!();
+                    println!("Nothing a process on this machine does to a file gets past all");
+                    println!("of them — including a write through a descriptor that was");
+                    println!("already open, which is the one that took the longest to cover.");
+                    println!();
+                    println!("Still machine-wide: it counts changes outside any indexed tree.");
+                    println!("That costs walks that were not needed. It never hides one.");
+                }
+                Ok(missing) => {
+                    println!(
+                        "hooks     {} of {} attached",
+                        thalyx_watch::REQUIRED_HOOKS.len() - missing.len(),
+                        thalyx_watch::REQUIRED_HOOKS.len()
+                    );
+                    println!();
+                    println!("MISSING — each of these is a way a file can change in silence:");
+                    for hook in missing {
+                        println!("  {hook}");
+                    }
+                    println!();
+                    println!("The count cannot be believed while any of them is absent.");
+                    println!("`make -C lsm hooks` shows which ones this kernel exposes.");
+                }
+                Err(error) => println!("hooks     could not be established: {error}"),
+            }
+
             Ok(())
         }
 
@@ -323,9 +384,29 @@ fn print_coverage(index: &Index) -> Fallible {
         None => println!("watcher   {total} mutation(s) seen; no baseline for this index"),
     }
 
-    if !counter.claims_complete_coverage() {
-        println!("          the count is machine-wide and its hooks miss writes through");
-        println!("          an open descriptor, so it is reported and never believed");
+    // Which hooks, by name. "Coverage is incomplete" is not actionable; "the
+    // hook that sees writes through an open descriptor is not attached" says
+    // what changed in silence and what to do about it.
+    match counter.missing_hooks() {
+        Ok(missing) if missing.is_empty() => {
+            println!(
+                "          all {} hooks attached: nothing on this machine can change a",
+                thalyx_watch::REQUIRED_HOOKS.len()
+            );
+            println!("          file without the count moving. It is still machine-wide, so");
+            println!("          it counts changes outside this tree — cautious, never blind.");
+        }
+        Ok(missing) => {
+            println!(
+                "          NOT BELIEVABLE — {} hook(s) missing:",
+                missing.len()
+            );
+            println!("          {}", missing.join(", "));
+            println!("          each one is a way a file can change without the count moving");
+        }
+        Err(error) => {
+            println!("          coverage could not be established: {error}");
+        }
     }
 
     Ok(())

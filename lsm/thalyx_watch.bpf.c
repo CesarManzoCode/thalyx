@@ -31,6 +31,12 @@ char LICENSE[] SEC("license") = "GPL";
 #define THALYX_CREATED 0
 #define THALYX_REMOVED 1
 #define THALYX_RENAMED 2
+#define THALYX_WRITTEN 3
+#define THALYX_RETITLED 4   /* metadata: truncate, chmod, chown, utimes */
+
+/* From include/linux/fs.h. Duplicated rather than derived because vmlinux.h
+ * carries type layouts, not macros. */
+#define MAY_WRITE 0x00000002
 
 struct mutation {
     __u64 cgroup_id;
@@ -56,12 +62,26 @@ struct {
  * the whole tree; a counter that has not moved since the last build means the
  * walk can be skipped entirely.
  *
+ * ## Why it is per-CPU
+ *
+ * It used to be a plain array, which is one `__sync_fetch_and_add` on one
+ * cacheline contended by every core in the machine. That was affordable while
+ * the hooks were three rare operations. It is not affordable now that the set
+ * includes `file_permission`, which fires on every read and write on the
+ * machine — the counter would have become a global lock in the write path.
+ *
+ * Per-CPU makes each increment local and uncontended. Userspace sums the
+ * slots, and the sum is still monotonic: no single read is atomic across
+ * CPUs, but any read lands between the true value when it started and the
+ * true value when it finished, so a later read is never smaller than an
+ * earlier one. That is the only property the freshness logic depends on.
+ *
  * Never reset while loaded. A count that went backwards would look like
  * "fewer things changed", so userspace treats any decrease as a reload and
  * therefore as a gap in coverage.
  */
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u64);
@@ -72,16 +92,30 @@ static __always_inline void count_mutation(void)
     __u32 slot = 0;
     __u64 *total = bpf_map_lookup_elem(&thalyx_mutation_count, &slot);
     if (total)
-        __sync_fetch_and_add(total, 1);
+        /* No atomic: the slot belongs to this CPU and BPF programs are not
+         * preemptible by other BPF programs on the same CPU. */
+        *total += 1;
 }
 
-static __always_inline void report(__u32 kind)
+/* Bump the counter, and queue the detail if there is room for it.
+ *
+ * `quiet` is for the hooks that fire constantly. Every write on the machine
+ * passes through `file_permission`, and pushing a ring buffer record for each
+ * one would drown every other event in the ring within milliseconds — the
+ * detail for a rename would be lost to a log file being appended to. So the
+ * hot hook contributes to the count, which is what freshness needs, and stays
+ * out of the ring, which is what attribution needs.
+ */
+static __always_inline void report(__u32 kind, bool quiet)
 {
     /* Counted first, and unconditionally. If the ring is full the detail is
      * lost, but the fact that something changed must not be: an index that
      * believed nothing had happened would be confidently wrong, which is the
      * one outcome this whole design refuses. */
     count_mutation();
+
+    if (quiet)
+        return;
 
     struct mutation *event = bpf_ringbuf_reserve(&thalyx_mutations, sizeof(*event), 0);
     if (!event)
@@ -95,33 +129,154 @@ static __always_inline void report(__u32 kind)
     bpf_ringbuf_submit(event, 0);
 }
 
-/* inode_* rather than path_*: the path family only exists when
-   CONFIG_SECURITY_PATH is built in, which depends on which LSMs the
-   distribution ships. The inode hooks are part of the core LSM set and are
-   always present. */
+/* ## Why every hook counts before knowing whether the operation succeeds
+ *
+ * An LSM hook runs *before* the operation, so there is no outcome to wait for.
+ * The `ret` argument is not "did it work" — it is what BPF programs already
+ * attached to this same hook decided, and a non-zero value means one of them
+ * denied it. Counting regardless over-counts a little: an operation that a
+ * later check refuses, or that fails on ENOSPC, still moves the number.
+ *
+ * That is the safe direction. Over-counting costs a tree walk that was not
+ * needed. Under-counting costs correctness, because the index would answer
+ * "current" for a tree that had changed underneath it.
+ *
+ * `ret` is still returned untouched. A watcher that returned 0 would turn a
+ * denial by another BPF LSM program on the same hook into an allow — a
+ * program whose whole purpose is to deny nothing would start granting things.
+ *
+ * ## Why inode_* and not path_*
+ *
+ * The path family only exists when CONFIG_SECURITY_PATH is built in, which
+ * depends on which LSMs the distribution ships. The inode hooks are part of
+ * the core LSM set and are always present.
+ */
 
-SEC("lsm/inode_unlink")
-int BPF_PROG(thalyx_inode_unlink, struct inode *dir, struct dentry *dentry, int ret)
+/* --- things appearing, disappearing and moving --------------------------- */
+
+SEC("lsm/inode_create")
+int BPF_PROG(thalyx_create, struct inode *dir, struct dentry *dentry,
+             umode_t mode, int ret)
 {
-    if (ret == 0)
-        report(THALYX_REMOVED);
+    report(THALYX_CREATED, false);
     return ret;
 }
 
-SEC("lsm/inode_create")
-int BPF_PROG(thalyx_inode_create, struct inode *dir, struct dentry *dentry,
-             umode_t mode, int ret)
+SEC("lsm/inode_unlink")
+int BPF_PROG(thalyx_unlink, struct inode *dir, struct dentry *dentry, int ret)
 {
-    if (ret == 0)
-        report(THALYX_CREATED);
+    report(THALYX_REMOVED, false);
     return ret;
 }
 
 SEC("lsm/inode_rename")
-int BPF_PROG(thalyx_inode_rename, struct inode *old_dir, struct dentry *old_dentry,
+int BPF_PROG(thalyx_rename, struct inode *old_dir, struct dentry *old_dentry,
              struct inode *new_dir, struct dentry *new_dentry, int ret)
 {
-    if (ret == 0)
-        report(THALYX_RENAMED);
+    report(THALYX_RENAMED, false);
     return ret;
 }
+
+/* `inode_create` is regular files only. A directory, a symlink, a hard link
+ * and a device node each have their own hook, and every one of them was
+ * missing from the first version of this program — so `mkdir` was invisible
+ * to a watcher whose entire job is noticing that the tree changed shape. */
+
+SEC("lsm/inode_mkdir")
+int BPF_PROG(thalyx_mkdir, struct inode *dir, struct dentry *dentry,
+             umode_t mode, int ret)
+{
+    report(THALYX_CREATED, false);
+    return ret;
+}
+
+SEC("lsm/inode_rmdir")
+int BPF_PROG(thalyx_rmdir, struct inode *dir, struct dentry *dentry, int ret)
+{
+    report(THALYX_REMOVED, false);
+    return ret;
+}
+
+SEC("lsm/inode_symlink")
+int BPF_PROG(thalyx_symlink, struct inode *dir, struct dentry *dentry,
+             const char *old_name, int ret)
+{
+    report(THALYX_CREATED, false);
+    return ret;
+}
+
+SEC("lsm/inode_link")
+int BPF_PROG(thalyx_link, struct dentry *old_dentry, struct inode *dir,
+             struct dentry *new_dentry, int ret)
+{
+    report(THALYX_CREATED, false);
+    return ret;
+}
+
+SEC("lsm/inode_mknod")
+int BPF_PROG(thalyx_mknod, struct inode *dir, struct dentry *dentry,
+             umode_t mode, dev_t dev, int ret)
+{
+    report(THALYX_CREATED, false);
+    return ret;
+}
+
+/* --- contents changing without the tree changing shape ------------------- */
+
+/* The hole this program existed with until now.
+ *
+ * Editing a file in place creates nothing, removes nothing and renames
+ * nothing. Every hook above stays silent while the contents the index parsed
+ * are replaced. A counter with that hole can be read as "nothing changed"
+ * about a tree that has been entirely rewritten, which is the exact failure
+ * `Coherencia-Doble-Ruta` forbids — so the fast path could never be turned on,
+ * and the counter could only ever be decoration.
+ *
+ * `file_permission` is called from `rw_verify_area`, on every read and every
+ * write, with the access being asked for. Masking it to `MAY_WRITE` catches
+ * every write through a descriptor **including one opened before this program
+ * attached**, which `file_open` would have missed and which is precisely the
+ * long-lived editor or database that makes a counter untrustworthy.
+ *
+ * It is the hot hook. That is why the counter is per-CPU and why this one does
+ * not touch the ring buffer.
+ */
+SEC("lsm/file_permission")
+int BPF_PROG(thalyx_write, struct file *file, int mask, int ret)
+{
+    if (mask & MAY_WRITE)
+        report(THALYX_WRITTEN, true);
+    return ret;
+}
+
+/* Truncate, chmod, chown and utimes go through `notify_change`, not through
+ * the write path, so `file_permission` never sees them. A truncate changes
+ * what a file contains; a chmod changes whether the indexer can still read it.
+ *
+ * The signature of this hook has moved across kernel versions — it gained a
+ * `user_namespace` argument and then an `mnt_idmap` one. This is the current
+ * form. On a kernel too old for it the whole watcher declines to attach and
+ * says so, which is the right outcome: a watcher missing a hook must not load
+ * looking complete. Thalyx already requires idmapped mounts, so a kernel
+ * without this signature cannot run the sandbox either.
+ */
+SEC("lsm/inode_setattr")
+int BPF_PROG(thalyx_setattr, struct mnt_idmap *idmap, struct dentry *dentry,
+             struct iattr *attr, int ret)
+{
+    report(THALYX_RETITLED, false);
+    return ret;
+}
+
+/* ## What is still not covered, and is not pretended to be
+ *
+ * Extended attributes are deliberately absent. SELinux relabels files
+ * constantly, and counting that would move the number all day for changes no
+ * parser cares about — a counter that never stops moving allows no shortcut,
+ * which is the same as no counter.
+ *
+ * A filesystem that another machine can write — NFS, SMB, a shared block
+ * device — changes with no hook on this machine firing at all. No hook set can
+ * close that, so `Trust::Counter` stays an explicit choice by the caller and
+ * `Watcher::verify` stays the thing that has to agree first.
+ */

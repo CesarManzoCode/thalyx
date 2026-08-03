@@ -382,6 +382,45 @@ fi
 
 "$THALYX" graph status "$ROOT/crates" 2>&1 | sed 's/^/     /'
 
+# Does the counter move for a write through a descriptor that was already
+# open? That is the case every earlier hook set missed, and the whole reason
+# the counter could not be believed.
+#
+# The descriptor is opened *before* the first reading is taken, and between the
+# two readings nothing is created, renamed, unlinked or truncated — so without
+# lsm/file_permission every one of the writes below is invisible and the delta
+# comes only from whatever else the machine happens to be doing.
+#
+# Ambient noise can only push the number up, never down, so this is one-sided:
+# a delta of at least CHURN cannot be produced by a hook set blind to this.
+# There is no need to quiet the machine first, which is the only reason a
+# measurement like this is usable at all.
+CHURN=5000
+counter_now() { "$THALYX" graph watcher 2>/dev/null | awk '$1 == "mutations" { print $2 }'; }
+
+if [ "$LOADED" = 1 ]; then
+    "$THALYX" graph watcher 2>&1 | sed 's/^/     /'
+
+    : > "$WORK/churn"
+    exec 9>>"$WORK/churn"
+    BEFORE="$(counter_now)"
+    for _ in $(seq "$CHURN"); do printf . >&9; done
+    AFTER="$(counter_now)"
+    exec 9>&-
+
+    if [ -z "$BEFORE" ] || [ -z "$AFTER" ]; then
+        unproven "the watcher is not loaded, so writes through an open descriptor cannot be counted"
+    elif [ "$((AFTER - BEFORE))" -ge "$CHURN" ]; then
+        proven "$CHURN writes through an already-open descriptor were every one counted"
+        echo "     the count moved by $((AFTER - BEFORE)) with nothing created, renamed or"
+        echo "     unlinked — the hole that made this counter undecidable is closed"
+    else
+        failed "only $((AFTER - BEFORE)) of $CHURN in-place writes were counted"
+        echo "     a file can be rewritten without the counter moving, so the index"
+        echo "     could answer 'current' about a tree that had changed underneath it"
+    fi
+fi
+
 if [ "$LOADED" = 1 ]; then
     if "$THALYX" graph verify "$ROOT/crates" > "$WORK/verify-graph.log" 2>&1; then
         if grep -q "COVERAGE HOLE" "$WORK/verify-graph.log"; then
@@ -391,11 +430,111 @@ if [ "$LOADED" = 1 ]; then
         fi
         sed 's/^/     /' "$WORK/verify-graph.log"
     else
-        unproven "graph verify found a coverage hole — expected today, the hook set misses writes"
+        unproven "graph verify could not complete; see $WORK/verify-graph.log"
         sed 's/^/     /' "$WORK/verify-graph.log"
     fi
 else
     unproven "the mutation counter needs the watcher attached"
+fi
+
+# -------------------------------------------------------------- 8. memory
+
+step "8. what the agent remembers, and what stops being assertable"
+
+# The whole claim of the fourth primitive is that a fact is checked against the
+# world every time it is recalled, and stops being assertable — without being
+# deleted — when what it describes changes. That can only be shown by changing
+# the file behind Thalyx's back, which is what happens here.
+
+MEMFILE="$WORK/auth.rs"
+cat > "$MEMFILE" <<'RS'
+pub fn login() {}
+RS
+
+"$THALYX" memory remember verify-run "moved login() to auth.rs" --about "$MEMFILE" \
+    > "$WORK/mem-remember.log" 2>&1
+"$THALYX" memory note verify-run "probably worth updating the imports" \
+    >> "$WORK/mem-remember.log" 2>&1
+"$THALYX" memory remember verify-run "the human confirmed a persistent network permission" \
+    >> "$WORK/mem-remember.log" 2>&1
+
+if "$THALYX" memory recall verify-run > "$WORK/mem-before.log" 2>&1; then
+    proven "a fact recorded against a real path recalls as verified"
+else
+    failed "recall failed; see $WORK/mem-before.log"
+fi
+
+# Facts and inferences are never interleaved: a reader skimming the output must
+# not be able to take one for the other.
+if grep -q "what happened" "$WORK/mem-before.log" &&
+   grep -q "what the agent worked out" "$WORK/mem-before.log"; then
+    proven "facts and inferences print under separate headings"
+else
+    failed "the two layers were not separated"
+    sed 's/^/     /' "$WORK/mem-before.log"
+fi
+
+# A fact with nothing to check against is not the same as a confirmed one, and
+# the output has to say so rather than presenting both as settled.
+if grep -q "nothing to check it against" "$WORK/mem-before.log"; then
+    proven "a fact with no witness is marked as unconfirmed, not as true"
+else
+    failed "an unwitnessed fact was presented as though it had been checked"
+    sed 's/^/     /' "$WORK/mem-before.log"
+fi
+
+# Now the human edits the file, outside Thalyx, the way a human actually would.
+sleep 1
+cat > "$MEMFILE" <<'RS'
+pub fn login() { todo!() }
+pub fn logout() {}
+RS
+
+if "$THALYX" memory recall verify-run > "$WORK/mem-after.log" 2>&1; then
+    if grep -q "NO LONGER VERIFIABLE" "$WORK/mem-after.log" &&
+       grep -q "auth.rs" "$WORK/mem-after.log"; then
+        proven "editing the file behind Thalyx's back made the fact unassertable, by name"
+    else
+        failed "the fact still reads as verified after the file changed underneath it"
+        sed 's/^/     /' "$WORK/mem-after.log"
+    fi
+
+    # Not deleted. No longer verifiable is not the same as false, and a memory
+    # that threw the record away would lose what it knew.
+    if grep -q "moved login() to auth.rs" "$WORK/mem-after.log"; then
+        proven "the fact was kept, not deleted"
+    else
+        failed "the fact disappeared instead of being marked unverifiable"
+    fi
+else
+    failed "recall failed after the edit; see $WORK/mem-after.log"
+fi
+
+# Inferences are discardable; facts are not. There is no command that deletes a
+# fact, and this checks that dropping the notes leaves them alone.
+"$THALYX" memory forget-notes verify-run > "$WORK/mem-forget.log" 2>&1
+if "$THALYX" memory recall verify-run > "$WORK/mem-kept.log" 2>&1; then
+    if ! grep -q "updating the imports" "$WORK/mem-kept.log" &&
+       grep -q "moved login() to auth.rs" "$WORK/mem-kept.log"; then
+        proven "forgetting the inferences left every fact standing"
+    else
+        failed "forget-notes did not do exactly what it says"
+        sed 's/^/     /' "$WORK/mem-kept.log"
+    fi
+fi
+
+# Search must never present word overlap as understanding. There is no local
+# model yet, so every result carries what kind of matching produced it.
+if "$THALYX" memory search "login" > "$WORK/mem-search.log" 2>&1; then
+    if grep -q "not by meaning" "$WORK/mem-search.log"; then
+        proven "search says what kind of matching produced its results"
+        grep -E "not by meaning" "$WORK/mem-search.log" | sed 's/^/     /'
+    else
+        failed "search presented lexical matches without saying they were lexical"
+        sed 's/^/     /' "$WORK/mem-search.log"
+    fi
+else
+    failed "search failed; see $WORK/mem-search.log"
 fi
 
 # ---------------------------------------------------------------- summary

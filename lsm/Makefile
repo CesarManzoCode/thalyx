@@ -58,11 +58,28 @@ $(VMLINUX):
 # A BPF LSM program can only attach where the kernel provides a bpf_lsm_<hook>
 # symbol, and that set depends on how the kernel was configured. Asking first
 # is faster than discovering it from a verifier error.
+ENFORCE_HOOKS := socket_connect file_open
+WATCH_HOOKS   := inode_create inode_unlink inode_rename inode_mkdir inode_rmdir \
+                 inode_symlink inode_link inode_mknod inode_setattr file_permission
+
 hooks:
 	@echo "LSM order: $$(cat /sys/kernel/security/lsm 2>/dev/null || echo unknown)"
 	@echo
-	@echo "hooks this build needs:"
-	@for hook in socket_connect file_open inode_unlink inode_create inode_rename; do \
+	@echo "enforcement needs:"
+	@for hook in $(ENFORCE_HOOKS); do \
+	    if grep -q " bpf_lsm_$$hook$$" /proc/kallsyms 2>/dev/null; then \
+	        printf '  \033[32mavailable\033[0m  %s\n' "$$hook"; \
+	    else \
+	        printf '  \033[31mmissing\033[0m    %s\n' "$$hook"; \
+	    fi; \
+	done
+	@echo
+	@# The watcher is all-or-nothing on purpose. One missing hook is one way a
+	@# file can change without the counter moving, and a counter with a hole in
+	@# it is worse than no counter: it would let the index answer "current"
+	@# about a tree that had been rewritten underneath it.
+	@echo "the watcher needs all of these, or it declines to load:"
+	@for hook in $(WATCH_HOOKS); do \
 	    if grep -q " bpf_lsm_$$hook$$" /proc/kallsyms 2>/dev/null; then \
 	        printf '  \033[32mavailable\033[0m  %s\n' "$$hook"; \
 	    else \
@@ -114,7 +131,8 @@ unload:
 	@# maps LIBBPF_PIN_BY_NAME, which put them here rather than under $(PINDIR);
 	@# one left behind makes every later load fail with an error that points at
 	@# programs instead of at the map that is really in the way.
-	@for stray in thalyx_policy thalyx_denials thalyx_enforcing thalyx_mutations; do \
+	@for stray in thalyx_policy thalyx_denials thalyx_enforcing thalyx_mutations \
+	              thalyx_mutation_count; do \
 	    if [ -e $(BPFFS)/$$stray ]; then \
 	        sudo rm -f $(BPFFS)/$$stray && echo "  removed stray pin $$stray"; \
 	    fi; \
@@ -144,7 +162,13 @@ status:
 	else \
 	    echo "enforcement: not attached"; \
 	fi
-	@if sudo test -d $(PINDIR)/watch; then echo "watcher:     attached"; \
+	@# Which of the watcher's programs are actually pinned. The load is
+	@# all-or-nothing, so this is normally all or none — it is printed because
+	@# "the watcher is attached" and "the watcher sees everything" are
+	@# different claims, and only the second one lets the index skip a walk.
+	@if sudo test -d $(PINDIR)/watch; then \
+	    echo "watcher:     attached ($$(sudo ls $(PINDIR)/watch | wc -l)/$(words $(WATCH_HOOKS)) hooks)"; \
+	    echo "             thalyx graph status  shows what it has counted"; \
 	 else echo "watcher:     not attached"; fi
 	@echo
 	@# A pinned program that is not linked to a hook enforces nothing. The
