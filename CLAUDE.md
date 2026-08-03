@@ -4,6 +4,11 @@ Read this before anything else. Then read
 `vault/06-Pendientes/Punto-Actual.md`, which says where the project is right
 now and what the next step is.
 
+**If Cesar opens with the output of a command and no explanation**, it is from
+`vault/09-Notas-Tecnicas/Primer-Arranque.md` — the first-boot procedure. That
+note has every command, what each should print, and what each failure means. It
+is written to be answered from itself.
+
 ## Who decides
 
 **Cesar Manzo decides. You build.** That division is not a courtesy, it is the

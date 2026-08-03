@@ -14,6 +14,13 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Lo siguiente es arrancar la máquina por primera vez
+>
+> **Los comandos exactos, lo que debe imprimir cada uno y qué significa cada
+> fallo están en [[Primer-Arranque]].** Si estás retomando y Cesar te pega la
+> salida de un comando, es de ahí; esa nota está escrita para responderse sin
+> más contexto que ella misma.
+
 ## Dónde estamos, en una frase
 
 **El 2026-08-03 se quitó la distribución.** La bóveda decretaba en tres notas
@@ -29,10 +36,13 @@ existe ni en una línea.
 
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
-verificados en hardware real**: 44 comprobaciones en máquina real, 0 sin probar,
-0 fallidas. Desde entonces se sumaron 448 pruebas y el agente mínimo, que lleva
-un enunciado hasta un módulo instalado sin modelo alguno. Lo que falta para
-cerrar la fase es el **modelo del agente** y el **ISO booteable**.
+verificados en hardware real**: 44 comprobaciones en máquina real. Desde
+entonces: **463 pruebas**, el agente mínimo que lleva un enunciado hasta un
+módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
+construye para sí mismo.
+
+Para cerrar la fase faltan tres: **arrancar la imagen**, **la API interna de
+módulos**, y **el modelo del agente**.
 
 ## Última corrida verificada
 
@@ -42,12 +52,13 @@ cerrar la fase es el **modelo del agente** y el **ISO booteable**.
 proven 44 · not proven 0 · failed 0
 ```
 
-> **La próxima corrida no dará `not proven 0`, y eso es correcto.** `verify.sh`
-> tiene ahora una etapa 10 para el agente, y la mitad que necesita un modelo
-> real no la ha comprobado nada. Esperar alrededor de `proven 51 · not proven 1`
-> —la etapa 10 aporta varias comprobaciones nuevas—. Un número
-> verde que se conserva escondiendo lo que no se probó es exactamente la clase
-> de instrumento que este proyecto existe para no construir.
+> **La próxima corrida no dará `not proven 0`, y eso es correcto.** Hay dos
+> etapas nuevas —el agente y la imagen— y las dos tienen una mitad que nada ha
+> comprobado. Esperar alrededor de `proven 53 · not proven 2 · failed 0`.
+>
+> Un número verde que se conserva escondiendo lo que no se probó es exactamente
+> la clase de instrumento que este proyecto existe para no construir. Los
+> comandos y qué significa cada fallo están en [[Primer-Arranque]].
 
 Es la primera vez que todo lo que Thalyx afirma se comprueba en una sola
 máquina y se sostiene. Reproducirla:
@@ -77,7 +88,7 @@ Detalle por crate en [[Estado-de-Implementacion]].
 
 ## Lo que sigue, en orden
 
-### 1. Un agente mínimo (`thalyx-agent`) — decidido el 2026-08-03
+### 1. El agente — su mitad determinista ya está construida
 
 Va primero, y el motivo es de descubrimiento, no de avance. El ISO desbloquea
 cinco de los seis pasos del [[Criterio-de-Salida-Fase-1|criterio de salida]]
@@ -120,12 +131,20 @@ marcado de origen, el camino confiable, la memoria persistente, y el principio
 de doble ruta implementado (todo lo que el agente podrá hacer, un humano ya
 puede hacerlo por la CLI).
 
-### 2. El ISO booteable
+### 2. Arrancar la imagen, y la API interna
 
-Ver [[Construccion-del-ISO]]. Independiente del agente. El criterio de salida
-**no cambia**: sigue exigiendo arrancar la imagen en QEMU y apagar la máquina,
-porque esos dos pasos prueban integración del sistema y no solo de los
-componentes.
+**Todo está escrito para arrancar; nada de eso ha corrido.** El procedimiento
+completo, con lo que debe imprimir cada comando y qué significa cada fallo, está
+en [[Primer-Arranque]]. Es el paso 1 del [[Criterio-de-Salida-Fase-1]].
+
+Después del primer arranque, dos cosas en este orden:
+
+1. **Cargar `thalyx-lsm` desde dentro de Thalyx.** Sin bpftool y sin shell, hoy
+   no se carga y la máquina lo dice. Sin esto no hay enforcement en la imagen.
+2. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
+   julio, sin una línea escrita. Sin userland debajo, es la única superficie que
+   un módulo puede tocar — y es lo que hace que un programa escrito para Thalyx
+   no corra en ningún otro lado.
 
 ### 3. Reindexado incremental
 
@@ -190,6 +209,23 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (7) — el decreto fundacional, y todo listo para arrancar
+Cesar escribió el texto que funda el proyecto y quedó **literal** como primera
+sección de [[Filosofia-Fundacional]], con la regla de que cualquier decreto que
+lo contradiga está equivocado. Está enlazado desde `CLAUDE.md`, el índice y el
+README, que son las cuatro puertas de entrada.
+
+Se registraron los dos decretos que su propio texto invalida: `bpftool` (que ya
+no puede estar en la imagen) y `llama.cpp` como proceso (que sería un segundo
+programa — probablemente el modelo del agente sea **un módulo**, pero eso lo
+decide Cesar).
+
+`rusqlite` pasa a `bundled`: SQLite se compila dentro del binario. No es
+preferencia, es necesidad — no hay libsqlite3 en el disco de la imagen contra el
+que enlazar, y era el primer bloqueador del binario estático.
+
+[[Primer-Arranque]] tiene el procedimiento completo.
 
 ### 2026-08-03 (6) — hay máquina: PID 1, la imagen, y el kernel
 `thalyx` es PID 1 (`init.rs`): monta siete filesystems diciendo por qué cada

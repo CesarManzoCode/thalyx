@@ -90,6 +90,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Notas-Tecnicas-Implementacion]] — referencia rápida para escribir código
 - [[Estrategia-de-Pruebas]] — tres niveles, con inyección de fallos como obligatorio
 - [[Construccion-del-ISO]] — **la imagen es el kernel y un programa**, y cómo se cuenta
+- [[Primer-Arranque]] — los comandos para arrancarla, y qué significa cada fallo
 
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]

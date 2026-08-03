@@ -62,7 +62,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
 | PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **No corrido como PID 1** |
 | Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
-| Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Jamás ejecutados** |
+| Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Jamás ejecutados** — procedimiento en [[Primer-Arranque]] |
 
 ### Decretos que el código ya hace cumplir
 

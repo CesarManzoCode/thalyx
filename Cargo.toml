@@ -54,7 +54,15 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 semver = "1"
-rusqlite = "0.37"
+# `bundled` compiles SQLite from source into the binary instead of linking the
+# system's.
+#
+# Required, not preferred: the image holds the Linux kernel and one program, so
+# there is no libsqlite3 on disk to link against, and a static musl build cannot
+# borrow the host's. Compiling it in is what makes the graph index and the
+# persistent memory exist inside `thalyx` rather than beside it — which is what
+# the founding decree says of everything.
+rusqlite = { version = "0.37", features = ["bundled"] }
 walkdir = "2"
 libc = "0.2"
 time = { version = "0.3", features = ["formatting", "macros"] }
