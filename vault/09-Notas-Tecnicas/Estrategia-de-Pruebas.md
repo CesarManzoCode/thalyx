@@ -399,6 +399,34 @@ Tres consecuencias:
    canal está muerto, sin la segunda el canal es un agujero, y separadas cada
    una pasaría sola.
 
+## Regla derivada: una comprobación sobre la prosa de otra herramienta comprueba la prosa
+
+**Cuando lo que importa es una propiedad, compruébala donde vive, no en la
+oración con la que otro programa la describe.**
+
+`image/Makefile` decidía si el binario era estático con `file … | grep
+'statically linked'`, y **rechazó un binario perfectamente estático**. Rust
+enlaza contra musl como *static-pie*, y `file` a eso le llama `static-pie
+linked`: dos frases distintas para la misma ausencia de cargador dinámico. La
+construcción se detuvo por la redacción de una herramienta que no prometió nunca
+esa redacción.
+
+Lo que de verdad importaba era si el programa pide un intérprete, y eso es una
+cabecera del ELF —el segmento `INTERP`— que es exactamente lo que lee el kernel
+al hacer `exec`. `readelf -lW | grep INTERP` responde la pregunta real y no
+cambia de opinión cuando la herramienta reescribe un mensaje.
+
+Es la misma regla que la de los fixtures inventados, del otro lado: allá se
+inventa lo que la herramienta imprime y aquí se inventa lo que va a seguir
+imprimiendo. La forma general: **si la comprobación se rompe cuando alguien
+reescribe un mensaje, no estaba comprobando la propiedad.**
+
+Y hay una segunda mitad, porque el fallo mintió durante un rato: la imagen ya
+había arrancado con ese mismo binario como `/init`. Uno dinámico habría dado
+`No working init found` antes de que Thalyx imprimiera una palabra. Cuando una
+comprobación contradice algo que la máquina ya demostró, **la comprobación es la
+sospechosa** — la quinta regla de esta nota, otra vez, y van siete.
+
 ## Regla derivada: la limpieza de una prueba puede destruir más que la prueba
 
 **Si una prueba monta algo, su limpieza tiene que desmontarlo antes de borrar, y

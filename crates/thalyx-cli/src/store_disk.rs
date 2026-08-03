@@ -330,6 +330,31 @@ mod tests {
     }
 
     #[test]
+    fn staticness_is_checked_against_the_elf_and_not_against_a_sentence() {
+        // `file … | grep 'statically linked'` refused a binary that was
+        // perfectly static: Rust links musl as static-pie and file(1) calls
+        // that `static-pie linked`. Two phrases, one absence of a loader, and
+        // the build stopped on the wording. What matters is whether the program
+        // asks for an interpreter, which is a program header.
+        let makefile = image_makefile();
+        // Comments excluded: the note explaining the mistake has to be allowed
+        // to quote it. Only what the shell actually runs is the check.
+        let commands: String = makefile
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !commands.contains("statically linked"),
+            "the static check is matching file(1)'s prose again"
+        );
+        assert!(
+            commands.contains("readelf") && commands.contains("INTERP"),
+            "nothing in the image Makefile checks for a dynamic loader"
+        );
+    }
+
+    #[test]
     fn a_missing_disk_says_whether_there_are_any_disks_at_all() {
         // Two failures that read identically and are fixed differently: nothing
         // was attached, against a disk that came up under another name. The

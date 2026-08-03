@@ -154,10 +154,40 @@ toolchain:
 $(THALYX): toolchain
 	cd $(ROOT) && cargo build --release --target $(TARGET) -p thalyx-cli
 
+# What "static" actually has to mean here: the program asks for no interpreter.
+# That is a program header, and it is what the kernel reads when it execs the
+# thing. So it is what gets checked.
+#
+# It used to be `file … | grep 'statically linked'`, and that refused a binary
+# that was perfectly static. Rust links musl as static-pie, and file(1) calls
+# that `static-pie linked` — a different phrase, describing the same absence of
+# a loader. The check was written against a sentence somebody assumed file(1)
+# prints rather than one it had been seen printing, which is the rule in
+# Estrategia-de-Pruebas about invented fixtures, in a Makefile.
+#
+# The evidence that it was the instrument and not the binary: the image had
+# already booted with that same binary as /init. A dynamically linked one would
+# have given `No working init found` before Thalyx printed a word.
+#
+# file(1)'s answer is still printed, because it reads well and because a future
+# reader deserves to see what it says next to what was decided from it.
+STATIC_CHECK = \
+	command -v readelf > /dev/null || { \
+	    echo "  no readelf, so nothing here checked that $$WHAT needs no libc."; \
+	    echo "  Install binutils. Refusing rather than passing unchecked:"; \
+	    echo "  an image that needs a loader panics at boot with no clue why."; \
+	    exit 1; \
+	}; \
+	if readelf -lW "$$BIN" | grep -q INTERP; then \
+	    echo "  NOT STATIC — $$WHAT asks for a dynamic loader, and there is"; \
+	    echo "  none on the machine:"; \
+	    readelf -lW "$$BIN" | grep -A1 INTERP | sed 's/^/    /'; \
+	    exit 1; \
+	fi; \
+	echo "  static: $$(du -h "$$BIN" | cut -f1)  $$(file -b "$$BIN" | cut -d, -f4-)"
+
 binary: $(THALYX)
-	@file $(THALYX) | grep -q 'statically linked' \
-	    || { echo "NOT STATIC — the image would need a libc on disk"; exit 1; }
-	@echo "  static: $$(du -h $(THALYX) | cut -f1)"
+	@BIN="$(THALYX)"; WHAT="the image"; $(STATIC_CHECK)
 
 # ─────────────────────────────────────────────────────────────────── the image
 
@@ -204,9 +234,7 @@ $(GREETER): toolchain
 	cd $(ROOT) && cargo build --release --target $(TARGET) -p dev-thalyx-greeter
 
 greeter: $(GREETER)
-	@file $(GREETER) | grep -q 'statically linked' \
-	    || { echo "NOT STATIC — the module could not run on the machine"; exit 1; }
-	@echo "  static: $$(du -h $(GREETER) | cut -f1)"
+	@BIN="$(GREETER)"; WHAT="the module"; $(STATIC_CHECK)
 
 # What goes on the disk, built where anyone can look at it.
 #

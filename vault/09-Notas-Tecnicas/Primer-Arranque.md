@@ -93,13 +93,22 @@ sudo dnf install -y musl-gcc musl-libc-static
 make -C image binary
 ```
 
-**Debe imprimir** una línea `static:` con un tamaño. El `Makefile` **se niega**
-si el binario no salió estático, porque uno dinámico necesitaría una libc en el
-disco de la imagen y eso ya no existe.
+**Debe imprimir** una línea `static:` con el tamaño y lo que dice `file`. El
+`Makefile` **se niega** si el binario pide un cargador dinámico, porque uno así
+necesitaría una libc en el disco de la imagen y eso ya no existe.
+
+Lo comprueba leyendo las cabeceras del ELF —si hay un segmento `INTERP`— y no
+buscando una frase en la salida de `file`. La primera versión buscaba
+`statically linked` y **rechazaba un binario perfectamente estático**: Rust
+enlaza musl como *static-pie*, y `file` a eso le dice `static-pie linked`. Dos
+frases, la misma ausencia de cargador, y la construcción se detenía por la
+redacción. Es la regla de [[Estrategia-de-Pruebas]] sobre fixtures inventados,
+dentro de un `Makefile`.
 
 | Si falla | Qué significa y qué hacer |
 |---|---|
-| `NOT STATIC` | El enlazado salió dinámico. Suele arreglarse con `RUSTFLAGS="-C target-feature=+crt-static"`. Pégame el error completo. |
+| `NOT STATIC` | El binario pide un cargador dinámico; el mensaje imprime la línea `INTERP` que lo dice y la ruta del intérprete. Suele arreglarse con `RUSTFLAGS="-C target-feature=+crt-static"`. Pégame el error completo. |
+| `no readelf` | Falta `binutils`. Se niega en vez de pasar sin comprobar: una imagen que necesita un cargador entra en pánico al arrancar sin decir por qué. |
 | Errores de `libsqlite3-sys` o `cc` | Falta `musl-gcc`, o `CC_x86_64_unknown_linux_musl` no apunta a él. Prueba `CC_x86_64_unknown_linux_musl=musl-gcc make -C image binary`. |
 | Errores de enlazado sobre `getaddrinfo`, `dlopen` o similares | musl no implementa algunas cosas de glibc. Pégame la lista completa de símbolos: es información de diseño, no un error de configuración. |
 
@@ -204,7 +213,7 @@ un mensaje que habla de lo que se está construyendo, no del disco.
 | `rustup: No existe el fichero` | Estás corriendo `store-stage` con `sudo`. No lleva sudo. |
 | `make store needs root` | Es `sudo make -C image store`, no `make`. |
 | `no mkfs.btrfs` | Falta `btrfs-progs`. |
-| `NOT STATIC — the module could not run on the machine` | El `greeter` enlazó dinámico. Mismo arreglo que el paso 2: falta `musl-gcc` o el target de musl. |
+| `NOT STATIC — the module asks for a dynamic loader` | El `greeter` enlazó dinámico. Mismo arreglo que el paso 2. |
 | `the module did not install into the stage` | El bundle no verificó o el commit no se publicó. Pégame la salida completa: es un fallo del core, no del disco. |
 | `mount: ... unknown filesystem type 'btrfs'` | Tu kernel no trae Btrfs. En Fedora 43 lo trae; si sale esto, algo raro pasa y quiero verlo. |
 
