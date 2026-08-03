@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
+thalyx-snapshot.workspace = true
 thalyx-permd.workspace = true
 thalyx-contract.workspace = true
 thalyx-journal.workspace = true

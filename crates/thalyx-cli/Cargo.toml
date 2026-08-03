@@ -18,6 +18,7 @@ thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
 thalyx-memory.workspace = true
 thalyx-watch.workspace = true
+thalyx-snapshot.workspace = true
 thalyx-contract.workspace = true
 thalyx-permd.workspace = true
 thalyx-sandbox.workspace = true

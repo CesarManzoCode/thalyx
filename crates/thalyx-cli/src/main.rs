@@ -10,6 +10,7 @@ mod graph;
 mod memory;
 mod render;
 mod run;
+mod snapshot;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -68,6 +69,10 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Keep and list moments of a Btrfs subvolume
+    #[command(subcommand)]
+    Snapshot(snapshot::SnapshotCommand),
 
     /// What the agent remembers between sessions
     #[command(subcommand)]
@@ -205,6 +210,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("undone.");
             Ok(())
+        }
+        Command::Snapshot(command) => {
+            let store = Store::open(&root)?;
+            snapshot::run(&store, command, &new_request_id())
         }
         Command::Memory(command) => {
             Store::open(&root)?;

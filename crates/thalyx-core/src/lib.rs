@@ -17,6 +17,7 @@ pub mod permissions;
 pub mod reconcile;
 pub mod rollback;
 pub mod run;
+pub mod snapshots;
 pub mod store;
 pub mod trusted_path;
 pub mod uids;
@@ -190,6 +191,9 @@ pub enum CoreError {
         published: String,
         installed: String,
     },
+
+    #[error(transparent)]
+    Snapshot(#[from] thalyx_snapshot::SnapshotError),
 
     #[error(transparent)]
     Sandbox(#[from] thalyx_sandbox::SandboxError),

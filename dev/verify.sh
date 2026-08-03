@@ -561,9 +561,74 @@ if [ "$LOADED" = 1 ]; then
     fi
 fi
 
-# -------------------------------------------------------------- 8. memory
+# ------------------------------------------------------------ 8. snapshots
 
-step "8. what the agent remembers, and what stops being assertable"
+step "8. snapshots, on a real Btrfs filesystem"
+
+# A throwaway subvolume beside the repository, so it lands on whatever
+# filesystem the repository is on. Everything here is created by this script
+# and removed by it; nothing existing is touched.
+SCRATCH="$(dirname "$ROOT")/thalyx-verify-subvolume"
+
+if ! command -v btrfs > /dev/null; then
+    unproven "btrfs-progs is not installed, so snapshots cannot be exercised"
+elif ! btrfs subvolume create "$SCRATCH" > "$WORK/subvol.log" 2>&1; then
+    unproven "no Btrfs filesystem here: $(tail -1 "$WORK/subvol.log")"
+    echo "     Thalyx requires Btrfs in Phase 1; this machine cannot check that part."
+else
+    proven "a Btrfs subvolume was created"
+    echo "as it was" > "$SCRATCH/notes.txt"
+
+    if "$THALYX" snapshot take "$SCRATCH" --label verify > "$WORK/snap.log" 2>&1; then
+        KEPT="$(awk '$1 == "kept" { print $2 }' "$WORK/snap.log")"
+        proven "a snapshot was taken: ${KEPT:-?}"
+
+        # The moment has to survive the tree moving on. A snapshot that changed
+        # with its source is a second working copy wearing the word snapshot.
+        echo "changed since" > "$SCRATCH/notes.txt"
+        HELD="$(cat "$(dirname "$SCRATCH")/.thalyx-snapshots/$KEPT/notes.txt" 2>/dev/null)"
+
+        if [ "$HELD" = "as it was" ]; then
+            proven "the snapshot held the old contents after the tree changed"
+        else
+            failed "the snapshot moved with its source, so it is not a snapshot"
+            echo "     it holds: ${HELD:-<unreadable>}"
+        fi
+
+        # Read-only, or it will quietly drift from the moment it claims to be.
+        if echo tampered > "$(dirname "$SCRATCH")/.thalyx-snapshots/$KEPT/notes.txt" 2>/dev/null; then
+            failed "the snapshot was writable"
+        else
+            proven "the snapshot is read-only, so it cannot drift from its moment"
+        fi
+
+        if "$THALYX" snapshot list "$SCRATCH" 2>/dev/null | grep -q "$KEPT"; then
+            proven "it is listed among the snapshots of that subvolume"
+        else
+            failed "the snapshot was taken and does not appear in the list"
+        fi
+
+        if "$THALYX" journal --limit 5 2>/dev/null | grep -q snapshot; then
+            proven "the journal recorded it, with the name it got"
+        else
+            failed "a snapshot was taken and the journal does not say so"
+        fi
+
+        "$THALYX" snapshot forget "$KEPT" "$SCRATCH" > /dev/null 2>&1
+    else
+        failed "the snapshot was not taken; see $WORK/snap.log"
+        sed 's/^/     /' "$WORK/snap.log"
+    fi
+
+    # Cleanup, whatever happened above.
+    btrfs subvolume delete "$(dirname "$SCRATCH")"/.thalyx-snapshots/* > /dev/null 2>&1
+    rmdir "$(dirname "$SCRATCH")/.thalyx-snapshots" > /dev/null 2>&1
+    btrfs subvolume delete "$SCRATCH" > /dev/null 2>&1
+fi
+
+# -------------------------------------------------------------- 9. memory
+
+step "9. what the agent remembers, and what stops being assertable"
 
 # The whole claim of the fourth primitive is that a fact is checked against the
 # world every time it is recalled, and stops being assertable — without being

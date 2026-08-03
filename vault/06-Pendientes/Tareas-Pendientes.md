@@ -14,7 +14,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **Snapshots y `restore`** — requieren Btrfs, no probables en el entorno actual. `rollback`, que es la operación acotada y no necesita snapshots, ya está construido.
+- [ ] **`restore`** — la operación destructiva. Los snapshots ya están construidos; falta la comprobación de deriva, el diff de lo que se perdería y la confirmación por el camino confiable. Ver [[Rollback-vs-Restore]].
 - [ ] **Probar los límites de recursos contra un kernel que delegue controladores** — `THALYX_REQUIRE_CONTROLLER_TESTS=1`.
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para saber *qué* cambió, no solo que algo cambió. El atajo ya no lo necesita — lo resolvió la atribución por ancestros — así que esto solo hace falta para reindexar de forma incremental en vez de reconstruir. Ver [[FS-en-Grafo]].
 

@@ -796,6 +796,7 @@ dependencies = [
  "thalyx-memory",
  "thalyx-permd",
  "thalyx-sandbox",
+ "thalyx-snapshot",
  "thalyx-watch",
  "toml",
 ]
@@ -829,6 +830,7 @@ dependencies = [
  "thalyx-manifest",
  "thalyx-permd",
  "thalyx-sandbox",
+ "thalyx-snapshot",
  "thiserror",
  "uuid",
 ]
@@ -908,6 +910,14 @@ dependencies = [
  "thalyx-manifest",
  "thalyx-permd",
  "thalyx-syscall",
+ "thiserror",
+]
+
+[[package]]
+name = "thalyx-snapshot"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "thiserror",
 ]
 
