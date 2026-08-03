@@ -138,15 +138,23 @@ Ninguno bloquea excepto el primero.
 
 Lista completa y viva en [[Tareas-Pendientes]].
 
-## Lo que sigue sin validarse, y es lo más importante
+## Lo que sigue sin validarse, y se carga a propósito
 
 **Ningún decreto de esta bóveda ha sido contrastado con una persona ajena al
 proyecto.** Todo el razonamiento sobre por qué alguien elegiría Thalyx sigue
-siendo a priori. El [[Criterio-de-Salida-Fase-1|criterio de salida]] está
-diseñado para forzar ese contacto: la fase no cierra sin que alguien de fuera
-use el sistema.
+siendo a priori. Eso es cierto y sigue siendo un riesgo real.
 
-Ver [[Por-Que-Elegirian-Este-SO]] y [[Riesgo-de-Ejecucion]].
+**Y no se adelanta.** El [[Criterio-de-Salida-Fase-1|criterio de salida]] pone a
+esa persona *después* del ISO, arrancando la imagen: ese es su paso 1. Nadie de
+fuera toca el sistema antes. No por miedo a lo que diga —el proyecto nunca
+dependió de eso— sino porque lo que esa persona determina es **la escala, no la
+validez**, y esta fase es incompatible con la escala.
+
+El riesgo se lleva con los ojos abiertos hasta entonces, que no es lo mismo que
+ignorarlo. El razonamiento completo, y la deriva concreta que previene, están en
+[[Criterio-de-Salida-Fase-1]].
+
+Ver también [[Por-Que-Elegirian-Este-SO]] y [[Riesgo-de-Ejecucion]].
 
 ## Cosas que hay que saber para no romper nada
 
