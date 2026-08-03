@@ -69,7 +69,24 @@ fi
 
 WORK="$(mktemp -d)"
 
+# Which commit is being checked, said out loud.
+#
+# A run against a checkout that never received the fix looks exactly like a run
+# where the fix did not work: same stage, same failure, same message. That
+# happened — two fixes sat on `main` while the machine under test was still on
+# the branch they came from, and the only clue was a stage printing wording
+# that had already been replaced. Naming the commit turns twenty minutes of
+# looking at the wrong code into one line.
+#
+# `safe.directory` because this script runs under sudo against a repository
+# owned by somebody else, and git refuses to read one without being told.
+GIT="git -c safe.directory=$ROOT -C $ROOT"
+COMMIT="$($GIT rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BRANCH="$($GIT rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+$GIT diff --quiet 2>/dev/null || COMMIT="$COMMIT+dirty"
+
 bold "Thalyx verification — $(uname -srm), $(date '+%Y-%m-%d %H:%M')"
+bold "                      $BRANCH @ $COMMIT"
 
 # ---------------------------------------------------------------- 1. machine
 
