@@ -102,8 +102,27 @@ impl KernelCounter {
     }
 
     /// Whether the watcher is loaded at all.
+    ///
+    /// Loaded, not readable. Whether `bpftool` could read the pinned map at
+    /// all — parsing what it printed is a separate question, and a map that is
+    /// pinned and full of counts which Thalyx fails to parse is a bug here,
+    /// not an absent watcher.
     pub fn is_available(&self) -> bool {
         self.dump().is_ok()
+    }
+
+    /// Why the counter could not be read, when it could not.
+    ///
+    /// `Ok(None)` means it was read fine. Split out so a caller can tell "the
+    /// watcher is not attached" — which is a thing to go and fix — from "it is
+    /// attached and Thalyx could not make sense of it", which is a defect in
+    /// Thalyx. Reporting the second as the first sends the human to reload
+    /// something that was already working.
+    pub fn unreadable(&self) -> Option<WatchError> {
+        match self.dump() {
+            Ok(output) => parse_total(&output).err(),
+            Err(error) => Some(error),
+        }
     }
 
     /// Which of [`REQUIRED_HOOKS`] are not loaded.
@@ -273,15 +292,30 @@ pub fn parse_total(output: &str) -> std::result::Result<u64, WatchError> {
     while let Some(start) = rest.find("\"value\"") {
         rest = &rest[start + "\"value\"".len()..];
 
-        let open = rest
-            .find('[')
-            .ok_or_else(|| unreadable("the value is not a byte array"))?;
-        let close = rest[open..]
+        // The bracket has to be the *next* thing, not the next one anywhere
+        // ahead. bpftool prints the same numbers twice: once as byte arrays and
+        // again under `formatted`, where a value is a plain integer —
+        // `"value":1676`. Searching forward for a `[` from there finds the
+        // bracket of some later entry and reads a number that belongs to
+        // something else, and for the final one there is no bracket left at
+        // all, which is how a working watcher reported itself unreadable.
+        let after_colon = match rest.trim_start().strip_prefix(':') {
+            Some(tail) => tail.trim_start(),
+            None => continue,
+        };
+        if !after_colon.starts_with('[') {
+            // The human-readable view of a value already counted. Skipping it
+            // is why this is not "sum every value in the document".
+            rest = after_colon;
+            continue;
+        }
+
+        let close = after_colon
             .find(']')
             .ok_or_else(|| unreadable("the value array is not closed"))?;
 
-        let body = &rest[open + 1..open + close];
-        rest = &rest[open + close..];
+        let body = &after_colon[1..close];
+        rest = &after_colon[close..];
 
         let mut bytes = [0u8; 8];
         let mut seen = 0usize;
@@ -418,6 +452,37 @@ mod tests {
         // cpu2 is idle and contributes nothing, which is the normal case for
         // most cores and must not be mistaken for the end of the list.
         assert_eq!(parse_total(output).unwrap(), 10 + 20 + 1);
+    }
+
+    #[test]
+    fn the_output_a_real_bpftool_actually_prints() {
+        // Verbatim from the first run of the ten-hook watcher on real hardware,
+        // where the crafted fixtures above all passed and this failed.
+        //
+        // bpftool prints the same numbers twice: the byte arrays, and then a
+        // `formatted` block where a value is a plain integer. The first parser
+        // searched forward for the next `[` after each `"value"`, so the
+        // formatted entries read brackets belonging to other entries, and the
+        // last one found none at all — a watcher that was counting perfectly
+        // reported itself unreadable, which then read as "not loaded".
+        let output = r#"[{"key":["0x00","0x00","0x00","0x00"],"values":[{"cpu":0,"value":["0x8c","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":1,"value":["0xfb","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":2,"value":["0x63","0x08","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":3,"value":["0x62","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":4,"value":["0x18","0x08","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":5,"value":["0xc7","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":6,"value":["0xa7","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":7,"value":["0x17","0x0a","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":8,"value":["0xe0","0x05","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":9,"value":["0x31","0x06","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":10,"value":["0x38","0x05","0x00","0x00","0x00","0x00","0x00","0x00"]},{"cpu":11,"value":["0xf6","0x08","0x00","0x00","0x00","0x00","0x00","0x00"]}],"formatted":{"key":0,"values":[{"cpu":0,"value":1676},{"cpu":1,"value":1787},{"cpu":2,"value":2147},{"cpu":3,"value":1634},{"cpu":4,"value":2072},{"cpu":5,"value":1735},{"cpu":6,"value":1703},{"cpu":7,"value":2583},{"cpu":8,"value":1504},{"cpu":9,"value":1585},{"cpu":10,"value":1336},{"cpu":11,"value":2294}]}}]"#;
+
+        // The sum of the twelve, counted once. bpftool's own formatted view is
+        // the arithmetic check: 1676 + 1787 + ... + 2294.
+        assert_eq!(parse_total(output).unwrap(), 22056);
+    }
+
+    #[test]
+    fn a_formatted_view_with_no_byte_arrays_is_not_a_counter() {
+        // The other half of skipping the formatted block: skipping must not
+        // become "read it anyway if it is all that is there". Those integers
+        // are decimal, and reading them as hex bytes would be a number wrong
+        // by orders of magnitude with nothing to signal it.
+        let output = r#"[{"key":0,"formatted":{"key":0,"values":[{"cpu":0,"value":1676}]}}]"#;
+        assert!(matches!(
+            parse_total(output),
+            Err(WatchError::Unreadable { .. })
+        ));
     }
 
     #[test]

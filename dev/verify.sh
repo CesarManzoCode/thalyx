@@ -437,7 +437,12 @@ if [ "$LOADED" = 1 ]; then
     exec 9>&-
 
     if [ -z "$BEFORE" ] || [ -z "$AFTER" ]; then
-        unproven "the watcher is not loaded, so writes through an open descriptor cannot be counted"
+        # Deliberately not "the watcher is not loaded". The count was once
+        # unreadable on a machine where the watcher was attached and counting
+        # perfectly, and naming a cause the script has not established sends
+        # the reader to reload something that was already working. What is
+        # actually known is printed by `graph watcher` just above.
+        unproven "the mutation count could not be read; see what graph watcher said above"
     elif [ "$((AFTER - BEFORE))" -ge "$CHURN" ]; then
         proven "$CHURN writes through an already-open descriptor were every one counted"
         echo "     the count moved by $((AFTER - BEFORE)) with nothing created, renamed or"

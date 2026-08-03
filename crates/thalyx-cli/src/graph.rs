@@ -168,11 +168,27 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                     // Deliberately not a `mutations` line with a word where the
                     // number goes. Anything reading this for a count must come
                     // away with nothing, not with something that parses.
-                    println!("watcher   not loaded");
-                    println!("  {}", counter.map().display());
-                    println!();
-                    println!("Every freshness check walks the whole tree until it is.");
-                    println!("`make -C lsm load` attaches it.");
+                    //
+                    // And "not loaded" is only said when that is what happened.
+                    // A map that is pinned and full of counts, which Thalyx
+                    // failed to parse, once reported itself as an unattached
+                    // watcher — sending the reader to reload something that had
+                    // been working the whole time.
+                    if counter.is_available() {
+                        println!("watcher   attached, and Thalyx could not read its counter");
+                        if let Some(error) = counter.unreadable() {
+                            println!("  {error}");
+                        }
+                        println!();
+                        println!("This is a defect in Thalyx, not a watcher that is missing.");
+                        println!("The kernel is counting; the reader is what is wrong.");
+                    } else {
+                        println!("watcher   not loaded");
+                        println!("  {}", counter.map().display());
+                        println!();
+                        println!("Every freshness check walks the whole tree until it is.");
+                        println!("`make -C lsm load` attaches it.");
+                    }
                     return Ok(());
                 }
             }
