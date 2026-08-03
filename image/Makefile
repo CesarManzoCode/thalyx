@@ -11,10 +11,17 @@
 # WHAT HAS RUN AND WHAT HAS NOT
 #
 # `make image` and `make count` are `thalyx dev image`, which is Rust with tests
-# and has been exercised. Everything else in this file — the kernel fetch, the
-# kernel build, QEMU — has never run: the machine it was written on has no
-# network route to kernel.org and no QEMU. The first `make kernel` is also the
-# first time anyone finds out what is wrong with it.
+# and has been exercised.
+#
+# The kernel side has now been run once, but not from here and not as this file
+# runs it: 6.12.101 was configured and built by hand in the development
+# container from a GitHub mirror, because kernel.org is not reachable from it.
+# What that proves is the configuration — every option survived, and the
+# resulting vmlinux carries .BTF. What it does not prove is GCC 15, since the
+# container has GCC 13, so the C23 problem this version bump exists to fix
+# cannot reproduce there either way.
+#
+# QEMU has still never run. `make run` has no evidence behind it at all.
 #
 # Stated here rather than in a footnote because the project's own rules say not
 # to stack unverified work and stay quiet about it.
@@ -24,7 +31,17 @@ ROOT    := $(CURDIR)/..
 BUILD   := $(CURDIR)/build
 TARGET  := x86_64-unknown-linux-musl
 
-KVERSION := 6.12.9
+# 6.12.9 does not build with GCC 15, which is what Fedora 43 ships. GCC 15
+# defaults to C23, where `bool`, `true` and `false` are keywords, and
+# arch/x86/boot/compressed/ was the one directory that never passed `-std=`.
+#
+# It cannot be fixed from here: that Makefile opens with `KBUILD_CFLAGS :=`,
+# which throws away everything from above, so KCFLAGS never reaches it. Upstream
+# added the missing `-std=gnu11` in January 2025 and it landed in the stable
+# series at 6.12.14 — checked tag by tag, not assumed.
+#
+# 6.12 is the LTS line this image was decreed on; .101 is its head.
+KVERSION := 6.12.101
 KSOURCE  := $(BUILD)/linux-$(KVERSION)
 KTARBALL := $(BUILD)/linux-$(KVERSION).tar.xz
 KURL     := https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$(KVERSION).tar.xz
@@ -35,7 +52,7 @@ INITRAMFS := $(BUILD)/initramfs.cpio
 DISK      := $(BUILD)/store.qcow2
 MEMORY    := 2048
 
-.PHONY: all kernel binary image run count clean toolchain
+.PHONY: all kernel binary image run count clean toolchain config-check
 
 all: kernel binary image
 	@echo
@@ -63,8 +80,44 @@ $(BZIMAGE): $(KSOURCE) thalyx.config | $(BUILD)
 	$(MAKE) -C $(KSOURCE) allnoconfig
 	cat $(KSOURCE)/.config-fragment >> $(KSOURCE)/.config
 	$(MAKE) -C $(KSOURCE) olddefconfig
+	@$(MAKE) --no-print-directory config-check
 	$(MAKE) -C $(KSOURCE) -j$$(nproc) bzImage
 	cp $(KSOURCE)/arch/x86/boot/bzImage $@
+
+# Asking for an option is not having it.
+#
+# `olddefconfig` drops, without a word, every option whose dependencies are not
+# met — the line is simply not in the .config afterwards. Nine of thalyx.config's
+# options were being lost that way, including BPF_LSM and DEBUG_INFO_BTF: the
+# kernel would have built, booted, and mounted everything, and the only sign
+# would have been thalyx-lsm failing to attach, three steps later, with the
+# blame landing on the loader.
+#
+# So this fails the build instead of the boot. It compares every line asked for
+# against the line that came out, which also catches an option renamed or
+# retired between kernel versions — the failure a version bump actually causes.
+config-check:
+	@test -r $(KSOURCE)/.config || { \
+	    echo "  no .config to check at $(KSOURCE) — the kernel was never"; \
+	    echo "  configured. That is a different failure from an option being"; \
+	    echo "  dropped, and saying so is the point."; \
+	    exit 1; \
+	}
+	@missing=$$(grep -v '^#' thalyx.config | grep '=' | while read -r want; do \
+	        grep -qxF "$$want" $(KSOURCE)/.config || echo "    $$want"; \
+	    done); \
+	if [ -n "$$missing" ]; then \
+	    echo; \
+	    echo "  These were asked for and are not in the kernel's .config:"; \
+	    echo "$$missing"; \
+	    echo; \
+	    echo "  olddefconfig discarded them: something they depend on is off,"; \
+	    echo "  or the symbol no longer exists in $(KVERSION). Each one is a"; \
+	    echo "  line thalyx.config should have had next to it."; \
+	    echo; \
+	    exit 1; \
+	fi; \
+	echo "  config: every option in thalyx.config survived olddefconfig"
 
 kernel: $(BZIMAGE)
 

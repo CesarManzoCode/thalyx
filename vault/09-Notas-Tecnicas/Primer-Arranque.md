@@ -13,10 +13,15 @@ tags: [imagen, arranque, procedimiento, fase-1]
 > este archivo para responder — busca el paso, compara la salida, y sigue la
 > columna de "si falla".
 >
-> Nada de lo que está entre el paso 2 y el paso 6 se ha ejecutado jamás. Se
-> escribió en un contenedor sin red a kernel.org, sin QEMU y sin el target de
-> musl. **Que algo falle ahí es lo esperado, no una sorpresa**, y cada fallo
-> tiene su arreglo escrito abajo.
+> **Qué se ha ejecutado y qué no.** El paso 3 se corrió una vez, el 2026-08-03,
+> en el contenedor de desarrollo y a mano: 6.12.101 configurado y compilado
+> desde un espejo de GitHub, con `pahole` real. Salió `bzImage` y el `vmlinux`
+> trae `.BTF`. Lo que eso comprueba es **la configuración**, no tu compilador:
+> el contenedor tiene GCC 13 y el problema que motivó el cambio de versión solo
+> aparece con GCC 15.
+>
+> El paso 5 —QEMU— **no se ha ejecutado nunca**, en ningún lado. Que algo falle
+> ahí es lo esperado, no una sorpresa, y cada fallo tiene su arreglo abajo.
 
 ## Qué se está intentando
 
@@ -91,16 +96,28 @@ make -C image kernel
 ```
 
 `dwarves` trae `pahole`, que hace falta para `CONFIG_DEBUG_INFO_BTF`, que hace
-falta para que `thalyx-lsm` pueda cargarse contra este kernel.
+falta para que `thalyx-lsm` pueda cargarse contra este kernel. **Instálalo antes
+de configurar, no después:** si `pahole` no está cuando se resuelve el
+`.config`, la opción de BTF no se rechaza, desaparece.
 
-Tarda. Descarga ~140 MB y compila con todos los núcleos.
+Tarda. Descarga ~150 MB y compila con todos los núcleos.
+
+**Antes de compilar debe imprimir**:
+
+```
+  config: every option in thalyx.config survived olddefconfig
+```
+
+Esa línea existe porque `olddefconfig` descarta en silencio las opciones cuyas
+dependencias no se cumplen, y nueve se estaban perdiendo así.
 
 | Si falla | Qué significa y qué hacer |
 |---|---|
-| Pide opciones que no están en `thalyx.config` | **Esperado.** Ese archivo nunca se compiló. Cada opción que pida es una línea que debió tener. Pégame lo que dice: agregarla es el arreglo correcto, no un parche. |
+| `These were asked for and are not in the kernel's .config` | La comprobación hizo su trabajo. Cada opción que nombre le falta una dependencia, o ya no existe con ese nombre en esta versión. Pégame la lista completa: agregar la dependencia es el arreglo correcto, no quitar la opción. |
+| `cannot use keyword 'false' as enumeration constant` | Estás compilando una versión anterior a 6.12.14 con GCC 15. `KVERSION` en `image/Makefile` debe decir `6.12.101`. Si dice eso y aun así sale, borra `image/build/linux-*` para que no reutilice el árbol viejo. |
 | `pahole: command not found` | Falta `dwarves`. |
 | Errores de `flex`/`bison`/`bc` | Falta alguna de las de arriba; el mensaje dice cuál. |
-| Descarga falla | Cambia `KVERSION` en `image/Makefile` por una versión que exista en `cdn.kernel.org/pub/linux/kernel/v6.x/`. |
+| Descarga falla | Cambia `KVERSION` en `image/Makefile` por una versión que exista en `cdn.kernel.org/pub/linux/kernel/v6.x/`, **6.12.14 o posterior**. |
 
 ## Paso 4 — la imagen, y contarla
 

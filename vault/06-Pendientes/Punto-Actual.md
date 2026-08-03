@@ -21,6 +21,13 @@ tags: [continuidad, punto-actual, sesiones]
 > salida de un comando, es de ahí; esa nota está escrita para responderse sin
 > más contexto que ella misma.
 
+> ## Lo último: el kernel ya compila, falta arrancarlo
+>
+> El primer intento de `make -C image kernel` falló por GCC 15, y al arreglarlo
+> apareció que **nueve opciones del kernel se estaban perdiendo en silencio**,
+> incluidas las dos que `thalyx-lsm` necesita. Las dos cosas están corregidas y
+> el kernel compila. Lo siguiente es el paso 3 y el paso 5 de [[Primer-Arranque]].
+
 ## Dónde estamos, en una frase
 
 **El 2026-08-03 se quitó la distribución.** La bóveda decretaba en tres notas
@@ -209,6 +216,35 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (8) — el kernel no compilaba, y la configuración se perdía sola
+El primer `make -C image kernel` en la máquina de Cesar falló entero en
+`arch/x86/boot/compressed/`: GCC 15 (Fedora 43) usa C23 por defecto, donde
+`bool`, `true` y `false` son palabras reservadas, y ese directorio era el único
+del kernel que nunca pasaba `-std=`. **No se puede arreglar desde fuera** —su
+Makefile abre con `KBUILD_CFLAGS :=`, que tira lo que venga de arriba, así que
+`KCFLAGS` jamás llega. Río arriba lo arreglaron en enero de 2025 y aterrizó en
+la serie estable en **6.12.14**, comprobado tag por tag. `KVERSION` pasa a
+**6.12.101**, la cabeza de la línea 6.12 LTS.
+
+**Y al reproducir la configuración a mano apareció algo peor.** `olddefconfig`
+descarta en silencio toda opción cuyas dependencias no se cumplan: **nueve de
+las de `thalyx.config` no llegaban al `.config` final**, entre ellas
+`CONFIG_BPF_LSM` y `CONFIG_DEBUG_INFO_BTF`. La máquina habría arrancado
+perfecta y `thalyx-lsm` no se habría podido enganchar nunca, con un síntoma
+idéntico al hueco de `bpftool` que ya conocíamos — la culpa habría caído sobre
+el cargador, que no tenía nada que ver. También faltaban `VIRTIO_MENU` y
+`BLK_DEV`, sin los cuales no hay disco del store, e `IPC_NS`.
+
+`make -C image kernel` ahora compara lo pedido contra lo que salió y **se niega
+a compilar** si falta una línea. Probado con su control: quitando `BPF_LSM` y
+`BTF` a mano, los nombra y sale con error. De ahí la regla nueva de
+[[Estrategia-de-Pruebas]]: **pedirle algo a una herramienta no es haberlo
+obtenido**.
+
+Con las nueve líneas puestas, 6.12.101 configura y compila limpio en el
+contenedor, y el `vmlinux` trae `.BTF`. Eso comprueba la configuración, **no**
+el problema de GCC 15: aquí hay GCC 13. QEMU sigue sin correr nunca.
 
 ### 2026-08-03 (7) — el decreto fundacional, y todo listo para arrancar
 Cesar escribió el texto que funda el proyecto y quedó **literal** como primera

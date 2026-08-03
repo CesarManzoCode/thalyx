@@ -323,6 +323,50 @@ afirma; no cubre lo que la bóveda afirma sobre Thalyx**, y la bóveda es la
 autoridad. Ver la advertencia 4 de [[Estado-de-Implementacion]] para el mismo
 agujero en la otra dirección: `verify.sh` exige tres de sus cuatro variables.
 
+## Regla derivada: pedirle algo a una herramienta no es haberlo obtenido
+
+`image/thalyx.config` lista las opciones del kernel que Thalyx necesita, cada
+una con su motivo. El `Makefile` las anexaba al `.config` y llamaba a
+`olddefconfig`, que las resuelve. Nadie miraba el resultado.
+
+`olddefconfig` **descarta sin decir nada** toda opción cuyas dependencias no se
+cumplan. No la rechaza, no advierte, no falla: la línea no aparece en el archivo
+de salida y la compilación sigue. Al reproducir la secuencia a mano, **nueve de
+las opciones pedidas no estaban en el `.config` final**. Dos de ellas eran
+`CONFIG_BPF_LSM` y `CONFIG_DEBUG_INFO_BTF`.
+
+Lo que habría pasado es lo que vuelve grave al caso. El kernel compila. La
+máquina arranca. Los siete montajes salen `ok`. Y `thalyx-lsm` no se engancha
+—porque el kernel no tiene BPF LSM ni BTF—, con un síntoma idéntico al del
+hueco que ya conocíamos (el cargador que invocaba `bpftool`). **La culpa habría
+caído sobre el cargador, que no tenía nada que ver**, y el arreglo real estaba a
+nueve líneas de distancia en otro archivo.
+
+La forma general: cuando se le pide algo a una herramienta ajena mediante un
+archivo de entrada, **el archivo de entrada no es la prueba de nada**. La prueba
+es leer lo que la herramienta produjo y compararlo con lo que se pidió. Es la
+misma regla que "una prueba de que algo se instaló no es una prueba de que
+corre", aplicada un nivel más arriba: aquí ni siquiera hubo instalación, hubo
+una petición que se evaporó.
+
+Tres consecuencias:
+
+1. **Toda configuración generada se compara contra la solicitada, y la
+   diferencia detiene el proceso.** `make -C image kernel` lo hace ahora y se
+   niega a compilar si falta una línea. Fallar la compilación cuesta minutos;
+   fallar el arranque costó, en el caso simétrico, tres días de un decreto roto.
+2. **La comprobación también cubre el envejecimiento.** Una opción renombrada o
+   retirada entre versiones del kernel se ve exactamente igual que una
+   dependencia sin cumplir, y es el fallo que un cambio de versión sí produce.
+3. **Una opción que está solo porque otra la necesita lo dice en el archivo.**
+   Sin eso, la siguiente limpieza borra `CONFIG_FTRACE` por parecer ajena a un
+   sistema operativo mínimo, y se lleva `BPF_LSM` con ella sin que nada avise.
+
+El corolario: esto no lo encontró leer el `Makefile`, que era correcto en todo
+lo que hacía. Lo encontró correr la secuencia y mirar la salida — la regla 1 de
+`CLAUDE.md` otra vez, ahora aplicada a una herramienta de construcción y no al
+sistema.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
