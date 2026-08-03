@@ -134,21 +134,57 @@ fn mount_all() -> Boot {
     boot
 }
 
+/// The BPF object, built into this binary by `build.rs`.
+///
+/// `None` when `make -C lsm` had not been run when this was compiled. That is a
+/// different fact from a kernel that cannot load it, and the boot says which.
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/lsm_object.rs"));
+}
+
+/// Where the links and maps are pinned, which is where `thalyx-permd` looks.
+const PIN_ROOT: &str = "/sys/fs/bpf/thalyx";
+
 /// Attach the kernel side before anything can ask for a permission.
 ///
 /// Ordering rather than tidiness: `module run` refuses to start a module while
 /// the policy map is absent, so a session that came up first would spend its
 /// early life reporting an enforcement layer that was merely late.
-fn attach_lsm() -> Result<(), String> {
-    let loader = Path::new("/lib/thalyx/thalyx_lsm.bpf.o");
-    if !loader.exists() {
-        return Err(format!("{} is not in the image", loader.display()));
-    }
-    // Deliberately not implemented by shelling out to bpftool: there is no
-    // bpftool in the image, and there is no shell to run it from. This is the
-    // one place where the decision to ship nothing but `thalyx` has a cost that
-    // has to be paid in code rather than avoided, and it is not paid yet.
-    Err("loading the LSM from inside PID 1 is not implemented".to_string())
+///
+/// This used to invoke `bpftool` and look for a second file on disk. Both were
+/// impossible in an image holding one program, and the message it printed
+/// suggested a fix that would have broken the founding decree. The object is
+/// now inside this binary and the loading is `thalyx_bpf`, which makes the four
+/// `bpf(2)` calls itself.
+fn attach_lsm() -> Result<String, String> {
+    let Some(object) = embedded::OBJECT else {
+        return Err(format!(
+            "no BPF object was built into me. `make -C lsm` produces {}, \
+             and this binary was compiled before it existed",
+            embedded::ORIGIN
+        ));
+    };
+
+    // Read before anything is created, because the failure is worth telling
+    // apart: no BTF means CONFIG_DEBUG_INFO_BTF is off and the fix is a kernel
+    // rebuild, not anything the loader can do.
+    let kernel = thalyx_bpf::kernel_btf().map_err(|error| error.to_string())?;
+    let loaded = thalyx_bpf::load(object, &kernel).map_err(|error| error.to_string())?;
+
+    let pinned = loaded.pin(Path::new(PIN_ROOT));
+
+    let hooks = loaded.links.len();
+    let maps = loaded.maps.len();
+
+    // Only now may the descriptors be dropped. Pinning is what makes them
+    // outlive this function; dropping them first would detach enforcement
+    // between one line of the boot and the next.
+    drop(loaded);
+
+    pinned.map_err(|error| error.to_string())?;
+    Ok(format!(
+        "{hooks} hook(s) live, {maps} map(s) pinned under {PIN_ROOT}"
+    ))
 }
 
 /// Run as PID 1: mount the world, start the session, and outlive it.
@@ -172,8 +208,17 @@ pub fn run() -> Fallible {
     crate::store_disk::mount().report();
 
     match attach_lsm() {
-        Ok(()) => println!("  ok  thalyx-lsm attached"),
-        Err(reason) => println!("  no  thalyx-lsm: {reason}"),
+        Ok(detail) => println!("  ok  thalyx-lsm  {detail}"),
+        // Multi-line on purpose: a verifier rejection names the instruction and
+        // the register, and that is the whole difference between "it did not
+        // load" and knowing why. Squeezing it onto one line would throw away
+        // the only part worth reading.
+        Err(reason) => {
+            println!("  no  thalyx-lsm  {}", reason.lines().next().unwrap_or(""));
+            for line in reason.lines().skip(1) {
+                println!("      {line}");
+            }
+        }
     }
 
     // Turned down only now, with the boot's own reporting already printed.

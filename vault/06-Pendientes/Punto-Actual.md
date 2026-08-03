@@ -55,6 +55,21 @@ tags: [continuidad, punto-actual, sesiones]
 > cuatro fueron del constructor y no del sistema — están abajo, en "Los cuatro
 > fallos del camino", porque tres de ellas son la misma regla.
 >
+> ## Y ahora carga su propio enforcement — 2026-08-03, escrito y sin ejercer
+>
+> El último hueco de arquitectura. `attach_lsm` invocaba `bpftool` —un segundo
+> programa, desde una shell, en una imagen que no tiene ninguno de los dos— y
+> buscaba `/lib/thalyx/thalyx_lsm.bpf.o`, un segundo archivo. **El mensaje que
+> imprimía sugería romper el decreto que estaba reportando.**
+>
+> Ahora el objeto BPF va dentro del binario y Thalyx hace las llamadas al kernel
+> él mismo: `crates/thalyx-bpf` lee ELF, BTF, la forma de los mapas y las
+> reubicaciones CO-RE sin una línea de `unsafe`, y `thalyx-syscall` hace las
+> cuatro llamadas. Ver [[Cargador-BPF-Propio]].
+>
+> **Nada de esto se ha ejercido.** El contenedor no tiene BPF LSM. La etapa 14
+> de `verify.sh` es donde se comprueba, y es lo siguiente que hay que correr.
+>
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
 
@@ -79,12 +94,12 @@ entonces: **520 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, la imagen que Thalyx
 construye para sí mismo, y el disco donde guarda lo que le instalan.
 
-**Queda un solo hueco de arquitectura: el enforcement dentro de la imagen.**
-Mientras `thalyx-lsm` no cargue desde dentro, el núcleo se niega a correr un
-módulo confinado —correctamente, porque nada haría cumplir sus permisos— y la
-única forma de correrlo es `correr <id> sin-confinar`, que existe para que ese
-estado sea algo que alguien escribió y no una degradación callada. Para cerrar
-la fase falta además **el modelo del agente**.
+**Los huecos de arquitectura de la Fase 1 están escritos.** El último era el
+enforcement dentro de la imagen, y el cargador propio existe desde el
+2026-08-03 — sin ejercer. Cuando la etapa 14 salga en verde, `correr <id>` a
+secas debería funcionar dentro de la máquina y `sin-confinar` deja de hacer
+falta. Para cerrar la fase falta **el modelo del agente**, que es lo único
+grande que queda.
 
 ## Lo que falta comprobar
 
@@ -92,9 +107,10 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 
 | Qué | Estado |
 |---|---|
-| El mecanismo del store | **Probado**, etapa 13 de `verify.sh`, en verde el 2026-08-03. |
-| `make -C image store-stage` y `sudo make -C image store` | El `Makefile` en sí. La etapa 13 hace lo mismo por su cuenta, así que un fallo aquí es del `Makefile`, no del store. |
-| El disco arrancando dentro de QEMU | Pasos 5 y 6 de [[Primer-Arranque]]. |
+| El mecanismo del store | **Probado**, etapa 13, en verde el 2026-08-03. |
+| El store arrancando en QEMU | **Probado**, arrancó con el disco montado y el módulo instalado. |
+| **El cargador de BPF propio** | **Escrito y sin ejercer.** Etapa 14. Es lo siguiente que hay que correr. |
+| `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. |
 
 ## Los cuatro fallos del camino, y por qué tres son el mismo
 

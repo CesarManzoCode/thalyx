@@ -33,6 +33,14 @@ pub enum EnforceCommand {
         #[arg(long)]
         cgroup: PathBuf,
     },
+    /// Load thalyx-lsm into the kernel and attach it, with no bpftool
+    ///
+    /// This is what PID 1 does at boot. It is a command as well so that the
+    /// loader can be exercised on a machine that is not the image — which is
+    /// every machine that can currently check it.
+    Attach,
+    /// Detach thalyx-lsm by removing what holds it
+    Detach,
 }
 
 pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
@@ -41,6 +49,9 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
 
     match command {
         EnforceCommand::Status => status(&store, &kernel),
+
+        EnforceCommand::Attach => attach(),
+        EnforceCommand::Detach => detach(),
 
         EnforceCommand::Apply { module_id, cgroup } => {
             require_kernel(&kernel)?;
@@ -144,4 +155,90 @@ fn require_kernel(kernel: &BpftoolStore) -> Fallible {
         return Ok(());
     }
     Err("the kernel policy map is not present; run `make -C lsm load` first".into())
+}
+
+/// Where PID 1 pins what it loads. The same path, because a loader that pinned
+/// somewhere else would leave `thalyx-permd` looking at nothing.
+const PIN_ROOT: &str = "/sys/fs/bpf/thalyx";
+
+/// The object, embedded by `build.rs`. See `init.rs` for why it is not a file.
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/lsm_object.rs"));
+}
+
+/// Load and attach, exactly as the boot does it.
+fn attach() -> Fallible {
+    let Some(object) = embedded::OBJECT else {
+        return Err(format!(
+            "no BPF object was built into this binary.\n  \
+             `make -C lsm` produces {}, and this was compiled before it existed.",
+            embedded::ORIGIN
+        )
+        .into());
+    };
+
+    // Refused rather than layered. Two sets of links on the same hooks both
+    // run, both deny, and detaching one leaves the other — so "it is still
+    // denying after I unloaded it" becomes the puzzle.
+    if std::path::Path::new(PIN_ROOT).join("links").exists() {
+        return Err(format!(
+            "something is already attached at {PIN_ROOT}.\n  \
+             `thalyx enforce detach` first; attaching twice leaves two sets of\n  \
+             live hooks and removing one of them changes nothing you can see."
+        )
+        .into());
+    }
+
+    let kernel = thalyx_bpf::kernel_btf()?;
+    let loaded = thalyx_bpf::load(object, &kernel)?;
+
+    println!();
+    for (name, _) in &loaded.maps {
+        println!("  map     {name}");
+    }
+    for (name, _) in &loaded.links {
+        println!("  live    {name}");
+    }
+
+    loaded.pin(std::path::Path::new(PIN_ROOT))?;
+    // Only after pinning: the descriptors are what keep it alive until the
+    // pins do.
+    drop(loaded);
+
+    println!();
+    println!("  attached, and pinned under {PIN_ROOT}.");
+    println!("  Nothing is denied yet: the policy map is empty and no module");
+    println!("  has been placed in a cgroup it knows about.");
+    println!();
+    Ok(())
+}
+
+/// Remove the pins, which is what lets the kernel free the links.
+///
+/// Links go first. A map removed while a link still references it is freed only
+/// when the link is, so the reverse order leaves enforcement live with its
+/// policy unreachable — denying on a map nothing can write to.
+fn detach() -> Fallible {
+    let root = std::path::Path::new(PIN_ROOT);
+    if !root.exists() {
+        println!("  nothing is attached at {PIN_ROOT}.");
+        return Ok(());
+    }
+
+    let mut removed = 0;
+    for directory in ["links", "maps"] {
+        let path = root.join(directory);
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+        let _ = std::fs::remove_dir(&path);
+    }
+    let _ = std::fs::remove_dir(root);
+
+    println!("  detached: {removed} pin(s) removed from {PIN_ROOT}");
+    Ok(())
 }

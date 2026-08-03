@@ -2,6 +2,7 @@
 #
 #   make                  everything below, in order
 #   make kernel           fetch and build Linux with our configuration
+#   make lsm              build the kernel side, which goes inside the binary
 #   make binary           build thalyx, statically linked
 #   make image            pack the root filesystem
 #   make store-stage      build what goes on the store disk
@@ -73,7 +74,7 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter
+        store store-stage greeter lsm
 
 all: kernel binary image
 	@echo
@@ -147,11 +148,39 @@ kernel: $(BZIMAGE)
 toolchain:
 	rustup target add $(TARGET)
 
+# The kernel side, built before the binary because it goes *inside* it.
+#
+# `thalyx` carries thalyx_lsm.bpf.o as bytes and loads it with its own loader —
+# no bpftool, and no second file in an image that holds one program. That is
+# what `crates/thalyx-cli/build.rs` picks up, and it picks up nothing if this
+# has not run.
+#
+# Building it needs clang, bpftool and a kernel that publishes BTF, on the
+# machine doing the building. Those are not needed to *run* Thalyx and they are
+# needed to make an image that can enforce anything. An image without
+# enforcement is a real thing to want while debugging, and it is
+# `make image WITHOUT_LSM=1` — said out loud rather than arrived at by a tool
+# quietly being absent.
+LSM_OBJECT := $(ROOT)/lsm/thalyx_lsm.bpf.o
+
+$(LSM_OBJECT):
+	$(MAKE) -C $(ROOT)/lsm thalyx_lsm.bpf.o
+
+lsm: $(LSM_OBJECT)
+	@echo "  kernel side: $$(du -h $(LSM_OBJECT) | cut -f1), to be embedded in the binary"
+
 # Statically linked, so the image needs no dynamic loader and no libc on disk.
 #
 # musl is compiled in, not shipped. Nothing in the image is a program somebody
 # could invoke, because there is nobody to invoke it.
-$(THALYX): toolchain
+$(THALYX): toolchain $(if $(WITHOUT_LSM),,$(LSM_OBJECT))
+	@test -n "$(WITHOUT_LSM)" || test -f $(LSM_OBJECT) || { \
+	    echo "  $(LSM_OBJECT) was not built, so the binary would carry no"; \
+	    echo "  enforcement and the machine would say so at every boot."; \
+	    echo "  To build an image without it on purpose:"; \
+	    echo "      make -C image image WITHOUT_LSM=1"; \
+	    exit 1; \
+	}
 	cd $(ROOT) && cargo build --release --target $(TARGET) -p thalyx-cli
 
 # What "static" actually has to mean here: the program asks for no interpreter.

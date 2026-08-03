@@ -915,3 +915,356 @@ mod kmsg_tests {
         assert!(parse_kmsg(b"").is_none());
     }
 }
+
+// ──────────────────────────────────────────────────────────── the bpf syscall
+//
+// `vault/09-Notas-Tecnicas/Construccion-del-ISO.md` says the image holds the
+// kernel and one program. Attaching thalyx-lsm used to mean invoking bpftool,
+// which is a second program, from a shell, which is a third. So Thalyx makes
+// the calls itself.
+//
+// Everything above the syscall — reading the object, working out map shapes,
+// resolving CO-RE offsets — is in `thalyx-bpf`, which forbids unsafe and needs
+// no kernel to be tested. What is left here is the four calls themselves.
+//
+// ## Why the argument structures are written out
+//
+// `union bpf_attr` is one union with a member per command, and each member is a
+// different length. The kernel reads exactly the number of bytes it is told,
+// requires anything past its own idea of the structure to be zero, and
+// zero-fills anything short. So each command gets its own `repr(C)` struct
+// whose layout is the prefix of that union member, and its own size — which is
+// both simpler than modelling the union and the only way the padding is
+// checkable by reading.
+//
+// Getting a field's offset wrong here does not fail loudly. It passes a
+// plausible number in the wrong slot, and the kernel does what that number
+// says.
+
+use std::os::fd::{BorrowedFd, OwnedFd};
+
+/// `bpf` is not in libc's exports on every target, so it goes through
+/// `syscall(2)` by number. 321 is x86-64.
+#[cfg(target_arch = "x86_64")]
+const SYS_BPF: libc::c_long = 321;
+#[cfg(target_arch = "aarch64")]
+const SYS_BPF: libc::c_long = 280;
+
+/// The commands used here, by their number in `enum bpf_cmd`.
+mod bpf_cmd {
+    pub const MAP_CREATE: u32 = 0;
+    pub const PROG_LOAD: u32 = 5;
+    pub const OBJ_PIN: u32 = 6;
+    pub const RAW_TRACEPOINT_OPEN: u32 = 17;
+}
+
+/// `BPF_PROG_TYPE_LSM`.
+pub const BPF_PROG_TYPE_LSM: u32 = 29;
+
+/// `BPF_LSM_MAC`, the expected attach type for a mandatory-access-control hook.
+pub const BPF_LSM_MAC: u32 = 26;
+
+/// Make the call. Returns the kernel's result, which for the commands here is a
+/// file descriptor or a negative error.
+fn bpf(command: u32, attr: &[u8]) -> io::Result<i32> {
+    // SAFETY: `syscall` is variadic and the kernel reads exactly `attr.len()`
+    // bytes from the pointer, which is a slice this call frame owns and which
+    // outlives the call. No memory is retained by the kernel past it: every
+    // command here either copies what it needs or returns a descriptor.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(
+            SYS_BPF,
+            command as libc::c_long,
+            attr.as_ptr(),
+            attr.len() as libc::c_long,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(result as i32)
+}
+
+/// A name as the kernel wants it: sixteen bytes, NUL-padded, truncated rather
+/// than refused.
+///
+/// Truncation is deliberate. A map called something long is a cosmetic problem;
+/// refusing to load enforcement over it is not.
+fn kernel_name(name: &str) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let bytes = name.as_bytes();
+    let take = bytes.len().min(15);
+    out[..take].copy_from_slice(&bytes[..take]);
+    out
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MapCreateAttr {
+    map_type: u32,
+    key_size: u32,
+    value_size: u32,
+    max_entries: u32,
+    map_flags: u32,
+    inner_map_fd: u32,
+    numa_node: u32,
+    map_name: [u8; 16],
+    map_ifindex: u32,
+    btf_fd: u32,
+    btf_key_type_id: u32,
+    btf_value_type_id: u32,
+    btf_vmlinux_value_type_id: u32,
+    map_extra: u64,
+}
+
+/// Create one map. The descriptor is what the programs get relocated with, so
+/// it has to stay open until every program that uses it is loaded.
+pub fn bpf_map_create(
+    name: &str,
+    map_type: u32,
+    key_size: u32,
+    value_size: u32,
+    max_entries: u32,
+    flags: u32,
+) -> io::Result<OwnedFd> {
+    let attr = MapCreateAttr {
+        map_type,
+        key_size,
+        value_size,
+        max_entries,
+        map_flags: flags,
+        map_name: kernel_name(name),
+        ..Default::default()
+    };
+    let descriptor = bpf(bpf_cmd::MAP_CREATE, as_bytes(&attr))?;
+    Ok(owned(descriptor))
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ProgLoadAttr {
+    prog_type: u32,
+    insn_cnt: u32,
+    insns: u64,
+    license: u64,
+    log_level: u32,
+    log_size: u32,
+    log_buf: u64,
+    kern_version: u32,
+    prog_flags: u32,
+    prog_name: [u8; 16],
+    prog_ifindex: u32,
+    expected_attach_type: u32,
+    prog_btf_fd: u32,
+    func_info_rec_size: u32,
+    func_info: u64,
+    func_info_cnt: u32,
+    line_info_rec_size: u32,
+    line_info: u64,
+    line_info_cnt: u32,
+    attach_btf_id: u32,
+    attach_btf_obj_fd: u32,
+    core_relo_cnt: u32,
+    fd_array: u64,
+    core_relos: u64,
+    core_relo_rec_size: u32,
+    log_true_size: u32,
+}
+
+/// What the verifier said, when it said no.
+///
+/// Carried rather than discarded because a rejected BPF program produces one of
+/// the most specific error messages in the kernel — the instruction, the
+/// register, and what it held — and throwing it away leaves `EINVAL`. The
+/// project has a rule about this: the machine says which thing failed.
+#[derive(Debug)]
+pub struct VerifierRejection {
+    pub error: io::Error,
+    pub log: String,
+}
+
+impl std::fmt::Display for VerifierRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)?;
+        if !self.log.is_empty() {
+            // The last lines are the ones about the instruction that failed;
+            // the rest is the trace that led there.
+            let tail: Vec<&str> = self.log.trim_end().lines().rev().take(12).collect();
+            for line in tail.into_iter().rev() {
+                write!(f, "\n      {line}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Load one program. `instructions` is already relocated.
+///
+/// A verifier log is always requested. It costs a buffer and it is the whole
+/// difference between "the kernel said no" and knowing which instruction.
+pub fn bpf_prog_load(
+    name: &str,
+    prog_type: u32,
+    expected_attach_type: u32,
+    attach_btf_id: u32,
+    instructions: &[u8],
+    license: &str,
+) -> std::result::Result<OwnedFd, VerifierRejection> {
+    let mut log = vec![0u8; 256 * 1024];
+    let license = std::ffi::CString::new(license).unwrap_or_default();
+
+    let attr = ProgLoadAttr {
+        prog_type,
+        insn_cnt: (instructions.len() / 8) as u32,
+        insns: instructions.as_ptr() as u64,
+        license: license.as_ptr() as u64,
+        log_level: 1,
+        log_size: log.len() as u32,
+        log_buf: log.as_mut_ptr() as u64,
+        prog_name: kernel_name(name),
+        expected_attach_type,
+        attach_btf_id,
+        ..Default::default()
+    };
+
+    match bpf(bpf_cmd::PROG_LOAD, as_bytes(&attr)) {
+        Ok(descriptor) => Ok(owned(descriptor)),
+        Err(error) => {
+            let end = log.iter().position(|b| *b == 0).unwrap_or(0);
+            Err(VerifierRejection {
+                error,
+                log: String::from_utf8_lossy(&log[..end]).into_owned(),
+            })
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawTracepointAttr {
+    name: u64,
+    prog_fd: u32,
+    padding: u32,
+    cookie: u64,
+}
+
+/// Put a loaded LSM program into the kernel's decision path.
+///
+/// The returned descriptor is a **link**, and it is what makes the program live.
+/// A loaded program that is not linked enforces nothing while looking, to
+/// anything that lists programs, exactly like one that does — which is why
+/// `make status` counts links and not pins.
+pub fn bpf_attach_lsm(program: BorrowedFd<'_>) -> io::Result<OwnedFd> {
+    use std::os::fd::AsRawFd;
+    let attr = RawTracepointAttr {
+        // Null: for an LSM program the kernel takes the attach point from the
+        // program's own attach_btf_id rather than from a name here.
+        name: 0,
+        prog_fd: program.as_raw_fd() as u32,
+        ..Default::default()
+    };
+    Ok(owned(bpf(bpf_cmd::RAW_TRACEPOINT_OPEN, as_bytes(&attr))?))
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ObjPinAttr {
+    pathname: u64,
+    bpf_fd: u32,
+    file_flags: u32,
+}
+
+/// Pin a map or a link into bpffs so it outlives the process that made it.
+///
+/// Without this every map and link is freed when Thalyx's descriptors close,
+/// which for PID 1 is never — but `thalyx-permd` runs as a separate process and
+/// finds the policy map by its pin. Unpinned, enforcement would exist and
+/// nothing could write a permission into it.
+pub fn bpf_obj_pin(object: BorrowedFd<'_>, path: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let path = path_to_c(path)?;
+    let attr = ObjPinAttr {
+        pathname: path.as_ptr() as u64,
+        bpf_fd: object.as_raw_fd() as u32,
+        file_flags: 0,
+    };
+    bpf(bpf_cmd::OBJ_PIN, as_bytes(&attr))?;
+    Ok(())
+}
+
+/// The bytes of an argument structure, exactly as long as the structure is.
+fn as_bytes<T>(value: &T) -> &[u8] {
+    // SAFETY: `T` is one of the `repr(C)` argument structures above, all of
+    // which are plain data with no padding this reads as uninitialised — every
+    // one is built with `..Default::default()`, so every byte including padding
+    // was written by zeroing. The slice borrows `value` and cannot outlive it.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(value).cast::<u8>(),
+            std::mem::size_of::<T>(),
+        )
+    }
+}
+
+/// Take ownership of a descriptor the kernel just returned.
+fn owned(descriptor: i32) -> OwnedFd {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `descriptor` came from a successful bpf(2), which returns a fresh
+    // descriptor owned by this process and held by nothing else.
+    #[allow(unsafe_code)]
+    unsafe {
+        OwnedFd::from_raw_fd(descriptor)
+    }
+}
+
+#[cfg(test)]
+mod bpf_tests {
+    use super::*;
+
+    #[test]
+    fn each_argument_structure_is_the_length_the_kernel_expects() {
+        // The kernel reads exactly as many bytes as it is told and requires
+        // anything past its own structure to be zero. A field at the wrong
+        // offset does not fail loudly: it passes a plausible number in the
+        // wrong slot. These numbers come from `union bpf_attr` in
+        // include/uapi/linux/bpf.h and are the one thing here that cannot be
+        // checked by running it on a machine with no BPF.
+        assert_eq!(std::mem::size_of::<MapCreateAttr>(), 72);
+        assert_eq!(std::mem::size_of::<ProgLoadAttr>(), 144);
+        assert_eq!(std::mem::size_of::<RawTracepointAttr>(), 24);
+        assert_eq!(std::mem::size_of::<ObjPinAttr>(), 16);
+    }
+
+    #[test]
+    fn the_fields_the_kernel_reads_are_where_it_looks_for_them() {
+        // Spot-checked at the offsets most likely to be wrong: the ones after
+        // a fixed-size name array, where a miscount shifts everything after it.
+        let attr = ProgLoadAttr::default();
+        let base = std::ptr::from_ref(&attr) as usize;
+        assert_eq!(std::ptr::from_ref(&attr.prog_name) as usize - base, 48);
+        assert_eq!(
+            std::ptr::from_ref(&attr.expected_attach_type) as usize - base,
+            68
+        );
+        assert_eq!(std::ptr::from_ref(&attr.attach_btf_id) as usize - base, 108);
+    }
+
+    #[test]
+    fn a_name_too_long_for_the_kernel_is_cut_rather_than_refused() {
+        // A map with a long name is cosmetic; refusing to load enforcement
+        // over one is not.
+        let name = kernel_name("a_very_long_map_name_indeed");
+        assert_eq!(name.len(), 16);
+        assert_eq!(name[15], 0, "the name must stay NUL-terminated");
+        assert_eq!(&name[..15], b"a_very_long_map");
+    }
+
+    #[test]
+    fn a_short_name_is_padded_with_zeroes_and_not_with_whatever_was_there() {
+        let name = kernel_name("thalyx_policy");
+        assert_eq!(&name[..13], b"thalyx_policy");
+        assert!(name[13..].iter().all(|b| *b == 0));
+    }
+}

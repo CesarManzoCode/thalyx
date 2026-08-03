@@ -251,7 +251,7 @@ Sale por la consola serie. Para salir de QEMU: `Ctrl-a` y luego `x`.
   ok  mounted /sys/fs/bpf
   ok  mounted /sys/fs/cgroup
   ok  store        /dev/vda — three subvolumes
-  no  thalyx-lsm: /lib/thalyx/thalyx_lsm.bpf.o is not in the image
+  ok  thalyx-lsm  2 hook(s) live, 3 map(s) pinned under /sys/fs/bpf/thalyx
   ok  kernel talk  warnings and worse only; `nucleo` shows the rest
 
   Thalyx.
@@ -270,7 +270,10 @@ contrario, y esa diferencia es cómo se comprueba que la frase no está cableada
 | `Kernel panic - not syncing: No working init found` | El kernel no encontró o no pudo ejecutar `/init`. Casi siempre el binario no era estático de verdad. |
 | Pánico inmediato sin ninguna línea de Thalyx | Falta algo del kernel: `CONFIG_BLK_DEV_INITRD`, `CONFIG_DEVTMPFS` o la consola serie. Pégame las últimas 20 líneas. |
 | Arranca pero algún `no  mounted` | **No es fatal, es el diseño.** Falta esa opción en `thalyx.config`. Pégame cuáles. |
-| `no  thalyx-lsm` | **Esperado.** Es el hueco conocido: el cargador invocaba `bpftool` y no hay bpftool en la imagen. Ver abajo. |
+| `no  thalyx-lsm  no BPF object was built into me` | La imagen se construyó sin el lado del kernel. `make -C image lsm` y reconstruye el binario. |
+| `no  thalyx-lsm  reading this kernel's BTF` | Falta `CONFIG_DEBUG_INFO_BTF`. El arreglo es reconstruir el kernel, no tocar el cargador. |
+| `no  thalyx-lsm  this kernel does not expose bpf_lsm_...` | El kernel no trae ese hook. `make -C lsm hooks` los enumera. |
+| `no  thalyx-lsm` seguido de líneas del verificador | El kernel rechazó el programa y dice cuál instrucción. **Pégamelo entero**: esas líneas son lo único que sirve. |
 | `no  store ... neither is any other disk` | No llegó ningún disco. O el paso 4b no se hizo, o QEMU no lo adjuntó. Desde el 2026-08-03 `make run` **se niega a arrancar** sin store, así que esto solo sale con `STORELESS=1`. |
 | `no  store ... The disks that are: X` | Sí hay discos y ninguno se llama como dice `thalyx.store=`. Cambia `STOREDEV` en `image/Makefile` por el que aparezca. |
 | `no  store        ... is there and did not mount` | El disco está adjunto y no es un store. Casi siempre: se creó con una versión anterior, o el `mkfs` se interrumpió. Rehazlo con el paso 4b. |
@@ -345,10 +348,11 @@ Para ver qué dijo el kernel: `nucleo`. Para apagar: `apagar`.
 
 ## Lo que va a estar mal, y ya se sabe
 
-**`thalyx-lsm` no se carga.** La máquina arranca y lo dice. El cargador invocaba
-`bpftool`, y la imagen no lleva bpftool ni shell desde donde llamarlo —
-[[Filosofia-Fundacional]] lo registra como uno de los dos decretos que su propio
-texto invalida. Cargar BPF desde dentro de Thalyx es el trabajo que sigue.
+**`thalyx-lsm` puede que sí cargue ahora, y nunca se ha probado.** El cargador
+propio se escribió el 2026-08-03: el objeto va dentro del binario y Thalyx hace
+las llamadas al kernel. Ver [[Cargador-BPF-Propio]]. **Corre la etapa 14 de
+`verify.sh` antes que esto** — prueba lo mismo sin QEMU, y si falla ahí el
+problema es el cargador y no el arranque.
 
 **Por eso `correr` se niega.** El núcleo no arranca un módulo confinado cuando
 nada puede hacer cumplir sus permisos, y en esta máquina nada puede todavía. La
