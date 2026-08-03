@@ -7,7 +7,7 @@
 
 use clap::Subcommand;
 use std::path::{Path, PathBuf};
-use thalyx_graph::{Coverage, Freshness, Index, MutationCounter, Watcher};
+use thalyx_graph::{Coverage, Freshness, Index, MutationCounter, Trust, Watcher};
 use thalyx_watch::{KernelCounter, Scoping, TreeCounter};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -77,6 +77,21 @@ pub enum GraphCommand {
         #[arg(long)]
         tree: Option<PathBuf>,
     },
+    /// Let the counter decide freshness, or take that back
+    ///
+    /// The fast path is not asserted, it is earned: switching it on runs the
+    /// verification first and refuses unless it agrees. With no flag, this
+    /// reports where the index stands and what earned it.
+    Trust {
+        #[arg(default_value = ".")]
+        tree: PathBuf,
+        /// Skip the walk when the kernel says nothing changed
+        #[arg(long, conflicts_with = "walk")]
+        counter: bool,
+        /// Go back to walking the tree on every check
+        #[arg(long)]
+        walk: bool,
+    },
     /// Files carrying a tag
     Tagged {
         tag: String,
@@ -133,12 +148,22 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             let tree = tree.canonicalize()?;
             let index = open(store_root, &tree)?;
 
+            let scoping = thalyx_watch::scoping_for(&tree);
             println!("tree      {}", tree.display());
             println!("nodes     {}", index.node_count()?);
             println!("edges     {}", index.edge_count()?);
-            print_coverage(&index, &thalyx_watch::scoping_for(&tree))?;
+            print_coverage(&index, &scoping)?;
 
-            match index.freshness()? {
+            // Through the watcher, so an index that earned the fast path
+            // actually takes it. Asking the index directly would make the
+            // whole earning mechanism decorative.
+            let mut watcher = Watcher::new(counter_for(&scoping)).with_trust(index.trust()?);
+            if let Some(baseline) = index.mutation_baseline()? {
+                watcher = Watcher::resuming_from(counter_for(&scoping), baseline)
+                    .with_trust(index.trust()?);
+            }
+
+            match watcher.freshness(&index)? {
                 Freshness::Current => {
                     println!("freshness index is current");
                 }
@@ -251,6 +276,90 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                 Err(error) => println!("hooks     could not be established: {error}"),
             }
 
+            Ok(())
+        }
+
+        GraphCommand::Trust {
+            tree,
+            counter: earn,
+            walk,
+        } => {
+            let tree = tree.canonicalize()?;
+            let index = open(store_root, &tree)?;
+
+            if walk {
+                index.set_trust(Trust::WalkAlways, None)?;
+                println!("this index walks the tree on every check.");
+                println!("Slower, and true on any machine.");
+                return Ok(());
+            }
+
+            if !earn {
+                match index.trust()? {
+                    Trust::Counter => {
+                        println!("trust     the counter decides; the walk is skipped when it");
+                        println!("          has not moved since the index was built");
+                        match index.trust_earned()? {
+                            Some(note) => println!("earned    {note}"),
+                            None => {
+                                println!("earned    (nothing recorded — it was not earned here)")
+                            }
+                        }
+                    }
+                    Trust::WalkAlways => {
+                        println!("trust     the tree is walked on every check");
+                        println!("          `thalyx graph trust --counter` earns the fast path");
+                    }
+                }
+                return Ok(());
+            }
+
+            // Earning it. The verification is run here rather than trusted
+            // from an earlier run: a machine that agreed once and has since
+            // had its watcher reloaded, or its tree moved under a mount, is a
+            // machine where the answer has changed.
+            let scoping = thalyx_watch::scoping_for(&tree);
+            let counter = counter_for(&scoping);
+
+            if !counter.claims_complete_coverage() {
+                println!("refused: the watcher does not cover every way a file can change.");
+                println!("`thalyx graph watcher` names the hooks that are missing.");
+                return Ok(());
+            }
+
+            let mut watcher = match index.mutation_baseline()? {
+                Some(baseline) => Watcher::resuming_from(counter, baseline),
+                None => Watcher::new(counter),
+            };
+            let verification = watcher.verify(&index)?;
+
+            if verification.found_a_coverage_hole() {
+                println!("refused: {}", verification.describe());
+                return Ok(());
+            }
+            if !verification.coverage.is_unbroken() {
+                println!("refused: coverage is {}", verification.coverage.describe());
+                println!("`thalyx graph build` re-establishes it.");
+                return Ok(());
+            }
+
+            let note = format!(
+                "{} — {}; counter said {}, the tree said {}",
+                thalyx_journal::now(),
+                scoping.describe(),
+                said(verification.counter_said_current),
+                said(verification.walk_said_current)
+            );
+            index.set_trust(Trust::Counter, Some(&note))?;
+
+            println!("earned. This index now skips the walk when the counter has not");
+            println!("moved since it was built.");
+            println!();
+            println!("  {note}");
+            println!();
+            println!("It is given back on its own the moment the counter cannot account");
+            println!("for everything: a reload, an unreadable map, a hook gone. Nothing");
+            println!("has to notice and turn it off.");
             Ok(())
         }
 
@@ -449,6 +558,11 @@ fn print_coverage(index: &Index, scoping: &Scoping) -> Fallible {
     // check will compare against. Printing the machine-wide total beside a
     // baseline taken from the tree's own count would show a difference of
     // millions and mean nothing.
+    match index.trust()? {
+        Trust::Counter => println!("trust     the counter decides; the walk is skipped"),
+        Trust::WalkAlways => println!("trust     the tree is walked on every check"),
+    }
+
     let total = match counter_for(scoping).total() {
         Ok(total) => total,
         Err(error) => {
@@ -475,8 +589,13 @@ fn print_coverage(index: &Index, scoping: &Scoping) -> Fallible {
                 "          all {} hooks attached: nothing on this machine can change a",
                 thalyx_watch::REQUIRED_HOOKS.len()
             );
-            println!("          file without the count moving. It is still machine-wide, so");
-            println!("          it counts changes outside this tree — cautious, never blind.");
+            println!("          file without the count moving");
+            // The caveat depends on the scoping, and printing it either way
+            // would go stale the moment the other case became true.
+            if matches!(scoping, Scoping::Machine { .. }) {
+                println!("          it counts changes outside this tree too — cautious, never");
+                println!("          blind, and the shortcut will rarely fire");
+            }
         }
         Ok(missing) => {
             println!(

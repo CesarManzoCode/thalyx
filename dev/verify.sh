@@ -525,6 +525,36 @@ if [ "$LOADED" = 1 ]; then
                 echo "     everything, which is the machine-wide counter with extra steps"
             fi
         fi
+        # Earning the fast path. It is not a setting somebody turns on: the
+        # verification runs first and refuses unless the counter and the tree
+        # agree on this machine, right now.
+        "$THALYX" graph build "$WORK/tree" > /dev/null 2>&1
+        if "$THALYX" graph trust "$WORK/tree" --counter > "$WORK/trust.log" 2>&1 &&
+           grep -q "^earned" "$WORK/trust.log"; then
+            proven "the fast path was earned: the counter and the tree agreed"
+            grep -E "^  20|^  " "$WORK/trust.log" | head -2 | sed 's/^/     /'
+        else
+            unproven "the fast path was not earned; see $WORK/trust.log"
+            sed 's/^/     /' "$WORK/trust.log"
+        fi
+
+        # And the direction that matters: a trusted index must still notice a
+        # real change. A shortcut that reported "current" here would be the
+        # index lying, which is the outcome the whole mechanism exists to
+        # prevent — and it would look exactly like a fast index.
+        echo "// changed by the verification" >> "$WORK/tree/src/main.rs"
+        if "$THALYX" graph status "$WORK/tree" > "$WORK/trusted-status.log" 2>&1; then
+            if grep -q "the counter decides" "$WORK/trusted-status.log" &&
+               ! grep -q "index is current" "$WORK/trusted-status.log"; then
+                proven "a trusted index still reported a real change as stale"
+            else
+                failed "a trusted index reported a changed tree as current"
+                sed 's/^/     /' "$WORK/trusted-status.log"
+            fi
+        else
+            failed "graph status failed on a trusted index"
+            sed 's/^/     /' "$WORK/trusted-status.log"
+        fi
     else
         unproven "this tree could not be scoped; see $WORK/scoped-build.log"
         sed 's/^/     /' "$WORK/scoped-build.log"

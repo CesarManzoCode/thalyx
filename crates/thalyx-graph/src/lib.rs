@@ -426,6 +426,69 @@ impl Index {
         Ok(stored.and_then(|value| value.parse().ok()))
     }
 
+    /// Record how much this index is allowed to let the counter decide.
+    ///
+    /// Persisted per index rather than globally, because it is a fact about
+    /// one tree on one machine: the same counter can be scoped to one tree and
+    /// machine-wide for another, and the verification that earned it was run
+    /// against a specific tree.
+    ///
+    /// `earned` is what the verification found. Stored beside the setting so
+    /// the answer to "why is the fast path on here" is on disk instead of in
+    /// somebody's memory.
+    pub fn set_trust(&self, trust: crate::watch::Trust, earned: Option<&str>) -> Result<()> {
+        let value = match trust {
+            crate::watch::Trust::Counter => "counter",
+            crate::watch::Trust::WalkAlways => "walk",
+        };
+        self.connection.execute(
+            "INSERT INTO meta (key, value) VALUES ('trust', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [value],
+        )?;
+        match earned {
+            Some(note) => self.connection.execute(
+                "INSERT INTO meta (key, value) VALUES ('trust_earned', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [note],
+            )?,
+            None => self
+                .connection
+                .execute("DELETE FROM meta WHERE key = 'trust_earned'", [])?,
+        };
+        Ok(())
+    }
+
+    /// How much the counter is allowed to decide for this index.
+    ///
+    /// Anything not recognised — absent, corrupt, written by a future version
+    /// — reads as [`crate::watch::Trust::WalkAlways`]. The shortcut is the
+    /// dangerous answer, so it is never the one a damaged field can produce.
+    pub fn trust(&self) -> Result<crate::watch::Trust> {
+        let stored: Option<String> = self
+            .connection
+            .query_row("SELECT value FROM meta WHERE key = 'trust'", [], |row| {
+                row.get(0)
+            })
+            .ok();
+        Ok(match stored.as_deref() {
+            Some("counter") => crate::watch::Trust::Counter,
+            _ => crate::watch::Trust::WalkAlways,
+        })
+    }
+
+    /// What the verification found when the fast path was switched on.
+    pub fn trust_earned(&self) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'trust_earned'",
+                [],
+                |row| row.get(0),
+            )
+            .ok())
+    }
+
     /// Forget the baseline, so the next run starts with no coverage.
     pub fn clear_mutation_baseline(&self) -> Result<()> {
         self.connection

@@ -608,6 +608,30 @@ mod persistence_tests {
     }
 
     #[test]
+    fn a_corrupt_trust_setting_reads_as_walking_rather_than_as_the_shortcut() {
+        // The shortcut is the dangerous answer, so it must never be what a
+        // damaged field — or a version of Thalyx that does not exist yet —
+        // can produce. Fail closed, in the direction that costs a walk.
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let index = Index::open(&dir.path().join("index.db"), &tree).unwrap();
+
+        index.set_trust(Trust::Counter, None).unwrap();
+        assert_eq!(index.trust().unwrap(), Trust::Counter);
+
+        index
+            .connection_for_tests()
+            .execute(
+                "UPDATE meta SET value = 'whatever-comes-next' WHERE key = 'trust'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(index.trust().unwrap(), Trust::WalkAlways);
+    }
+
+    #[test]
     fn a_baseline_that_cannot_be_read_is_absent_rather_than_zero() {
         // Zero is a baseline the watcher would vouch for. A corrupt field must
         // never turn into a claim about what has happened since.

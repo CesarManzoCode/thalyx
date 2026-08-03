@@ -15,9 +15,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
 - [ ] **Snapshots y `restore`** — requieren Btrfs, no probables en el entorno actual. `rollback`, que es la operación acotada y no necesita snapshots, ya está construido.
-- [ ] **Acotar la cuenta de mutaciones al árbol indexado.** Hoy es de toda la máquina: cuesta recorridos que no hacían falta, nunca esconde un cambio. La vía es atribuir cada evento subiendo por los ancestros del dentry en el propio hook, no consumir el ringbuf. Ver [[FS-en-Grafo]].
 - [ ] **Probar los límites de recursos contra un kernel que delegue controladores** — `THALYX_REQUIRE_CONTROLLER_TESTS=1`.
-- [ ] **Cargar el watcher de diez hooks en hardware.** El programa BPF no se puede compilar ni verificar en el contenedor de desarrollo; `dev/verify.sh` ya trae la medición que lo comprueba.
+- [ ] **Consumir el ringbuf `thalyx_mutations`** para saber *qué* cambió, no solo que algo cambió. El atajo ya no lo necesita — lo resolvió la atribución por ancestros — así que esto solo hace falta para reindexar de forma incremental en vez de reconstruir. Ver [[FS-en-Grafo]].
 
 
 ## Pendientes de decreto formal
@@ -60,6 +59,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-03
 
+- [x] **Acotar la cuenta de mutaciones al árbol** — atribución subiendo por los ancestros del dentry, con la ausencia de montajes debajo como precondición comprobada. Verificado en hardware: 5000 escrituras dentro contadas, las mismas 5000 fuera ignoradas.
+- [x] **La puerta del atajo del índice** — `thalyx graph trust`, que corre la verificación en el momento y se niega si no coincide.
 - [x] **Escrituras por descriptor abierto en el watcher** — `lsm/file_permission` enmascarado a `MAY_WRITE`, más los siete hooks de forma del árbol que faltaban. El contador ya puede creerse en cuanto a cobertura. Ver [[FS-en-Grafo]].
 - [x] **`thalyx rollback`** — deshace un commit de Thalyx, y se niega cuando la entrada del journal ya no describe el disco. Ver [[Rollback-vs-Restore]].
 
