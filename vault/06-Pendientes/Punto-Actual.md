@@ -14,19 +14,19 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Lo siguiente es arrancar la máquina por primera vez
+> ## La máquina arrancó — 2026-08-03
 >
-> **Los comandos exactos, lo que debe imprimir cada uno y qué significa cada
-> fallo están en [[Primer-Arranque]].** Si estás retomando y Cesar te pega la
-> salida de un comando, es de ahí; esa nota está escrita para responderse sin
-> más contexto que ella misma.
-
-> ## Lo último: el kernel ya compila, falta arrancarlo
+> `make -C image run`, en la Fedora de Cesar, con kernel 6.12.101 propio y un
+> solo programa dentro. Montó sus siete filesystems, imprimió lo que es y lo que
+> no tiene, y esperó una instrucción. **Es la primera vez que Thalyx existe como
+> máquina y no como programa sobre la máquina de alguien más.**
 >
-> El primer intento de `make -C image kernel` falló por GCC 15, y al arreglarlo
-> apareció que **nueve opciones del kernel se estaban perdiendo en silencio**,
-> incluidas las dos que `thalyx-lsm` necesita. Las dos cosas están corregidas y
-> el kernel compila. Lo siguiente es el paso 3 y el paso 5 de [[Primer-Arranque]].
+> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos. Los tres
+> eran conocidos y están anotados abajo. Lo siguiente es el primero de ellos que
+> tiene arreglo: **cargar `thalyx-lsm` desde dentro**.
+>
+> El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
+> comando, casi siempre es de ahí.
 
 ## Dónde estamos, en una frase
 
@@ -48,8 +48,10 @@ entonces: **463 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
 construye para sí mismo.
 
-Para cerrar la fase faltan tres: **arrancar la imagen**, **la API interna de
-módulos**, y **el modelo del agente**.
+**Arrancar la imagen ya ocurrió.** Para cerrar la fase faltan dos: **la API
+interna de módulos** y **el modelo del agente** — más el enforcement dentro de
+la imagen, que no es de la lista original porque hasta hoy no había imagen
+donde faltara.
 
 ## Última corrida verificada
 
@@ -138,17 +140,33 @@ marcado de origen, el camino confiable, la memoria persistente, y el principio
 de doble ruta implementado (todo lo que el agente podrá hacer, un humano ya
 puede hacerlo por la CLI).
 
-### 2. Arrancar la imagen, y la API interna
+### 2. La imagen ya arranca; le faltan tres cosas y las nombra
 
-**Todo está escrito para arrancar; nada de eso ha corrido.** El procedimiento
-completo, con lo que debe imprimir cada comando y qué significa cada fallo, está
-en [[Primer-Arranque]]. Es el paso 1 del [[Criterio-de-Salida-Fase-1]].
+El arranque está hecho y verificado. Lo que la máquina dijo de sí misma:
 
-Después del primer arranque, dos cosas en este orden:
+```
+  ok  kernel       6.12.101
+  no  filesystem   rootfs — snapshots and restore need btrfs and will not work here
+  ok  cgroup v2    mounted at /sys/fs/cgroup
+  ok  lsm order    capability,bpf
+  no  enforcement  the policy map is not loaded, so no permission would be enforced
+  no  modules      nothing installed yet
+
+  3 are not here. I will not pretend otherwise later.
+```
+
+Las tres, en el orden en que se resuelven:
 
 1. **Cargar `thalyx-lsm` desde dentro de Thalyx.** Sin bpftool y sin shell, hoy
-   no se carga y la máquina lo dice. Sin esto no hay enforcement en la imagen.
-2. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
+   no se carga. Sin esto no hay enforcement en la imagen. **Y el stub actual
+   busca `/lib/thalyx/thalyx_lsm.bpf.o`, que es un segundo archivo y por lo
+   tanto está prohibido por [[Filosofia-Fundacional]]** — el objeto BPF tiene
+   que ir *dentro* del binario, no junto a él. Ver el decreto abierto abajo.
+2. **El store.** `store.qcow2` se crea vacío: no tiene Btrfs ni los tres
+   subvolúmenes, así que PID 1 monta lo que no existe y la máquina lo dice. Es
+   el mismo problema de forma que el LSM —hace falta `mkfs.btrfs`, que tampoco
+   puede estar en la imagen— y sin él no se puede instalar nada.
+3. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
    julio, sin una línea escrita. Sin userland debajo, es la única superficie que
    un módulo puede tocar — y es lo que hace que un programa escrito para Thalyx
    no corra en ningún otro lado.
@@ -216,6 +234,26 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (9) — existe la máquina
+`make -C image run` arrancó. Kernel 6.12.101 construido desde `allnoconfig`,
+initramfs con **un solo archivo**, `thalyx` como PID 1. Montó los siete
+filesystems, arrancó la sesión, y la sesión imprimió el párrafo que dice que no
+hay shell detrás — que solo imprime cuando su padre es el pid 1, así que la
+frase no está cableada: es una comprobación.
+
+Y se describió con tres `no` que no oculta: sin Btrfs, sin enforcement, sin
+módulos. Los tres eran conocidos y están arriba con su orden de resolución.
+
+**Lo que esto cierra**: el paso 1 del [[Criterio-de-Salida-Fase-1]] tiene por
+fin una máquina detrás. No cierra el criterio —ese exige que lo haga alguien de
+fuera, sin ayuda— pero hasta hoy no había nada que esa persona pudiera arrancar.
+
+**Un hallazgo del arranque**: `attach_lsm` en `init.rs` busca
+`/lib/thalyx/thalyx_lsm.bpf.o`. Ese archivo **no puede existir**: sería un
+segundo archivo en una imagen que el decreto obliga a tener uno. El mensaje
+"is not in the image" es cierto y su arreglo obvio es el equivocado. El objeto
+BPF va incrustado en el binario.
 
 ### 2026-08-03 (8) — el kernel no compilaba, y la configuración se perdía sola
 El primer `make -C image kernel` en la máquina de Cesar falló entero en

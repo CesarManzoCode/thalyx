@@ -20,8 +20,10 @@ tags: [imagen, arranque, procedimiento, fase-1]
 > el contenedor tiene GCC 13 y el problema que motivó el cambio de versión solo
 > aparece con GCC 15.
 >
-> El paso 5 —QEMU— **no se ha ejecutado nunca**, en ningún lado. Que algo falle
-> ahí es lo esperado, no una sorpresa, y cada fallo tiene su arreglo abajo.
+> **El paso 5 corrió y funcionó**, el 2026-08-03. La máquina arrancó, montó los
+> siete filesystems, imprimió lo que es y lo que no tiene, y esperó. Lo que
+> queda abajo ya no es un pronóstico: es el procedimiento que sí funciona, con
+> lo que efectivamente imprimió.
 
 ## Qué se está intentando
 
@@ -197,6 +199,35 @@ El siguiente se escribe contra la API interna, que tampoco existe.
 
 Ninguna de las tres impide que la máquina arranque y se describa a sí misma, que
 es lo que este primer arranque tiene que demostrar.
+
+## Lo que salió la primera vez, verbatim
+
+2026-08-03, Fedora 43, QEMU. Después de los siete montajes y del párrafo:
+
+```
+  What I can tell you about where I am:
+
+  ok  kernel       6.12.101
+  no  filesystem   rootfs — snapshots and restore need btrfs and will not work here
+  ok  cgroup v2    mounted at /sys/fs/cgroup
+  ok  lsm order    capability,bpf
+  no  enforcement  the policy map is not loaded, so no permission would be enforced
+  no  modules      nothing installed yet
+
+  3 are not here. I will not pretend otherwise later.
+
+  Say what you want. `salir` to leave.
+```
+
+Los tres `no` son los tres huecos conocidos de arriba, en el mismo orden. Que la
+máquina los enumere sola —y que el `ok lsm order` conviva con el `no
+enforcement`— es la diferencia entre un sistema que sabe lo que le falta y uno
+que reporta verde porque nadie preguntó.
+
+**Y hay un cuarto hueco que este arranque hizo visible.** `attach_lsm` busca
+`/lib/thalyx/thalyx_lsm.bpf.o`. Ese archivo no puede existir: sería el segundo
+de una imagen que tiene que tener uno. El mensaje es cierto y el arreglo que
+sugiere es el equivocado — el objeto BPF va incrustado en el binario.
 
 ## Qué contestar cuando llegue la salida
 

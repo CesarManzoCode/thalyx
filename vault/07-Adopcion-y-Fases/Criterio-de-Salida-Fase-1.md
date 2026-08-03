@@ -24,6 +24,12 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 
 **Ningún otro criterio lo sustituye.** Que todos los componentes estén implementados y con tests en verde no cierra la Fase 1.
 
+> **El paso 1 ya tiene máquina detrás.** El 2026-08-03 la imagen arrancó en QEMU
+> con un comando. Eso **no cierra el paso**: el decreto exige que lo haga una
+> persona ajena, siguiendo solo el README y sin ayuda. Lo que cambió es que
+> hasta ese día no existía nada que esa persona pudiera arrancar. Ver
+> [[Primer-Arranque]].
+
 ## Por qué este criterio y no uno técnico
 
 Un criterio por componentes ("todo implementado y probado") se puede cumplir íntegramente con un sistema que no le sirve a nadie: "implementado" no es "usable", y la diferencia entre ambos solo aparece cuando alguien que no construyó el sistema intenta usarlo.

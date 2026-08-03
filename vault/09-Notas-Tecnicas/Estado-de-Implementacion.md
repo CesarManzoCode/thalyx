@@ -60,9 +60,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
-| PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **No corrido como PID 1** |
+| PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **Corrido como PID 1 el 2026-08-03**: los siete montajes salieron `ok` |
 | Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
-| Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Jamás ejecutados** — procedimiento en [[Primer-Arranque]] |
+| Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Ejecutados: 6.12.101 compila y la imagen arranca en QEMU** — procedimiento en [[Primer-Arranque]] |
 
 ### Decretos que el código ya hace cumplir
 
