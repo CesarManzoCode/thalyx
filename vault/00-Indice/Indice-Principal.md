@@ -16,6 +16,15 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 > Si eres una IA trabajando en el repo, `CLAUDE.md` en la raíz explica cómo se
 > trabaja aquí y quién decide.
 
+## El decreto fundacional
+
+**Empieza por [[Filosofia-Fundacional]].** Su primera sección es el texto del que
+nace el proyecto, escrito por Cesar el 2026-08-03 y guardado literal. Cualquier
+nota de esta bóveda que lo contradiga está equivocada.
+
+> Thalyx es el sistema operativo. […] **Thalyx es el todo. Sin Thalyx no hay
+> nada.**
+
 ## Resumen en una frase
 
 **Thalyx** es un sistema operativo de código abierto, diseñado desde el núcleo hacia afuera, donde la IA es ciudadana de primera clase — no una aplicación más — y el humano sigue siendo el soberano.
@@ -80,14 +89,16 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 - [[Estado-de-Implementacion]] — **qué está construido de lo que está decretado**
 - [[Notas-Tecnicas-Implementacion]] — referencia rápida para escribir código
 - [[Estrategia-de-Pruebas]] — tres niveles, con inyección de fallos como obligatorio
-- [[Construccion-del-ISO]] — cómo se construye y se arranca la imagen
+- [[Construccion-del-ISO]] — **la imagen es el kernel y un programa**, y cómo se cuenta
 
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]
 
 ## Estado global del proyecto (snapshot al 3 de agosto de 2026)
 
-Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de Fase 2— y el flujo canónico están construidos y **verificados en hardware real**: 392 pruebas y 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs, sin nada por probar y sin fallos. Falta el agente y el ISO. Ver [[Punto-Actual]] para el detalle vivo y [[Estado-de-Implementacion]] por crate.
+Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de Fase 2— y el flujo canónico están construidos y **verificados en hardware real**: 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs. Desde entonces: 463 pruebas, el agente mínimo, `thalyx` como PID 1, y la imagen que Thalyx construye para sí mismo.
+
+**El 2026-08-03 se quitó la distribución.** La bóveda decretaba en tres notas una base Alpine y en una que Thalyx no es una distribución; se resolvió a favor del decreto fundacional. Falta el modelo del agente, la API interna de módulos, y arrancar la imagen por primera vez. Ver [[Punto-Actual]] y [[Estado-de-Implementacion]].
 
 | Área | Estado |
 |---|---|
@@ -106,7 +117,8 @@ Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de F
 | Concurrencia | ✅ Decretado |
 | Alcance y criterio de salida de Fase 1 | ✅ Decretado |
 | Estrategia de pruebas | ✅ Decretado |
-| Diseño del ISO | ✅ Decretado |
+| La imagen: kernel + un programa | ✅ Decretado y construible; **nunca arrancada** |
+| PID 1 | ✅ `thalyx`, escrito; nunca corrido como PID 1 |
 | Casos trazados (feliz y de fallo) | ✅ Completos |
 | Ruta de instalación de módulos | ✅ Implementada y probada |
 | Atomicidad del commit | ✅ Demostrada con inyección de fallos |
@@ -125,7 +137,9 @@ Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de F
 | uid por módulo | ✅ Decretado e implementado |
 | Montajes idmapped para rutas concedidas | ✅ Implementados y verificados |
 | Sockets `AF_UNIX` | ✅ Decretado: fuera, reversible |
-| Modelo concreto del agente | ⚠️ Abierto, no bloqueante para Fase 1 |
+| Gamas del modelo del agente | ✅ Decretadas; faltan las cifras medidas |
+| **API interna de módulos** | ❌ **Decretada desde el 31 de julio, sin una línea** |
+| Cargar `thalyx-lsm` sin `bpftool` | ❌ El hueco que deja la imagen de un solo programa |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |
 | Interpretabilidad: técnicas concretas | ⚠️ Abierto |
 | Dependencias entre módulos | ⚠️ Pospuesto deliberadamente |

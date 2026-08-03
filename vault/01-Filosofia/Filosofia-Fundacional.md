@@ -9,6 +9,60 @@ tags: [filosofia, core, no-negociable]
 
 El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
 
+## El decreto fundacional
+
+*Escrito por Cesar Manzo el 2026-08-03. Es el texto del que nace todo lo demás
+de este proyecto, y está aquí **literal**. No se parafrasea, no se resume, no se
+"mejora". Cualquier decreto de esta bóveda que lo contradiga está equivocado, sin
+importar cuándo se escribió ni con qué confianza.*
+
+> **Thalyx es el sistema operativo.** El kernel de Linux es un componente que
+> Thalyx gestiona, no el anfitrión sobre el que descansa. No hay capas
+> intermedias, no hay distribuciones, no hay Alpine, no hay busybox, no hay
+> glibc — no hay nada que no sea Thalyx.
+>
+> Los módulos y el agente se comunican **exclusivamente a través de la API de
+> Thalyx**, no a través de POSIX, no a través de libc, no a través de scripts de
+> shell.
+>
+> El binario `thalyx` es el init, es estático, es el primer proceso, y todo lo
+> demás —el Core, el FS en grafo, los permisos JIT, el scheduler predictivo, la
+> memoria persistente, el journal y el agente— vive dentro de ese binario o como
+> módulos que se enlazan contra su API.
+>
+> Linux es el motor que Thalyx elige para hablar con el hardware, pero **Thalyx
+> define la interfaz, Thalyx define las reglas, Thalyx define la experiencia.**
+>
+> Si Linux desaparece, Thalyx encuentra otro motor. Si Thalyx desaparece, no hay
+> sistema.
+>
+> **Thalyx es el todo. Sin Thalyx no hay nada.**
+
+### Cómo se comprueba, no cómo se recita
+
+Este decreto es la razón por la que [[Construccion-del-ISO]] está escrito para
+ser **contable**: la imagen lleva el kernel y un programa, se listan los
+archivos, y o hay uno o hay más. Un texto fundacional que solo se pudiera citar
+sería una consigna; éste se puede contradecir con un número.
+
+```
+make -C image count
+```
+
+### Qué invalida, hoy
+
+Dos decretos anteriores dan por supuesto un userland que ya no existe, y los dos
+tienen que resolverse en vez de dejarse:
+
+1. **`CLAUDE.md` prefiere invocar `bpftool` a enlazar una librería.** Buena regla
+   —sin dependencia de headers del kernel, cada paso reproducible a mano— y
+   ahora imposible: no hay bpftool en la imagen ni shell desde donde llamarlo.
+   Hoy `thalyx-lsm` no se carga en el arranque y la máquina lo dice.
+2. **[[Gamas-de-Modelo]] decreta `llama.cpp` invocado como proceso.** Eso es un
+   segundo programa. La respuesta probablemente sea que el modelo del agente es
+   **un módulo**, enlazado contra la API como cualquier otro, que es justo lo que
+   este decreto describe — pero eso lo decide Cesar, no se deduce aquí.
+
 ## Declaración central
 
 > "La IA no debe ser una aplicación más dentro del sistema operativo. Debe ser el mecanismo principal mediante el cual el usuario interactúa con la máquina."

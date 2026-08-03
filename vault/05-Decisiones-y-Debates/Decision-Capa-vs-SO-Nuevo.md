@@ -11,6 +11,11 @@ tags: [debate, arquitectura, no-negociable]
 
 Un crítico argumentó que casi todo el valor del sistema (agente, FS semántico, permisos JIT, scheduler predictivo) se podía construir como una capa sobre una distribución de Linux existente, evitando el costo de reinventar el kernel.
 
+> Desde el 2026-08-03 esta nota **no es la más profunda sobre el tema**. El
+> decreto fundacional está en [[Filosofia-Fundacional]], en palabras de Cesar, y
+> esta nota se lee a la luz de aquél. Lo que sigue aquí es el debate del que
+> salió y el criterio que lo hace comprobable.
+
 ## Resolución (decretada, cerrada, no se reabre)
 
 **Thalyx es un sistema operativo nuevo. No es una capa y no es una distribución de Linux.**

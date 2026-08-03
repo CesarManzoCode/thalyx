@@ -4,6 +4,16 @@ An open-source operating system designed from the kernel outward, where AI is a
 first-class citizen rather than one more application, and the human stays
 sovereign.
 
+> **Thalyx is the operating system.** The Linux kernel is a component Thalyx
+> manages, not the host it rests on. No intermediate layers, no distributions —
+> nothing that is not Thalyx. Modules and the agent speak to it through Thalyx's
+> API, not through POSIX, not through libc, not through shell scripts. If Linux
+> disappeared, Thalyx would find another engine. If Thalyx disappeared, there is
+> no system.
+>
+> The image carries the Linux kernel and one program, and that is countable
+> rather than quotable: `make -C image count`.
+
 > **Status: Phase 1, core infrastructure built.** Three of the four base
 > primitives — the fourth, the predictive scheduler, is Phase 2 — and the
 > canonical flow are built and **verified on real hardware**: 392 tests and 44

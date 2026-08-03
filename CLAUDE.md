@@ -66,6 +66,26 @@ EOF
 
 ## What this project is
 
+Read this first, in `vault/01-Filosofia/Filosofia-Fundacional.md`, where it is
+kept verbatim in Cesar's words:
+
+> **Thalyx es el sistema operativo.** El kernel de Linux es un componente que
+> Thalyx gestiona, no el anfitrión sobre el que descansa. No hay capas
+> intermedias, no hay distribuciones — no hay nada que no sea Thalyx. Los
+> módulos y el agente se comunican exclusivamente a través de la API de Thalyx,
+> no a través de POSIX, no a través de libc, no a través de scripts de shell.
+> […] Si Linux desaparece, Thalyx encuentra otro motor. Si Thalyx desaparece, no
+> hay sistema. **Thalyx es el todo. Sin Thalyx no hay nada.**
+
+**Anything in this repository that contradicts that text is wrong**, however
+confidently it is written and whenever it was written. Three decrees contradicted
+it for three days without anyone noticing, and the way it was caught was somebody
+asking why there would be a login at boot that nobody had built.
+
+The practical form of it: the image carries the Linux kernel and one program.
+That is checkable rather than quotable — `make -C image count`, and it says one
+or it says the decree is broken.
+
 An operating system where AI is a first-class citizen rather than an
 application, and the human stays sovereign. The design lives in an Obsidian
 vault **inside this repository** (`vault/`). Do not reorganise it.
