@@ -967,6 +967,50 @@ else
     unproven "$AGENT_GAP"
 fi
 
+# ------------------------------------------------------------- 11. the image
+
+step "11. the image is the kernel and one program"
+
+# The decree in Construccion-del-ISO.md was written to be counted rather than
+# argued, so this counts it — by parsing the archive, not by asking the builder
+# what it meant to put there.
+
+IMAGE="$WORK/initramfs.cpio"
+if "$THALYX" dev image --binary "$THALYX" --out "$IMAGE" > "$WORK/image.log" 2>&1; then
+    COUNT=$("$THALYX" dev image --list "$IMAGE" 2>/dev/null |
+            grep -oE '^[0-9]+ program' | grep -oE '^[0-9]+')
+    if [ "$COUNT" = 1 ]; then
+        proven "the image holds exactly one program"
+    else
+        failed "the image holds ${COUNT:-?} programs; the decree says one"
+        "$THALYX" dev image --list "$IMAGE" | sed 's/^/     /'
+    fi
+else
+    failed "the image could not be built; see $WORK/image.log"
+    sed 's/^/     /' "$WORK/image.log"
+fi
+
+# Reproducible, because an image that differs between builds cannot be compared
+# against the one that was tested.
+"$THALYX" dev image --binary "$THALYX" --out "$WORK/again.cpio" > /dev/null 2>&1
+if cmp -s "$IMAGE" "$WORK/again.cpio"; then
+    proven "two builds of the same binary are byte for byte the same image"
+else
+    failed "the image is not reproducible"
+fi
+
+# What none of that touches.
+if command -v qemu-system-x86_64 > /dev/null; then
+    IMAGE_GAP="qemu is here, but the kernel has never been built and the image has never booted"
+else
+    IMAGE_GAP="qemu is not installed; the image has never booted, and the kernel has never been built"
+fi
+if [ "${THALYX_REQUIRE_IMAGE_TESTS:-0}" = 1 ]; then
+    failed "$IMAGE_GAP"
+else
+    unproven "$IMAGE_GAP"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

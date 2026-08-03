@@ -485,3 +485,93 @@ mod tests {
         OsStr::from_bytes(b"/tmp/a\0b")
     }
 }
+
+/// Ask the kernel to stop the machine.
+///
+/// Only meaningful from PID 1: `reboot(2)` from anything else either fails or
+/// takes the whole system down behind the init's back, which is why this is
+/// wrapped rather than called from wherever it is convenient.
+///
+/// Returns on failure only. On success the kernel does not come back.
+pub fn reboot(command: RebootCommand) -> io::Error {
+    // SAFETY: `libc::reboot` takes an integer command and touches no memory of
+    // ours. The only values passed are the two constants below, both of which
+    // the kernel defines.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::reboot(command as i32);
+    }
+    io::Error::last_os_error()
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(i32)]
+pub enum RebootCommand {
+    PowerOff = libc::RB_POWER_OFF,
+    Restart = libc::RB_AUTOBOOT,
+}
+
+/// Reap one exited child, if any has exited.
+///
+/// PID 1 inherits every orphan on the system, and an init that does not reap
+/// them fills the process table with zombies until nothing can fork. This is
+/// the non-blocking form: it answers "has anything died" without waiting.
+///
+/// Returns the pid reaped, or `None` when nothing was waiting.
+pub fn reap_one() -> Option<i32> {
+    let mut status: i32 = 0;
+    // SAFETY: `status` is a valid, initialised `i32` that outlives the call,
+    // and WNOHANG makes this return immediately whether or not a child exists.
+    #[allow(unsafe_code)]
+    let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+    (pid > 0).then_some(pid)
+}
+
+/// Block until the given child exits, reaping anything else that dies meanwhile.
+///
+/// Distinct from [`reap_one`] because PID 1 has two jobs at once: it waits for
+/// the session, and it is also the parent of last resort for every orphan on
+/// the machine. Waiting on only the session would leave those unreaped.
+pub fn wait_for(child: i32) -> io::Result<i32> {
+    loop {
+        let mut status: i32 = 0;
+        // SAFETY: as above. Blocking form, so it returns when some child exits.
+        #[allow(unsafe_code)]
+        let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+        if pid < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if pid == child {
+            // The shape libc uses: low byte holds the signal, the next holds
+            // the exit code.
+            return Ok(if status & 0x7f == 0 {
+                (status >> 8) & 0xff
+            } else {
+                128 + (status & 0x7f)
+            });
+        }
+    }
+}
+
+/// Mount flags, re-exported so that callers do not need `libc` themselves.
+///
+/// The point of this crate is that it is the only one allowed to touch the
+/// raw interface; a caller that had to depend on `libc` for a constant would
+/// be halfway to bypassing that.
+pub mod mount_flags {
+    pub const NOSUID: u64 = libc::MS_NOSUID;
+    pub const NOEXEC: u64 = libc::MS_NOEXEC;
+    pub const NODEV: u64 = libc::MS_NODEV;
+    pub const RDONLY: u64 = libc::MS_RDONLY;
+
+    /// What everything gets unless it specifically needs otherwise: no setuid
+    /// bits honoured, nothing executable, no device nodes.
+    pub const HARDENED: u64 = NOSUID | NOEXEC | NODEV;
+}
+
+/// `EBUSY`, which for a mount means "already mounted" and is not a failure.
+pub const EBUSY: i32 = libc::EBUSY;

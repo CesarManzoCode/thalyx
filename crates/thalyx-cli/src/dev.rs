@@ -36,6 +36,22 @@ pub enum DevCommand {
     /// Show what a bundle contains, without installing it
     Inspect { bundle: PathBuf },
 
+    /// Build the machine's root filesystem, or count what is in one
+    ///
+    /// The image is the Linux kernel and one program. This is what makes the
+    /// second half of that, and what checks it.
+    Image {
+        /// The statically linked `thalyx` to put in it
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        /// Where to write the archive
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Read an archive back and list what is really in it
+        #[arg(long)]
+        list: Option<PathBuf>,
+    },
+
     /// Drive the agent with a model that misbehaves on purpose.
     ///
     /// This exists because of rule 4. Until `llama.cpp` is wired in there is no
@@ -67,6 +83,11 @@ pub fn run(command: DevCommand) -> Fallible {
             out,
         } => pack(&source, &manifest, &key, &out),
         DevCommand::Inspect { bundle } => inspect(&bundle),
+        DevCommand::Image { binary, out, list } => match (binary, out, list) {
+            (_, _, Some(archive)) => crate::image::list(&archive),
+            (Some(binary), Some(out), None) => crate::image::build(&binary, &out),
+            _ => Err("give --binary and --out to build, or --list to inspect".into()),
+        },
         DevCommand::AgentProbe {
             utterance,
             foreign,

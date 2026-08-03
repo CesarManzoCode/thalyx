@@ -8,6 +8,8 @@ mod agent;
 mod dev;
 mod enforce;
 mod graph;
+mod image;
+mod init;
 mod memory;
 mod render;
 mod restore;
@@ -47,6 +49,12 @@ enum Command {
     /// Say what you want and see the contract it becomes
     #[command(subcommand)]
     Agent(agent::AgentCommand),
+
+    /// What PID 1 would mount and start, without doing any of it
+    ///
+    /// Running it for real means being PID 1, which is decided by the kernel
+    /// and not by a flag.
+    Init,
 
     /// What Thalyx is, on the machine it is on right now
     ///
@@ -183,6 +191,20 @@ fn main() -> ExitCode {
         };
     }
 
+    // Before argument parsing, and not a subcommand: if this process is PID 1
+    // then it is the machine's init and nothing else, whatever it was passed.
+    // Making it a flag would mean a way to be PID 1 without being init, and a
+    // way to be init without being PID 1, both of which are nonsense.
+    if std::process::id() == 1 {
+        return match init::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("thalyx: init: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -253,6 +275,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Agent(command) => {
             let store = Store::open(&root)?;
             agent::run(&store, command, &new_request_id()).map_err(|e| e.to_string().into())
+        }
+        Command::Init => {
+            init::describe();
+            Ok(())
         }
         Command::Session { once } => {
             let store = Store::open(&root)?;

@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 thalyx-agent.workspace = true
 thalyx-core.workspace = true
+thalyx-syscall.workspace = true
 thalyx-journal.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
@@ -35,6 +36,7 @@ tempfile.workspace = true
 thalyx-permd.workspace = true
 thalyx-agent.workspace = true
 thalyx-core.workspace = true
+thalyx-syscall.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
 

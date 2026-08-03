@@ -813,6 +813,7 @@ dependencies = [
  "thalyx-permd",
  "thalyx-sandbox",
  "thalyx-snapshot",
+ "thalyx-syscall",
  "thalyx-watch",
  "toml",
 ]

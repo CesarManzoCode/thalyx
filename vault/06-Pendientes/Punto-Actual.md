@@ -191,6 +191,29 @@ corrida. Para encenderlo a mano:
 
 ## Historial de sesiones
 
+### 2026-08-03 (6) — hay máquina: PID 1, la imagen, y el kernel
+`thalyx` es PID 1 (`init.rs`): monta siete filesystems diciendo por qué cada
+uno, arranca la sesión, y cosecha huérfanos para siempre. Si un montaje falla no
+aborta — la máquina arranca describiéndose a sí misma, porque un sistema que se
+niega a arrancar no te dice *por qué* desde una pantalla a la que no llegas.
+
+**Thalyx construye su propia imagen** (`image.rs`): un cpio `newc` escrito aquí,
+sin `cpio` ni herramientas ajenas. Un initramfs, no un ISO — sin gestor de
+arranque, sin tabla de particiones, sin una tercera cosa donde algo se esconda.
+**Un solo archivo dentro**, `/init`, porque si el decreto dice un programa,
+un archivo es lo que lo vuelve cierto en vez de casi cierto.
+
+Y se cuenta: `make -C image count` parsea el archivo y dice cuántos programas
+hay. Si no dice uno, el decreto está roto y el número lo dice antes de que nadie
+discuta.
+
+`image/` lleva el Makefile y `thalyx.config`, un kernel desde `allnoconfig`.
+**Jamás ejecutados**: aquí no hay red a kernel.org ni QEMU.
+
+El hueco grande queda dicho: **`thalyx-lsm` no se carga en el arranque**. El
+cargador invocaba `bpftool`, y no hay bpftool en la imagen ni shell para
+llamarlo. La máquina arranca y lo dice.
+
 ### 2026-08-03 (5) — se cae la distro, y con ella lo que se apoyaba en ella
 Cesar preguntó por qué habría un login al arrancar si nadie lo construyó. La
 respuesta —lo pone la base— hizo visible que había una base, y que la bóveda se

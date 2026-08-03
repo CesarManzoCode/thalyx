@@ -62,20 +62,67 @@ disponible, y ninguno usaba el nuestro. Sin él no hay alternativa.
 
 **Quitar la distro y volverse un sistema operativo son el mismo acto.**
 
+## Cómo se construye, decidido el 2026-08-03
+
+**Un initramfs, no un ISO.** Un ISO necesita gestor de arranque, tabla de
+particiones y un filesystem donde ponerlos. Un initramfs no necesita ninguno de
+los tres: el kernel desempaca un archivo cpio en un tmpfs y ejecuta `/init`. A
+QEMU se le pasan el kernel y el archivo, y nada más.
+
+No es un atajo alrededor del decreto: es el decreto sin nada sobrante. **No hay
+una tercera cosa en el camino donde algo se pueda esconder**, que es exactamente
+por donde entró la base de Alpine la vez pasada.
+
+**El archivo lo construye Thalyx**, en `crates/thalyx-cli/image.rs`. No por
+desconfiar de `cpio` —es un programa perfectamente bueno— sino porque la forma
+del error anterior fue *agarrar lo que la base ofrecía*, y un sistema que
+embarca un solo programa puede producir su propio sistema de archivos raíz en
+doscientas líneas en vez de heredar una cuarta cosa que nadie eligió.
+
+**Un archivo, no dos.** La primera versión ponía el binario en `/thalyx` y en
+`/init` por familiaridad, y duplicaba una imagen de 47 MB para decir dos veces lo
+mismo. Si el decreto dice "un programa", un solo archivo es lo que lo vuelve
+cierto en vez de casi cierto — y es lo que devuelve la cuenta.
+
+**El kernel parte de `allnoconfig`.** La dirección importa: un kernel de
+distribución con cosas apagadas sigue conteniendo todo lo que nadie se acordó de
+apagar, y nadie puede decir qué hay adentro. Partiendo de cero, lo que está
+encendido es lo que alguien decidió encender. La lista está en
+`image/thalyx.config`, con un motivo al lado de cada grupo.
+
+**El estado persistente va en otro disco.** La raíz es un tmpfs que no conserva
+nada entre arranques. PID 1 monta los tres subvolúmenes; **no los crea**, porque
+una máquina que se fabrica un store nuevo cada vez que no encuentra el viejo
+nunca podría avisarte de que lo perdió.
+
+### Cómo se cuenta
+
+El decreto se escribió para ser contable, y esto es lo que cuenta:
+
+```
+make -C image count
+```
+
+Si dice algo distinto de `1 program(s) in the image`, el decreto está roto y el
+número lo dice antes de que nadie tenga que discutirlo. Lo cuenta **parseando el
+archivo**, no reportando lo que el constructor creía haber metido.
+
 ## Qué queda por decidir, y no se hereda
 
 La versión anterior heredó de Alpine cosas que nadie eligió — el login en tty1
 fue la más visible, no la única. Lo que sigue abierto se escribe aquí para que
 se decida en vez de aparecer:
 
-- **Cómo se construye el kernel:** qué configuración mínima y de dónde salen las
-  fuentes.
-- **Cómo se arma la imagen:** particionado, `mkfs.btrfs` con los tres
-  subvolúmenes de [[Core-Nucleo]], y si el arranque usa el EFI stub del propio
-  kernel en vez de un gestor de arranque.
-- **Qué hace `thalyx` como PID 1** antes de la sesión: montar `/proc`, `/sys`,
-  `devtmpfs` y cgroup2, montar los subvolúmenes, cargar el LSM.
+- **Cargar `thalyx-lsm` desde dentro de Thalyx.** Es el hueco grande. El cargador
+  invocaba `bpftool`, y no hay bpftool en la imagen ni shell desde donde
+  llamarlo. La máquina arranca y lo dice —"enforcement absent"— con las mismas
+  palabras que usa `thalyx session` en cualquier máquina que no lo tenga. Es
+  honesto y es el agujero más grande que queda.
+- **Crear los subvolúmenes del store la primera vez.** PID 1 los monta y no los
+  crea; falta decidir quién los hace y cuándo.
 - **Qué pasa al apagar.**
+- **Que el binario sea estático de verdad.** Hoy enlaza glibc dinámicamente. El
+  `Makefile` lo comprueba y se niega si no lo es, pero nunca se ha corrido.
 
 ## Cómo se arranca
 

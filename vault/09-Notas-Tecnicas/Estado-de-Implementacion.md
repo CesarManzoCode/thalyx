@@ -60,6 +60,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
+| PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **No corrido como PID 1** |
+| Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
+| Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Jamás ejecutados** |
 
 ### Decretos que el código ya hace cumplir
 
@@ -93,7 +96,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
 | La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
 | Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
-| **La imagen**: kernel propio, PID 1, ensamblado | [[Construccion-del-ISO]] |
+| Cargar `thalyx-lsm` sin `bpftool` | Que la imagen tenga enforcement — el hueco grande |
 | **La API interna de módulos** | Que un módulo no pueda ser un script — [[Core-Nucleo]] |
 | Binario estático contra musl | Hoy enlaza glibc dinámicamente, o sea depende de la libc del host |
 
@@ -132,11 +135,11 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-455 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+463 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay cinco variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS` y `_AGENT_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay seis variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS` `_AGENT_TESTS` y `_IMAGE_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
 `verify.sh` activa las cuatro primeras cuando la máquina las soporta. La quinta
 es distinta por naturaleza: no hay máquina que la satisfaga todavía, porque lo
