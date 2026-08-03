@@ -12,6 +12,7 @@ mod memory;
 mod render;
 mod restore;
 mod run;
+mod session;
 mod snapshot;
 
 use clap::{Parser, Subcommand};
@@ -46,6 +47,16 @@ enum Command {
     /// Say what you want and see the contract it becomes
     #[command(subcommand)]
     Agent(agent::AgentCommand),
+
+    /// What Thalyx is, on the machine it is on right now
+    ///
+    /// On the image this is what init starts, with no login before it and no
+    /// shell behind it. Run here, it says so.
+    Session {
+        /// Print the state and stop, without waiting for anything
+        #[arg(long)]
+        once: bool,
+    },
 
     /// Build and query the semantic index
     #[command(subcommand)]
@@ -242,6 +253,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Agent(command) => {
             let store = Store::open(&root)?;
             agent::run(&store, command, &new_request_id()).map_err(|e| e.to_string().into())
+        }
+        Command::Session { once } => {
+            let store = Store::open(&root)?;
+            session::run(&store, once).map_err(|e| e.to_string().into())
         }
         Command::Snapshot(command) => {
             let store = Store::open(&root)?;

@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# Attach the kernel side before anything can ask for a permission.
+#
+# Ordering is the point, not tidiness: `thalyx module run` refuses to start a
+# module when the policy map is absent, so a session that came up first would
+# spend its early life reporting an enforcement layer that was merely late.
+
+description="Thalyx kernel policy (BPF LSM)"
+
+depend() {
+    need localmount
+    before thalyx-session
+}
+
+start() {
+    ebegin "Attaching thalyx-lsm"
+    /usr/libexec/thalyx/load-lsm
+    eend $?
+}
+
+stop() {
+    ebegin "Detaching thalyx-lsm"
+    /usr/libexec/thalyx/unload-lsm
+    eend $?
+}
