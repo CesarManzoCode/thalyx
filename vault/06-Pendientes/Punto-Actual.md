@@ -18,9 +18,10 @@ tags: [continuidad, punto-actual, sesiones]
 
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
-verificados en hardware real**: 392 pruebas, 44 comprobaciones en máquina real,
-0 sin probar, 0 fallidas. Lo que falta para cerrar la fase es el **agente** y el
-**ISO booteable**.
+verificados en hardware real**: 44 comprobaciones en máquina real, 0 sin probar,
+0 fallidas. Desde entonces se sumaron 448 pruebas y el agente mínimo, que lleva
+un enunciado hasta un módulo instalado sin modelo alguno. Lo que falta para
+cerrar la fase es el **modelo del agente** y el **ISO booteable**.
 
 ## Última corrida verificada
 
@@ -32,7 +33,8 @@ proven 44 · not proven 0 · failed 0
 
 > **La próxima corrida no dará `not proven 0`, y eso es correcto.** `verify.sh`
 > tiene ahora una etapa 10 para el agente, y la mitad que necesita un modelo
-> real no la ha comprobado nada. Esperar `proven 46 · not proven 1`. Un número
+> real no la ha comprobado nada. Esperar alrededor de `proven 51 · not proven 1`
+> —la etapa 10 aporta varias comprobaciones nuevas—. Un número
 > verde que se conserva escondiendo lo que no se probó es exactamente la clase
 > de instrumento que este proyecto existe para no construir.
 
@@ -78,8 +80,10 @@ Alcance: router de reglas más un modelo con decodificación restringida por
 gramática, sobre **un solo caso de uso** —instalar un módulo—, no un agente
 general.
 
-**Construida ya la mitad que no necesita un modelo** (`crates/thalyx-agent`, 39
-pruebas). Lo que falta, en orden:
+**Construida ya la mitad que no necesita un modelo**, y probada de punta a
+punta: `thalyx agent do "install dev.thalyx.demo@^1.0" --repo <dir>` resuelve
+contra un repositorio local de bundles firmados, pide confirmación por el camino
+confiable, y deja el módulo instalado y ejecutable. Lo que falta, en orden:
 
 1. El `Model` real que invoca `llama.cpp` como proceso.
 2. La gramática GBNF, que no se puede validar sin `llama.cpp`.
@@ -166,6 +170,31 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (4) — el enunciado llega hasta el disco, y un fallo que solo salió corriéndolo
+`thalyx agent plan` y `thalyx agent do`, más el repositorio local y la
+resolución de versiones (`thalyx-core/repo.rs`): **máxima versión que satisface
+el constraint y cuya firma valida**, como manda [[Resolucion-de-Versiones]]. La
+cadena entera funciona contra bundles firmados de verdad — enunciado, contrato,
+resolución, camino confiable, commit atómico, journal, y el módulo instalado
+corre.
+
+**El fallo del día**, y es el más instructivo que ha dado el proyecto: la
+atribución tomaba el canal *menos* confiable cuando un valor aparecía en dos.
+Eso volvía imposible de instalar por nombre cualquier módulo mencionado en
+cualquier página leída. Pasó 39 pruebas y tres mutantes deliberados. Murió a los
+tres segundos de existir el comando, tecleando una frase. De ahí la regla nueva
+de [[Estrategia-de-Pruebas]]: **un mutante demuestra que una prueba es portante,
+no que la decisión que codifica sea la correcta.**
+
+También quedó `thalyx dev agent-probe`, que existe por la regla 4: sin modelo,
+toda inyección se rechaza con "no model is configured", y esa denegación se ve
+idéntica a la de la procedencia sin probar nada de ella.
+
+Antes de eso, `bundle.rs`: un `.thmod` de 768 MB **sin firma** llevaba el
+proceso a 1 GB de RSS porque cada miembro se leía entero antes de decidir si
+importaba. Ahora hay tamaños por miembro, los desconocidos no se leen, y el
+artefacto no puede expandirse más de 50× lo comprimido.
 
 ### 2026-08-03 (3) — el agente mínimo, contra un modelo que miente a propósito
 Se decretó [[Gamas-de-Modelo]] —cuatro gamas de una familia, `llama.cpp` como

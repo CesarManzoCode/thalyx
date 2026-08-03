@@ -12,6 +12,7 @@ name = "thalyx"
 path = "src/main.rs"
 
 [dependencies]
+thalyx-agent.workspace = true
 thalyx-core.workspace = true
 thalyx-journal.workspace = true
 thalyx-manifest.workspace = true
@@ -32,6 +33,7 @@ toml.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 thalyx-permd.workspace = true
+thalyx-agent.workspace = true
 thalyx-core.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true

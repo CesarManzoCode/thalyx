@@ -47,6 +47,23 @@ pub trait Model {
     fn propose(&self, transcript: &Transcript) -> Result<String, ModelError>;
 }
 
+/// No model at all, which is the honest state of things until `llama.cpp` is
+/// wired in.
+///
+/// It is not a stub standing in for the real one: it is what the system is
+/// today, and it says so. Everything the rules resolve still works with this in
+/// place, which is the double route being load-bearing rather than decorative —
+/// a Thalyx with no model installed is a Thalyx a human can still use for
+/// everything, just not by describing it loosely.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnconfiguredModel;
+
+impl Model for UnconfiguredModel {
+    fn propose(&self, _: &Transcript) -> Result<String, ModelError> {
+        Err(ModelError::NotConfigured)
+    }
+}
+
 /// The ways a model can be wrong, each one worth a test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Misbehaviour {

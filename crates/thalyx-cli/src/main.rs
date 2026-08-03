@@ -4,6 +4,7 @@
 //! principle it must stay a complete way in even once the agent exists.
 //! Everything the agent will be able to do, a human can do here first.
 
+mod agent;
 mod dev;
 mod enforce;
 mod graph;
@@ -41,6 +42,10 @@ enum Command {
     /// Install, list and remove modules
     #[command(subcommand)]
     Module(ModuleCommand),
+
+    /// Say what you want and see the contract it becomes
+    #[command(subcommand)]
+    Agent(agent::AgentCommand),
 
     /// Build and query the semantic index
     #[command(subcommand)]
@@ -233,6 +238,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let store = Store::open(&root)?;
             restore::run(&store, &snapshot, subvolume, yes, &new_request_id())
+        }
+        Command::Agent(command) => {
+            let store = Store::open(&root)?;
+            agent::run(&store, command, &new_request_id()).map_err(|e| e.to_string().into())
         }
         Command::Snapshot(command) => {
             let store = Store::open(&root)?;

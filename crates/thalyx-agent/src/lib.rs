@@ -45,7 +45,7 @@ pub mod transcript;
 
 pub use assemble::Path;
 pub use attribution::AttributionError;
-pub use model::{HostileModel, Misbehaviour, Model, ModelError};
+pub use model::{HostileModel, Misbehaviour, Model, ModelError, UnconfiguredModel};
 pub use proposal::{Proposal, ProposalError, ProposedOperation};
 pub use router::Route;
 pub use transcript::{Channel, Segment, Transcript};

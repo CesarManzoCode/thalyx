@@ -30,3 +30,7 @@ thalyx-contract.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Real signed bundles for tests in other crates. Never enabled by the binary.
+test-support = []

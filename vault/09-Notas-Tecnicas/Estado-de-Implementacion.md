@@ -54,9 +54,10 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
-| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Sin modelo real; el único `Model` del crate existe para portarse mal |
-| CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
-| Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
+| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Sin modelo real; enunciado → contrato → instalación, probado de punta a punta |
+| Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
+| CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
+| Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
 
 ### Decretos que el código ya hace cumplir
 

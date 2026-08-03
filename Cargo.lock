@@ -785,7 +785,9 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "thalyx-contract",
+ "thalyx-core",
  "thalyx-manifest",
  "thiserror",
 ]
@@ -800,6 +802,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "thalyx-agent",
  "thalyx-contract",
  "thalyx-core",
  "thalyx-graph",

@@ -15,11 +15,14 @@ pub mod install;
 pub mod keystore;
 pub mod permissions;
 pub mod reconcile;
+pub mod repo;
 pub mod restore;
 pub mod rollback;
 pub mod run;
 pub mod snapshots;
 pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod trusted_path;
 pub mod uids;
 
@@ -134,6 +137,13 @@ pub enum CoreError {
 
     #[error("archive entry `{path}` is a {kind}; only regular files and directories are accepted")]
     UnsafeArchiveEntry { path: String, kind: String },
+
+    #[error("no version of `{module_id}` satisfying `{constraint}` could be resolved: {reason}")]
+    UnresolvableModule {
+        module_id: String,
+        constraint: String,
+        reason: String,
+    },
 
     #[error(
         "bundle member `{member}` is {found} bytes, past the {allowed} a bundle is read with.\n  \

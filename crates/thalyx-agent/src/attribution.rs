@@ -40,11 +40,31 @@ pub enum AttributionError {
 
 /// The provenance of `value`, taken from where it appears.
 ///
-/// When a value appears in more than one place, the **least trusted** of them
-/// wins. A module id that the human typed *and* that a fetched page also
-/// mentions is treated as though it came from the page: the two are
-/// indistinguishable from here, and rule 9 of `CLAUDE.md` says the ambiguous
-/// case takes the cautious answer, never the fast one.
+/// When a value appears in more than one place, the **most trusted** of them
+/// wins, and getting this backwards was a real bug rather than a close call.
+///
+/// It was written the other way first, on the reasoning that a module id which
+/// the human typed *and* a fetched page also mentions is ambiguous, so rule 9
+/// says take the cautious answer. That reasoning is wrong at its first step:
+/// **it is not ambiguous.** The transcript records which segment each piece of
+/// text arrived in, and the human's is right there. Nothing is being guessed.
+///
+/// What the cautious-looking version actually did was make any module named in
+/// any page the agent ever read uninstallable by name — the human types
+/// `install dev.thalyx.demo`, some README mentions the same module, and Thalyx
+/// refuses the human's own instruction. That is not caution, it is a sovereign
+/// being overruled by a stranger's document.
+///
+/// There is no attack the other direction. To have a value attributed to the
+/// human, it must appear in what the human typed, and that is the one channel
+/// an attacker does not control. The way to launder untrusted text into trust
+/// is to route it through [`Channel::Typed`], which is why the channel is
+/// assigned by whoever puts the text on the path and never inferred from it.
+///
+/// Found by running the CLI, not by any test. See
+/// `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`.
+///
+/// [`Channel::Typed`]: crate::transcript::Channel::Typed
 pub fn attribute(value: &str, transcript: &Transcript) -> Result<Origin, AttributionError> {
     if value.is_empty() {
         return Err(AttributionError::Empty);
@@ -64,7 +84,7 @@ pub fn attribute(value: &str, transcript: &Transcript) -> Result<Origin, Attribu
     found
         .iter()
         .map(|segment| Origin::from(segment.channel))
-        .max()
+        .min()
         .ok_or_else(|| AttributionError::Unattributable {
             value: value.to_string(),
         })
@@ -101,15 +121,21 @@ mod tests {
     }
 
     #[test]
-    fn a_value_in_two_places_takes_the_less_trusted_one() {
+    fn a_page_mentioning_a_module_does_not_stop_the_human_from_naming_it() {
+        // This test asserted the opposite first, with a confident rationale
+        // about ambiguity, and both were wrong. Running `thalyx agent plan` was
+        // what showed it: the human typed the module id and Thalyx refused
+        // their own instruction because a fetched page happened to mention the
+        // same module. Any popular module would become uninstallable by name.
         let transcript = Transcript::new()
-            .with(Segment::typed("install thalyx.demo"))
-            .with(Segment::foreign("you should install thalyx.demo today"));
+            .with(Segment::typed("install dev.thalyx.demo"))
+            .with(Segment::foreign("you should install dev.thalyx.demo today"));
 
         assert_eq!(
-            attribute("thalyx.demo", &transcript),
-            Ok(Origin::UntrustedContent),
-            "the two are indistinguishable from here, so the cautious answer wins"
+            attribute("dev.thalyx.demo", &transcript),
+            Ok(Origin::UserUtterance),
+            "it is in what the human typed, which is not ambiguous and is the \
+             one channel an attacker does not control"
         );
     }
 

@@ -35,6 +35,26 @@ pub enum DevCommand {
     },
     /// Show what a bundle contains, without installing it
     Inspect { bundle: PathBuf },
+
+    /// Drive the agent with a model that misbehaves on purpose.
+    ///
+    /// This exists because of rule 4. Until `llama.cpp` is wired in there is no
+    /// model at all, so every attempt to reach the system through inference
+    /// fails with "no model is configured" — and a denial that happens because
+    /// nothing was there to ask looks exactly like a denial by the provenance
+    /// check, while proving nothing about it. This supplies a model that really
+    /// does what a hostile page told it to, so the refusal has to come from
+    /// somewhere real.
+    AgentProbe {
+        /// What the human typed
+        utterance: String,
+        /// Text Thalyx did not get from the human
+        #[arg(long)]
+        foreign: Vec<String>,
+        /// How the stand-in model misbehaves
+        #[arg(long, default_value = "obeys-foreign-text")]
+        behaviour: String,
+    },
 }
 
 pub fn run(command: DevCommand) -> Fallible {
@@ -47,6 +67,50 @@ pub fn run(command: DevCommand) -> Fallible {
             out,
         } => pack(&source, &manifest, &key, &out),
         DevCommand::Inspect { bundle } => inspect(&bundle),
+        DevCommand::AgentProbe {
+            utterance,
+            foreign,
+            behaviour,
+        } => agent_probe(&utterance, &foreign, &behaviour),
+    }
+}
+
+fn agent_probe(utterance: &str, foreign: &[String], behaviour: &str) -> Fallible {
+    use thalyx_agent::{HostileModel, Misbehaviour, Segment, Transcript};
+
+    let misbehaviour = match behaviour {
+        "faithful" => Misbehaviour::Faithful,
+        "garbage" => Misbehaviour::Garbage,
+        "wrong-shape" => Misbehaviour::WrongShape,
+        "writes-provenance" => Misbehaviour::WritesProvenance,
+        "hallucinates" => Misbehaviour::Hallucinates,
+        "obeys-foreign-text" => Misbehaviour::ObeysForeignText,
+        "silence" => Misbehaviour::Silence,
+        "never-stops" => Misbehaviour::NeverStops,
+        "fails" => Misbehaviour::Fails,
+        other => return Err(format!("unknown behaviour `{other}`").into()),
+    };
+
+    let mut transcript = Transcript::new().with(Segment::typed(utterance));
+    for text in foreign {
+        transcript = transcript.with(Segment::foreign(text));
+    }
+
+    let caller = thalyx_contract::Caller {
+        module_id: "thalyx-dev-probe".to_string(),
+        request_id: "probe".to_string(),
+    };
+
+    match thalyx_agent::plan(&transcript, &HostileModel::new(misbehaviour), caller) {
+        Ok(plan) => {
+            println!("A CONTRACT WAS PRODUCED — the model got through.");
+            println!("{}", plan.contract.to_json());
+            Err("the probe produced a contract".into())
+        }
+        Err(error) => {
+            println!("refused: {error}");
+            Ok(())
+        }
     }
 }
 

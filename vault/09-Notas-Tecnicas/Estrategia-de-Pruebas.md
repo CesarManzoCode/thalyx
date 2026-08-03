@@ -185,6 +185,45 @@ hay que verificarlas igual que a Thalyx.** La misma revisión que encontró de
 verdad cinco contradicciones de la bóveda falló al restar seis horas de huso
 horario y listó once riesgos ya cerrados como si estuvieran abiertos.
 
+## Regla derivada: los mutantes prueban que las pruebas sostienen algo, no que sostengan lo correcto
+
+Esta es la continuación incómoda de la regla de abajo, y llegó el mismo día.
+
+La atribución del agente decidía que un valor presente en **dos** canales
+tomaba la procedencia del **menos** confiable. Tenía su prueba
+(`a_value_in_two_places_takes_the_less_trusted_one`), tenía un comentario
+seguro de sí mismo —"los dos son indistinguibles desde aquí, y la regla 9 dice
+tomar la respuesta cautelosa"— y cuando se rompió el mecanismo a propósito, la
+prueba falló como debía. Todo en verde y todo coherente.
+
+**Estaba mal.** No son indistinguibles: el transcript registra en qué segmento
+llegó cada texto, y el del humano está ahí. No se estaba adivinando nada. Lo
+que esa regla hacía de verdad era volver **imposible de instalar por nombre**
+cualquier módulo mencionado en cualquier página que el agente hubiera leído: el
+humano teclea `install dev.thalyx.demo`, un README lo menciona, y Thalyx rechaza
+la instrucción de su propio soberano. Eso no es cautela, es un desconocido
+sobrescribiendo al dueño de la máquina.
+
+Se encontró **tecleando una frase en la CLI**, tres segundos después de que
+existiera el comando. No lo encontró ninguna de las 39 pruebas, ni los tres
+mutantes, ni el ejercicio de la regla de abajo.
+
+> **Un mutante demuestra que una prueba es portante. No demuestra que la
+> decisión que codifica sea la correcta.** Las dos cosas se sienten igual desde
+> adentro: en ambas la prueba falla cuando se rompe el código. La diferencia
+> solo aparece cuando alguien usa el sistema.
+
+Y el corolario que ya es la regla 1 de `CLAUDE.md`, otra vez, en una capa nueva:
+**una prueba sabe lo que yo sabía cuando la escribí.** Si lo que yo sabía estaba
+equivocado, la prueba lo protege en vez de delatarlo — y cuanto mejor escrita
+esté, con mejor justificación en el comentario, más convincente es el error.
+
+El detalle práctico que sale de aquí: el comentario de esa prueba justificaba la
+decisión con una cita a la regla 9 ("fallar cerrado"). **Fallar cerrado no
+significa rechazar más cosas, significa rechazar lo que no se puede determinar.**
+Aquí sí se podía determinar. Invocar una regla correcta sobre un caso que no le
+toca es una forma especialmente difícil de detectar de estar equivocado.
+
 ## Regla derivada: dos defensas que se solapan hacen que la prueba grande no pruebe ninguna
 
 El agente mínimo tiene una prueba que parece la importante: nueve formas de

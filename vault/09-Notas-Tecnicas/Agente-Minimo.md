@@ -64,9 +64,23 @@ de máquina: hay RAM y disco de sobra.
 | Router de reglas | Contenedor — es determinista |
 | Ensamblado del contrato y procedencia | Contenedor |
 | Que un modelo hostil no logre falsificar el origen | Contenedor, con el falso adversario |
+| Enunciado → contrato → resolución → instalación | Contenedor, con bundles firmados de verdad |
 | Que la gramática GBNF sea válida y `llama.cpp` la acepte | **Su máquina** |
 | Acierto, latencia y RAM por gama | **Su máquina** |
 | El flujo completo con inferencia real | **Su máquina** |
+
+### El gancho que existe por la regla 4
+
+Mientras no haya modelo, todo intento de llegar al sistema por inferencia falla
+con "no model is configured". Esa denegación **se ve idéntica** a la de la
+comprobación de procedencia y no prueba nada sobre ella: es la regla 4, una
+denegación sin control es indistinguible de algo que nunca funcionó.
+
+Por eso existe `thalyx dev agent-probe`, que le pone al agente un modelo que sí
+obedece a la página hostil. `verify.sh` lo corre con siete formas de portarse
+mal y con el control —el mismo modelo, preguntado sobre algo que el humano sí
+tecleó, que **debe** producir un contrato—. Sin ese control, un agente que
+rechazara todo pasaría la etapa entera.
 
 ## El falso tiene que ser hostil
 
@@ -115,7 +129,16 @@ consecuencias que no estaban previstas.
 
 El ensamblador no interpreta nada. Busca el valor propuesto en los segmentos que
 el agente recibió y le da la procedencia del canal donde lo encuentra. Si
-aparece en varios, gana el menos confiable.
+aparece en varios, **gana el más confiable**.
+
+Esto último se escribió al revés primero, y estuvo mal medio día. El
+razonamiento era que un id presente en lo tecleado *y* en una página es
+ambiguo, así que hay que ser cauteloso. Pero no es ambiguo: el transcript sabe
+en qué segmento llegó cada texto. Lo que la versión "cautelosa" hacía era
+volver imposible de instalar por nombre cualquier módulo que apareciera en
+cualquier página leída. No hay ataque en la otra dirección: para que un valor se
+atribuya al humano tiene que aparecer en lo que el humano tecleó, y ese es el
+único canal que un atacante no controla. Ver [[Estrategia-de-Pruebas]].
 
 **Consecuencia no prevista: la alucinación deja de ser una cuestión de grado.**
 Un valor que no aparece en *nada* de lo que se le dijo al agente no puede
