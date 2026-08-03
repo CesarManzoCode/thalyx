@@ -15,7 +15,6 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
 - [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
-- [ ] **Memoria persistente.**
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para acotar la cuenta de mutaciones al árbol indexado. Necesita un consumidor que haga `mmap` del mapa; solo se puede escribir donde se pueda ejecutar. Ver [[FS-en-Grafo]].
 - [ ] **Ampliar los hooks del watcher** para cubrir escrituras por descriptor abierto. Sin eso el contador nunca podrá creerse.
 - [ ] **Probar los límites de recursos contra un kernel que delegue controladores** — `THALYX_REQUIRE_CONTROLLER_TESTS=1`.
@@ -65,6 +64,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Montajes idmapped para las rutas concedidas** — implementados y verificados. Ver [[Sandbox-Ejecucion]].
 - [x] **Con qué uid corre un módulo** — uno por módulo, sin reutilizar nunca. Decretado **e implementado**. Ver [[Sandbox-Ejecucion]].
 - [x] **Sockets `AF_UNIX` en el sandbox** — se quedan fuera, y queda dicho que la decisión es reversible. Ver [[Sandbox-Ejecucion]].
+- [x] **Memoria persistente** — cuarta primitiva, construida y probada. Ver [[Memoria-Persistente]].
 - [x] **Raíz propia del módulo (`pivot_root`)** — el módulo ya no ve el árbol del host. Ver [[Sandbox-Ejecucion]].
 - [x] **Perfil `module_standard`** — namespaces, seccomp y límites, verificados contra el kernel real. Ver [[Sandbox-Ejecucion]].
 - [x] **Dónde vive el `unsafe`** — en `thalyx-syscall` y en ningún otro lado. Ver [[Sandbox-Ejecucion]].

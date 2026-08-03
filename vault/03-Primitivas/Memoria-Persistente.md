@@ -53,6 +53,36 @@ Distinta del [[Journal-y-Snapshots|Journal/sistema de snapshots]]: el Journal ex
 **Motivo del fechado:** con el [[Principio-Doble-Ruta]] garantizando que el usuario puede cambiar las cosas sin pasar por el agente, un hecho registrado puede dejar de ser cierto sin que nadie lo note. Un agente que afirma con seguridad algo que ya no se sostiene es peor que uno que dice "esto lo registré, pero ya no puedo verificarlo".
 **Nota sobre la base vectorial:** se evaluó reemplazarla en Fase 1 por dos tablas SQLite con acceso por `task_id`, dado que `RESTORE_STATE` es una búsqueda por clave y no semántica. Se decretó conservar la base vectorial.
 
+## Estado: construida
+
+`crates/thalyx-memory`, y `thalyx memory` en la CLI. Las dos separaciones que el decreto pide están **en los tipos**, no en la disciplina de quien las use.
+
+### Las dos capas no se pueden confundir
+
+`Recollection` devuelve hechos y notas en **dos campos distintos**. Escribir una frase que los mezcle exige un acto deliberado, no un descuido. Y las notas se pueden tirar (`forget-notes`); **no existe forma de borrar un hecho**: la inferencia es del agente, el registro de lo que pasó es tuyo.
+
+### El fechado: contra las rutas, no contra el índice entero
+
+La lectura obvia del decreto —tomar la huella del índice y compararla después— deja **todo hecho no verificado en cuanto cambia cualquier cosa en cualquier lado**, o sea a los pocos segundos en una máquina que alguien esté usando. Una memoria donde todo es dudoso es lo mismo que no tener memoria.
+
+Entonces un hecho se atestigua contra **las rutas de las que habla**. Editar un archivo ajeno lo deja en pie; editar el que describe, no — y el reporte **nombra qué ruta se movió**.
+
+Hay un tercer estado además de verificado y no verificable: **`Unwitnessed`**, un hecho registrado sin nada contra qué comprobarlo. Es distinto de "verificado" a propósito: un hecho que nadie puede contradecir no es un hecho que alguien haya confirmado, y juntar los dos es exactamente cómo un agente termina sonando seguro de algo que nunca comprobó.
+
+### La base vectorial, y qué es honestamente
+
+Implementación propia, como se decretó.
+
+Una base vectorial solo es **semántica** si los vectores vienen de un modelo que entiende el texto, y Thalyx todavía no tiene modelo local — cuál correr es un decreto abierto. Así que el embebedor que se entrega hoy es **léxico**: una bolsa de palabras hasheada. Encuentra vocabulario compartido, no significado compartido.
+
+Hay un test que afirma que dos formas de decir lo mismo **no** se encuentran, porque eso es la limitación y no un defecto. Y **cada resultado carga si el emparejamiento fue semántico o no**, con la misma forma que `Answer<T>` en el grafo: no se pueden obtener las filas sin la advertencia. Cambiar a un modelo real toca una implementación de trait y nada más.
+
+La búsqueda es **exacta** sobre todos los vectores. Un índice aproximado cambia recall por velocidad, y un recall que no se ha medido es una memoria que olvida en silencio.
+
+Dos cosas quedan clavadas por tests porque equivocarlas **no fallaría**: la disposición de bytes de un vector guardado, y el bucket en el que cae cada palabra. Las dos harían que todo vector almacenado significara otra cosa. El hash es FNV-1a escrito a mano y no el de la biblioteca estándar, que no promete estabilidad entre versiones.
+
+Una memoria escrita por un embebedor **se niega a ser leída por otro**, en vez de devolver disparates con confianza.
+
 ## Relacionado
 - [[Coherencia-Doble-Ruta]]
 - [[Journal-y-Snapshots]]

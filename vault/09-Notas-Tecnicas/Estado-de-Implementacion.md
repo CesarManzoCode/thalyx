@@ -36,7 +36,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente |
 | Raíz propia del módulo (`pivot_root`) | `crates/thalyx-sandbox/rootfs.rs` | Solo el módulo, el sistema en RO y lo concedido |
 | Disciplina de cobertura del índice | `crates/thalyx-graph/watch.rs` | Completa y probada; el atajo queda apagado |
-| Contador de mutaciones del kernel | `crates/thalyx-watch` | Lectura por `bpftool`; no ejercitado sin BPF |
+| Contador de mutaciones del kernel | `crates/thalyx-watch` | Lectura por `bpftool`; verificado en hardware |
+| Memoria persistente | `crates/thalyx-memory` | Dos capas, fechado por rutas, base vectorial propia |
 | Límites de cgroup | `crates/thalyx-sandbox/limits.rs` | `memory.max`, `pids.max`, `cpu.max` |
 | Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
@@ -93,7 +94,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ## Pruebas
 
-274 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+304 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay tres variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS` y `_CONTROLLER_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
