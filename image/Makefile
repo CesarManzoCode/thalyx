@@ -1,12 +1,16 @@
 # The machine.
 #
-#   make            everything below, in order
-#   make kernel     fetch and build Linux with our configuration
-#   make binary     build thalyx, statically linked
-#   make image      pack the root filesystem
-#   sudo make store format the store disk and put the first module on it
-#   make run        boot it in QEMU
-#   make count      list what is really inside the image
+#   make                  everything below, in order
+#   make kernel           fetch and build Linux with our configuration
+#   make binary           build thalyx, statically linked
+#   make image            pack the root filesystem
+#   make store-stage      build what goes on the store disk
+#   sudo make store       format the disk and copy that onto it
+#   make run              boot it in QEMU
+#   make count            list what is really inside the image
+#
+# `store` is the one that needs root, and the only one. It will not build
+# anything: see the note above it.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT HAS RUN AND WHAT HAS NOT
@@ -59,6 +63,7 @@ MEMORY    := 2048
 STORE     := $(BUILD)/store.img
 STORESIZE := 8G
 STAGE     := $(BUILD)/store-stage
+STAMP     := $(BUILD)/store-stage.done
 MNT       := $(BUILD)/store-mnt
 STOREDEV  := /dev/vda
 
@@ -176,11 +181,22 @@ count: $(INITRAMFS)
 # shape as the bpftool problem and it has the same answer — the work moves to
 # build time rather than a second binary moving into the image.
 #
-# Two targets on purpose. `store-stage` fills a plain directory and needs no
-# privilege, so everything that can go wrong about *contents* — the module not
-# being static, the bundle not verifying, the install not committing — goes
-# wrong there, where the error is readable. `store` is only mkfs, mount, three
-# subvolumes and a copy, and it is the only part that needs root.
+# Two targets, two invocations, and `store` does not build the stage.
+#
+#     make -C image store-stage        # you
+#     sudo make -C image store         # root
+#
+# It was one command, with `store` depending on `store-stage`, and that was
+# wrong twice over. It failed immediately — `sudo` resets PATH, so rustup and
+# cargo, which live under the user's home, are simply not there — and the
+# failure is the smaller problem. Had it worked, `sudo make store` would have
+# run the entire Rust build as root: every build script of every dependency,
+# executing with privilege, writing root-owned files into the target directory
+# that the next ordinary `cargo build` could not replace.
+#
+# So the privilege boundary is the target boundary. `store-stage` builds and
+# needs nothing; `store` is mkfs, mount, three subvolumes and a copy, and it
+# refuses rather than building anything itself.
 
 # The module, built for the machine rather than for the host that builds it.
 # Static for the same reason `thalyx` is: there is no libc on the store either.
@@ -200,7 +216,7 @@ greeter: $(GREETER)
 # names a file, and a grant naming a directory would send it to read a directory
 # and report the failure as a permissions problem.
 store-stage: binary greeter
-	rm -rf $(STAGE)
+	rm -rf $(STAGE) $(STAMP)
 	mkdir -p $(STAGE)/system $(STAGE)/modules/greeter $(STAGE)/user
 	mkdir -p $(BUILD)/pack/bin
 	cp $(GREETER) $(BUILD)/pack/bin/greeter
@@ -239,8 +255,14 @@ store-stage: binary greeter
 	THALYX_ROOT=$(STAGE)/system $(THALYX) module install $(BUILD)/greeter.thmod --yes
 	@THALYX_ROOT=$(STAGE)/system $(THALYX) module list | grep -q dev.thalyx.greeter \
 	    || { echo "the module did not install into the stage"; exit 1; }
+	@# Written last, and only on success. `store` looks for this and not for
+	@# the directory: an interrupted stage leaves the directory sitting there
+	@# looking finished, and a disk built from it would be missing whatever
+	@# had not happened yet.
+	@date -u +%Y-%m-%dT%H:%M:%SZ > $(STAMP)
 	@echo
 	@echo "  staged: $(STAGE)"
+	@echo "  now:    sudo make -C image store"
 
 # The disk itself. Needs root, for the loop device and for the mount.
 #
@@ -248,7 +270,18 @@ store-stage: binary greeter
 # absolute path of its own, which is what lets the stage be built at one path
 # and mounted at another. If that stops being true, this copy is where it will
 # show, and it will show as a module that installed and cannot be found.
-store: store-stage
+store:
+	@test -f $(STAMP) || { \
+	    echo "  nothing staged yet. Build it first, as yourself:"; \
+	    echo; \
+	    echo "      make -C image store-stage"; \
+	    echo; \
+	    echo "  This target does not do it for you on purpose. It runs as"; \
+	    echo "  root, and a Rust build under root executes every dependency's"; \
+	    echo "  build script with privilege and leaves root-owned files in"; \
+	    echo "  the target directory."; \
+	    exit 1; \
+	}
 	@test "$$(id -u)" = 0 || { \
 	    echo "  make store needs root: it formats a disk and mounts it."; \
 	    echo "  sudo make -C image store"; \
@@ -269,6 +302,13 @@ store: store-stage
 	cp -a $(STAGE)/system/. $(MNT)/system/
 	cp -a $(STAGE)/modules/. $(MNT)/modules/
 	cp -a $(STAGE)/user/. $(MNT)/user/
+	@# `cp -a` keeps the ownership of the stage, which is whoever ran
+	@# `store-stage` — a uid that does not exist inside the machine. A store
+	@# built by Thalyx itself is root's, because installing is something
+	@# Thalyx does as Thalyx, and this makes the built one indistinguishable
+	@# from that. Nothing here becomes writable by a module: the uids handed
+	@# out start at 700000 and this is 0.
+	chown -R 0:0 $(MNT)/system $(MNT)/modules $(MNT)/user
 	btrfs subvolume list $(MNT)
 	umount $(MNT)
 	@echo
@@ -290,7 +330,8 @@ run: $(BZIMAGE) $(INITRAMFS)
 	@test -f $(STORE) || { \
 	    echo "  no store disk at $(STORE)."; \
 	    echo "  The machine will boot and say so, and nothing will survive it."; \
-	    echo "  To make one:  sudo make -C image store"; \
+	    echo "  To make one:  make -C image store-stage"; \
+	    echo "                sudo make -C image store"; \
 	    echo; \
 	}
 	qemu-system-x86_64 \

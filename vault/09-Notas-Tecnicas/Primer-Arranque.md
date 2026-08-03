@@ -25,12 +25,13 @@ tags: [imagen, arranque, procedimiento, fase-1]
 > queda abajo ya no es un pronóstico: es el procedimiento que sí funciona, con
 > lo que efectivamente imprimió.
 >
-> **El paso 4b es nuevo y nunca ha corrido.** Formatea el disco del store. Se
-> escribió en el contenedor de desarrollo, que no tiene Btrfs en el kernel ni
-> QEMU, así que ni el `mkfs` ni el montaje ni el arranque con disco se han
-> ejercido nunca. La etapa 13 de `verify.sh` prueba el mecanismo entero sin
-> QEMU; córrela antes que el paso 4b y sabrás si el problema es el disco o la
-> imagen.
+> **El mecanismo del store está probado; el paso 4b no.** La etapa 13 de
+> `verify.sh` corrió en verde en la Fedora de Cesar el 2026-08-03: formateó un
+> disco Btrfs, le hizo los tres subvolúmenes, instaló el módulo adentro y lo
+> volvió a montar para comprobar que sobrevivió. Lo que eso no ejerce es el
+> `Makefile` —el paso 4b— ni el disco arrancando dentro de QEMU. Si el paso 4b
+> falla y la etapa 13 estaba verde, el problema está en el `Makefile`, no en el
+> store.
 
 ## Qué se está intentando
 
@@ -50,7 +51,7 @@ sudo ./dev/verify.sh
 **Debe imprimir**, al final:
 
 ```
-proven      ~66
+proven      67
 not proven  2
 failed      0
 ```
@@ -62,8 +63,8 @@ Las **dos** `not proven` esperadas son:
 
 La etapa 13 es la que prueba el store: formatea un disco Btrfs de verdad, le
 hace los tres subvolúmenes, instala el módulo adentro y lo vuelve a montar para
-ver si sobrevivió. **Nunca ha corrido en ningún lado**; el contenedor donde se
-escribió no tiene Btrfs en el kernel y la salta diciéndolo.
+ver si sobrevivió. **Corrió en verde el 2026-08-03**, seis comprobaciones. En un
+contenedor sin Btrfs en el kernel se salta diciéndolo, y eso también está bien.
 
 | Si falla | Qué significa |
 |---|---|
@@ -164,18 +165,27 @@ alguien le instaló encima.
 
 ```sh
 sudo dnf install -y btrfs-progs
+make -C image store-stage
 sudo make -C image store
 ```
 
-Formatea `image/build/store.img` con Btrfs, le crea los tres subvolúmenes e
-instala el `greeter` adentro. Necesita root: monta un dispositivo de bucle.
+**Son dos comandos y el orden importa.** El primero compila y arma lo que va en
+el disco; corre como tú. El segundo formatea `image/build/store.img` con Btrfs,
+le hace los tres subvolúmenes y copia lo del primero adentro; ese sí necesita
+root, porque monta un dispositivo de bucle.
 
-**Debe imprimir**, al final:
+**`store` no compila nada, a propósito.** Era un solo comando y estaba mal dos
+veces: falló de inmediato —`sudo` reinicia el `PATH` y `rustup` vive en tu home,
+así que no existe— y ese es el problema chico. De haber funcionado, `sudo make
+store` habría corrido toda la compilación de Rust como root: los scripts de
+build de cada dependencia ejecutándose con privilegio, y archivos de root
+quedando en `target/` que tu siguiente `cargo build` normal ya no podría
+reemplazar. La frontera de privilegio es la frontera de target.
+
+**El primero debe terminar** con `staged:` y la ruta. **El segundo debe imprimir**,
+al final:
 
 ```
-  static: 1.8M
-  ...
-dev.thalyx.greeter 1.0.0 installed
 ID 256 gen 8 top level 5 path system
 ID 257 gen 9 top level 5 path modules
 ID 258 gen 9 top level 5 path user
@@ -184,15 +194,17 @@ ID 258 gen 9 top level 5 path user
 ```
 
 Los números de `ID` y `gen` van a ser otros; lo que importa son los tres
-`path`. La primera parte —`store-stage`— no necesita root y falla sola si el
-módulo no salió estático o si el bundle no verifica, que es donde conviene que
-fallen esas cosas.
+`path`. `store-stage` falla solo si el módulo no salió estático o si el bundle
+no verifica, que es donde conviene que fallen esas cosas: sin privilegio y con
+un mensaje que habla de lo que se está construyendo, no del disco.
 
 | Si falla | Qué significa y qué hacer |
 |---|---|
+| `nothing staged yet` | Te saltaste `make -C image store-stage`. Ese va primero y sin `sudo`. |
+| `rustup: No existe el fichero` | Estás corriendo `store-stage` con `sudo`. No lleva sudo. |
 | `make store needs root` | Es `sudo make -C image store`, no `make`. |
 | `no mkfs.btrfs` | Falta `btrfs-progs`. |
-| `NOT STATIC — the módulo could not run on the machine` | El `greeter` enlazó dinámico. Mismo arreglo que el paso 2: falta `musl-gcc` o el target de musl. |
+| `NOT STATIC — the module could not run on the machine` | El `greeter` enlazó dinámico. Mismo arreglo que el paso 2: falta `musl-gcc` o el target de musl. |
 | `the module did not install into the stage` | El bundle no verificó o el commit no se publicó. Pégame la salida completa: es un fallo del core, no del disco. |
 | `mount: ... unknown filesystem type 'btrfs'` | Tu kernel no trae Btrfs. En Fedora 43 lo trae; si sale esto, algo raro pasa y quiero verlo. |
 

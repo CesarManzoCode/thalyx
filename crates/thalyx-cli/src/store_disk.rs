@@ -218,6 +218,76 @@ pub fn describe() {
 mod tests {
     use super::*;
 
+    /// The image builder, read rather than trusted.
+    fn image_makefile() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../image/Makefile")
+            .canonicalize()
+            .expect("the image Makefile is part of the repository");
+        std::fs::read_to_string(&path).expect("reading the image Makefile")
+    }
+
+    /// One target's recipe: every line after `name:` that is indented.
+    fn recipe_of<'a>(makefile: &'a str, target: &str) -> Vec<&'a str> {
+        let mut lines = makefile.lines().skip_while(|l| !l.starts_with(target));
+        let header = lines.next().unwrap_or_default();
+        assert!(
+            header.starts_with(target),
+            "no `{target}` target in the image Makefile"
+        );
+        lines
+            .take_while(|l| l.starts_with('\t') || l.trim().is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_target_that_needs_root_builds_nothing() {
+        // `store` used to depend on `store-stage`, so `sudo make store` was one
+        // command. It failed at once — sudo resets PATH and rustup lives under
+        // the user's home — and the failure was the small half. Had it worked it
+        // would have run the whole Rust build as root: every dependency's build
+        // script executing with privilege, and root-owned files left in the
+        // target directory that the next ordinary build could not replace.
+        let makefile = image_makefile();
+
+        let header = makefile
+            .lines()
+            .find(|l| l.starts_with("store:"))
+            .expect("a `store` target");
+        assert_eq!(
+            header.trim(),
+            "store:",
+            "the target that runs as root has prerequisites, so root will build them"
+        );
+
+        for line in recipe_of(&makefile, "store:") {
+            for tool in ["cargo ", "rustup ", "$(MAKE)"] {
+                assert!(
+                    !line.contains(tool),
+                    "`store` runs `{tool}` as root: {}",
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_privileged_target_refuses_rather_than_assuming_the_stage_is_there() {
+        // And it looks for the stamp, not the directory. An interrupted stage
+        // leaves the directory sitting there looking finished, and a disk built
+        // from it would be missing whatever had not happened yet.
+        let makefile = image_makefile();
+        let recipe: String = recipe_of(&makefile, "store:").join("\n");
+        assert!(
+            recipe.contains("test -f $(STAMP)"),
+            "`store` does not check that anything was staged"
+        );
+        assert!(
+            recipe.contains("store-stage"),
+            "`store` refuses without naming the command that fixes it"
+        );
+    }
+
     #[test]
     fn the_store_root_is_one_subvolume_so_that_rename_stays_atomic() {
         // The mistake this guards is specific and has already been made once in
@@ -287,11 +357,7 @@ mod tests {
         // Not a check that the file parses as make: only that every name PID 1
         // will mount is a subvolume somebody created, and that nothing else was
         // created that nothing mounts.
-        let makefile = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../image/Makefile")
-            .canonicalize()
-            .expect("the image Makefile is part of the repository");
-        let text = std::fs::read_to_string(&makefile).expect("reading the image Makefile");
+        let text = image_makefile();
 
         let mut created: Vec<&str> = text
             .lines()
@@ -300,9 +366,8 @@ mod tests {
         created.sort_unstable();
         assert!(
             !created.is_empty(),
-            "no `btrfs subvolume create` in {} — the store is no longer built there,\n\
-             and this test would pass forever without checking anything",
-            makefile.display()
+            "no `btrfs subvolume create` in image/Makefile — the store is no longer\n\
+             built there, and this test would pass forever without checking anything"
         );
 
         let mut mounted: Vec<&str> = subvolume_names().collect();
@@ -320,11 +385,7 @@ mod tests {
         // the store findable. A Makefile that attached the disk and forgot to
         // name it would produce a machine reporting "no store" with the store
         // plugged in — a failure whose message points away from its cause.
-        let makefile = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../image/Makefile")
-            .canonicalize()
-            .expect("the image Makefile is part of the repository");
-        let text = std::fs::read_to_string(&makefile).expect("reading the image Makefile");
+        let text = image_makefile();
         assert!(
             text.contains(&format!("{PARAMETER}$(STOREDEV)")),
             "the boot line does not carry {PARAMETER}"

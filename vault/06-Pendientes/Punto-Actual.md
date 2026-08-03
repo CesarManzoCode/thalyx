@@ -74,24 +74,30 @@ la fase falta además **el modelo del agente**.
 
 Escrito aparte para que no se confunda con lo que sí está probado:
 
-| Qué | Dónde se probaría |
+| Qué | Estado |
 |---|---|
-| `sudo make -C image store` | La máquina de Cesar. Nunca ha corrido: el contenedor no tiene Btrfs en el kernel ni el target de musl. |
-| El disco arrancando dentro de QEMU | `make -C image run`, paso 5 y 6 de [[Primer-Arranque]]. |
-| El mecanismo del store sin QEMU | Etapa 13 de `verify.sh`. **Su cuerpo nunca se ha ejecutado**; el contenedor la salta por falta de Btrfs en el kernel, diciéndolo. |
+| El mecanismo del store | **Probado**, etapa 13 de `verify.sh`, en verde el 2026-08-03. |
+| `make -C image store-stage` y `sudo make -C image store` | El `Makefile` en sí. La etapa 13 hace lo mismo por su cuenta, así que un fallo aquí es del `Makefile`, no del store. |
+| El disco arrancando dentro de QEMU | Pasos 5 y 6 de [[Primer-Arranque]]. |
 
-La etapa 13 es la que conviene correr primero: prueba formatear, montar, hacer
-los subvolúmenes, instalar el módulo adentro, y volver a montar el disco para
-ver si sobrevivió — sin necesitar QEMU. Si algo del store está mal, ahí sale con
-un mensaje que dice cuál de los cuatro pasos fue.
+**El primer intento del paso 4b falló y enseñó algo.** Era un solo comando,
+`sudo make -C image store`, con `store` dependiendo de `store-stage`. Se cayó de
+inmediato porque `sudo` reinicia el `PATH` y `rustup` vive en el home del
+usuario — y ese es el problema chico. De haber funcionado habría corrido toda la
+compilación de Rust como root: los scripts de build de cada dependencia con
+privilegio, y archivos de root en `target/` que el siguiente `cargo build`
+normal no podría reemplazar. **La frontera de privilegio es la frontera de
+target**: `store-stage` construye y no necesita nada; `store` formatea y se
+niega en vez de construir. Hay dos pruebas que leen el `Makefile` para que no
+vuelva a juntarse.
 
 ## Última corrida verificada
 
 **2026-08-03, Fedora 43, kernel 7.0.11, Btrfs, `bpf` en el orden de LSM,
-`main @ 465ccce`.**
+`main @ f149ddf`.**
 
 ```
-proven 61 · not proven 2 · failed 0
+proven 67 · not proven 2 · failed 0
 ```
 
 Las dos `not proven` son cosas que **todavía no existen**, no cosas que no se
@@ -99,9 +105,12 @@ pudieron comprobar: el modelo del agente (`llama.cpp` no está y la ruta real no
 está escrita) y arrancar la imagen desde este script, que se hace a mano con
 `make -C image run`.
 
-Lo que esta corrida cerró y las anteriores no: **el canal del módulo atraviesa
-el sandbox** —dos `exec` y el filtro seccomp— que era la última afirmación de la
-API interna sin comprobar en ningún lado.
+Lo que esta corrida cerró y las anteriores no: **el store**. La etapa 13
+formateó un disco Btrfs de verdad, le hizo los tres subvolúmenes, instaló el
+módulo adentro, y lo desmontó y volvió a montar para comprobar que seguía ahí.
+También ejerció el `EXDEV` en el que descansa el layout, con línea base y
+control — porque una afirmación que sostiene un diseño hay que ejercerla, no
+citarla.
 
 Reproducirla:
 
