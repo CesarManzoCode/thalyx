@@ -21,3 +21,15 @@ emit the relocation rather than a fixed offset.
 What this object is not: the one that gets loaded. That one is built by
 `make -C lsm` against the real `vmlinux.h`, on a machine that has bpftool. This
 one is for the parser to be checked against something clang actually wrote.
+
+## `kernelish.btf`
+
+A stand-in for a running kernel's BTF, and also clang's real output — extracted
+from `kernelish.c` with `llvm-objcopy --dump-section=.BTF=`. Its `struct file`
+puts `f_flags` at byte **20**, behind three fields the object's own header does
+not have; its `struct sockaddr` keeps `sa_family` at **0**.
+
+That pair is the whole point. One field moved and one did not, so a relocation
+pass that did nothing at all would pass on `sa_family` and fail on `f_flags` —
+which is the baseline-and-control shape `Estrategia-de-Pruebas` asks for, made
+out of two fields instead of two machines.

@@ -16,6 +16,7 @@ thalyx-agent.workspace = true
 thalyx-abi.workspace = true
 thalyx-core.workspace = true
 thalyx-syscall.workspace = true
+thalyx-bpf.workspace = true
 thalyx-journal.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
@@ -38,6 +39,7 @@ thalyx-permd.workspace = true
 thalyx-agent.workspace = true
 thalyx-core.workspace = true
 thalyx-syscall.workspace = true
+thalyx-bpf.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
 

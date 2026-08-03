@@ -25,9 +25,13 @@
 pub mod btf;
 pub mod core;
 pub mod elf;
+pub mod loader;
 pub mod maps;
+pub mod program;
 
 pub use btf::{Btf, BtfError};
 pub use core::CoreError;
 pub use elf::{Elf, ElfError};
+pub use loader::{LoadError, Loaded, kernel_btf, load};
 pub use maps::{MapError, MapSpec};
+pub use program::{ProgramError, ProgramSpec};

@@ -504,3 +504,136 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod against_a_kernel_where_the_field_moved {
+    use super::*;
+    use crate::elf::Elf;
+    use crate::program;
+
+    const CAPTURED: &[u8] = include_bytes!("../tests/captured/thalyx_lsm.bpf.o");
+
+    /// Clang's output for a `struct file` whose `f_flags` is at byte 20, which
+    /// is what a real kernel looks like and what the object's own header does
+    /// not. See `tests/captured/README.md`.
+    const KERNELISH: &[u8] = include_bytes!("../tests/captured/kernelish.btf");
+
+    /// The immediate of the instruction a relocation points at.
+    fn immediate_at(instructions: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(instructions[offset + 4..offset + 8].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_field_that_moved_gets_the_offset_this_kernel_uses() {
+        // The claim this whole module exists for, checked without a kernel.
+        //
+        // Before: the instruction holds 0, because the header the object was
+        // built against put f_flags first. After: 20, from the target's BTF. A
+        // loader that skipped this step would leave the 0 — and `file_open`
+        // would decide read-versus-write from `f_lock`, forever, without ever
+        // failing.
+        let elf = Elf::parse(CAPTURED).unwrap();
+        let local = Btf::parse(elf.section(".BTF").unwrap().bytes).unwrap();
+        let kernel = Btf::parse(KERNELISH).unwrap();
+        let all = relocations(elf.section(".BTF.ext").unwrap().bytes, &local).unwrap();
+
+        let mut spec = program::programs(&elf)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.section == "lsm/file_open")
+            .unwrap();
+        let (_, entries) = all.iter().find(|(n, _)| n == "lsm/file_open").unwrap();
+        let at = entries[0].insn_offset as usize;
+
+        assert_eq!(
+            immediate_at(&spec.instructions, at),
+            0,
+            "the object should start out carrying the offset from its own header"
+        );
+
+        apply(
+            &mut spec.instructions,
+            &spec.section,
+            entries,
+            &local,
+            &kernel,
+        )
+        .unwrap();
+
+        assert_eq!(
+            immediate_at(&spec.instructions, at),
+            20,
+            "the instruction still holds an offset from the wrong kernel"
+        );
+    }
+
+    #[test]
+    fn a_field_that_did_not_move_is_left_where_it_was() {
+        // The control. Without it, a relocation pass that wrote a constant —
+        // or that wrote nothing — would be indistinguishable from one that
+        // resolved the offset, because 0 happens to be right for sa_family.
+        let elf = Elf::parse(CAPTURED).unwrap();
+        let local = Btf::parse(elf.section(".BTF").unwrap().bytes).unwrap();
+        let kernel = Btf::parse(KERNELISH).unwrap();
+        let all = relocations(elf.section(".BTF.ext").unwrap().bytes, &local).unwrap();
+
+        let mut spec = program::programs(&elf)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.section == "lsm/socket_connect")
+            .unwrap();
+        let (_, entries) = all.iter().find(|(n, _)| n == "lsm/socket_connect").unwrap();
+        let at = entries[0].insn_offset as usize;
+
+        apply(
+            &mut spec.instructions,
+            &spec.section,
+            entries,
+            &local,
+            &kernel,
+        )
+        .unwrap();
+
+        assert_eq!(
+            immediate_at(&spec.instructions, at),
+            0,
+            "sa_family is the first member of sockaddr on both sides"
+        );
+    }
+
+    #[test]
+    fn only_the_instruction_the_relocation_names_is_touched() {
+        // A patch that wrote to the wrong slot would still produce the right
+        // answer above while corrupting something else — and the corruption
+        // would surface as a verifier error about an unrelated instruction.
+        let elf = Elf::parse(CAPTURED).unwrap();
+        let local = Btf::parse(elf.section(".BTF").unwrap().bytes).unwrap();
+        let kernel = Btf::parse(KERNELISH).unwrap();
+        let all = relocations(elf.section(".BTF.ext").unwrap().bytes, &local).unwrap();
+
+        let mut spec = program::programs(&elf)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.section == "lsm/file_open")
+            .unwrap();
+        let before = spec.instructions.clone();
+        let (_, entries) = all.iter().find(|(n, _)| n == "lsm/file_open").unwrap();
+        let at = entries[0].insn_offset as usize;
+
+        apply(
+            &mut spec.instructions,
+            &spec.section,
+            entries,
+            &local,
+            &kernel,
+        )
+        .unwrap();
+
+        for (index, (old, new)) in before.iter().zip(spec.instructions.iter()).enumerate() {
+            if (at..at + 8).contains(&index) {
+                continue;
+            }
+            assert_eq!(old, new, "byte {index} changed and no relocation named it");
+        }
+    }
+}

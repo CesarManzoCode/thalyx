@@ -884,6 +884,7 @@ dependencies = [
 name = "thalyx-bpf"
 version = "0.1.0"
 dependencies = [
+ "thalyx-syscall",
  "thiserror",
 ]
 
@@ -899,6 +900,7 @@ dependencies = [
  "tempfile",
  "thalyx-abi",
  "thalyx-agent",
+ "thalyx-bpf",
  "thalyx-contract",
  "thalyx-core",
  "thalyx-graph",

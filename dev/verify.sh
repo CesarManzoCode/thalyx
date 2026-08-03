@@ -1351,6 +1351,95 @@ else
     fi
 fi
 
+step "14. Thalyx attaches its own enforcement, with no bpftool"
+
+# The claim from Construccion-del-ISO.md and Filosofia-Fundacional.md together:
+# the image holds the kernel and one program, so the thing that puts thalyx-lsm
+# into the kernel has to be that program. Until today it was bpftool, invoked
+# from a shell, and the image has neither.
+#
+# Everything below uses the same binary the image carries, loading the same
+# object, through its own bpf(2) calls. What it cannot check by construction is
+# the container this was written in — no BPF LSM there at all — so this stage is
+# guarded on the same LOADED that stage 12 uses, and the run above has already
+# detached what `make -C lsm load` attached.
+
+if [ "${LOADED:-0}" != 1 ]; then
+    LOADER_GAP="Thalyx's own BPF loader has not been exercised; this machine has no usable BPF LSM"
+    if [ "${THALYX_REQUIRE_LSM_TESTS:-0}" = 1 ]; then
+        failed "$LOADER_GAP"
+    else
+        unproven "$LOADER_GAP"
+    fi
+elif [ ! -f "$ROOT/lsm/thalyx_lsm.bpf.o" ]; then
+    failed "there is no BPF object to load; stage 3 should have built one"
+else
+    # Out of the way first. Two sets of links on the same hooks both run, and
+    # "it still denies after I detached it" is a puzzle nobody needs.
+    make -C lsm unload > "$WORK/loader-unload-first.log" 2>&1
+    LOADED=0
+
+    # The binary under test is the one `cargo install` put in place, built from
+    # this checkout — which means build.rs already embedded the object. Checked
+    # rather than assumed: a binary compiled before `make -C lsm` ran carries
+    # nothing, and would fail here for a reason that has nothing to do with the
+    # loader.
+    if "$THALYX" enforce attach > "$WORK/loader-attach.log" 2>&1; then
+        proven "Thalyx loaded and attached thalyx-lsm itself, with no bpftool"
+        THALYX_ATTACHED=1
+    else
+        failed "Thalyx could not attach its own enforcement; see $WORK/loader-attach.log"
+        sed 's/^/     /' "$WORK/loader-attach.log" | head -25
+        THALYX_ATTACHED=0
+    fi
+
+    if [ "${THALYX_ATTACHED:-0}" = 1 ]; then
+        # A pin is not a link. A program can be loaded, pinned and in nobody's
+        # decision path, and it lists identically to one that is live — which is
+        # exactly how a security tool reads as armed while disarmed.
+        LIVE="$(bpftool link list 2>/dev/null | grep -c 'prog_type lsm' || echo 0)"
+        if [ "$LIVE" -ge 2 ]; then
+            proven "$LIVE LSM link(s) live in the kernel, which is what enforces rather than what is pinned"
+        else
+            failed "only $LIVE LSM link(s) are live; the programs loaded and are in nobody's path"
+        fi
+
+        # The maps permd needs, by the names permd looks them up under. A
+        # loader that pinned them somewhere else would attach enforcement that
+        # no permission could ever be written into.
+        MISSING=""
+        for map in thalyx_policy thalyx_denials thalyx_enforcing; do
+            [ -e "/sys/fs/bpf/thalyx/maps/$map" ] || MISSING="$MISSING $map"
+        done
+        if [ -z "$MISSING" ]; then
+            proven "the three maps are pinned where thalyx-permd looks for them"
+        else
+            failed "these maps are not pinned where permd looks:$MISSING"
+        fi
+
+        # And it denies. The same demo stage 4 runs, against enforcement this
+        # binary attached rather than bpftool — which is the only thing that
+        # tells a loader that works from one that merely returns success.
+        if make -C lsm demo > "$WORK/loader-demo.log" 2>&1 \
+           && grep -q "ENFORCEMENT IS REAL" "$WORK/loader-demo.log"; then
+            proven "enforcement Thalyx attached itself denies a connection, and allows it outside the cgroup"
+        else
+            failed "enforcement attached by Thalyx did not deny; see $WORK/loader-demo.log"
+            tail -25 "$WORK/loader-demo.log" | sed 's/^/     /'
+        fi
+
+        # Taken back down by the same command, because a stage that left the
+        # machine attached would make every later run start from a state the
+        # first one did not.
+        if "$THALYX" enforce detach > "$WORK/loader-detach.log" 2>&1 \
+           && [ ! -d /sys/fs/bpf/thalyx/links ]; then
+            proven "detaching removed every pin it made"
+        else
+            failed "Thalyx did not detach cleanly; see $WORK/loader-detach.log"
+        fi
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
