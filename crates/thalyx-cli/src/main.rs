@@ -7,6 +7,7 @@
 mod dev;
 mod enforce;
 mod graph;
+mod memory;
 mod render;
 mod run;
 
@@ -52,6 +53,10 @@ enum Command {
 
     /// Show granted permissions
     Permissions,
+
+    /// What the agent remembers between sessions
+    #[command(subcommand)]
+    Memory(memory::MemoryCommand),
 
     /// Push granted permissions into the kernel, and see what is enforced
     #[command(subcommand)]
@@ -153,6 +158,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Permissions => {
             let store = Store::open(&root)?;
             render::permissions(&store)
+        }
+        Command::Memory(command) => {
+            Store::open(&root)?;
+            memory::run(&root, command)
         }
         Command::Enforce(command) => enforce::run(&root, command),
         Command::Store(StoreCommand::Status) => {

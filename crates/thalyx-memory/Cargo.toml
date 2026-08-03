@@ -1,0 +1,19 @@
+[package]
+name = "thalyx-memory"
+description = "What the agent remembers between sessions, and how much of it can still be checked"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -793,6 +793,7 @@ dependencies = [
  "thalyx-graph",
  "thalyx-journal",
  "thalyx-manifest",
+ "thalyx-memory",
  "thalyx-permd",
  "thalyx-sandbox",
  "thalyx-watch",
@@ -868,6 +869,16 @@ dependencies = [
  "sha2",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "thalyx-memory"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+ "time",
 ]
 
 [[package]]
