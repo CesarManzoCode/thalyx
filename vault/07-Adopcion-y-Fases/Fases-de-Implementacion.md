@@ -7,9 +7,9 @@ tags: [fases, roadmap, implementacion]
 
 # Estrategia de implementación (fases)
 
-## Fase 1: Núcleo de Thalyx sobre base Alpine — primeros 6-12 meses
+## Fase 1: El núcleo de Thalyx, sin distribución debajo — primeros 6-12 meses
 
-- **Base:** Alpine Linux minimalista, con **Btrfs obligatorio** en el volumen raíz y subvolúmenes separados para sistema, módulos y datos de usuario.
+- **Base:** ninguna. El kernel de Linux y el binario `thalyx`, y nada más — ver [[Construccion-del-ISO]]. **Btrfs obligatorio** en el volumen raíz, con subvolúmenes separados para sistema, módulos y datos de usuario.
 - **Componentes:**
   - `thalyx-core` — validación de contratos, resolución de versiones, verificación, commit atómico, journal. Módulos internos con fronteras duras — ver [[Core]].
   - `thalyx-lsm` — módulo de seguridad del kernel: aplica permisos e intercepta mutaciones del filesystem.
@@ -49,6 +49,11 @@ tags: [fases, roadmap, implementacion]
 ### 2026-08-01 — Se elimina la palabra "capa" del título de la Fase 1
 **Antes:** la fase se titulaba "Capa sobre Linux (userspace)", en contradicción directa con [[Decision-Capa-vs-SO-Nuevo]], que decreta que Thalyx no puede ser una capa.
 **Ahora:** "Núcleo de Thalyx sobre base Alpine".
+
+### 2026-08-03 — desaparece la base
+**Antes:** "Fase 1: Núcleo de Thalyx sobre base Alpine. Base: Alpine Linux minimalista."
+**Ahora:** no hay base. La imagen es el kernel de Linux y `thalyx`.
+**Motivo:** la revisión de arriba quitó la palabra "capa" del título y dejó la distro en el cuerpo, que es como el problema sobrevivió a la corrección que se suponía lo arreglaba. Ver [[Construccion-del-ISO]].
 **Motivo:** Thalyx es un sistema operativo nuevo. Que la mayor parte del código corra en userspace es orden de construcción, no arquitectura. Ver la formulación completa en [[Decision-Capa-vs-SO-Nuevo]].
 
 ### 2026-08-01 — El LSM entra en Fase 1, el scheduler y la GUI salen

@@ -16,6 +16,17 @@ tags: [continuidad, punto-actual, sesiones]
 
 ## Dónde estamos, en una frase
 
+**El 2026-08-03 se quitó la distribución.** La bóveda decretaba en tres notas
+una base Alpine y en una —marcada no negociable— que Thalyx no es una
+distribución de Linux. Se resolvió a favor de la segunda: **la imagen es el
+kernel de Linux y `thalyx`, y nada más.** Ninguna distro, nunca. Ver
+[[Construccion-del-ISO]].
+
+Eso convierte la **API interna de módulos** en la pieza que sigue: sin shell y
+sin utilidades, un módulo no puede ser un script y no tiene con quién hablar
+excepto Thalyx. Está decretada desde el 31 de julio en [[Core-Nucleo]] y no
+existe ni en una línea.
+
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real, 0 sin probar,
@@ -179,6 +190,19 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (5) — se cae la distro, y con ella lo que se apoyaba en ella
+Cesar preguntó por qué habría un login al arrancar si nadie lo construyó. La
+respuesta —lo pone la base— hizo visible que había una base, y que la bóveda se
+contradecía en cuatro notas. Decreto: **cualquier distribución queda fuera para
+siempre**; el kernel de Linux nunca estuvo en discusión.
+
+Borrados por falsos: el esqueleto del ISO escrito esa misma noche, que producía
+una distro de Alpine con el getty quitado, y el módulo `dev.thalyx.hola`, que
+era un script de shell y por lo tanto corría en cualquier Linux.
+
+Reescritos: [[Construccion-del-ISO]] entero, y las secciones de
+[[Core-Nucleo]] y [[Fases-de-Implementacion]] que decretaban la base.
 
 ### 2026-08-03 (4) — el enunciado llega hasta el disco, y un fallo que solo salió corriéndolo
 **El paso 6, ahora con sus dos mitades.** El agente escribe lo que hizo **y lo

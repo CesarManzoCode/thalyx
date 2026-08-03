@@ -59,7 +59,6 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
-| Módulo `dev.thalyx.hola` | `modules/hola/` | Sin función, a propósito: existe para que se vea qué es tener un módulo |
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
 
 ### Decretos que el código ya hace cumplir
@@ -94,7 +93,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
 | La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
 | Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
-| Imagen ISO — **esqueleto escrito, jamás ejecutado** | [[Construccion-del-ISO]] |
+| **La imagen**: kernel propio, PID 1, ensamblado | [[Construccion-del-ISO]] |
+| **La API interna de módulos** | Que un módulo no pueda ser un script — [[Core-Nucleo]] |
+| Binario estático contra musl | Hoy enlaza glibc dinámicamente, o sea depende de la libc del host |
 
 ### Las advertencias que quedan
 

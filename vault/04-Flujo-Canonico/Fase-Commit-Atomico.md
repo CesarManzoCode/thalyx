@@ -47,7 +47,7 @@ Sin este paso, reintentar tras un corte a mitad del commit falla con `ENOTEMPTY`
 
 ### Por qué así y no de otra forma
 
-`rename` es atómico dentro del mismo filesystem, pero falla con `EXDEV` cuando cruza filesystems — y también **entre subvolúmenes distintos de Btrfs**, no solo entre dispositivos. Un área de staging en `/tmp`, que en Alpine suele ser tmpfs, activa ese fallo siempre.
+`rename` es atómico dentro del mismo filesystem, pero falla con `EXDEV` cuando cruza filesystems — y también **entre subvolúmenes distintos de Btrfs**, no solo entre dispositivos. Un área de staging en `/tmp`, que en la mayoría de los sistemas es tmpfs, activa ese fallo siempre.
 
 Y `rename` sobre un directorio no vacío falla con `ENOTEMPTY`, así que publicar una actualización encima de una versión anterior no se puede hacer renombrando el directorio de destino. De ahí la indirección por enlace simbólico: `rename` sobre un symlink existente sí es atómico y sí lo reemplaza.
 
@@ -115,7 +115,7 @@ La reconciliación es idempotente y se ejecuta sola al principio de cada instala
 **Motivo:** un corte entre el commit y la escritura del journal dejaba una instalación real y no registrada. Un journal que a veces omite una operación exitosa es peor que uno que declara cuándo puede fallar.
 
 ### 2026-08-01 — Se concreta el mecanismo y se corrige el área de staging
-**Antes:** la nota decretaba usar `rename` y advertía, como riesgo hipotético, que la atomicidad no estaría garantizada "si el commit involucra diferentes filesystems". Pero el trazado del caso canónico publicaba de `/tmp/build/` a `/opt/modules/`, que activa ese riesgo en la configuración por defecto de Alpine. Tampoco contemplaba que `rename` no puede publicar encima de un directorio existente.
+**Antes:** la nota decretaba usar `rename` y advertía, como riesgo hipotético, que la atomicidad no estaría garantizada "si el commit involucra diferentes filesystems". Pero el trazado del caso canónico publicaba de `/tmp/build/` a `/opt/modules/`, que activa ese riesgo siempre que `/tmp` sea tmpfs, o sea casi siempre. Tampoco contemplaba que `rename` no puede publicar encima de un directorio existente.
 **Ahora:** staging en el mismo subvolumen que el destino, publicación versionada, e intercambio atómico de enlace simbólico.
 **Motivo:** el mecanismo decretado no funcionaba en el propio caso de referencia. Dos fallos concretos: `EXDEV` por cruce de filesystems (incluido el cruce entre subvolúmenes de Btrfs, que no es obvio) y `ENOTEMPTY` al actualizar un módulo ya instalado.
 

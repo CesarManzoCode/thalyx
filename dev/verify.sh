@@ -900,37 +900,10 @@ else
     sed 's/^/     /' "$WORK/agent-own2.log"
 fi
 
-# What a module can see, measured rather than asserted.
-#
-# `dev.thalyx.hola` prints the entries it can reach from its own root and never
-# says whether it is confined — it cannot know. So the claim is the difference
-# between the two runs, and it is a number, which is the only form of this claim
-# that cannot be written by wishful thinking.
-HOLA_REPO="$WORK/hola-repo"
-mkdir -p "$HOLA_REPO"
-"$THALYX" dev pack "$ROOT/modules/hola/payload" \
-    --manifest "$ROOT/modules/hola/manifest.toml" \
-    --key "$WORK/agent.key" --out "$HOLA_REPO/hola.thmod" > /dev/null 2>&1
-
-HSTORE="$WORK/hola-store"
-if THALYX_ROOT="$HSTORE" "$THALYX" agent do "instala dev.thalyx.hola" \
-        --repo "$HOLA_REPO" --yes > "$WORK/hola-install.log" 2>&1; then
-    LOOSE=$(THALYX_ROOT="$HSTORE" "$THALYX" module run dev.thalyx.hola --unconfined 2>/dev/null |
-            grep -oE 'ver [0-9]+ cosas' | grep -oE '[0-9]+')
-    TIGHT=$(THALYX_ROOT="$HSTORE" "$THALYX" module run dev.thalyx.hola 2>/dev/null |
-            grep -oE 'ver [0-9]+ cosas' | grep -oE '[0-9]+')
-
-    if [ -n "$LOOSE" ] && [ -n "$TIGHT" ] && [ "$TIGHT" -lt "$LOOSE" ]; then
-        proven "the same module sees $LOOSE entries unconfined and $TIGHT confined"
-    elif [ -z "$TIGHT" ]; then
-        unproven "the confined run produced no count; enforcement may be unavailable here"
-    else
-        failed "confinement changed nothing: $LOOSE entries loose, $TIGHT confined"
-    fi
-else
-    failed "could not install the hola module; see $WORK/hola-install.log"
-    sed 's/^/     /' "$WORK/hola-install.log"
-fi
+# The module that used to be measured here was a shell script, and it was
+# deleted along with the Alpine skeleton on 2026-08-03. A module cannot be a
+# shell script on a system with no shell — see Construccion-del-ISO.md. This
+# stage comes back when there is a module written against Thalyx's own API.
 
 # The denial, with a model that really does obey the hostile page.
 #

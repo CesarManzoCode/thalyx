@@ -1,9 +1,0 @@
-format_version = 1
-id = "dev.thalyx.hola"
-name = "Hola"
-version = "1.0.0"
-description = "Un módulo que solo dice lo que puede ver, para que se entienda qué es tener uno."
-license = "GPL-3.0-or-later"
-
-[entrypoints]
-run = "run.sh"

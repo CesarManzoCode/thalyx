@@ -35,11 +35,11 @@ directorio, `verify.sh` monta cgroups prestados, el LSM se carga y se desenganch
 a mano. **Eso es un banco de pruebas, no una forma de usar Thalyx.** Es
 simplemente lo más rápido de validar en una máquina que ya existe.
 
-Lo que el sistema es, lo dice [[Fases-de-Implementacion]] desde la primera
-línea de la Fase 1: base Alpine, **Btrfs obligatorio en el volumen raíz**,
-subvolúmenes separados para sistema, módulos y datos de usuario. Una imagen que
-arranca. El primer usuario no instalará un paquete encima de su distribución —
-vivirá la experiencia completa de instalar un sistema operativo.
+Lo que el sistema es, lo dice [[Construccion-del-ISO]]: el kernel de Linux y
+`thalyx`, sobre Btrfs con subvolúmenes separados para sistema, módulos y datos
+de usuario. Una imagen que arranca, sin distribución debajo. El primer usuario
+no instalará un paquete encima de su distro — vivirá la experiencia completa de
+instalar un sistema operativo.
 
 ### Qué se lee mal cuando esto no está escrito
 
@@ -63,6 +63,38 @@ imagen que arranque todavía. Lo que confundía era el tipo de afirmación: no e
 una posición de diseño pendiente de decidir, es un hecho de **orden de
 construcción**. La autoridad de diseño ya está ejercida, y `thalyx-lsm` modifica
 el kernel desde la Fase 1.
+
+## Revisión del 2026-08-03 — la bóveda decretaba lo contrario en otras tres notas
+
+Este decreto dice "no es una distribución de Linux" y está marcado no
+negociable. Al mismo tiempo, [[Construccion-del-ISO]] decretaba construir con
+`mkimage.sh` —la herramienta con la que se hacen distros de Alpine—,
+[[Fases-de-Implementacion]] titulaba la Fase 1 *"sobre base Alpine"*, y
+[[Core-Nucleo]] decía *"kernel Linux minimalista (tipo Alpine)"*, que además es
+un error de categoría porque Alpine no tiene kernel propio.
+
+Tres notas decretaban una distro y esta decretaba que no lo era. **Tres días
+conviviendo**, y las cuatro leídas el mismo día sin que saltara.
+
+**Resuelto:** la imagen es el kernel de Linux y `thalyx`, y nada más. Ninguna
+distribución, nunca. Ver [[Construccion-del-ISO]].
+
+### Lo que esto le hace al criterio de este decreto
+
+Este decreto dice que lo que distingue un sistema de una capa es **la autoridad
+de diseño**, y ese criterio es correcto: Android es Linux y nadie lo llama capa,
+porque los programas se escriben contra el contrato de Android.
+
+Pero Thalyx **no lo cumplía**. Un módulo era un script de shell que corre en
+cualquier Linux; la API interna que [[Core-Nucleo]] nombra no existía; y todo el
+sistema se podía instalar sobre una Fedora — de hecho ahí se desarrolló entero.
+Un sistema que se instala con `cargo` sobre la distro de alguien más es una capa,
+por más autoridad de diseño que declare tener.
+
+Lo que cambia al quitar la distro es que el criterio **se cumple por
+construcción**: sin shell y sin utilidades, no queda otro contrato contra el que
+escribir. Quitar la distro y cumplir este decreto son el mismo acto, y esa es la
+razón por la que la corrección no es cosmética.
 
 ## Revisiones
 
