@@ -282,6 +282,39 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_carries_the_module_to_install_and_not_the_module_installed() {
+        // `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` step 2 is a
+        // person installing a signed module from a local repository, and step 3
+        // is confirming its permissions on the trusted path. A machine that
+        // boots with the module already installed makes both unperformable —
+        // there is nothing left to install, so the prompt is never reached.
+        //
+        // That is a one-line change away at all times, and it would break the
+        // exit criterion while every test still passed and the machine still
+        // looked better: it would boot listing a module. Hence reading the
+        // build rather than trusting it.
+        let text = image_makefile();
+        let recipe = recipe_of(&text, "store-stage:");
+
+        let installs: Vec<&&str> = recipe
+            .iter()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| line.contains("module install"))
+            .collect();
+        assert!(
+            installs.is_empty(),
+            "the store stage installs the module, so there is nothing left for a\n\
+             person to install and the trusted path is never reached:\n  {installs:?}"
+        );
+
+        assert!(
+            recipe.iter().any(|line| line.contains("/repo")),
+            "nothing in the store stage puts a bundle in a repository, so the\n\
+             machine would boot with nothing to install"
+        );
+    }
+
+    #[test]
     fn the_target_that_needs_root_builds_nothing() {
         // `store` used to depend on `store-stage`, so `sudo make store` was one
         // command. It failed at once — sudo resets PATH and rustup lives under

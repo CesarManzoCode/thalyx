@@ -16,7 +16,7 @@ sovereign.
 
 > **Status: Phase 1, core infrastructure built.** Three of the four base
 > primitives — the fourth, the predictive scheduler, is Phase 2 — and the
-> canonical flow are built and **verified on real hardware**: 392 tests and 44
+> canonical flow are built and **verified on real hardware**: 590 tests and 72
 > checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
 > unproven *there*. Modules install atomically, run confined, and can be rolled
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
@@ -24,12 +24,13 @@ sovereign.
 > came up in QEMU with one program inside it, mounted its seven filesystems, and
 > said out loud what it does and does not have. It now has a store of its own —
 > a Btrfs disk made at build time, because `mkfs.btrfs` cannot live in an image
-> that holds one program — with the first module installed on it, and a session
-> that can list it and run it. It also carries its own BPF loader — no bpftool,
-> no second file — and on 2026-08-03 that loader attached enforcement on real
-> hardware, and the enforcement it attached denied a connection. Missing: the
-> conversational agent, and any use by a person outside the project, which is
-> what actually ends Phase 1.
+> that holds one program — carrying the first module in a local repository, and
+> a session with no shell behind it that can install it, show what it asks for
+> on the trusted path, run it, and undo the whole thing. It also carries its own
+> BPF loader — no bpftool, no second file — and that loader attached enforcement
+> on real hardware, and the enforcement it attached denied a connection.
+> Missing: the conversational agent, and any use by a person outside the
+> project, which is what actually ends Phase 1.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.

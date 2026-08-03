@@ -309,9 +309,33 @@ store-stage: binary greeter
 	    > $(BUILD)/greeter-manifest.toml
 	$(THALYX) dev pack $(BUILD)/pack --manifest $(BUILD)/greeter-manifest.toml \
 	    --key $(BUILD)/store-signing.key --out $(BUILD)/greeter.thmod
-	THALYX_ROOT=$(STAGE)/system $(THALYX) module install $(BUILD)/greeter.thmod --yes
-	@THALYX_ROOT=$(STAGE)/system $(THALYX) module list | grep -q dev.thalyx.greeter \
-	    || { echo "the module did not install into the stage"; exit 1; }
+	@# Into the repository, and deliberately **not** installed.
+	@#
+	@# vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md step 2 is a person
+	@# installing a signed module from a local repository. A machine that boots
+	@# with it already installed makes that step unperformable — there would be
+	@# nothing left to install, and the trusted path of step 3 would never be
+	@# reached. So the disk carries the bundle, and the human installs it.
+	mkdir -p $(STAGE)/system/repo
+	cp $(BUILD)/greeter.thmod $(STAGE)/system/repo/
+	@# Two checks, and they are different claims.
+	@#
+	@# That the bundle holds up: a signature that does not verify is refused
+	@# inside the machine, where there is no shell to look at the file with, and
+	@# the person following the README would have no way to tell whose fault it
+	@# was. `dev inspect` prints INVALID rather than failing, so the wording is
+	@# what has to be checked.
+	@$(THALYX) dev inspect $(STAGE)/system/repo/greeter.thmod \
+	    | grep -q 'signature    valid' \
+	    || { echo "the bundle in the repository does not verify"; \
+	         $(THALYX) dev inspect $(STAGE)/system/repo/greeter.thmod; exit 1; }
+	@# And that nothing is installed. If a later change puts the module back on
+	@# the disk, step 2 of the exit criterion silently stops being performable —
+	@# the machine would boot with it already there and nothing to install.
+	@if THALYX_ROOT=$(STAGE)/system $(THALYX) module list | grep -q dev.thalyx.greeter; then \
+	    echo "the module is installed on the stage, and step 2 needs it not to be"; \
+	    exit 1; \
+	fi
 	@# Written last, and only on success. `store` looks for this and not for
 	@# the directory: an interrupted stage leaves the directory sitting there
 	@# looking finished, and a disk built from it would be missing whatever
@@ -383,7 +407,7 @@ store:
 	    echo "  the disk file belongs to uid $(SUDO_UID); what is inside it is root's"; \
 	fi
 	@echo
-	@echo "  store: $(STORE) — three subvolumes, one module installed"
+	@echo "  store: $(STORE) — three subvolumes, one module in the repository"
 	@echo "  now:   make -C image run"
 
 # ────────────────────────────────────────────────────────────────────── boot

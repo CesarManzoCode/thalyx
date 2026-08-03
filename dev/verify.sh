@@ -1462,6 +1462,110 @@ else
     fi
 fi
 
+# ------------------------------------------- 15. the six steps, from inside
+
+step "15. what a person can do from inside the machine, with no shell"
+
+# The exit criterion of Phase 1 is not a list of components: it is six things a
+# person outside the project does, following only the README. Four of them
+# happen at the session prompt, with no shell behind it — install a signed
+# module from a local repository, confirm its permissions on the trusted path,
+# revert it, and power off.
+#
+# This drives that prompt for real rather than calling the functions behind it.
+# Every defect this project has had came from running the system.
+#
+# A pty is required and is not a detail: `TerminalConfirmer` refuses to confirm
+# when stdin is not a terminal, because silence is not consent. Inside QEMU the
+# serial console is a terminal, so `script` is what makes this run the same way
+# there and here.
+
+SESSION_STORE="$WORK/session-store"
+mkdir -p "$SESSION_STORE/repo"
+
+if ! command -v script > /dev/null 2>&1; then
+    unproven "util-linux's \`script\` is absent, so the session prompt cannot be driven with a terminal"
+elif [ ! -f "$WORK/greeter.thmod" ]; then
+    failed "no signed bundle to put in the repository; stage 12 should have packed one"
+else
+    cp "$WORK/greeter.thmod" "$SESSION_STORE/repo/"
+
+    # Feed the prompt and keep everything it said.
+    at_the_prompt() {
+        printf '%s\n' "$@" | \
+            THALYX_ROOT="$SESSION_STORE" script -qec "$THALYX session" /dev/null 2>&1
+    }
+
+    # --- the repository is visible, and says what it holds ------------------
+    at_the_prompt disponibles salir > "$WORK/session-available.log"
+    if grep -q "dev.thalyx.greeter 1.0.0" "$WORK/session-available.log"; then
+        proven "the machine lists what its repository holds, with no shell to look with"
+    else
+        failed "\`disponibles\` did not show the bundle; see $WORK/session-available.log"
+    fi
+
+    # --- the control: refusing must not install ----------------------------
+    #
+    # Without this, a session that installed no matter what the human answered
+    # would pass every check below. The refusal has to be the thing that stops
+    # it, not the absence of an opportunity.
+    at_the_prompt "instalar dev.thalyx.greeter" n modulos salir > "$WORK/session-refused.log"
+    if grep -q "Nothing is installed" "$WORK/session-refused.log"; then
+        proven "answering no left the machine with nothing installed"
+    else
+        failed "a refused install did not leave the machine empty; see $WORK/session-refused.log"
+    fi
+
+    # --- the trusted path, and the install ---------------------------------
+    at_the_prompt "instalar dev.thalyx.greeter" y modulos salir > "$WORK/session-install.log"
+
+    # The prompt is generated and rendered by the core. What is checked here is
+    # that the human was shown the permission before granting it — a flow that
+    # installed first and listed after would satisfy every other line.
+    # Three things, because any one alone is weak: the box that identifies the
+    # request as Thalyx's rather than a module's, the actual permission inside
+    # it, and the question. `grep read` would match half the file.
+    if grep -q "Thalyx — capability authorisation" "$WORK/session-install.log" \
+       && grep -q "read access to" "$WORK/session-install.log" \
+       && grep -q "Confirm?" "$WORK/session-install.log"; then
+        proven "the permission was shown, identified as Thalyx's, and confirmed before anything was written"
+    else
+        failed "the trusted path did not present the capability; see $WORK/session-install.log"
+    fi
+
+    if grep -q "dev.thalyx.greeter 1.0.0 installed" "$WORK/session-install.log"; then
+        proven "a signed module installed from a local repository, typed at the machine's own prompt"
+    else
+        failed "the module did not install from the session; see $WORK/session-install.log"
+    fi
+
+    # --- and it is really there --------------------------------------------
+    if THALYX_ROOT="$SESSION_STORE" "$THALYX" module list 2>/dev/null \
+        | grep -q dev.thalyx.greeter; then
+        proven "the install survives the session that made it, on disk"
+    else
+        failed "the session reported an install that is not on disk"
+    fi
+
+    # --- reverting ----------------------------------------------------------
+    at_the_prompt revertir modulos salir > "$WORK/session-revert.log"
+    if grep -q "undone" "$WORK/session-revert.log" \
+       && grep -q "Nothing is installed" "$WORK/session-revert.log"; then
+        proven "the same prompt took the module back off the machine"
+    else
+        failed "\`revertir\` did not undo the install; see $WORK/session-revert.log"
+    fi
+
+    # And the repository still holds it, because reverting an install is not
+    # deleting what it was installed from. A person who reverts and wants to
+    # try again has to have something to try again with.
+    if [ -s "$SESSION_STORE/repo/greeter.thmod" ]; then
+        proven "reverting left the repository alone, so it can be installed again"
+    else
+        failed "reverting deleted the bundle it came from"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

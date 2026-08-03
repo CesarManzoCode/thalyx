@@ -402,6 +402,175 @@ fn list_modules(store: &Store) {
     println!();
 }
 
+/// What is in the repository and could be installed.
+///
+/// Separate verb from `modulos` because they answer different questions, and
+/// conflating them is how a person ends up believing something is installed
+/// because they saw its name. `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`
+/// step 2 is installing from a local repository, and inside the machine there
+/// is no shell to hand a path to — so the repository has to be findable.
+fn list_available(store: &Store) {
+    println!();
+    let repo = store.repo_root();
+    match thalyx_core::repo::scan(&repo) {
+        Ok(scan) if scan.candidates.is_empty() && scan.rejected.is_empty() => {
+            println!("  The repository is empty.");
+            println!();
+            println!("  It is {}, on the store.", repo.display());
+        }
+        Ok(scan) => {
+            for candidate in &scan.candidates {
+                println!("  {} {}", candidate.module_id, candidate.version);
+            }
+            // Named, never silently dropped. A bundle whose signature does not
+            // check out is the single most important thing this list can say,
+            // and a resolver that only prints what passed would hide exactly
+            // the file somebody needs to look at.
+            for rejected in &scan.rejected {
+                println!();
+                println!(
+                    "  refused  {}",
+                    rejected
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| rejected.path.display().to_string())
+                );
+                println!("           {}", rejected.reason);
+            }
+            if !scan.candidates.is_empty() {
+                println!();
+                println!("  `instalar <id>` installs one, and shows what it asks for");
+                println!("  before anything is written.");
+            }
+        }
+        Err(error) => {
+            println!("  I could not read the repository: {error}");
+            println!("  That is not the same as it being empty.");
+        }
+    }
+    println!();
+}
+
+/// Install from the repository, through the trusted path.
+///
+/// The confirmation is `TerminalConfirmer`, which prints a prompt the **core**
+/// generated and can neither reword nor skip — `vault/11-Seguridad/Camino-Confiable.md`
+/// decrees that the request is generated and rendered by the core, and this is
+/// the machine's end of it. It is step 3 of the exit criterion, and it is the
+/// same code path the host CLI uses, not a copy of it.
+fn install_module(store: &Store, name: &str) {
+    println!();
+    let candidate = match thalyx_core::repo::resolve(&store.repo_root(), name, None) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            println!("  {error}");
+            println!();
+            println!("  `disponibles` lists what the repository holds.");
+            println!();
+            return;
+        }
+    };
+
+    println!("  {} {}", candidate.module_id, candidate.version);
+    println!("  from {}", candidate.path.display());
+    println!();
+
+    let request = thalyx_core::InstallRequest {
+        bundle_path: &candidate.path,
+        contract: crate::install_contract(&candidate.path),
+    };
+
+    // Never `--yes` from here. This is the one place in the whole system where
+    // a human is being asked to grant something, and a session that assumed
+    // consent would make the trusted path a formality.
+    let mut confirmer = crate::render::TerminalConfirmer::new(false);
+
+    match thalyx_core::install(store, request, &mut confirmer) {
+        Ok(outcome) => {
+            println!();
+            match &outcome.replaced {
+                Some(previous) => println!(
+                    "  {} upgraded from {} to {}",
+                    outcome.module_id, previous, outcome.version
+                ),
+                None => println!("  {} {} installed", outcome.module_id, outcome.version),
+            }
+            println!(
+                "  {} file(s), {} permission(s) now in force",
+                outcome.files.len(),
+                outcome.granted
+            );
+            println!();
+            println!(
+                "  `correr {}` runs it. `revertir` undoes this.",
+                outcome.module_id
+            );
+        }
+        Err(error) => {
+            println!();
+            println!("  not installed: {error}");
+            println!();
+            println!("  Nothing was written. An install that stops before the commit");
+            println!("  leaves the machine exactly as it was.");
+        }
+    }
+    println!();
+}
+
+/// What is granted, and to whom.
+fn show_permissions(store: &Store) {
+    println!();
+    if let Err(error) = crate::render::permissions(store) {
+        println!("  I could not read the permission registry: {error}");
+    }
+    println!();
+}
+
+/// Undo the last thing Thalyx published.
+///
+/// Step 4 of the exit criterion. Deliberately the cheap one: `rollback` takes
+/// back what Thalyx itself put on disk and touches nothing the human made,
+/// which is why it does not ask first. The destructive one is `restore`, it has
+/// its own name, and it is not a verb here.
+fn revert(store: &Store) {
+    println!();
+    let plan = match thalyx_core::rollback::plan(store, None) {
+        Ok(plan) => plan,
+        Err(error) => {
+            println!("  {error}");
+            println!();
+            return;
+        }
+    };
+
+    println!("  {}", plan.describe());
+    println!("  published by request {}", plan.request_id);
+    if plan.permissions_revoked > 0 {
+        println!(
+            "  {} permission(s) stop being effective",
+            plan.permissions_revoked
+        );
+    }
+    if let Some(uid) = plan.uid_retired {
+        println!("  user {uid} is retired, and never handed to another module");
+    }
+    println!();
+    println!("  Nothing outside what Thalyx published is touched.");
+
+    match thalyx_core::rollback::apply(store, &plan, &crate::new_request_id()) {
+        Ok(()) => {
+            println!();
+            println!("  undone.");
+        }
+        Err(error) => {
+            println!();
+            println!("  not undone: {error}");
+        }
+    }
+    println!();
+}
+
 /// The word that makes running without enforcement a thing somebody typed.
 const UNCONFINED_WORD: &str = "sin-confinar";
 
@@ -533,12 +702,16 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     println!();
     match &standing {
         Standing::TheMachine => {
+            println!("  `disponibles` lists what can be installed, `instalar <id>`");
+            println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
-            println!("  `estado` re-reads the machine, `nucleo` shows what the");
-            println!("  kernel has been saying, `apagar` turns it off.");
+            println!("  `permisos` shows what is granted, `estado` re-reads the");
+            println!("  machine, `nucleo` shows what the kernel has been saying,");
+            println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
-            println!("  `modulos`, `correr <id>`, `estado`, `nucleo`. `salir` to leave.");
+            println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
+            println!("  `permisos`, `revertir`, `estado`, `nucleo`. `salir` to leave.");
         }
     }
     // Said wherever it is true, and nowhere it is not. Both standings hit the
@@ -592,6 +765,24 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "modulos" | "módulos" => {
                 list_modules(store);
+            }
+            "disponibles" | "available" | "repo" => {
+                list_available(store);
+            }
+            "permisos" | "permissions" => {
+                show_permissions(store);
+            }
+            "revertir" | "rollback" => {
+                revert(store);
+            }
+            _ if line.starts_with("instalar ") || line.starts_with("install ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                install_module(store, rest);
+            }
+            "instalar" | "install" => {
+                println!();
+                println!("  Which one. `disponibles` lists what the repository holds.");
+                println!();
             }
             "nucleo" | "núcleo" | "kernel" | "dmesg" => {
                 show_kernel(false);

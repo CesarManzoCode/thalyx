@@ -56,6 +56,22 @@ impl Store {
         self.root.join("state")
     }
 
+    /// Where bundles wait to be installed.
+    ///
+    /// A directory of `.thmod` files — that is all a local repository is, and
+    /// `repo::resolve` picks the highest version in it whose signature
+    /// validates. It is separate from `modules_root` because the two answer
+    /// different questions: this one is what *could* be installed, that one is
+    /// what *is*.
+    ///
+    /// It exists because of `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`,
+    /// whose second step is a person installing a signed module from a local
+    /// repository. Inside the image there is no shell to hand a path to, so the
+    /// repository has to be somewhere the session can find on its own.
+    pub fn repo_root(&self) -> PathBuf {
+        self.root.join("repo")
+    }
+
     pub fn journal_path(&self) -> PathBuf {
         self.root.join("journal.jsonl")
     }

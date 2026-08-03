@@ -29,6 +29,21 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 > persona ajena, siguiendo solo el README y sin ayuda. Lo que cambió es que
 > hasta ese día no existía nada que esa persona pudiera arrancar. Ver
 > [[Primer-Arranque]].
+>
+> **Los pasos 2, 3 y 4 se pueden hacer desde adentro desde el 2026-08-03.** La
+> sesión entiende `disponibles`, `instalar <id>`, `permisos` y `revertir`, y el
+> disco viaja con el módulo **en un repositorio y sin instalar** — porque una
+> máquina que arranca con él puesto vuelve el paso 2 irrealizable y el 3 nunca
+> se alcanza. La confirmación es el `TerminalConfirmer` del [[Camino-Confiable]],
+> el mismo código que usa la CLI del host, no una copia.
+>
+> Igual que arriba: **eso no cierra los pasos.** Los cierra una persona ajena
+> haciéndolos. Lo que cambió es que antes no había cómo, porque adentro de la
+> máquina no hay shell y lo que no es un verbo de la sesión no existe.
+>
+> Comprobado manejando el prompt de verdad —etapa 15 de `verify.sh`, con un pty,
+> porque el confirmador se niega sin terminal: el silencio no es consentimiento—
+> y con el control que hace falta, que responder que no **no** instale.
 
 ## Por qué este criterio y no uno técnico
 

@@ -106,6 +106,31 @@ tags: [continuidad, punto-actual, sesiones]
 > mismas: `llama.cpp` no está instalado y el camino del modelo real no está
 > escrito, y `verify.sh` no arranca la imagen.
 >
+> ## Y la máquina ya puede instalar, confirmar y revertir — 2026-08-03
+>
+> **El objetivo es cerrar la Fase 1**, y el criterio de salida no es una lista
+> de componentes: son [[Criterio-de-Salida-Fase-1|seis cosas que hace una
+> persona ajena]]. De esas seis, tres pasaban por la sesión y ninguna se podía
+> hacer: adentro no hay shell, así que lo que no es un verbo de la sesión no
+> existe para esa persona. La sesión entendía seis palabras y ninguna era
+> `instalar`.
+>
+> Ahora entiende `disponibles`, `instalar <id>`, `permisos` y `revertir`. Nada
+> de la lógica es nueva —el repositorio local, el camino confiable y el rollback
+> ya estaban escritos— y ese era justo el problema: **estaban escritos y no
+> alcanzables.**
+>
+> Y el disco cambió de contenido: lleva el módulo **en un repositorio, sin
+> instalar**. Una máquina que arranca con él puesto vuelve el paso 2
+> irrealizable, y el paso 3 —el camino confiable— nunca se alcanza. Hay una
+> prueba que lee `image/Makefile` para que eso no se deshaga sin que nadie lo
+> note, porque deshacerlo mejora lo que la máquina *aparenta*: arrancaría
+> listando un módulo.
+>
+> La etapa 15 maneja el prompt de verdad, con un pty, y trae el control que
+> hace falta: **responder que no no instala.** Sin eso, una sesión que
+> instalara pase lo que pase pasaría todas las demás comprobaciones.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
