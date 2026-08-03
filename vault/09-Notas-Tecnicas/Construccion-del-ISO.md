@@ -90,6 +90,14 @@ apagar, y nadie puede decir qué hay adentro. Partiendo de cero, lo que está
 encendido es lo que alguien decidió encender. La lista está en
 `image/thalyx.config`, con un motivo al lado de cada grupo.
 
+**Y se comprueba que sobreviva.** `olddefconfig` descarta en silencio cualquier
+opción cuyas dependencias no se cumplan: la línea simplemente no aparece en el
+`.config` resultante, sin una advertencia. Nueve de las opciones pedidas se
+estaban perdiendo así, entre ellas `CONFIG_BPF_LSM` y `CONFIG_DEBUG_INFO_BTF`
+—las dos que `thalyx-lsm` necesita para existir—. Por eso `make -C image kernel`
+compara línea por línea lo pedido contra lo que salió y **detiene la compilación**
+si falta alguna. Ver la regla de [[Estrategia-de-Pruebas]] sobre pedir y tener.
+
 **El estado persistente va en otro disco.** La raíz es un tmpfs que no conserva
 nada entre arranques. PID 1 monta los tres subvolúmenes; **no los crea**, porque
 una máquina que se fabrica un store nuevo cada vez que no encuentra el viejo

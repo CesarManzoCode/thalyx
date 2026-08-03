@@ -20,8 +20,11 @@ sovereign.
 > checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
 > unproven *there*. Modules install atomically, run confined, and can be rolled
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
-> restored. Missing: the conversational agent, the bootable image, and any use
-> by a person outside the project — which is what actually ends Phase 1.
+> restored. **The image boots**: on 2026-08-03 a kernel built from `allnoconfig`
+> came up in QEMU with one program inside it, mounted its seven filesystems, and
+> said out loud what it does and does not have. Missing: the conversational
+> agent, enforcement inside the image, and any use by a person outside the
+> project — which is what actually ends Phase 1.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.

@@ -14,12 +14,20 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Lo siguiente es arrancar la máquina por primera vez
+> ## La máquina arrancó — 2026-08-03
 >
-> **Los comandos exactos, lo que debe imprimir cada uno y qué significa cada
-> fallo están en [[Primer-Arranque]].** Si estás retomando y Cesar te pega la
-> salida de un comando, es de ahí; esa nota está escrita para responderse sin
-> más contexto que ella misma.
+> `make -C image run`, en la Fedora de Cesar, con kernel 6.12.101 propio y un
+> solo programa dentro. Montó sus siete filesystems, imprimió lo que es y lo que
+> no tiene, y esperó una instrucción. **Es la primera vez que Thalyx existe como
+> máquina y no como programa sobre la máquina de alguien más.**
+>
+> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos. **El
+> tercero ya está resuelto fuera de la imagen**: existe un módulo real que habla
+> con Thalyx por la API interna. Falta meterlo en la máquina, que es lo que
+> necesita el store de Btrfs.
+>
+> El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
+> comando, casi siempre es de ahí.
 
 ## Dónde estamos, en una frase
 
@@ -29,20 +37,23 @@ distribución de Linux. Se resolvió a favor de la segunda: **la imagen es el
 kernel de Linux y `thalyx`, y nada más.** Ninguna distro, nunca. Ver
 [[Construccion-del-ISO]].
 
-Eso convierte la **API interna de módulos** en la pieza que sigue: sin shell y
+Eso convirtió la **API interna de módulos** en la pieza que seguía: sin shell y
 sin utilidades, un módulo no puede ser un script y no tiene con quién hablar
-excepto Thalyx. Está decretada desde el 31 de julio en [[Core-Nucleo]] y no
-existe ni en una línea.
+excepto Thalyx. **Diseñada y construida el 2026-08-03** en
+[[API-Interna-de-Modulos]]: protocolo, servidor, el canal por el sandbox, y
+`dev.thalyx.greeter`, el primer módulo escrito contra ella.
 
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real. Desde
-entonces: **463 pruebas**, el agente mínimo que lleva un enunciado hasta un
+entonces: **509 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
 construye para sí mismo.
 
-Para cerrar la fase faltan tres: **arrancar la imagen**, **la API interna de
-módulos**, y **el modelo del agente**.
+**Arrancar la imagen ya ocurrió, y la API interna ya existe.** Para cerrar la
+fase falta **el modelo del agente**, y para que la máquina sirva le faltan dos
+que no eran de la lista original porque hasta hoy no había máquina donde
+faltaran: **el store de Btrfs** y **el enforcement dentro de la imagen**.
 
 ## Última corrida verificada
 
@@ -131,17 +142,33 @@ marcado de origen, el camino confiable, la memoria persistente, y el principio
 de doble ruta implementado (todo lo que el agente podrá hacer, un humano ya
 puede hacerlo por la CLI).
 
-### 2. Arrancar la imagen, y la API interna
+### 2. La imagen ya arranca; le faltan tres cosas y las nombra
 
-**Todo está escrito para arrancar; nada de eso ha corrido.** El procedimiento
-completo, con lo que debe imprimir cada comando y qué significa cada fallo, está
-en [[Primer-Arranque]]. Es el paso 1 del [[Criterio-de-Salida-Fase-1]].
+El arranque está hecho y verificado. Lo que la máquina dijo de sí misma:
 
-Después del primer arranque, dos cosas en este orden:
+```
+  ok  kernel       6.12.101
+  no  filesystem   rootfs — snapshots and restore need btrfs and will not work here
+  ok  cgroup v2    mounted at /sys/fs/cgroup
+  ok  lsm order    capability,bpf
+  no  enforcement  the policy map is not loaded, so no permission would be enforced
+  no  modules      nothing installed yet
+
+  3 are not here. I will not pretend otherwise later.
+```
+
+Las tres, en el orden en que se resuelven:
 
 1. **Cargar `thalyx-lsm` desde dentro de Thalyx.** Sin bpftool y sin shell, hoy
-   no se carga y la máquina lo dice. Sin esto no hay enforcement en la imagen.
-2. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
+   no se carga. Sin esto no hay enforcement en la imagen. **Y el stub actual
+   busca `/lib/thalyx/thalyx_lsm.bpf.o`, que es un segundo archivo y por lo
+   tanto está prohibido por [[Filosofia-Fundacional]]** — el objeto BPF tiene
+   que ir *dentro* del binario, no junto a él. Ver el decreto abierto abajo.
+2. **El store.** `store.qcow2` se crea vacío: no tiene Btrfs ni los tres
+   subvolúmenes, así que PID 1 monta lo que no existe y la máquina lo dice. Es
+   el mismo problema de forma que el LSM —hace falta `mkfs.btrfs`, que tampoco
+   puede estar en la imagen— y sin él no se puede instalar nada.
+3. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
    julio, sin una línea escrita. Sin userland debajo, es la única superficie que
    un módulo puede tocar — y es lo que hace que un programa escrito para Thalyx
    no corra en ningún otro lado.
@@ -209,6 +236,130 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (11) — hay un módulo, y habla
+`dev.thalyx.greeter` existe: el primer módulo desde que se borró el que era un
+script de shell. Se instala desde un bundle firmado, corre, y **habla con
+Thalyx por un socket que nunca abrió**. Lo que sale por pantalla:
+
+```
+  dev.thalyx.greeter said:
+    I am dev.thalyx.greeter 1.0.0, speaking protocol 1, holding 1 grant(s).
+    read 27 byte(s) from .../notes.txt: the vault is the authority
+    I asked for /etc/shadow and was refused, which is correct.
+```
+
+Las tres líneas dicen cosas distintas. La primera: **un módulo no sabe quién
+es**, pregunta, y lo que le contestan sale del manifiesto firmado. La segunda:
+la línea base. La tercera: la denegación — sin la segunda no probaría nada,
+porque un Thalyx que negara todo se vería igual.
+
+Y una cuarta que no sale por pantalla: **ejecutado a mano no arranca**. No
+porque compruebe una licencia, sino porque en el descriptor 3 no hay nadie.
+Eso es [[Filosofia-Fundacional]] vuelta comprobación.
+
+Lo construido: `thalyx-syscall` coloca el descriptor (`place_on`,
+`spawn_with_channel`, `inherited_channel`), `launch.rs` lo lleva por las dos
+etapas del sandbox, y `thalyx-core/api.rs` es el servidor.
+
+**El hallazgo que más importa está en `api.rs`, y es de seguridad.** El
+servidor **no está dentro del sandbox**: corre como Thalyx, con el alcance de
+Thalyx. Un módulo que pide una ruta le está pidiendo a *Thalyx* que la abra, así
+que la raíz vacía del sandbox y el LSM no protegen nada ahí. Cada ruta se
+comprueba dos veces: por el nombre, y por **lo que el kernel resuelve** — que es
+lo único que atrapa un symlink plantado dentro de un directorio que el módulo
+puede escribir. Esa era la vía que sí habría funcionado.
+
+Etapa 12 en `verify.sh`, con su control. Y **una guarda mía salió mal primero**:
+se disparaba con "cgroup2 montado" cuando la condición real es "el LSM está
+cargado", así que exigió a este contenedor algo que no puede hacer y reportó
+roto a Thalyx. Es la regla 3 otra vez: un salto que se dispara solo se ve
+idéntico a un fallo real.
+
+Falta la ruta confinada —el canal por dos `exec` y un filtro seccomp— que solo
+se puede comprobar en máquina con LSM.
+
+### 2026-08-03 (10) — la API interna deja de ser una línea de una nota
+Decretada en [[API-Interna-de-Modulos]] y construida en `crates/thalyx-abi`:
+**un socket que Thalyx entrega ya abierto en el descriptor 3** al ejecutar el
+módulo —sin ruta que equivocar, sobrevive a la raíz vacía del sandbox, y su
+ausencia es lo que impide que un módulo corra fuera de Thalyx—, mensajes de
+longitud explícita más CBOR, y tres familias: archivos, notificar, y preguntar
+quién es. **27 pruebas**, incluidas las dos mitades de la conversación
+hablando por un socket real entre dos hilos.
+
+Tres decisiones que valen más que el código:
+
+- **Denegado y fallido son respuestas distintas.** "No puedes leer esto" y
+  "esto no se pudo leer" son hechos diferentes sobre el mundo, y un módulo que
+  solo supiera que falló reportaría un disco ausente como un problema de
+  permisos. Es la regla 10 de `CLAUDE.md` puesta en el protocolo.
+- **Un campo desconocido se rechaza, no se ignora.** Es la dirección incómoda
+  —rompe con un módulo más nuevo— y la correcta: ignorarlo dejaría al que envía
+  creyendo que restringió la operación y al que recibe sin haber visto la
+  restricción, en un canal que gobierna permisos.
+- **Un marco ilegible cierra la conexión; un mensaje ilegible se contesta.**
+  Después de una longitud mala no hay dónde empezar a leer otra vez; después de
+  un mensaje malo, sí.
+
+**Y una tercera contradicción del mismo tipo que las anteriores.**
+[[Core-Nucleo]] listaba *"ejecutar comandos"* entre las capacidades de esta API.
+No hay comandos que ejecutar. Como el login en tty1 y como `bpftool`: una
+capacidad que se apoyaba en la base y envejeció callada cuando la base se cayó.
+Queda anulada por decreto, no implementada.
+
+Falta lo que la vuelve real: pasar el descriptor por las dos etapas del
+lanzamiento, el servidor contra los permisos verdaderos, y un módulo escrito
+contra ella. Eso último es lo que el decreto pone como prueba de que sirve.
+
+### 2026-08-03 (9) — existe la máquina
+`make -C image run` arrancó. Kernel 6.12.101 construido desde `allnoconfig`,
+initramfs con **un solo archivo**, `thalyx` como PID 1. Montó los siete
+filesystems, arrancó la sesión, y la sesión imprimió el párrafo que dice que no
+hay shell detrás — que solo imprime cuando su padre es el pid 1, así que la
+frase no está cableada: es una comprobación.
+
+Y se describió con tres `no` que no oculta: sin Btrfs, sin enforcement, sin
+módulos. Los tres eran conocidos y están arriba con su orden de resolución.
+
+**Lo que esto cierra**: el paso 1 del [[Criterio-de-Salida-Fase-1]] tiene por
+fin una máquina detrás. No cierra el criterio —ese exige que lo haga alguien de
+fuera, sin ayuda— pero hasta hoy no había nada que esa persona pudiera arrancar.
+
+**Un hallazgo del arranque**: `attach_lsm` en `init.rs` busca
+`/lib/thalyx/thalyx_lsm.bpf.o`. Ese archivo **no puede existir**: sería un
+segundo archivo en una imagen que el decreto obliga a tener uno. El mensaje
+"is not in the image" es cierto y su arreglo obvio es el equivocado. El objeto
+BPF va incrustado en el binario.
+
+### 2026-08-03 (8) — el kernel no compilaba, y la configuración se perdía sola
+El primer `make -C image kernel` en la máquina de Cesar falló entero en
+`arch/x86/boot/compressed/`: GCC 15 (Fedora 43) usa C23 por defecto, donde
+`bool`, `true` y `false` son palabras reservadas, y ese directorio era el único
+del kernel que nunca pasaba `-std=`. **No se puede arreglar desde fuera** —su
+Makefile abre con `KBUILD_CFLAGS :=`, que tira lo que venga de arriba, así que
+`KCFLAGS` jamás llega. Río arriba lo arreglaron en enero de 2025 y aterrizó en
+la serie estable en **6.12.14**, comprobado tag por tag. `KVERSION` pasa a
+**6.12.101**, la cabeza de la línea 6.12 LTS.
+
+**Y al reproducir la configuración a mano apareció algo peor.** `olddefconfig`
+descarta en silencio toda opción cuyas dependencias no se cumplan: **nueve de
+las de `thalyx.config` no llegaban al `.config` final**, entre ellas
+`CONFIG_BPF_LSM` y `CONFIG_DEBUG_INFO_BTF`. La máquina habría arrancado
+perfecta y `thalyx-lsm` no se habría podido enganchar nunca, con un síntoma
+idéntico al hueco de `bpftool` que ya conocíamos — la culpa habría caído sobre
+el cargador, que no tenía nada que ver. También faltaban `VIRTIO_MENU` y
+`BLK_DEV`, sin los cuales no hay disco del store, e `IPC_NS`.
+
+`make -C image kernel` ahora compara lo pedido contra lo que salió y **se niega
+a compilar** si falta una línea. Probado con su control: quitando `BPF_LSM` y
+`BTF` a mano, los nombra y sale con error. De ahí la regla nueva de
+[[Estrategia-de-Pruebas]]: **pedirle algo a una herramienta no es haberlo
+obtenido**.
+
+Con las nueve líneas puestas, 6.12.101 configura y compila limpio en el
+contenedor, y el `vmlinux` trae `.BTF`. Eso comprueba la configuración, **no**
+el problema de GCC 15: aquí hay GCC 13. QEMU sigue sin correr nunca.
 
 ### 2026-08-03 (7) — el decreto fundacional, y todo listo para arrancar
 Cesar escribió el texto que funda el proyecto y quedó **literal** como primera

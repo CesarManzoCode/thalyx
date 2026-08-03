@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/thalyx-abi",
     "crates/thalyx-manifest",
     "crates/thalyx-parser",
     "crates/thalyx-contract",
@@ -15,6 +16,7 @@ members = [
     "crates/thalyx-snapshot",
     "crates/thalyx-core",
     "crates/thalyx-cli",
+    "modules/dev.thalyx.greeter",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/CesarManzoCode/thalyx"
 
 [workspace.dependencies]
+thalyx-abi = { path = "crates/thalyx-abi" }
 thalyx-manifest = { path = "crates/thalyx-manifest" }
 thalyx-parser = { path = "crates/thalyx-parser" }
 thalyx-contract = { path = "crates/thalyx-contract" }
@@ -40,6 +43,7 @@ thalyx-snapshot = { path = "crates/thalyx-snapshot" }
 thalyx-core = { path = "crates/thalyx-core" }
 
 serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
 toml = "0.9"
 serde_json = "1"
 sha2 = "0.10"

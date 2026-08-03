@@ -80,6 +80,14 @@ pub struct RunOutcome {
     /// The user the module ran as. `None` when it ran as Thalyx itself.
     pub uid: Option<u32>,
     pub exit_code: Option<i32>,
+    /// What the module said to the human over its channel, in order.
+    pub said: Vec<(thalyx_abi::Level, String)>,
+    /// Why the channel stopped, when it stopped badly.
+    ///
+    /// Carried rather than logged because a module whose requests went
+    /// unanswered halfway through exits looking exactly like one that
+    /// finished, and only this distinguishes them.
+    pub channel_error: Option<String>,
 }
 
 impl RunOutcome {
@@ -248,11 +256,58 @@ fn run_inner(
     let isolation = confinement.profile().describe();
     let isolated = confinement.profile().isolates();
 
-    let mut child =
-        confinement.spawn(&request.helper, &module_dir, &program, uid, &request.args)?;
+    // The channel, before the module exists.
+    //
+    // Both ends are made here so that the module's end can be handed across
+    // `exec` and Thalyx's end can be served from this process. A module never
+    // opens a channel; it is born holding one.
+    let (thalyx_end, module_end) = std::os::unix::net::UnixStream::pair()
+        .map_err(|source| CoreError::io(&request.helper, source))?;
+
+    let mut child = {
+        use std::os::fd::AsFd;
+        confinement.spawn(
+            &request.helper,
+            &module_dir,
+            &program,
+            uid,
+            &request.args,
+            Some(module_end.as_fd()),
+        )?
+    };
+
+    // Thalyx keeps no copy of the module's end. Without this the server below
+    // would never see the connection close, because one writer would still be
+    // open — in this process — and it would wait for a module that had already
+    // exited.
+    drop(module_end);
+
+    // Serve while it runs, in a thread, because both have to be happening at
+    // once: a module that asks something before Thalyx starts listening would
+    // block, and a Thalyx that waited for the child before listening would
+    // deadlock against it.
+    let mut api = crate::api::ModuleApi::for_module(&manifest, &permissions);
+    let serving = std::thread::spawn(move || {
+        let mut stream = thalyx_end;
+        let outcome = thalyx_abi::serve(&mut stream, &mut api);
+        (api, outcome)
+    });
+
     let status = child
         .wait()
         .map_err(|source| CoreError::io(&request.helper, source))?;
+
+    // The module is gone, so its end of the socket is closed and the server
+    // has returned or is about to.
+    let (api, served) = serving
+        .join()
+        .map_err(|_| CoreError::io(&program, std::io::Error::other("the API thread panicked")))?;
+
+    // A channel that broke is reported, not swallowed. A module whose requests
+    // stopped being answered halfway looks, from its own exit code, exactly
+    // like one that finished — and the difference is whether the work happened.
+    let channel_error = served.err().map(|error| error.to_string());
+    let said = api.said().to_vec();
 
     // Teardown happens whatever the module did. `release` is a no-op while
     // another instance is still inside, so a second run is not stripped of its
@@ -270,20 +325,57 @@ fn run_inner(
         uid,
         permissions,
         exit_code: status.code(),
+        said,
+        channel_error,
     })
 }
 
 /// The deliberate, named exception: run with nothing enforcing.
+///
+/// **The channel is still there**, and that is not an oversight. Unconfined
+/// means no cgroup and no kernel policy; it does not mean no system. The API's
+/// own checks live in [`crate::api`] and do not lean on the sandbox for
+/// anything — they cannot, because the code answering a module runs outside it
+/// either way. Withholding the channel here would have made the degraded mode
+/// differ from the real one in a second, unrelated way, and the whole reason
+/// this mode is named in the journal is so that what it degrades is exactly
+/// one thing.
 fn run_unconfined(
     manifest: &thalyx_manifest::Manifest,
     program: &std::path::Path,
     request: &RunRequest<'_>,
     permissions: Vec<thalyx_manifest::Permission>,
 ) -> Result<RunOutcome> {
-    let status = std::process::Command::new(program)
-        .args(&request.args)
-        .status()
+    let (thalyx_end, module_end) =
+        std::os::unix::net::UnixStream::pair().map_err(|source| CoreError::io(program, source))?;
+
+    // No re-execution on this path, so there is no later stage to renumber the
+    // descriptor. It has to happen between `fork` and `exec`, which is what
+    // `spawn_with_channel` is for and why it lives in the crate that is allowed
+    // `unsafe`.
+    let mut child = {
+        use std::os::fd::AsRawFd;
+        let mut command = std::process::Command::new(program);
+        command.args(&request.args);
+        thalyx_syscall::spawn_with_channel(&mut command, module_end.as_raw_fd())
+            .map_err(|source| CoreError::io(program, source))?
+    };
+    drop(module_end);
+
+    let mut api = crate::api::ModuleApi::for_module(manifest, &permissions);
+    let serving = std::thread::spawn(move || {
+        let mut stream = thalyx_end;
+        let outcome = thalyx_abi::serve(&mut stream, &mut api);
+        (api, outcome)
+    });
+
+    let status = child
+        .wait()
         .map_err(|source| CoreError::io(program, source))?;
+
+    let (api, served) = serving
+        .join()
+        .map_err(|_| CoreError::io(program, std::io::Error::other("the API thread panicked")))?;
 
     Ok(RunOutcome {
         module_id: manifest.id.clone(),
@@ -296,5 +388,7 @@ fn run_unconfined(
         uid: None,
         permissions,
         exit_code: status.code(),
+        said: api.said().to_vec(),
+        channel_error: served.err().map(|error| error.to_string()),
     })
 }

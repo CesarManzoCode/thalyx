@@ -74,6 +74,32 @@ pub fn run(
         }
     }
 
+    // What the module said over its channel.
+    //
+    // Printed by Thalyx and not by the module, which is the whole arrangement:
+    // a module has no terminal, and everything it wants a human to see passes
+    // through here. That is also why the marker says who is speaking — text
+    // from a module must never be able to look like Thalyx talking.
+    if !outcome.said.is_empty() {
+        println!();
+        println!("  {} said:", outcome.module_id);
+        for (level, text) in &outcome.said {
+            let marker = match level {
+                thalyx_abi::Level::Info => " ",
+                thalyx_abi::Level::Warning => "!",
+                thalyx_abi::Level::Error => "x",
+            };
+            println!("  {marker} {text}");
+        }
+    }
+
+    if let Some(error) = &outcome.channel_error {
+        println!();
+        println!("  the module's channel to Thalyx broke: {error}");
+        println!("  anything it asked for after that point did not happen.");
+    }
+
+    println!();
     match outcome.exit_code {
         Some(0) => println!("  exited cleanly"),
         Some(code) => println!("  exited with status {code}"),

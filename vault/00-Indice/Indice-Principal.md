@@ -97,7 +97,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ## Estado global del proyecto (snapshot al 3 de agosto de 2026)
 
-Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de Fase 2— y el flujo canónico están construidos y **verificados en hardware real**: 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs. Desde entonces: 463 pruebas, el agente mínimo, `thalyx` como PID 1, y la imagen que Thalyx construye para sí mismo.
+Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de Fase 2— y el flujo canónico están construidos y **verificados en hardware real**: 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs. Desde entonces: 509 pruebas, el agente mínimo, `thalyx` como PID 1, y la imagen que Thalyx construye para sí mismo.
 
 **El 2026-08-03 se quitó la distribución.** La bóveda decretaba en tres notas una base Alpine y en una que Thalyx no es una distribución; se resolvió a favor del decreto fundacional. Falta el modelo del agente, la API interna de módulos, y arrancar la imagen por primera vez. Ver [[Punto-Actual]] y [[Estado-de-Implementacion]].
 

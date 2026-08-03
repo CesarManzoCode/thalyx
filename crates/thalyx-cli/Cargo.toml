@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 thalyx-agent.workspace = true
+thalyx-abi.workspace = true
 thalyx-core.workspace = true
 thalyx-syscall.workspace = true
 thalyx-journal.workspace = true
