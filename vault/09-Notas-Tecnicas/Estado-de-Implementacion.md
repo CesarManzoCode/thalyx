@@ -59,6 +59,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
+| API interna de módulos: protocolo | `crates/thalyx-abi` | Marco con longitud + CBOR, las tres familias de la v1, cliente y servidor. **Probado entre dos hilos sobre un socket real; no conectado todavía al lanzamiento de un módulo** |
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
 | PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **Corrido como PID 1 el 2026-08-03**: los siete montajes salieron `ok` |
 | Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
@@ -135,7 +136,7 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-463 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+490 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

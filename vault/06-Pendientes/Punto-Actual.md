@@ -36,15 +36,16 @@ distribución de Linux. Se resolvió a favor de la segunda: **la imagen es el
 kernel de Linux y `thalyx`, y nada más.** Ninguna distro, nunca. Ver
 [[Construccion-del-ISO]].
 
-Eso convierte la **API interna de módulos** en la pieza que sigue: sin shell y
+Eso convirtió la **API interna de módulos** en la pieza que seguía: sin shell y
 sin utilidades, un módulo no puede ser un script y no tiene con quién hablar
-excepto Thalyx. Está decretada desde el 31 de julio en [[Core-Nucleo]] y no
-existe ni en una línea.
+excepto Thalyx. **Diseñada el 2026-08-03** en [[API-Interna-de-Modulos]], y su
+protocolo construido en `crates/thalyx-abi`. Falta conectarla a la ejecución
+real de un módulo.
 
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real. Desde
-entonces: **463 pruebas**, el agente mínimo que lleva un enunciado hasta un
+entonces: **490 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
 construye para sí mismo.
 
@@ -234,6 +235,39 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (10) — la API interna deja de ser una línea de una nota
+Decretada en [[API-Interna-de-Modulos]] y construida en `crates/thalyx-abi`:
+**un socket que Thalyx entrega ya abierto en el descriptor 3** al ejecutar el
+módulo —sin ruta que equivocar, sobrevive a la raíz vacía del sandbox, y su
+ausencia es lo que impide que un módulo corra fuera de Thalyx—, mensajes de
+longitud explícita más CBOR, y tres familias: archivos, notificar, y preguntar
+quién es. **27 pruebas**, incluidas las dos mitades de la conversación
+hablando por un socket real entre dos hilos.
+
+Tres decisiones que valen más que el código:
+
+- **Denegado y fallido son respuestas distintas.** "No puedes leer esto" y
+  "esto no se pudo leer" son hechos diferentes sobre el mundo, y un módulo que
+  solo supiera que falló reportaría un disco ausente como un problema de
+  permisos. Es la regla 10 de `CLAUDE.md` puesta en el protocolo.
+- **Un campo desconocido se rechaza, no se ignora.** Es la dirección incómoda
+  —rompe con un módulo más nuevo— y la correcta: ignorarlo dejaría al que envía
+  creyendo que restringió la operación y al que recibe sin haber visto la
+  restricción, en un canal que gobierna permisos.
+- **Un marco ilegible cierra la conexión; un mensaje ilegible se contesta.**
+  Después de una longitud mala no hay dónde empezar a leer otra vez; después de
+  un mensaje malo, sí.
+
+**Y una tercera contradicción del mismo tipo que las anteriores.**
+[[Core-Nucleo]] listaba *"ejecutar comandos"* entre las capacidades de esta API.
+No hay comandos que ejecutar. Como el login en tty1 y como `bpftool`: una
+capacidad que se apoyaba en la base y envejeció callada cuando la base se cayó.
+Queda anulada por decreto, no implementada.
+
+Falta lo que la vuelve real: pasar el descriptor por las dos etapas del
+lanzamiento, el servidor contra los permisos verdaderos, y un módulo escrito
+contra ella. Eso último es lo que el decreto pone como prueba de que sirve.
 
 ### 2026-08-03 (9) — existe la máquina
 `make -C image run` arrancó. Kernel 6.12.101 construido desde `allnoconfig`,

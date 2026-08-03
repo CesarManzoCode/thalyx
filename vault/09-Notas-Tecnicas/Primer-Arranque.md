@@ -57,7 +57,7 @@ Las **dos** `not proven` esperadas son:
 |---|---|
 | `failed` > 0 | Regresión real. La etapa lo dice; el log queda en el directorio temporal que imprime. Esto se arregla antes de seguir. |
 | `not proven` > 2 | Algo que antes se comprobaba dejó de poder comprobarse. Mira cuáles se nombran al final: casi siempre es una herramienta que falta (`bpftool`, `clang`, `btrfs`). |
-| `463 tests` sale distinto | Si es menos, algo dejó de compilarse. Si es más, alguien agregó pruebas y está bien. |
+| `490 tests` sale distinto | Si es menos, algo dejó de compilarse. Si es más, alguien agregó pruebas y está bien. |
 
 ## Paso 1 — el target de musl
 
