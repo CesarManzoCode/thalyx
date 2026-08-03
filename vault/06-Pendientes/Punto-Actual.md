@@ -93,7 +93,25 @@ tags: [continuidad, punto-actual, sesiones]
 > Hay una respuesta más que antes: *parte de los hooks vivos*, que se nombra
 > aparte porque es peor que ninguno.
 >
-> **Falta una corrida en la que la etapa 14 salga verde entera.**
+> ## Y la etapa 14 salió verde entera — 2026-08-03
+>
+> `proven 72 · not proven 2 · failed 0`. **Thalyx carga su propio enforcement,
+> lo atacha, y ese enforcement deniega**: una conexión negada adentro del cgroup
+> y permitida afuera, contra hooks que puso Thalyx y no `bpftool`.
+>
+> **Ese era el último hueco de arquitectura de la Fase 1.** Lo que queda sin
+> probar no es arquitectura: es que llegue el modelo de verdad.
+>
+> Las dos cosas que la máquina de Cesar no puede establecer siguen siendo las
+> mismas: `llama.cpp` no está instalado y el camino del modelo real no está
+> escrito, y `verify.sh` no arranca la imagen.
+>
+> ## Lo que sigue sin verse
+>
+> **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
+> el kernel de la imagen tiene `CONFIG_BPF_LSM=y` y `CONFIG_DEBUG_INFO_BTF=y`,
+> así que debería salir `ok thalyx-lsm`. Sería el tercero de los tres `no` del
+> primer arranque, cerrado. Nadie lo ha visto: se ve con `make -C image run`.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.

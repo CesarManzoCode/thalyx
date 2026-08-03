@@ -7,9 +7,17 @@ tags: [bpf, lsm, kernel, imagen, fase-1]
 
 # El cargador de BPF propio
 
-> **Estado: el cargador funciona en hardware desde el 2026-08-03.** Carga,
-> atacha, deja los mapas donde `permd` los busca y se suelta limpio. Le costó
-> dos fallos, y los dos valen la pena:
+> **Estado: probado entero en hardware el 2026-08-03.** La etapa 14 salió verde
+> completa: carga sin `bpftool`, todos los hooks vivos, los mapas donde `permd`
+> los busca, **deniega una conexión adentro del cgroup y la deja pasar afuera**,
+> y se suelta sin dejar nada. La corrida entera: `proven 72 · not proven 2 ·
+> failed 0`.
+>
+> Lo que todavía no se ha visto es **el arranque de la imagen atachando su
+> propio enforcement**. El kernel de la imagen tiene `CONFIG_BPF_LSM=y` y
+> `CONFIG_DEBUG_INFO_BTF=y`, así que debería; ver [[Primer-Arranque]].
+>
+> Le costó dos fallos, y los dos valen la pena:
 >
 > 1. **`BPF_LSM_MAC` estaba escrito como 26**, que es `BPF_MODIFY_RETURN`, la
 >    entrada anterior del mismo `enum`. El kernel aplicó la comprobación
@@ -20,8 +28,6 @@ tags: [bpf, lsm, kernel, imagen, fase-1]
 >    vivo**, porque preguntaba por un directorio que solo crea `bpftool`. No era
 >    un fallo del cargador: era el arnés contestando por otra implementación.
 >    Ver "Cómo se pregunta si está puesto" abajo.
->
-> Falta una corrida en la que la etapa 14 salga verde entera.
 
 ## Qué problema resuelve
 
