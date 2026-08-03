@@ -36,8 +36,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente |
 | Raíz propia del módulo (`pivot_root`) | `crates/thalyx-sandbox/rootfs.rs` | Solo el módulo, el sistema en RO y lo concedido |
 | Disciplina de cobertura del índice | `crates/thalyx-graph/watch.rs` | Completa y probada; el atajo queda apagado |
-| Contador de mutaciones del kernel | `crates/thalyx-watch` | Lectura por `bpftool`; verificado en hardware |
+| Contador de mutaciones del kernel | `crates/thalyx-watch` | Diez hooks; cobertura comprobada contra el kernel, no afirmada |
 | Memoria persistente | `crates/thalyx-memory` | Dos capas, fechado por rutas, base vectorial propia |
+| `rollback` | `crates/thalyx-core/rollback.rs` | Deshace un commit; se niega cuando la entrada ya no describe el disco |
 | Límites de cgroup | `crates/thalyx-sandbox/limits.rs` | `memory.max`, `pids.max`, `cpu.max` |
 | Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
@@ -45,9 +46,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
-| `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Enganchado; falta consumir los eventos |
+| `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU; falta acotarlo al árbol |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
-| CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `journal`, `permissions`, `enforce`, `store`, `dev` |
+| CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect` |
 
 ### Decretos que el código ya hace cumplir
@@ -80,21 +81,22 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Pieza | Bloqueante para |
 |---|---|
 | `thalyx-agent` | Todo el flujo conversacional |
-| Snapshots, `rollback` y `restore` | [[Rollback-vs-Restore]] |
-| Memoria persistente | [[Memoria-Persistente]] |
+| Snapshots y `restore` | [[Rollback-vs-Restore]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
 
 ### Las advertencias que quedan
 
 **1. Los límites de recursos siguen sin probarse contra un kernel.** El código los aplica y rechaza correr si no puede, pero este contenedor no delega ningún controlador de cgroup. `THALYX_REQUIRE_CONTROLLER_TESTS=1` convierte ese salto en fallo, para una máquina que sí los tenga.
 
-**3. El atajo del índice está apagado y debe quedarse así hasta que se pruebe.** `thalyx graph verify` es el experimento que decide si el contador del kernel puede creerse en una máquina dada. Ver [[FS-en-Grafo]].
+**2. El contador del kernel ya cubre todo lo que un proceso de esta máquina puede hacerle a un archivo, y sigue sin estar acotado al árbol.** Cuenta cambios fuera del árbol indexado, lo que cuesta recorridos que no hacían falta y nunca esconde uno que sí. El atajo se queda apagado hasta que `thalyx graph verify` haya coincidido en la máquina en cuestión: son dos llaves, la cobertura la responde el kernel y la confianza la decide quien llama. Ver [[FS-en-Grafo]].
+
+**3. `restore` no existe.** `rollback` sí, y es la operación acotada: deshace lo que Thalyx publicó y no toca nada más, por eso corre sin preguntar. La destructiva necesita Btrfs y se escribirá donde pueda ejecutarse, no a ciegas. Ver [[Rollback-vs-Restore]].
 
 **4. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
 
 ## Pruebas
 
-304 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
+335 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay tres variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS` y `_CONTROLLER_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 

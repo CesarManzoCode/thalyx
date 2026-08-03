@@ -14,11 +14,10 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Ejecutar `lsm/` por primera vez.** Escrito sin poder compilarlo. Hasta que `make -C dev check` pase en una máquina real, es una propuesta.
-- [ ] **Snapshots, `rollback` y `restore`** — requieren Btrfs, no probables en el entorno actual.
-- [ ] **Consumir el ringbuf `thalyx_mutations`** para acotar la cuenta de mutaciones al árbol indexado. Necesita un consumidor que haga `mmap` del mapa; solo se puede escribir donde se pueda ejecutar. Ver [[FS-en-Grafo]].
-- [ ] **Ampliar los hooks del watcher** para cubrir escrituras por descriptor abierto. Sin eso el contador nunca podrá creerse.
+- [ ] **Snapshots y `restore`** — requieren Btrfs, no probables en el entorno actual. `rollback`, que es la operación acotada y no necesita snapshots, ya está construido.
+- [ ] **Acotar la cuenta de mutaciones al árbol indexado.** Hoy es de toda la máquina: cuesta recorridos que no hacían falta, nunca esconde un cambio. La vía es atribuir cada evento subiendo por los ancestros del dentry en el propio hook, no consumir el ringbuf. Ver [[FS-en-Grafo]].
 - [ ] **Probar los límites de recursos contra un kernel que delegue controladores** — `THALYX_REQUIRE_CONTROLLER_TESTS=1`.
-- [ ] **Ejecutar `make -C lsm load` con el contador nuevo** — el cambio al programa BPF no pudo compilarse ni verificarse en el contenedor de desarrollo.
+- [ ] **Cargar el watcher de diez hooks en hardware.** El programa BPF no se puede compilar ni verificar en el contenedor de desarrollo; `dev/verify.sh` ya trae la medición que lo comprueba.
 
 
 ## Pendientes de decreto formal
@@ -58,6 +57,11 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Zona gris del umbral de migración** — ver [[Decision-Kernel-vs-Userspace]].
 - [x] **Filesystem requerido** — Btrfs. Ver [[Journal-y-Snapshots]].
 - [x] **Alcance de la Fase 1** — ver [[Fases-de-Implementacion]].
+
+## Resueltos el 2026-08-03
+
+- [x] **Escrituras por descriptor abierto en el watcher** — `lsm/file_permission` enmascarado a `MAY_WRITE`, más los siete hooks de forma del árbol que faltaban. El contador ya puede creerse en cuanto a cobertura. Ver [[FS-en-Grafo]].
+- [x] **`thalyx rollback`** — deshace un commit de Thalyx, y se niega cuando la entrada del journal ya no describe el disco. Ver [[Rollback-vs-Restore]].
 
 ## Resueltos el 2026-08-02
 

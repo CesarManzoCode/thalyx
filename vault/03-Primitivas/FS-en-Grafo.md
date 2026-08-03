@@ -76,13 +76,21 @@ Corolario descubierto al implementarlo: **el índice no puede vivir dentro del �
 
 Verificar la frescura **camina el árbol entero, en cada consulta**. Es honesto —el filesystem es la verdad y el índice es un caché— y no escala.
 
-`thalyx_watch.bpf.c` cuenta ahora cada mutación que ven sus hooks, en un mapa BPF de tipo array que `bpftool map dump` sabe leer. La pregunta cara pasa a tener respuesta barata: si el contador no se movió desde que se construyó el índice, no hay nada que caminar.
+`thalyx_watch.bpf.c` cuenta cada mutación que ven sus hooks, en un mapa BPF que `bpftool map dump` sabe leer. La pregunta cara pasa a tener respuesta barata: si el contador no se movió desde que se construyó el índice, no hay nada que caminar.
 
 **El atajo está apagado**, y lo interesante de este trabajo es por qué.
 
-Solo es correcto si los hooks atrapan *todas* las formas en que un archivo puede cambiar, y no lo hacen: una escritura por un descriptor ya abierto no pasa por `inode_create`, ni `inode_unlink`, ni `inode_rename`. Peor: el contador es **de toda la máquina**, así que dice que algo cambió en esta computadora, no que algo haya cambiado en el árbol indexado. Cualquiera de las dos cosas haría que el índice contestara "vigente" sobre un árbol que ya se movió — exactamente lo que [[Coherencia-Doble-Ruta]] declara peor que admitir ignorancia.
+Solo es correcto si los hooks atrapan *todas* las formas en que un archivo puede cambiar, y durante meses no lo hicieron. El primer juego era `inode_create`, `inode_unlink` e `inode_rename`: **editar un archivo en su lugar no crea nada, no borra nada y no renombra nada**, así que "el contador no se movió" era compatible con el árbol entero reescrito. Faltaban además los directorios, los enlaces simbólicos, los enlaces duros y los nodos de dispositivo — `inode_create` es solo archivos regulares, así que un `mkdir` era invisible para un watcher cuyo trabajo entero es notar que el árbol cambió de forma.
 
-Entonces el atajo no se afirma: **se gana**. Por defecto se camina siempre y el contador solo explica el resultado. `thalyx graph verify` pregunta a los dos lado a lado en una máquina real y reporta si coincidieron.
+Un contador con ese hueco no puede encender el atajo jamás, y por lo tanto es decoración.
+
+Ahora son **diez hooks**, y el que decide todo es `lsm/file_permission` enmascarado a `MAY_WRITE`. Se llama desde `rw_verify_area` en cada lectura y cada escritura, así que atrapa las escrituras por un descriptor **que ya estaba abierto cuando el watcher se enganchó** — el editor o la base de datos de vida larga que es precisamente lo que vuelve increíble a un contador. `file_open` no las habría visto. Ese hook es caliente, y por eso el contador pasó a ser por CPU: una sola línea de caché disputada por todos los núcleos en la ruta de escritura no era pagable.
+
+Lo que **sigue** fuera es que el contador es de toda la máquina: dice que algo cambió en esta computadora, no que haya cambiado algo en el árbol indexado. Esa es la dirección segura del error —cuesta recorridos que no hacían falta, nunca esconde un cambio— pero significa que el atajo solo se dispara en una máquina tranquila.
+
+Entonces el atajo no se afirma: **se gana**, y hacen falta dos llaves. La cobertura la responde el kernel: `claims_complete_coverage` dejó de ser la constante `false` y ahora le pregunta a `bpftool` qué programas están cargados, contestando que no por cada motivo por el que debe hacerlo — no cargado, hook ausente, sin `bpftool`, sin permiso. La confianza la decide quien llama, y `thalyx graph verify` pregunta a los dos lados en una máquina real y reporta si coincidieron.
+
+Y una cosa que se estaba haciendo mal sin que doliera: cada hook cuenta **antes** de saber si la operación tuvo éxito, porque un hook LSM corre antes de la operación y su argumento `ret` no es el resultado, es lo que ya decidió otro programa enganchado al mismo hook. Contar de más cuesta un recorrido; contar de menos cuesta corrección. Y `ret` se devuelve intacto: un watcher que devolviera 0 convertiría la denegación de otro programa en un permiso — un programa cuyo propósito entero es no denegar nada empezaría a conceder cosas.
 
 ### La asimetría que importa
 
@@ -105,7 +113,13 @@ Solo la segunda rompe la cobertura, y la rompe de forma permanente.
 
 ### Lo que falta
 
-Acotar la cuenta al árbol indexado necesita la **ruta** de cada mutación, que está en el ring buffer junto al contador y requiere un consumidor que haga `mmap` del mapa y siga el protocolo del anillo. No se escribió a ciegas: el contenedor de desarrollo no tiene `bpftool`, ni bpffs, ni `vmlinux.h`, así que ni ese consumidor ni el cambio al programa BPF pudieron ejercitarse ahí.
+Acotar la cuenta al árbol indexado. La vía **no** es consumir el ring buffer: es atribuir cada evento dentro del propio hook, subiendo por los ancestros del dentry hasta encontrar una raíz vigilada. Eso mantiene la lectura en `bpftool map dump` y no necesita ningún consumidor que siga el protocolo del anillo.
+
+Tiene un caso que hay que resolver con cuidado y no adivinar: si la subida llega a la raíz del superbloque sin encontrar coincidencia, el archivo está fuera del árbol vigilado **solo si** ambos están en el mismo superbloque; si no, pudo entrar por un montaje. Se puede comprobar desde userspace al construir el índice —¿hay algún punto de montaje debajo del árbol?— y romper la cobertura cuando lo haya.
+
+Lo que sí queda deliberadamente sin cubrir: los atributos extendidos, porque SELinux reetiqueta archivos todo el día y un contador que nunca deja de moverse no permite ningún atajo; y un filesystem que otra máquina pueda escribir, que cambia sin que ningún hook de esta máquina se entere. Ningún juego de hooks cierra eso.
+
+Nada de esto se puede compilar ni verificar en el contenedor de desarrollo, que no tiene `bpftool`, ni bpffs, ni `vmlinux.h`. Por eso `dev/verify.sh` trae la medición que lo comprueba en hardware.
 
 ## Relacionado
 - [[Parser-Mecanico]]

@@ -44,6 +44,20 @@ Se consideró un único comando que decidiera según el contexto. Se descartó: 
 
 La demostración #1 usa `restore`, no `rollback`. Decirlo en voz alta deja claro que la demostración más impactante del proyecto depende del comando peligroso, y por lo tanto de que la comprobación de estado previa funcione bien.
 
+## Revisiones
+
+### 2026-08-03 — `rollback` construido; lo que se aprendió al construirlo
+**Antes:** el decreto separaba las dos operaciones y nada las implementaba.
+**Ahora:** `thalyx rollback` existe y es exactamente la operación acotada. `restore` sigue sin existir: necesita Btrfs y se escribirá donde pueda ejecutarse.
+
+Construirlo dejó dos cosas que el decreto no había anticipado:
+
+**Casi todo el trabajo es negarse, y el peligro no está donde parecía.** Deshacer el commit es fácil. Lo difícil es negarse a deshacer una entrada que **ya no describe el mundo**: si el módulo se actualizó después, la versión que hay en disco no es la que esa entrada publicó, y "deshacer la instalación" borraría una versión que el humano sí quiere. Por eso el plan se calcula contra el disco y no contra el journal —el journal solo registra lo que hizo Thalyx, y el [[Principio-Doble-Ruta|principio de doble ruta]] garantiza que el humano pudo hacer otra cosa— y se vuelve a comprobar al aplicarlo, porque perder esa carrera cuesta borrar la instalación de alguien más.
+
+**Cada negativa dice cuál de los motivos aplica.** Un intento rechazado no publicó nada; uno no comprometido es build-then-commit funcionando; una eliminación no se puede deshacer porque los bytes ya no están y lo que el humano quiere después es reinstalar. Juntarlos en "eso no se puede deshacer" escondería el único caso que es buena noticia.
+
+Y una regla que salió sola: **nombrar una entrada que no se puede deshacer se niega, no cae hacia atrás a la última que sí.** El humano nombró una solicitud; deshacer otra no es una versión más pequeña de lo que pidió.
+
 ## Relacionado
 - [[Coherencia-Doble-Ruta]]
 - [[Journal-y-Snapshots]]
