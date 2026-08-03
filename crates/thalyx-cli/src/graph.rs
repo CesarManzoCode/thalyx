@@ -8,7 +8,7 @@
 use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use thalyx_graph::{Coverage, Freshness, Index, MutationCounter, Watcher};
-use thalyx_watch::KernelCounter;
+use thalyx_watch::{KernelCounter, Scoping, TreeCounter};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -72,7 +72,11 @@ pub enum GraphCommand {
     /// only way to watch the count move while doing something to a file,
     /// which is how the hook set gets checked against reality rather than
     /// against its own list of hooks.
-    Watcher,
+    Watcher {
+        /// Report this tree's own count rather than the machine's
+        #[arg(long)]
+        tree: Option<PathBuf>,
+    },
     /// Files carrying a tag
     Tagged {
         tag: String,
@@ -86,18 +90,24 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
         GraphCommand::Build { tree } => {
             let tree = tree.canonicalize()?;
             let mut index = open(store_root, &tree)?;
+
+            // Ask the kernel to count this tree's mutations on their own,
+            // before the build rather than after: registration resets the
+            // tree's count, and a reset after the build would throw away
+            // everything that changed while it was running.
+            let scoping = register(&tree);
             let report = index.build()?;
 
             // The counter's value at the moment the index matched the tree.
             // Recorded here because this is the only instant it is true.
-            let counter = KernelCounter::default_map();
-            let mut watcher = Watcher::new(counter);
+            let mut watcher = Watcher::new(counter_for(&scoping));
             match watcher.rebuilt() {
                 Coverage::Unbroken { baseline } => index.set_mutation_baseline(baseline)?,
                 Coverage::Broken { .. } => index.clear_mutation_baseline()?,
             }
 
             println!("indexed {}", tree.display());
+            println!("  {}", scoping.describe());
             println!(
                 "  {} file(s), {} parsed",
                 report.files_indexed, report.files_parsed
@@ -126,7 +136,7 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             println!("tree      {}", tree.display());
             println!("nodes     {}", index.node_count()?);
             println!("edges     {}", index.edge_count()?);
-            print_coverage(&index)?;
+            print_coverage(&index, &thalyx_watch::scoping_for(&tree))?;
 
             match index.freshness()? {
                 Freshness::Current => {
@@ -159,10 +169,26 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             Ok(())
         }
 
-        GraphCommand::Watcher => {
+        GraphCommand::Watcher { tree } => {
             let counter = KernelCounter::default_map();
 
-            match counter.total() {
+            // With a tree, the number that matters is that tree's. Reporting
+            // the machine's total when a tree was named would answer a
+            // different question with a number that looks like an answer.
+            let scoped: Option<Box<dyn MutationCounter>> = match &tree {
+                Some(tree) => {
+                    let tree = tree.canonicalize()?;
+                    let scoping = thalyx_watch::scoping_for(&tree);
+                    println!("scope     {}", scoping.describe());
+                    Some(counter_for(&scoping))
+                }
+                None => None,
+            };
+
+            match scoped
+                .as_ref()
+                .map_or_else(|| counter.total(), |c| c.total())
+            {
                 Ok(total) => println!("mutations {total}"),
                 Err(_) => {
                     // Deliberately not a `mutations` line with a word where the
@@ -233,6 +259,7 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             let index = open(store_root, &tree)?;
 
             let counter = KernelCounter::default_map();
+            let scoping = thalyx_watch::scoping_for(&tree);
             if !counter.is_available() {
                 println!("the kernel mutation counter is NOT PRESENT");
                 println!("  {}", counter.map().display());
@@ -242,6 +269,8 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                 return Ok(());
             }
 
+            println!("scope          {}", scoping.describe());
+            let counter = counter_for(&scoping);
             let mut watcher = match index.mutation_baseline()? {
                 Some(baseline) => Watcher::resuming_from(counter, baseline),
                 None => Watcher::new(counter),
@@ -363,6 +392,37 @@ fn open(store_root: &Path, tree: &Path) -> Result<Index, Box<dyn std::error::Err
     Ok(Index::open(&database, tree)?)
 }
 
+/// Tell the kernel to count this tree on its own, and report what it will do.
+///
+/// Failing to register is not an error. It means no watcher is loaded, or no
+/// permission to write the map — and the answer to both is the machine-wide
+/// count, which is less useful and never wrong.
+fn register(tree: &Path) -> Scoping {
+    let scoping = thalyx_watch::scoping_for(tree);
+    let Scoping::Tree(root) = &scoping else {
+        return scoping;
+    };
+
+    match KernelCounter::default_map().watch(root) {
+        Ok(()) => scoping,
+        Err(error) => Scoping::Machine {
+            reason: format!("the kernel could not be told to watch it ({error})"),
+        },
+    }
+}
+
+/// The counter the scoping calls for.
+///
+/// Boxed because which one it is depends on the machine. Everything the
+/// watcher concludes is the same either way: scoping narrows what is counted,
+/// not what may be concluded from it.
+fn counter_for(scoping: &Scoping) -> Box<dyn MutationCounter> {
+    match scoping {
+        Scoping::Tree(root) => Box::new(TreeCounter::new(KernelCounter::default_map(), *root)),
+        Scoping::Machine { .. } => Box::new(KernelCounter::default_map()),
+    }
+}
+
 fn said(current: bool) -> &'static str {
     if current {
         "nothing changed"
@@ -375,7 +435,7 @@ fn said(current: bool) -> &'static str {
 ///
 /// Printed with the rest of the status because a shortcut that is off, and a
 /// shortcut that is on and wrong, look identical from the outside otherwise.
-fn print_coverage(index: &Index) -> Fallible {
+fn print_coverage(index: &Index, scoping: &Scoping) -> Fallible {
     let counter = KernelCounter::default_map();
 
     if !counter.is_available() {
@@ -383,10 +443,16 @@ fn print_coverage(index: &Index) -> Fallible {
         return Ok(());
     }
 
-    let total = match counter.total() {
+    println!("scope     {}", scoping.describe());
+
+    // The scoped counter, so the number printed is the number the freshness
+    // check will compare against. Printing the machine-wide total beside a
+    // baseline taken from the tree's own count would show a difference of
+    // millions and mean nothing.
+    let total = match counter_for(scoping).total() {
         Ok(total) => total,
         Err(error) => {
-            println!("watcher   present but unreadable: {error}");
+            println!("watcher   present, and this tree's count is unavailable: {error}");
             return Ok(());
         }
     };

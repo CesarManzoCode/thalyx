@@ -132,7 +132,7 @@ unload:
 	@# one left behind makes every later load fail with an error that points at
 	@# programs instead of at the map that is really in the way.
 	@for stray in thalyx_policy thalyx_denials thalyx_enforcing thalyx_mutations \
-	              thalyx_mutation_count; do \
+	              thalyx_mutation_count thalyx_watched thalyx_unattributed; do \
 	    if [ -e $(BPFFS)/$$stray ]; then \
 	        sudo rm -f $(BPFFS)/$$stray && echo "  removed stray pin $$stray"; \
 	    fi; \

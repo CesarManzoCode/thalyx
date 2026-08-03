@@ -30,6 +30,10 @@
 //!   [`thalyx_graph::Trust::Counter`] stays an explicit choice and
 //!   `Watcher::verify` has to agree first.
 
+pub mod scope;
+
+pub use scope::WatchedRoot;
+
 use std::path::{Path, PathBuf};
 use thalyx_graph::MutationCounter;
 
@@ -141,6 +145,81 @@ impl KernelCounter {
         Ok(missing_among(&program_names(&listing)))
     }
 
+    /// Another of the watcher's maps, pinned beside this one.
+    fn sibling(&self, name: &str) -> String {
+        self.map
+            .parent()
+            .map(|dir| dir.join(name))
+            .unwrap_or_else(|| PathBuf::from(name))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Tell the kernel to count mutations under this tree separately.
+    ///
+    /// Idempotent, and it starts the tree's count at zero. Re-watching an
+    /// already-watched tree therefore resets it — which is correct only
+    /// because the caller is rebuilding the index at the same moment, and a
+    /// rebuild is the one event that makes a fresh baseline true.
+    pub fn watch(&self, root: &scope::WatchedRoot) -> std::result::Result<(), WatchError> {
+        let map = self.sibling("thalyx_watched");
+        let key = hex_bytes(&root.key_bytes());
+        let value = hex_bytes(&0u64.to_le_bytes());
+
+        let mut args: Vec<&str> = vec!["map", "update", "pinned", &map, "key"];
+        args.extend(key.iter().map(String::as_str));
+        args.push("value");
+        args.extend(value.iter().map(String::as_str));
+
+        self.bpftool(&args).map(|_| ())
+    }
+
+    /// What the kernel has counted for one tree.
+    ///
+    /// `Ok(None)` means the kernel was never told to watch it. Deliberately
+    /// not zero — a tree nobody is watching and a tree nothing has happened in
+    /// are the same number and completely different facts, and only one of
+    /// them may be read as "nothing changed".
+    ///
+    /// The unattributed count is added in. Those are mutations the kernel
+    /// could not place — a path nested deeper than its walk climbs — and they
+    /// belong to every tree at once, because belonging to none of them would
+    /// mean a change nobody sees.
+    pub fn count_for(
+        &self,
+        root: &scope::WatchedRoot,
+    ) -> std::result::Result<Option<u64>, WatchError> {
+        let map = self.sibling("thalyx_watched");
+        let key = hex_bytes(&root.key_bytes());
+
+        let mut args: Vec<&str> = vec!["map", "lookup", "pinned", &map, "key"];
+        args.extend(key.iter().map(String::as_str));
+        args.push("-j");
+
+        let looked_up = match self.bpftool(&args) {
+            Ok(output) => output,
+            // bpftool says "No such file or directory" both for a map that is
+            // not pinned and for a key that is not in it. The map is pinned —
+            // the counter beside it was just read — so this is the key.
+            Err(WatchError::NotPinned(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+
+        let Some(own) = scope::parse_lookup(&looked_up) else {
+            return Ok(None);
+        };
+
+        let unattributed = self.bpftool(&[
+            "map",
+            "dump",
+            "pinned",
+            &self.sibling("thalyx_unattributed"),
+            "-j",
+        ])?;
+
+        Ok(Some(own.saturating_add(parse_total(&unattributed)?)))
+    }
+
     fn dump(&self) -> std::result::Result<String, WatchError> {
         let map = self.map.to_string_lossy().into_owned();
         self.bpftool(&["map", "dump", "pinned", &map, "-j"])
@@ -165,6 +244,121 @@ impl KernelCounter {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// `bpftool` takes map keys and values one byte per argument.
+fn hex_bytes(bytes: &[u8]) -> Vec<String> {
+    bytes.iter().map(|byte| format!("{byte:#04x}")).collect()
+}
+
+/// A counter that answers for one tree instead of for the machine.
+///
+/// The same trait, so nothing downstream changes: [`thalyx_graph::Watcher`]
+/// keeps every rule it already has about what a count may be used to conclude,
+/// and this only narrows what is being counted.
+pub struct TreeCounter {
+    counter: KernelCounter,
+    root: scope::WatchedRoot,
+}
+
+impl TreeCounter {
+    pub fn new(counter: KernelCounter, root: scope::WatchedRoot) -> Self {
+        Self { counter, root }
+    }
+
+    pub fn root(&self) -> scope::WatchedRoot {
+        self.root
+    }
+}
+
+impl MutationCounter for TreeCounter {
+    fn total(&self) -> thalyx_graph::Result<u64> {
+        let failed = |message: String| thalyx_graph::GraphError::Io {
+            path: self.counter.map.clone(),
+            source: std::io::Error::other(message),
+        };
+
+        match self.counter.count_for(&self.root) {
+            Ok(Some(total)) => Ok(total),
+            // Not zero. A tree the kernel is not watching has no count, and
+            // returning zero would make the first check after a reload read as
+            // "nothing has changed since the index was built".
+            Ok(None) => Err(failed(
+                "the kernel is not watching this tree; rebuild the index to \
+                 register it"
+                    .to_string(),
+            )),
+            Err(error) => Err(failed(error.to_string())),
+        }
+    }
+
+    /// The same claim the machine-wide counter makes.
+    ///
+    /// Scoping narrows *what* is counted, not *how completely*. The hooks are
+    /// the same hooks.
+    fn claims_complete_coverage(&self) -> bool {
+        self.counter.claims_complete_coverage()
+    }
+}
+
+/// Whether a tree's mutations can be counted on their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scoping {
+    /// Yes, and this is the root the kernel will match against.
+    Tree(scope::WatchedRoot),
+    /// No — fall back to the machine-wide count, for this reason.
+    Machine { reason: String },
+}
+
+impl Scoping {
+    pub fn describe(&self) -> String {
+        match self {
+            Scoping::Tree(root) => format!(
+                "counted for this tree alone (device {}, inode {})",
+                root.dev, root.ino
+            ),
+            Scoping::Machine { reason } => {
+                format!("counted machine-wide: {reason}")
+            }
+        }
+    }
+}
+
+/// Decide how a tree's mutations can be counted.
+///
+/// The mount check is the whole reason this is a decision rather than a
+/// constructor. The kernel's walk climbs `d_parent`, which never crosses a
+/// mount point, so a change inside something mounted under the tree would be
+/// missed — and a missed change is the one failure the design refuses. A tree
+/// with anything mounted below it is counted machine-wide instead: less
+/// useful, never wrong.
+pub fn scoping_for(tree: &Path) -> Scoping {
+    let mounts = match std::fs::read_to_string("/proc/mounts") {
+        Ok(text) => text,
+        Err(error) => {
+            return Scoping::Machine {
+                reason: format!("/proc/mounts could not be read ({error})"),
+            };
+        }
+    };
+
+    let inside = scope::mounts_under(tree, &mounts);
+    if !inside.is_empty() {
+        return Scoping::Machine {
+            reason: format!(
+                "{} is mounted inside this tree, and the kernel's walk cannot climb \
+                 out of a mount into the tree above it",
+                inside[0].display()
+            ),
+        };
+    }
+
+    match scope::WatchedRoot::of(tree) {
+        Ok(root) => Scoping::Tree(root),
+        Err(error) => Scoping::Machine {
+            reason: format!("the tree root could not be identified ({error})"),
+        },
     }
 }
 

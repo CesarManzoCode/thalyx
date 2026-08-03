@@ -59,6 +59,22 @@ pub trait MutationCounter {
     }
 }
 
+/// So a caller can choose between counters at run time.
+///
+/// Whether a tree's mutations are counted on their own or machine-wide is
+/// decided by the machine, not at compile time — and either way every rule in
+/// this module applies unchanged, because scoping narrows what is counted, not
+/// what may be concluded from it.
+impl<T: MutationCounter + ?Sized> MutationCounter for Box<T> {
+    fn total(&self) -> Result<u64> {
+        (**self).total()
+    }
+
+    fn claims_complete_coverage(&self) -> bool {
+        (**self).claims_complete_coverage()
+    }
+}
+
 /// Whether the watcher can account for everything since the index was built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Coverage {

@@ -111,11 +111,17 @@ Solo la segunda rompe la cobertura, y la rompe de forma permanente.
 - Un contador ilegible rompe la cobertura; "no lo pude leer" nunca se convierte en "no cambió nada".
 - Un baseline persistido que no se puede parsear se trata como **ausente**, no como cero. Cero es un valor que el watcher sí avalaría.
 
-### Lo que falta
+### Acotar la cuenta al árbol
 
-Acotar la cuenta al árbol indexado. La vía **no** es consumir el ring buffer: es atribuir cada evento dentro del propio hook, subiendo por los ancestros del dentry hasta encontrar una raíz vigilada. Eso mantiene la lectura en `bpftool map dump` y no necesita ningún consumidor que siga el protocolo del anillo.
+Construido, pendiente de ejecutarse en hardware. La vía **no** es consumir el ring buffer: es atribuir cada evento dentro del propio hook, subiendo por los ancestros del dentry hasta encontrar una raíz vigilada. Eso mantiene la lectura en `bpftool map dump` y no necesita ningún consumidor que siga el protocolo del anillo.
 
-Tiene un caso que hay que resolver con cuidado y no adivinar: si la subida llega a la raíz del superbloque sin encontrar coincidencia, el archivo está fuera del árbol vigilado **solo si** ambos están en el mismo superbloque; si no, pudo entrar por un montaje. Se puede comprobar desde userspace al construir el índice —¿hay algún punto de montaje debajo del árbol?— y romper la cobertura cuando lo haya.
+El caso delicado se resolvió comprobándolo, no adivinándolo. Si la subida llega a la raíz de su propio filesystem sin coincidir, el archivo está **definitivamente fuera** de todo árbol vigilado en ese filesystem: mismo superbloque, todos los ancestros examinados, ninguno coincide. Nada se cuenta. Ese es el caso que vuelve callada a una máquina ocupada — el caché del navegador, un log, una tubería, una escritura a `/tmp`: cada uno sube a su propia raíz y no aporta a ningún árbol.
+
+Descansa sobre un supuesto, y el supuesto es ahora una **precondición comprobada**: un archivo alcanzado por un *montaje* dentro del árbol vive en otro superbloque, y su subida pararía en la raíz de ese filesystem sin ver nunca el dentry vigilado. Así que userspace se niega a acotar un árbol que tenga algo montado debajo — una lectura de `/proc/mounts` al construir el índice — y cae al conteo de toda la máquina, que es menos útil y nunca está mal.
+
+Lo único que queda genuinamente sin atribuir es una ruta más profunda de lo que la subida sube (64 niveles). Eso va a un contador aparte que userspace **suma a todos los árboles**: cobrarle de más a un árbol cuesta un recorrido, dejarlo fuera dejaría pasar un cambio.
+
+Y la conversión que falla en silencio si se hace mal: el `st_dev` que devuelve un `stat` **no** es el `s_dev` que tiene el kernel. Confundirlos no da error — la búsqueda simplemente nunca coincide, la cuenta del árbol se queda en cero, y cero se lee como "aquí nunca ha cambiado nada". Está pinchado con valores conocidos en un test.
 
 Lo que sí queda deliberadamente sin cubrir: los atributos extendidos, porque SELinux reetiqueta archivos todo el día y un contador que nunca deja de moverse no permite ningún atajo; y un filesystem que otra máquina pueda escribir, que cambia sin que ningún hook de esta máquina se entere. Ningún juego de hooks cierra eso.
 

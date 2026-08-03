@@ -470,6 +470,67 @@ else
     unproven "the mutation counter needs the watcher attached"
 fi
 
+# The count, narrowed to one tree.
+#
+# The machine-wide measurement above proves the hooks fire. It says nothing
+# about attribution: a counter that counted everything against every tree would
+# pass it exactly the same way. So this one has a control column — the same
+# churn, outside the tree — and the scoping is only real if the two differ.
+if [ "$LOADED" = 1 ]; then
+    mkdir -p "$WORK/tree/src"
+    echo "fn main() {}" > "$WORK/tree/src/main.rs"
+
+    tree_count() {
+        "$THALYX" graph watcher --tree "$WORK/tree" 2>/dev/null |
+            awk '$1 == "mutations" { print $2 }'
+    }
+
+    if "$THALYX" graph build "$WORK/tree" > "$WORK/scoped-build.log" 2>&1 &&
+       grep -q "counted for this tree alone" "$WORK/scoped-build.log"; then
+
+        # Inside: a descriptor opened before the first reading, as before.
+        exec 8>>"$WORK/tree/src/churn"
+        INSIDE_BEFORE="$(tree_count)"
+        for _ in $(seq "$CHURN"); do printf . >&8; done
+        INSIDE_AFTER="$(tree_count)"
+        exec 8>&-
+
+        # Outside: the identical churn, somewhere else entirely.
+        exec 8>>"$WORK/outside-churn"
+        OUTSIDE_BEFORE="$(tree_count)"
+        for _ in $(seq "$CHURN"); do printf . >&8; done
+        OUTSIDE_AFTER="$(tree_count)"
+        exec 8>&-
+
+        if [ -z "$INSIDE_BEFORE" ] || [ -z "$OUTSIDE_AFTER" ]; then
+            unproven "this tree's own count could not be read; see $WORK/scoped-build.log"
+        else
+            INSIDE=$((INSIDE_AFTER - INSIDE_BEFORE))
+            OUTSIDE=$((OUTSIDE_AFTER - OUTSIDE_BEFORE))
+
+            if [ "$INSIDE" -ge "$CHURN" ]; then
+                proven "$CHURN writes inside the tree were every one counted against it"
+            else
+                failed "only $INSIDE of $CHURN writes inside the tree were counted against it"
+            fi
+
+            # The control. Machine-wide counting would put all CHURN here too.
+            if [ "$OUTSIDE" -lt $((CHURN / 10)) ]; then
+                proven "the same churn outside the tree left its count alone"
+                echo "     inside +$INSIDE, outside +$OUTSIDE — the count is the tree's,"
+                echo "     not the machine's, so a quiet project stays quiet"
+            else
+                failed "writes outside the tree moved its count by $OUTSIDE"
+                echo "     attribution is not working: every tree is being charged for"
+                echo "     everything, which is the machine-wide counter with extra steps"
+            fi
+        fi
+    else
+        unproven "this tree could not be scoped; see $WORK/scoped-build.log"
+        sed 's/^/     /' "$WORK/scoped-build.log"
+    fi
+fi
+
 # -------------------------------------------------------------- 8. memory
 
 step "8. what the agent remembers, and what stops being assertable"

@@ -25,6 +25,7 @@
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -97,6 +98,127 @@ static __always_inline void count_mutation(void)
         *total += 1;
 }
 
+/* ## Attributing a mutation to the tree it happened in
+ *
+ * The count above is machine-wide. That is the safe direction — it costs walks
+ * that were not needed, never a missed change — but it means the index's
+ * shortcut only ever fires on a machine nobody is using. Everything below
+ * exists to answer the tighter question: did anything change *in this tree*.
+ *
+ * Userspace puts the (device, inode) of each indexed tree root in here. The
+ * program only ever increments keys that are already present; it never
+ * inserts, so the map cannot grow from the write path and a busy machine
+ * cannot fill it.
+ */
+struct root_key {
+    __u64 ino;
+    __u32 dev;
+    __u32 pad;   /* explicit, and always zero: a hash key compares by bytes,
+                    and a padding hole full of stack garbage would make the
+                    same root hash differently on every call */
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct root_key);
+    __type(value, __u64);
+} thalyx_watched SEC(".maps");
+
+/* Mutations that could not be attributed to any tree, and so have to be
+ * counted against all of them.
+ *
+ * Only one thing lands here: a directory nested deeper than the walk below is
+ * willing to climb. Everything else resolves — a match, or a walk that reaches
+ * the root of its own filesystem, which settles the question rather than
+ * leaving it open (see below).
+ *
+ * Userspace adds this to every tree's count. Over-counting a tree costs a walk
+ * that was not needed; leaving it out would let a change go unseen.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} thalyx_unattributed SEC(".maps");
+
+/* How far up the tree to look before giving up and counting it against
+ * everything. Deep enough that real source trees resolve; bounded because the
+ * verifier requires it and because a corrupted parent chain must not spin. */
+#define MAX_DEPTH 64
+
+static __always_inline void count_unattributed(void)
+{
+    __u32 slot = 0;
+    __u64 *total = bpf_map_lookup_elem(&thalyx_unattributed, &slot);
+    if (total)
+        *total += 1;
+}
+
+/* Walk up from a dentry until a watched root is found.
+ *
+ * Three outcomes, and the middle one is what makes this worth doing:
+ *
+ * 1. **A watched root is an ancestor.** Count it against that tree.
+ *
+ * 2. **The walk reaches the root of its own filesystem without a match.**
+ *    The file is *definitively outside* every watched tree on that filesystem:
+ *    same superblock, every ancestor examined, no match. Nothing is counted.
+ *
+ *    This is the case that makes a busy machine quiet again. A browser cache,
+ *    a log file, a pipe, a write to /tmp — each one climbs to its own root and
+ *    stops, contributing nothing to any tree's count.
+ *
+ *    It rests on one assumption, and the assumption is checked rather than
+ *    hoped for: a file reached through a *mount* inside a watched tree lives
+ *    on a different superblock, and its walk would stop at that filesystem's
+ *    root without ever seeing the watched dentry. So userspace refuses to
+ *    scope a tree that has anything mounted underneath it — the check is one
+ *    read of /proc/mounts at build time, and it turns an assumption into a
+ *    precondition.
+ *
+ * 3. **The walk runs out of depth.** Genuinely unknown, so counted against
+ *    everything.
+ */
+static __always_inline void attribute(struct dentry *dentry)
+{
+    struct dentry *cur = dentry;
+
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        if (!cur)
+            return;   /* nothing to attribute it to and nothing to conclude */
+
+        struct inode *inode = BPF_CORE_READ(cur, d_inode);
+        struct super_block *sb = BPF_CORE_READ(cur, d_sb);
+
+        /* A negative dentry — the name being created does not exist yet — has
+         * no inode. It cannot be a watched root either, so the walk simply
+         * continues to its parent, which is the directory it is being created
+         * in and is exactly what should be attributed. */
+        if (inode && sb) {
+            struct root_key key = {
+                .ino = BPF_CORE_READ(inode, i_ino),
+                .dev = BPF_CORE_READ(sb, s_dev),
+                .pad = 0,
+            };
+
+            __u64 *count = bpf_map_lookup_elem(&thalyx_watched, &key);
+            if (count) {
+                __sync_fetch_and_add(count, 1);
+                return;
+            }
+        }
+
+        struct dentry *parent = BPF_CORE_READ(cur, d_parent);
+        if (!parent || parent == cur)
+            return;   /* the root of this filesystem: outcome 2, and settled */
+        cur = parent;
+    }
+
+    count_unattributed();
+}
+
 /* Bump the counter, and queue the detail if there is room for it.
  *
  * `quiet` is for the hooks that fire constantly. Every write on the machine
@@ -106,13 +228,14 @@ static __always_inline void count_mutation(void)
  * hot hook contributes to the count, which is what freshness needs, and stays
  * out of the ring, which is what attribution needs.
  */
-static __always_inline void report(__u32 kind, bool quiet)
+static __always_inline void report(__u32 kind, bool quiet, struct dentry *where)
 {
     /* Counted first, and unconditionally. If the ring is full the detail is
      * lost, but the fact that something changed must not be: an index that
      * believed nothing had happened would be confidently wrong, which is the
      * one outcome this whole design refuses. */
     count_mutation();
+    attribute(where);
 
     if (quiet)
         return;
@@ -158,14 +281,14 @@ SEC("lsm/inode_create")
 int BPF_PROG(thalyx_create, struct inode *dir, struct dentry *dentry,
              umode_t mode, int ret)
 {
-    report(THALYX_CREATED, false);
+    report(THALYX_CREATED, false, dentry);
     return ret;
 }
 
 SEC("lsm/inode_unlink")
 int BPF_PROG(thalyx_unlink, struct inode *dir, struct dentry *dentry, int ret)
 {
-    report(THALYX_REMOVED, false);
+    report(THALYX_REMOVED, false, dentry);
     return ret;
 }
 
@@ -173,7 +296,12 @@ SEC("lsm/inode_rename")
 int BPF_PROG(thalyx_rename, struct inode *old_dir, struct dentry *old_dentry,
              struct inode *new_dir, struct dentry *new_dentry, int ret)
 {
-    report(THALYX_RENAMED, false);
+    /* The destination, not the source. A rename into a watched tree is a
+     * change to that tree; one out of it changed the tree it left, and the
+     * source dentry no longer describes where anything is. Counting the
+     * destination misses the second case, so both are attributed. */
+    report(THALYX_RENAMED, false, new_dentry);
+    attribute(old_dentry);
     return ret;
 }
 
@@ -186,14 +314,14 @@ SEC("lsm/inode_mkdir")
 int BPF_PROG(thalyx_mkdir, struct inode *dir, struct dentry *dentry,
              umode_t mode, int ret)
 {
-    report(THALYX_CREATED, false);
+    report(THALYX_CREATED, false, dentry);
     return ret;
 }
 
 SEC("lsm/inode_rmdir")
 int BPF_PROG(thalyx_rmdir, struct inode *dir, struct dentry *dentry, int ret)
 {
-    report(THALYX_REMOVED, false);
+    report(THALYX_REMOVED, false, dentry);
     return ret;
 }
 
@@ -201,7 +329,7 @@ SEC("lsm/inode_symlink")
 int BPF_PROG(thalyx_symlink, struct inode *dir, struct dentry *dentry,
              const char *old_name, int ret)
 {
-    report(THALYX_CREATED, false);
+    report(THALYX_CREATED, false, dentry);
     return ret;
 }
 
@@ -209,7 +337,7 @@ SEC("lsm/inode_link")
 int BPF_PROG(thalyx_link, struct dentry *old_dentry, struct inode *dir,
              struct dentry *new_dentry, int ret)
 {
-    report(THALYX_CREATED, false);
+    report(THALYX_CREATED, false, new_dentry);
     return ret;
 }
 
@@ -217,7 +345,7 @@ SEC("lsm/inode_mknod")
 int BPF_PROG(thalyx_mknod, struct inode *dir, struct dentry *dentry,
              umode_t mode, dev_t dev, int ret)
 {
-    report(THALYX_CREATED, false);
+    report(THALYX_CREATED, false, dentry);
     return ret;
 }
 
@@ -245,7 +373,7 @@ SEC("lsm/file_permission")
 int BPF_PROG(thalyx_write, struct file *file, int mask, int ret)
 {
     if (mask & MAY_WRITE)
-        report(THALYX_WRITTEN, true);
+        report(THALYX_WRITTEN, true, BPF_CORE_READ(file, f_path.dentry));
     return ret;
 }
 
@@ -264,7 +392,7 @@ SEC("lsm/inode_setattr")
 int BPF_PROG(thalyx_setattr, struct mnt_idmap *idmap, struct dentry *dentry,
              struct iattr *attr, int ret)
 {
-    report(THALYX_RETITLED, false);
+    report(THALYX_RETITLED, false, dentry);
     return ret;
 }
 
