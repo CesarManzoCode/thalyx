@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 thalyx-contract.workspace = true
 thalyx-manifest.workspace = true
+thalyx-memory.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -16,6 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 thalyx-core = { workspace = true, features = ["test-support"] }
+thalyx-memory.workspace = true
 tempfile.workspace = true
 
 [lints]

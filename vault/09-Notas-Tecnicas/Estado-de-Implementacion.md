@@ -55,6 +55,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
 | Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Sin modelo real; enunciado → contrato → instalación, probado de punta a punta |
+| Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Lo pedido sin testigo, lo instalado atestiguado por `current` |
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
@@ -91,7 +92,6 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
 | La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
 | Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
-| Memoria de conversación del agente | Paso 6 del [[Criterio-de-Salida-Fase-1]] |
 | Imagen ISO | [[Construccion-del-ISO]] |
 
 ### Las advertencias que quedan
@@ -117,7 +117,7 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-436 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+450 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

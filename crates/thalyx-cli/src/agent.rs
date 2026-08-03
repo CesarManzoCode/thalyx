@@ -43,6 +43,12 @@ pub enum AgentCommand {
         /// Confirm capabilities without prompting. For scripts and tests.
         #[arg(long)]
         yes: bool,
+        /// Remember this under a task name, so it survives a reboot.
+        ///
+        /// Step 6 of the Phase 1 exit criterion is that the machine can be
+        /// restarted and the agent still knows what the task was.
+        #[arg(long)]
+        task: Option<String>,
     },
 }
 
@@ -59,7 +65,16 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             repo,
             foreign,
             yes,
-        } => act(store, &utterance, &repo, &foreign, yes, request_id),
+            task,
+        } => act(
+            store,
+            &utterance,
+            &repo,
+            &foreign,
+            yes,
+            task.as_deref(),
+            request_id,
+        ),
     }
 }
 
@@ -129,6 +144,7 @@ fn act(
     repo: &std::path::Path,
     foreign: &[String],
     yes: bool,
+    task: Option<&str>,
     request_id: &str,
 ) -> Fallible {
     let transcript = transcript(utterance, foreign);
@@ -169,5 +185,28 @@ fn act(
         outcome.files.len(),
         outcome.granted
     );
+
+    // After the install, never before. A memory written first would record an
+    // installation that then failed, and a memory of something that did not
+    // happen is worse than no memory at all.
+    if let Some(task) = task {
+        // The `current` link and not the version directory: it is the single
+        // point that decides whether a module is installed at all, so removing
+        // the module, or upgrading past this version, both make the memory stop
+        // being assertable — which is exactly what it should say in either case.
+        let installed_at = store.current_link(&outcome.module_id);
+        thalyx_agent::recollection::record_install(
+            &store.root().join("state").join("memory.db"),
+            task,
+            utterance,
+            &outcome.module_id,
+            &outcome.version,
+            &installed_at,
+        )?;
+        println!();
+        println!("remembered under task `{task}`.");
+        println!("  `thalyx memory recall {task}` reads it back, after a reboot too.");
+    }
+
     Ok(())
 }

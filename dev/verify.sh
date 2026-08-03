@@ -847,6 +847,36 @@ else
     sed 's/^/     /' "$WORK/agent-control.log"
 fi
 
+# Step 6 of the exit criterion, as far as it can be taken without a reboot.
+#
+# The memory is a file, so what matters is that a later process — nothing
+# carried over in RAM — finds it. A process ending and a machine restarting look
+# the same from the database's side; the reboot itself is his to do.
+ASTORE4="$WORK/agent-store-4"
+if THALYX_ROOT="$ASTORE4" "$THALYX" agent do "install dev.thalyx.demo@^1.0" \
+        --repo "$AREPO" --yes --task verify-task > "$WORK/agent-task.log" 2>&1 &&
+   THALYX_ROOT="$ASTORE4" "$THALYX" memory recall verify-task > "$WORK/agent-recall.log" 2>&1 &&
+   grep -q "the human asked" "$WORK/agent-recall.log" &&
+   grep -q "installed dev.thalyx.demo 1.4.2" "$WORK/agent-recall.log"; then
+    proven "a separate process recalled what the agent was asked and what it did"
+else
+    failed "the agent did not remember across processes; see $WORK/agent-recall.log"
+    sed 's/^/     /' "$WORK/agent-recall.log"
+fi
+
+# And that the memory is checked rather than merely stored. Without this, an
+# agent that cheerfully reported installations that are no longer there would
+# pass the step above.
+THALYX_ROOT="$ASTORE4" "$THALYX" module remove dev.thalyx.demo > /dev/null 2>&1
+if THALYX_ROOT="$ASTORE4" "$THALYX" memory recall verify-task > "$WORK/agent-stale.log" 2>&1 &&
+   grep -q "NO LONGER VERIFIABLE" "$WORK/agent-stale.log" &&
+   grep -q "the human asked" "$WORK/agent-stale.log"; then
+    proven "removing the module made the install unassertable, and left what was said standing"
+else
+    failed "the memory did not notice the module was gone; see $WORK/agent-stale.log"
+    sed 's/^/     /' "$WORK/agent-stale.log"
+fi
+
 # The denial, with a model that really does obey the hostile page.
 #
 # `thalyx agent` has no model until llama.cpp is wired in, so driving the

@@ -143,6 +143,127 @@ fn the_same_module_installs_fine_when_the_human_asks_for_it() {
 }
 
 #[test]
+fn what_the_agent_did_survives_the_process_that_did_it() {
+    // Step 6 of the exit criterion, minus the reboot: the memory is a file, and
+    // the check that matters is that a *different* Memory handle, opened later
+    // with nothing carried over in RAM, still finds it. A process ending and a
+    // machine restarting look the same from the database's side.
+    use thalyx_memory::{LexicalEmbedder, Memory};
+
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repository(&repo);
+    let store = Store::open(work.path().join("store")).unwrap();
+    let memory_path = work.path().join("store/state/memory.db");
+
+    let utterance = "install dev.thalyx.demo@^1.0";
+    let transcript = Transcript::new().with(Segment::typed(utterance));
+    let version = install_from(&transcript, &UnconfiguredModel, &repo, &store).unwrap();
+
+    thalyx_agent::recollection::record_install(
+        &memory_path,
+        "poner-el-demo",
+        utterance,
+        "dev.thalyx.demo",
+        &version,
+        &store.current_link("dev.thalyx.demo"),
+    )
+    .unwrap();
+
+    let embedder = LexicalEmbedder;
+    let memory = Memory::open(&memory_path, &embedder).unwrap();
+    let recalled = memory.recall("poner-el-demo").unwrap();
+
+    assert_eq!(recalled.facts.len(), 2);
+    assert!(
+        recalled
+            .facts
+            .iter()
+            .any(|f| f.record.text.contains(utterance)),
+        "the agent forgot what it was asked"
+    );
+    assert!(
+        recalled
+            .facts
+            .iter()
+            .any(|f| f.record.text.contains("installed dev.thalyx.demo 1.4.2")),
+        "the agent forgot what it did"
+    );
+}
+
+#[test]
+fn the_memory_of_an_install_stops_being_assertable_when_the_module_goes() {
+    // The other half, and the reason the install fact carries a witness at all.
+    // An agent that kept reporting an installation that is no longer there
+    // would be worse than one that forgot: it would be confidently wrong about
+    // the state of the machine it is supposed to be helping with.
+    use thalyx_memory::{LexicalEmbedder, Memory};
+
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repository(&repo);
+    let store = Store::open(work.path().join("store")).unwrap();
+    let memory_path = work.path().join("store/state/memory.db");
+
+    let utterance = "install dev.thalyx.demo@^1.0";
+    let transcript = Transcript::new().with(Segment::typed(utterance));
+    let version = install_from(&transcript, &UnconfiguredModel, &repo, &store).unwrap();
+    thalyx_agent::recollection::record_install(
+        &memory_path,
+        "t",
+        utterance,
+        "dev.thalyx.demo",
+        &version,
+        &store.current_link("dev.thalyx.demo"),
+    )
+    .unwrap();
+
+    let embedder = LexicalEmbedder;
+    {
+        // The baseline. Without it, a fact that was never verifiable and one
+        // that stopped being verifiable read identically.
+        let memory = Memory::open(&memory_path, &embedder).unwrap();
+        let before = memory.recall("t").unwrap();
+        assert_eq!(
+            before.no_longer_verifiable().count(),
+            0,
+            "nothing should be stale before anything changed"
+        );
+    }
+
+    thalyx_core::remove(&store, "dev.thalyx.demo", "req-remove").unwrap();
+
+    let memory = Memory::open(&memory_path, &embedder).unwrap();
+    let after = memory.recall("t").unwrap();
+
+    let stale: Vec<&str> = after
+        .no_longer_verifiable()
+        .map(|f| f.record.text.as_str())
+        .collect();
+    assert_eq!(
+        stale.len(),
+        1,
+        "exactly the install fact should go stale, got {stale:?}"
+    );
+    assert!(stale[0].contains("installed dev.thalyx.demo"));
+
+    assert!(
+        after
+            .facts
+            .iter()
+            .any(|f| f.record.text.contains(utterance)),
+        "what the human said is not a claim about the disk and must still stand"
+    );
+    assert_eq!(
+        after.facts.len(),
+        2,
+        "a fact that can no longer be checked is kept, not deleted"
+    );
+}
+
+#[test]
 fn a_module_that_is_not_in_the_repository_says_so_rather_than_half_installing() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");

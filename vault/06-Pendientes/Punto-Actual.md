@@ -172,6 +172,13 @@ corrida. Para encenderlo a mano:
 ## Historial de sesiones
 
 ### 2026-08-03 (4) — el enunciado llega hasta el disco, y un fallo que solo salió corriéndolo
+También quedó el **paso 6 del criterio de salida**: `thalyx agent do --task <t>`
+escribe en la memoria persistente qué se pidió y qué se instaló, y
+`thalyx memory recall <t>` lo lee desde otro proceso. Los dos hechos son de
+clase distinta a propósito: lo que el humano dijo **no atestigua nada** —ningún
+archivo puede volver falso que lo haya dicho— y lo instalado atestigua el enlace
+`current`, así que quitar el módulo deja el recuerdo *no afirmable* y lo dice,
+en vez de seguir reportando una instalación que ya no está.
 `thalyx agent plan` y `thalyx agent do`, más el repositorio local y la
 resolución de versiones (`thalyx-core/repo.rs`): **máxima versión que satisface
 el constraint y cuya firma valida**, como manda [[Resolucion-de-Versiones]]. La

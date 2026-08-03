@@ -40,6 +40,7 @@ pub mod assemble;
 pub mod attribution;
 pub mod model;
 pub mod proposal;
+pub mod recollection;
 pub mod router;
 pub mod transcript;
 
