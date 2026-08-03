@@ -57,26 +57,33 @@ faltaran: **el store de Btrfs** y **el enforcement dentro de la imagen**.
 
 ## Última corrida verificada
 
-**2026-08-03, Fedora 43, kernel 7.0.11, Btrfs, `bpf` en el orden de LSM.**
+**2026-08-03, Fedora 43, kernel 7.0.11, Btrfs, `bpf` en el orden de LSM,
+`main @ 465ccce`.**
 
 ```
-proven 44 · not proven 0 · failed 0
+proven 61 · not proven 2 · failed 0
 ```
 
-> **La próxima corrida no dará `not proven 0`, y eso es correcto.** Hay dos
-> etapas nuevas —el agente y la imagen— y las dos tienen una mitad que nada ha
-> comprobado. Esperar alrededor de `proven 53 · not proven 2 · failed 0`.
->
-> Un número verde que se conserva escondiendo lo que no se probó es exactamente
-> la clase de instrumento que este proyecto existe para no construir. Los
-> comandos y qué significa cada fallo están en [[Primer-Arranque]].
+Las dos `not proven` son cosas que **todavía no existen**, no cosas que no se
+pudieron comprobar: el modelo del agente (`llama.cpp` no está y la ruta real no
+está escrita) y arrancar la imagen desde este script, que se hace a mano con
+`make -C image run`.
 
-Es la primera vez que todo lo que Thalyx afirma se comprueba en una sola
-máquina y se sostiene. Reproducirla:
+Lo que esta corrida cerró y las anteriores no: **el canal del módulo atraviesa
+el sandbox** —dos `exec` y el filtro seccomp— que era la última afirmación de la
+API interna sin comprobar en ningún lado.
+
+Reproducirla:
 
 ```
-git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+git checkout main && git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
 ```
+
+> **El encabezado dice qué commit se está probando.** Existe porque una corrida
+> contra código viejo se ve idéntica a una donde el arreglo no funcionó: misma
+> etapa, mismo fallo, mismo mensaje. Pasó — dos arreglos estaban en `main` y la
+> máquina seguía en la rama de la que salieron. Si la línea no dice `main` y el
+> commit que esperas, la corrida no significa nada.
 
 ## Qué quedó construido y probado
 
