@@ -97,14 +97,17 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ### Las advertencias que quedan
 
-**0. Un módulo con cero permisos no corre confinado sin el LSM cargado.**
-`run.rs:216` se niega si el mapa de política no está disponible, **sin mirar
-cuántos permisos declara el módulo**. El decreto dice "un módulo *cuyos
-permisos* nada puede aplicar no se ejecuta", y uno con cero permisos no tiene
-ninguno que quedara sin aplicar. Consecuencia: en cualquier máquina sin `bpf` en
-el orden de LSM —casi todas— no se puede correr **ningún** módulo confinado, lo
-que choca de frente con el [[Criterio-de-Salida-Fase-1|criterio de salida]].
-Sin resolver: es una decisión de Cesar, no un arreglo.
+**0. Un módulo con cero permisos no corre confinado sin el LSM cargado**, y eso
+**no es un defecto** — se registró como tal el 2026-08-03 y la lectura estaba
+mal. `run.rs:216` se niega si el mapa de política no está disponible, sin mirar
+cuántos permisos declara el módulo, y en Thalyx **el LSM se carga en el
+arranque** porque Thalyx es dueño del arranque ([[Decision-Capa-vs-SO-Nuevo]]).
+Que el mapa falte significa que algo está roto, y negarse es lo correcto.
+
+El argumento con el que se archivó como defecto —"en casi ninguna máquina hay
+`bpf` en el orden de LSM"— daba por supuesto un modelo de despliegue que este
+proyecto nunca tuvo: instalar Thalyx encima del Linux de alguien más. Ver la
+sección de andamio en [[Decision-Capa-vs-SO-Nuevo]].
 
 **1. El perfil no crea un user namespace para el módulo.** Lo que sí hay es un
 uid propio por módulo, al que el lanzador desciende con `setresuid` y **relee el

@@ -155,6 +155,33 @@ Resultado: un watcher que estaba contando perfectamente se reportó ilegible.
 
 Y el corolario, que es la quinta vez que este proyecto lo aprende en otra capa: **un fallo al leer se reportó como un fallo al existir.** `thalyx graph watcher` trataba cualquier error como "el watcher no está cargado", así que mandaba al humano a recargar algo que llevaba todo el rato funcionando. Ahora distingue las dos cosas y dice cuál es: una es algo que ir a arreglar afuera, la otra es un defecto de Thalyx.
 
+## Regla derivada: un decreto citado de memoria puede salir invertido
+
+El 2026-08-03, al descartar un punto de una revisión externa, se citó
+[[Decision-Capa-vs-SO-Nuevo]] como *"el proyecto decidió empezar como capa sobre
+Linux"*. El decreto dice, literalmente y marcado como no negociable, que Thalyx
+**no es una capa** — y una revisión anterior había eliminado esa palabra del
+vocabulario del proyecto para evitar exactamente esa lectura.
+
+No fue un matiz perdido: fue la afirmación al revés, dicha con confianza, para
+rechazar una crítica que en su parte factual tenía razón.
+
+Es la misma forma que el fallo de atribución de ese mismo día, en otra capa. Ahí
+una decisión equivocada quedó protegida por una justificación convincente; aquí
+un decreto correcto quedó reportado como su contrario por un resumen convincente.
+En ambos casos **lo que falló no fue el conocimiento sino la verificación**, y en
+ambos el síntoma externo fue el mismo: sonaba bien.
+
+Regla, y aplica a las notas tanto como al código:
+
+> **Un decreto que se va a usar para cerrar una discusión se abre y se cita.**
+> No se parafrasea de memoria. Si la conclusión de un argumento es "esto ya está
+> decidido", el archivo tiene que estar abierto mientras se escribe la frase.
+
+El costo de abrirlo son diez segundos. El costo de no abrirlo, ese día, fue
+archivar como defecto una implementación correcta y descartar como error una
+observación válida.
+
 ## Regla derivada: la superficie previa a la comprobación se encuentra midiendo, no leyendo
 
 Una revisión externa entregó una lista de una docena de riesgos del desempaquetado

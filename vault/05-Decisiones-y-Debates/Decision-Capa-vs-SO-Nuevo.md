@@ -25,6 +25,45 @@ Una capa no puede cambiar las reglas del sistema que la aloja: las acata. Thalyx
 
 Que la mayor parte del código de la Fase 1 viva en userspace es una decisión de **orden de construcción y gestión de riesgo**, no una renuncia arquitectónica. Ver [[Decision-Kernel-vs-Userspace]].
 
+## Correr sobre otro Linux es andamio, no destino
+
+Añadido el 2026-08-03, porque faltaba escrito y su ausencia costó un día de
+razonamiento torcido.
+
+Hoy Thalyx se ejecuta sobre la Fedora de Cesar: `THALYX_ROOT` apunta a un
+directorio, `verify.sh` monta cgroups prestados, el LSM se carga y se desengancha
+a mano. **Eso es un banco de pruebas, no una forma de usar Thalyx.** Es
+simplemente lo más rápido de validar en una máquina que ya existe.
+
+Lo que el sistema es, lo dice [[Fases-de-Implementacion]] desde la primera
+línea de la Fase 1: base Alpine, **Btrfs obligatorio en el volumen raíz**,
+subvolúmenes separados para sistema, módulos y datos de usuario. Una imagen que
+arranca. El primer usuario no instalará un paquete encima de su distribución —
+vivirá la experiencia completa de instalar un sistema operativo.
+
+### Qué se lee mal cuando esto no está escrito
+
+Dos cosas, ambas ocurridas el mismo día:
+
+1. **Se registró como defecto que un módulo sin permisos no corra confinado
+   cuando falta el mapa de política**, con el argumento de que "casi ninguna
+   máquina tiene `bpf` en el orden de LSM". Cierto para las máquinas de otras
+   personas, irrelevante para Thalyx: aquí el LSM se carga en el arranque. Que
+   falte es una avería, y negarse es la respuesta correcta. Ver la advertencia 0
+   de [[Estado-de-Implementacion]].
+
+2. **Se resumió este decreto como su contrario** — "el proyecto decidió empezar
+   como capa sobre Linux" — al descartar una crítica externa que decía que
+   Thalyx todavía no es un sistema operativo. El decreto dice literalmente que
+   no es una capa, y la revisión de abajo eliminó esa palabra del vocabulario
+   precisamente para que nadie volviera a leerlo así.
+
+Sobre esa crítica, dicho bien: **como artefacto de hoy tiene razón** — no hay
+imagen que arranque todavía. Lo que confundía era el tipo de afirmación: no es
+una posición de diseño pendiente de decidir, es un hecho de **orden de
+construcción**. La autoridad de diseño ya está ejercida, y `thalyx-lsm` modifica
+el kernel desde la Fase 1.
+
 ## Revisiones
 
 ### 2026-08-01 — Se añade la formulación de "autoridad de diseño" y se elimina "capa" del vocabulario
