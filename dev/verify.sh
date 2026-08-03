@@ -370,6 +370,34 @@ else
     echo "     (that refusal is itself the correct behaviour, and the suite tests it)"
 fi
 
+# Undoing the install, on the real store, right after having run the module.
+# `rollback` is the narrow one: it takes back what Thalyx published and touches
+# nothing else, which is why it runs without asking.
+if "$THALYX" rollback --dry-run > "$WORK/rollback-dry.log" 2>&1 &&
+   "$THALYX" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
+    proven "rollback --dry-run said what it would undo and undid nothing"
+else
+    failed "the dry run was not a dry run; see $WORK/rollback-dry.log"
+    sed 's/^/     /' "$WORK/rollback-dry.log"
+fi
+
+if "$THALYX" rollback > "$WORK/rollback.log" 2>&1; then
+    if "$THALYX" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
+        failed "rollback reported success and the module is still installed"
+    else
+        proven "rollback took the module and its permissions back off disk"
+        # And the second time refuses rather than reporting another success.
+        if "$THALYX" rollback > "$WORK/rollback-again.log" 2>&1; then
+            failed "rolling back twice reported success the second time"
+        else
+            green "     rolling it back again refused: $(tail -1 "$WORK/rollback-again.log" | head -c 80)"
+        fi
+    fi
+else
+    failed "rollback failed; see $WORK/rollback.log"
+    sed 's/^/     /' "$WORK/rollback.log"
+fi
+
 # --------------------------------------------------- 7. the index and watcher
 
 step "7. the semantic index, and what the kernel can tell it"

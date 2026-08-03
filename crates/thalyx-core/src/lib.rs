@@ -15,6 +15,7 @@ pub mod install;
 pub mod keystore;
 pub mod permissions;
 pub mod reconcile;
+pub mod rollback;
 pub mod run;
 pub mod store;
 pub mod trusted_path;
@@ -158,6 +159,37 @@ pub enum CoreError {
          over the life of this system."
     )]
     UidRangeExhausted { first: u32, last: u32 },
+
+    #[error(
+        "nothing to roll back: the journal holds no committed installation.\n  \
+         Build-then-commit means a failed install published nothing, so there is \
+         usually nothing to undo — which is the design working."
+    )]
+    NothingToRollBack,
+
+    #[error("no journal entry has request id `{request_id}`")]
+    NoSuchRequest { request_id: String },
+
+    #[error("`{operation}` cannot be rolled back: {reason}")]
+    NotReversible { operation: String, reason: String },
+
+    #[error(
+        "`{module_id}` {version} is already gone; there is nothing left of that \
+         installation to undo"
+    )]
+    AlreadyUndone { module_id: String, version: String },
+
+    #[error(
+        "refusing to roll back: that entry published `{module_id}` {published}, but \
+         {installed} is what is installed now.\n  \
+         Undoing it would delete a version this entry never put there. Remove it \
+         deliberately with `thalyx module remove {module_id}` if that is what you want."
+    )]
+    RollbackSuperseded {
+        module_id: String,
+        published: String,
+        installed: String,
+    },
 
     #[error(transparent)]
     Sandbox(#[from] thalyx_sandbox::SandboxError),

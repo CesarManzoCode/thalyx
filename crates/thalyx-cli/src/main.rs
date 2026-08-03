@@ -54,6 +54,21 @@ enum Command {
     /// Show granted permissions
     Permissions,
 
+    /// Undo something Thalyx published
+    ///
+    /// Narrow and cheap: it takes back what Thalyx itself put on disk and
+    /// touches nothing you made, which is why it does not ask before running.
+    /// It is not the command that returns the filesystem to a snapshot — that
+    /// one is destructive and has its own name, `restore`.
+    Rollback {
+        /// Undo this exact request rather than the most recent commit
+        #[arg(long)]
+        request: Option<String>,
+        /// Say what would be undone, and do nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// What the agent remembers between sessions
     #[command(subcommand)]
     Memory(memory::MemoryCommand),
@@ -158,6 +173,38 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Permissions => {
             let store = Store::open(&root)?;
             render::permissions(&store)
+        }
+        Command::Rollback { request, dry_run } => {
+            let store = Store::open(&root)?;
+            let plan = thalyx_core::rollback::plan(&store, request.as_deref())?;
+
+            // Said before it happens, in the same words either way. The decree
+            // says rollback needs no confirmation because it cannot destroy
+            // the human's work; it does not say it may act silently.
+            println!("{}", plan.describe());
+            println!("  published by request {}", plan.request_id);
+            if plan.permissions_revoked > 0 {
+                println!(
+                    "  {} permission(s) stop being effective",
+                    plan.permissions_revoked
+                );
+            }
+            if let Some(uid) = plan.uid_retired {
+                println!("  user {uid} is retired, and never handed to another module");
+            }
+            println!();
+            println!("Nothing outside what Thalyx published is touched.");
+
+            if dry_run {
+                println!();
+                println!("--dry-run: nothing was undone.");
+                return Ok(());
+            }
+
+            thalyx_core::rollback::apply(&store, &plan, &new_request_id())?;
+            println!();
+            println!("undone.");
+            Ok(())
         }
         Command::Memory(command) => {
             Store::open(&root)?;
