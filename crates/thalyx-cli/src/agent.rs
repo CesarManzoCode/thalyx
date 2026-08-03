@@ -10,6 +10,7 @@
 use crate::render;
 use clap::Subcommand;
 use std::path::PathBuf;
+use thalyx_agent::recollection::Context;
 use thalyx_agent::{ForeignText, Path as AgentPath, Segment, Transcript, UnconfiguredModel};
 use thalyx_contract::Caller;
 use thalyx_core::Store;
@@ -39,6 +40,15 @@ pub enum AgentCommand {
         /// named only there is still refused.
         #[arg(long)]
         foreign_may_act: bool,
+        /// Reason with what the agent remembers about this task
+        #[arg(long)]
+        task: Option<String>,
+    },
+
+    /// What the agent remembers about a task, and what it can no longer confirm
+    Recall {
+        /// The task name it was recorded under
+        task: String,
     },
 
     /// Turn a sentence into a contract and carry it out
@@ -75,13 +85,20 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             repo,
             foreign,
             foreign_may_act,
+            task,
         } => plan(
-            &utterance,
-            repo.as_deref(),
-            &foreign,
-            policy(foreign_may_act),
-            request_id,
+            store,
+            Planning {
+                utterance: &utterance,
+                repo: repo.as_deref(),
+                foreign: &foreign,
+                task: task.as_deref(),
+                policy: policy(foreign_may_act),
+                request_id,
+            },
         ),
+
+        AgentCommand::Recall { task } => recall(store, &task),
 
         AgentCommand::Do {
             utterance,
@@ -115,12 +132,71 @@ fn policy(may_act: bool) -> ForeignText {
     }
 }
 
-fn transcript(utterance: &str, foreign: &[String]) -> Transcript {
-    let mut transcript = Transcript::new().with(Segment::typed(utterance));
+fn memory_path(store: &Store) -> PathBuf {
+    store.root().join("state").join("memory.db")
+}
+
+/// Assemble everything the agent is working from, in trust order.
+///
+/// What Thalyx remembers goes in first because it is the oldest and the least
+/// specific; what the human just typed goes last because it is the request. The
+/// order is for a reader — attribution does not care about position, only about
+/// which channel a value turns up on.
+fn transcript(context: Context, utterance: &str, foreign: &[String]) -> Transcript {
+    let mut transcript = Transcript::new();
+    for segment in context.segments {
+        transcript = transcript.with(segment);
+    }
+    transcript = transcript.with(Segment::typed(utterance));
     for text in foreign {
         transcript = transcript.with(Segment::foreign(text));
     }
     transcript
+}
+
+/// The agent reading its own memory back, in its own voice.
+///
+/// `thalyx memory recall` shows the same records as a database would. This says
+/// what they mean for the task: what is still true, and what it has stopped
+/// being able to stand behind. A memory nobody consults is a log.
+fn recall(store: &Store, task: &str) -> Fallible {
+    let context = thalyx_agent::recollection::context(&memory_path(store), task)?;
+
+    if context.is_empty() {
+        println!("I have nothing recorded under `{task}`.");
+        return Ok(());
+    }
+
+    if !context.said.is_empty() {
+        println!("About `{task}`, you told me:");
+        for text in &context.said {
+            println!("  · {text}");
+        }
+    }
+
+    if !context.holds.is_empty() {
+        if !context.said.is_empty() {
+            println!();
+        }
+        println!("And this still checks out:");
+        for text in &context.holds {
+            println!("  ✓ {text}");
+        }
+    }
+
+    if !context.unconfirmable.is_empty() {
+        println!();
+        println!("And this I remember but can no longer confirm:");
+        for text in &context.unconfirmable {
+            println!("  ? {text}");
+        }
+        println!();
+        println!("Not wrong — unconfirmable. Something it described changed without");
+        println!("going through Thalyx, so I will not act on it. Name it yourself and");
+        println!("I will, which is the point of you never needing me.");
+    }
+
+    Ok(())
 }
 
 fn caller(request_id: &str) -> Caller {
@@ -137,14 +213,37 @@ fn describe_path(path: AgentPath) -> &'static str {
     }
 }
 
-fn plan(
-    utterance: &str,
-    repo: Option<&std::path::Path>,
-    foreign: &[String],
+/// One `agent plan`, gathered for the same reason [`Doing`] is.
+struct Planning<'a> {
+    utterance: &'a str,
+    repo: Option<&'a std::path::Path>,
+    foreign: &'a [String],
+    task: Option<&'a str>,
     policy: ForeignText,
-    request_id: &str,
-) -> Fallible {
-    let transcript = transcript(utterance, foreign);
+    request_id: &'a str,
+}
+
+fn plan(store: &Store, planning: Planning<'_>) -> Fallible {
+    let Planning {
+        utterance,
+        repo,
+        foreign,
+        task,
+        policy,
+        request_id,
+    } = planning;
+
+    let context = match task {
+        Some(task) => thalyx_agent::recollection::context(&memory_path(store), task)?,
+        None => Context::default(),
+    };
+    if !context.segments.is_empty() {
+        println!(
+            "working from {} thing(s) I remember",
+            context.segments.len()
+        );
+    }
+    let transcript = transcript(context, utterance, foreign);
     let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));
@@ -206,7 +305,11 @@ fn act(store: &Store, doing: Doing<'_>) -> Fallible {
         request_id,
     } = doing;
 
-    let transcript = transcript(utterance, foreign);
+    let context = match task {
+        Some(task) => thalyx_agent::recollection::context(&memory_path(store), task)?,
+        None => Context::default(),
+    };
+    let transcript = transcript(context, utterance, foreign);
     let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));

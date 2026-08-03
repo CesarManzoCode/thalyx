@@ -264,6 +264,181 @@ fn the_memory_of_an_install_stops_being_assertable_when_the_module_goes() {
     );
 }
 
+/// A model that names a module it could only have learned from the transcript.
+///
+/// It reports what it was given rather than inventing, which is what makes it
+/// the right instrument here: if the id reaches it, it proposes it; if the id
+/// never reaches it, it proposes something unattributable and the agent refuses.
+struct EchoesWhatItWasTold;
+impl Model for EchoesWhatItWasTold {
+    fn propose(&self, transcript: &Transcript) -> Result<String, ModelError> {
+        let seen = transcript
+            .segments()
+            .iter()
+            .find_map(|segment| {
+                segment
+                    .text
+                    .split_whitespace()
+                    .find(|word| word.starts_with("dev.thalyx."))
+            })
+            .unwrap_or("dev.nothing.here")
+            // A version constraint is not part of a module's name. A real model
+            // under a grammar could not glue them together either; this one
+            // could, and did, the moment the memory started reaching it.
+            .split('@')
+            .next()
+            .unwrap_or_default()
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+            .to_string();
+        Ok(format!(
+            r#"{{"operation": "install_module", "targets": ["{seen}"]}}"#
+        ))
+    }
+}
+
+#[test]
+fn the_agent_can_act_on_something_only_its_own_memory_knows() {
+    // The point of memory being read at all. The human never types the module
+    // id here — the only place it exists is what Thalyx recorded doing earlier,
+    // and that is Thalyx's own state rather than anybody's text.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repository(&repo);
+    let store = Store::open(work.path().join("store")).unwrap();
+    let memory_path = work.path().join("store/state/memory.db");
+
+    install_from(
+        &Transcript::new().with(Segment::typed("install dev.thalyx.demo@^1.0")),
+        &UnconfiguredModel,
+        &repo,
+        &store,
+    )
+    .unwrap();
+    thalyx_agent::recollection::record_install(
+        &memory_path,
+        "t",
+        "install dev.thalyx.demo@^1.0",
+        "dev.thalyx.demo",
+        "1.4.2",
+        &store.current_link("dev.thalyx.demo"),
+    )
+    .unwrap();
+
+    let context = thalyx_agent::recollection::context(&memory_path, "t").unwrap();
+    assert!(context.unconfirmable.is_empty());
+    assert_eq!(
+        context.holds.len(),
+        1,
+        "the install should be checkable and checking out"
+    );
+    assert_eq!(
+        context.said.len(),
+        1,
+        "what the human asked has no witness and must survive anyway — an \
+         earlier version dropped exactly this and left the task with no subject"
+    );
+
+    // "that one again" — no module id anywhere in what was typed.
+    let mut transcript = Transcript::new();
+    for segment in context.segments {
+        transcript = transcript.with(segment);
+    }
+    transcript = transcript.with(Segment::typed("otra vez ese"));
+
+    let plan = thalyx_agent::plan(
+        &transcript,
+        &EchoesWhatItWasTold,
+        ForeignText::NeverActs,
+        caller(),
+    )
+    .expect("a value from Thalyx's own record is allowed to have effect");
+
+    assert_eq!(plan.contract.targets, ["dev.thalyx.demo"]);
+    assert_eq!(
+        plan.contract.origins.get("targets"),
+        Some(thalyx_contract::Origin::SystemState),
+        "it came from Thalyx's own state, not from the human and not from a stranger"
+    );
+}
+
+#[test]
+fn a_memory_that_can_no_longer_be_confirmed_authorises_nothing() {
+    // The half that keeps the half above honest. Same setup, except the module
+    // is gone — so the memory of installing it stops checking out, and a belief
+    // the system has just said it cannot confirm must not be able to act.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repository(&repo);
+    let store = Store::open(work.path().join("store")).unwrap();
+    let memory_path = work.path().join("store/state/memory.db");
+
+    install_from(
+        &Transcript::new().with(Segment::typed("install dev.thalyx.demo@^1.0")),
+        &UnconfiguredModel,
+        &repo,
+        &store,
+    )
+    .unwrap();
+    thalyx_agent::recollection::record_install(
+        &memory_path,
+        "t",
+        "algo que no nombra el modulo",
+        "dev.thalyx.demo",
+        "1.4.2",
+        &store.current_link("dev.thalyx.demo"),
+    )
+    .unwrap();
+
+    thalyx_core::remove(&store, "dev.thalyx.demo", "req-remove").unwrap();
+
+    let context = thalyx_agent::recollection::context(&memory_path, "t").unwrap();
+    assert_eq!(
+        context.unconfirmable.len(),
+        1,
+        "the install fact should have stopped checking out"
+    );
+    assert!(
+        context
+            .segments
+            .iter()
+            .all(|s| !s.text.contains("dev.thalyx.demo")),
+        "an unconfirmable fact must not become trusted context"
+    );
+
+    let mut transcript = Transcript::new();
+    for segment in context.segments {
+        transcript = transcript.with(segment);
+    }
+    transcript = transcript.with(Segment::typed("otra vez ese"));
+
+    let outcome = thalyx_agent::plan(
+        &transcript,
+        &EchoesWhatItWasTold,
+        ForeignText::NeverActs,
+        caller(),
+    );
+    assert!(
+        outcome.is_err(),
+        "acting on a belief the system cannot confirm: {outcome:?}"
+    );
+}
+
+#[test]
+fn the_human_can_always_name_it_themselves_when_the_memory_went_stale() {
+    // The escape hatch, and the reason the rule above is affordable. Being
+    // unable to resume from memory must never mean being unable to act.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repository(&repo);
+    let store = Store::open(work.path().join("store")).unwrap();
+
+    let transcript = Transcript::new().with(Segment::typed("install dev.thalyx.demo"));
+    assert!(install_from(&transcript, &UnconfiguredModel, &repo, &store).is_ok());
+}
+
 #[test]
 fn a_module_that_is_not_in_the_repository_says_so_rather_than_half_installing() {
     let work = tempfile::tempdir().unwrap();

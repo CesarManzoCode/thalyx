@@ -113,8 +113,6 @@ de aclaración. Ninguno puede terminar en una acción.
 Escrito para que no se lea como una versión coja de algo, sino como su alcance:
 
 - No encadena acciones.
-- No recuerda entre sesiones — eso es el paso 6 del criterio de salida y llega
-  después, sobre [[Memoria-Persistente]], que ya está construida.
 - No busca en un repositorio remoto.
 - No llama a modelos remotos, y en Fase 1 no puede.
 - No compone las confirmaciones: las genera y las muestra el núcleo.
@@ -196,6 +194,39 @@ en una página sigue rechazado, por el núcleo, antes de abrir nada.
 Esa separación es lo que hace ofrecible la concesión. Sin ella, conceder "puedes
 actuar tras leer" concedería en silencio "la página puede elegir", que es el
 ataque entero.
+
+## La memoria, y por qué se lee con un filtro
+
+El agente **lee** su propia memoria, no solo escribe en ella: `thalyx agent
+recall <tarea>`, y `agent plan`/`agent do --task <t>` traen ese contexto solos.
+Una memoria que nunca se consulta no es memoria, es una bitácora.
+
+Lo que se lee no entra como texto de nadie: **es estado de Thalyx**, así que
+llega al transcript por el canal `Thalyx`, que sí puede tener efecto. Eso es lo
+que hace posible que el agente actúe sobre algo que solo su propio registro
+conoce.
+
+Con un filtro, y aquí está la decisión. `Standing` tiene **tres** valores:
+
+| Standing | Qué es | ¿Sirve de contexto? |
+|---|---|---|
+| `Unwitnessed` | *"me pediste X"* — un registro de habla | **Sí.** Nada en el disco puede confirmarlo ni desmentirlo, así que no tiene contra qué quedar obsoleto |
+| `Verified` | *"X está instalado"*, y el disco sigue de acuerdo | **Sí** |
+| `Unverified` | Lo estuvo y ya no | **No.** Se muestra, no se usa |
+
+Un hecho que la memoria ya no puede comprobar **no es falso** —lo que describía
+pudo cambiar por fuera de Thalyx— pero dejó de ser una afirmación sobre el
+presente. Autorizar algo desde ahí es actuar sobre una creencia que el propio
+sistema acaba de decir que no puede confirmar. Regla 9.
+
+Y no deja a nadie atrapado: el humano siempre puede nombrarlo él y tomar la ruta
+del router. Otra vez el [[Principio-Doble-Ruta]] siendo lo que hace pagable una
+defensa así.
+
+**La primera versión manejaba dos de los tres** y tiraba el tercero en silencio
+— justo el que dice de qué iba la tarea. Se encontró corriendo `agent recall` y
+notando que al resumen de la tarea le faltaba su propio sujeto. Van dos veces
+que la memoria enseña lo mismo: los estados intermedios son los que se pierden.
 
 ## Relacionado
 - [[Gamas-de-Modelo]] — qué modelo, cómo corre, qué garantiza la gramática

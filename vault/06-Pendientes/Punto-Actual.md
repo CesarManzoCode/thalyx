@@ -127,7 +127,6 @@ por ancestros— así que es una mejora de rendimiento, no de corrección. Ver
 
 Ninguno bloquea excepto el primero.
 
-- [ ] **La mitad de lectura del paso 6** — que el agente lea su propia memoria y retome una tarea, no solo que la escriba.
 - [ ] **Una frontera real que etiquete canales** — hoy `--foreign` es una bandera que un humano pasa a propósito; nada en Thalyx llama a `Segment::foreign()` por su cuenta, porque nada trae texto de terceros todavía. Toda la defensa de procedencia descansa sobre ese código, que no existe.
 - [ ] **Correr el banco de las gamas** — el decreto ya está ([[Gamas-de-Modelo]]); faltan las cifras medidas. Necesita `llama.cpp` y los pesos, que el contenedor de desarrollo no puede tener.
 - [ ] Métricas de benchmark de la Fase 2 (el umbral ya está decretado; falta el instrumento)
@@ -174,12 +173,13 @@ corrida. Para encenderlo a mano:
 ## Historial de sesiones
 
 ### 2026-08-03 (4) — el enunciado llega hasta el disco, y un fallo que solo salió corriéndolo
-**Corrección sobre el paso 6:** lo construido es la *mitad de escritura*. El
-criterio pide que **el agente conserve el contexto de la tarea**, y lo que hay
-es un registro legible por un humano — el agente escribe en su memoria pero no
-la lee. Falta la mitad que hace que retome una conversación a medias.
+**El paso 6, ahora con sus dos mitades.** El agente escribe lo que hizo **y lo
+lee**: `thalyx agent recall <tarea>`, y `--task` trae el contexto solo. Lo que
+recuerda entra como estado de Thalyx y puede tener efecto, salvo lo que ya no
+puede confirmar, que se muestra y no se usa. Falta que retome una conversación
+de varios turnos, que necesita un modelo.
 
-Lo que sí quedó: `thalyx agent do --task <t>`
+Lo que quedó: `thalyx agent do --task <t>`
 escribe en la memoria persistente qué se pidió y qué se instaló, y
 `thalyx memory recall <t>` lo lee desde otro proceso. Los dos hechos son de
 clase distinta a propósito: lo que el humano dijo **no atestigua nada** —ningún

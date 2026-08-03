@@ -864,9 +864,20 @@ else
     sed 's/^/     /' "$WORK/agent-recall.log"
 fi
 
+# Reading it back is the agent's own job, not only the database's. A memory
+# nobody consults is a log.
+if THALYX_ROOT="$ASTORE4" "$THALYX" agent recall verify-task > "$WORK/agent-own.log" 2>&1 &&
+   grep -q "you told me" "$WORK/agent-own.log" &&
+   grep -q "still checks out" "$WORK/agent-own.log"; then
+    proven "the agent read its own memory back, separating what it was told from what it checked"
+else
+    failed "the agent could not read its own memory; see $WORK/agent-own.log"
+    sed 's/^/     /' "$WORK/agent-own.log"
+fi
+
 # And that the memory is checked rather than merely stored. Without this, an
 # agent that cheerfully reported installations that are no longer there would
-# pass the step above.
+# pass the steps above.
 THALYX_ROOT="$ASTORE4" "$THALYX" module remove dev.thalyx.demo > /dev/null 2>&1
 if THALYX_ROOT="$ASTORE4" "$THALYX" memory recall verify-task > "$WORK/agent-stale.log" 2>&1 &&
    grep -q "NO LONGER VERIFIABLE" "$WORK/agent-stale.log" &&
@@ -875,6 +886,18 @@ if THALYX_ROOT="$ASTORE4" "$THALYX" memory recall verify-task > "$WORK/agent-sta
 else
     failed "the memory did not notice the module was gone; see $WORK/agent-stale.log"
     sed 's/^/     /' "$WORK/agent-stale.log"
+fi
+
+# The fail-closed half, from the agent's side: what it can no longer confirm has
+# to move out of what it will reason from, not just be flagged in a listing.
+if THALYX_ROOT="$ASTORE4" "$THALYX" agent recall verify-task > "$WORK/agent-own2.log" 2>&1 &&
+   grep -q "can no longer confirm" "$WORK/agent-own2.log" &&
+   ! grep -q "still checks out" "$WORK/agent-own2.log" &&
+   grep -q "you told me" "$WORK/agent-own2.log"; then
+    proven "the agent moved the stale fact out of what it will act on, and kept what you said"
+else
+    failed "the agent still counts a fact it cannot confirm; see $WORK/agent-own2.log"
+    sed 's/^/     /' "$WORK/agent-own2.log"
 fi
 
 # The denial, with a model that really does obey the hostile page.
