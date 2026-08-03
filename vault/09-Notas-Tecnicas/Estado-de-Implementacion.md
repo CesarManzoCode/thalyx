@@ -59,6 +59,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
 | Empaquetado de módulos | `crates/thalyx-cli/dev.rs` | `keygen`, `pack`, `inspect`, `agent-probe` |
+| Módulo `dev.thalyx.hola` | `modules/hola/` | Sin función, a propósito: existe para que se vea qué es tener un módulo |
 
 ### Decretos que el código ya hace cumplir
 
@@ -95,6 +96,15 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Imagen ISO | [[Construccion-del-ISO]] |
 
 ### Las advertencias que quedan
+
+**0. Un módulo con cero permisos no corre confinado sin el LSM cargado.**
+`run.rs:216` se niega si el mapa de política no está disponible, **sin mirar
+cuántos permisos declara el módulo**. El decreto dice "un módulo *cuyos
+permisos* nada puede aplicar no se ejecuta", y uno con cero permisos no tiene
+ninguno que quedara sin aplicar. Consecuencia: en cualquier máquina sin `bpf` en
+el orden de LSM —casi todas— no se puede correr **ningún** módulo confinado, lo
+que choca de frente con el [[Criterio-de-Salida-Fase-1|criterio de salida]].
+Sin resolver: es una decisión de Cesar, no un arreglo.
 
 **1. El perfil no crea un user namespace para el módulo.** Lo que sí hay es un
 uid propio por módulo, al que el lanzador desciende con `setresuid` y **relee el
