@@ -325,21 +325,41 @@ store:
 # The store is a prerequisite that is deliberately not built here: `make store`
 # needs root, and a `run` that quietly asked for a password would be a `run`
 # nobody could put in a script.
+#
+# But it refuses rather than warning. It used to print a note and boot anyway,
+# and the note scrolled past above a kernel's worth of output — so the machine
+# came up saying it had no disk, which reads as the store being broken when
+# what happened is that nobody made one. Booting with no store is a real thing
+# to want; it is `make run STORELESS=1`, and then the machine's own message is
+# the answer rather than a mystery.
+#
+# The disk is checked for readability, not just existence. `sudo make store`
+# leaves it owned by root, and QEMU started as an ordinary user would fail to
+# open it with an error about the file rather than about the permission.
 
 run: $(BZIMAGE) $(INITRAMFS)
-	@test -f $(STORE) || { \
-	    echo "  no store disk at $(STORE)."; \
-	    echo "  The machine will boot and say so, and nothing will survive it."; \
-	    echo "  To make one:  make -C image store-stage"; \
-	    echo "                sudo make -C image store"; \
+	@if [ -z "$(STORELESS)" ] && [ ! -f $(STORE) ]; then \
+	    echo "  no store disk at $(STORE), so nothing would survive this boot."; \
 	    echo; \
-	}
+	    echo "      make -C image store-stage"; \
+	    echo "      sudo make -C image store"; \
+	    echo; \
+	    echo "  To boot without one on purpose:  make -C image run STORELESS=1"; \
+	    exit 1; \
+	fi
+	@if [ -f $(STORE) ] && [ ! -r $(STORE) ]; then \
+	    echo "  $(STORE) is there and this user cannot read it."; \
+	    echo "  sudo make store leaves it owned by root. Either run QEMU with"; \
+	    echo "  sudo, or: sudo chown $$(id -un) $(STORE)"; \
+	    exit 1; \
+	fi
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
 	    -smp 2 \
 	    -kernel $(BZIMAGE) \
 	    -initrd $(INITRAMFS) \
-	    $$(test -f $(STORE) && echo "-drive file=$(STORE),if=virtio,format=raw") \
+	    $$(test -z "$(STORELESS)" && test -r $(STORE) \
+	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
 	    -append "console=ttyS0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
 

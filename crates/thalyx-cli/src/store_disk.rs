@@ -107,6 +107,46 @@ fn named_device() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Every block device the kernel knows about, by name.
+///
+/// From `/sys/block`, which is the kernel's own list and not a guess about
+/// which names are plausible. `Err` is a failure to read and is kept separate
+/// from an empty list, because those two say opposite things about the machine.
+fn block_devices() -> std::io::Result<Vec<String>> {
+    let mut names: Vec<String> = std::fs::read_dir("/sys/block")?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Why the named device is not here, in the terms that decide what to do next.
+///
+/// "No disk at all" and "disks, but not that one" send you to different halves
+/// of the problem — a kernel with no driver for the controller against a disk
+/// that was attached under another name or never attached. The first version of
+/// this said only "is not a device on this machine", which is true of both and
+/// useful for neither. Rule 10 of `Estrategia-de-Pruebas.md`, applied to the one
+/// message a person reads while looking at a machine that came up empty.
+fn why_absent(device: &Path) -> String {
+    let named = device.display();
+    match block_devices() {
+        Ok(names) if names.is_empty() => format!(
+            "{named} is not here, and neither is any other disk. Either nothing\n      \
+             was attached, or this kernel has no driver for the controller it\n      \
+             was attached to"
+        ),
+        Ok(names) => format!(
+            "{named} is not here. The disks that are: {}",
+            names.join(", ")
+        ),
+        // Not "there are no disks". /sys was mounted a few lines ago and this
+        // still failed, which is a stranger fact than a missing store.
+        Err(error) => format!("{named} is not here, and /sys/block could not be read: {error}"),
+    }
+}
+
 /// Mount the store, or say precisely which way it was not there.
 pub fn mount() -> Store {
     let Some(device) = named_device() else {
@@ -118,7 +158,7 @@ pub fn mount() -> Store {
     // which is ENODEV for both a missing device node and an unknown filesystem.
     if !device.exists() {
         return Store::Absent {
-            why: format!("{} is not a device on this machine", device.display()),
+            why: why_absent(&device),
         };
     }
 
@@ -168,8 +208,9 @@ impl Store {
             }
             Store::Absent { why } => {
                 println!("  no  store        {why}");
-                println!("      nothing will survive this boot. Making a store is");
-                println!("      `sudo make -C image store`; I will not make one myself,");
+                println!("      nothing will survive this boot. Making one is");
+                println!("      `make -C image store-stage` and then");
+                println!("      `sudo make -C image store`. I will not make one myself,");
                 println!("      because a machine that did could never tell you it");
                 println!("      had lost the old one.");
             }
@@ -286,6 +327,39 @@ mod tests {
             recipe.contains("store-stage"),
             "`store` refuses without naming the command that fixes it"
         );
+    }
+
+    #[test]
+    fn a_missing_disk_says_whether_there_are_any_disks_at_all() {
+        // Two failures that read identically and are fixed differently: nothing
+        // was attached, against a disk that came up under another name. The
+        // first version said only "is not a device on this machine", which is
+        // true of both — and that is the one line somebody reads while looking
+        // at a machine that came up with nothing on it.
+        //
+        // This runs where /sys/block exists and is populated, so it exercises
+        // the branch that lists them. The two other branches are unreachable
+        // from a test that does not control /sys, and are written to be read.
+        let why = why_absent(Path::new("/dev/nothing-is-called-this"));
+        assert!(
+            why.contains("/dev/nothing-is-called-this"),
+            "the message does not name the disk that was asked for: {why}"
+        );
+
+        match block_devices() {
+            Ok(names) if !names.is_empty() => {
+                assert!(
+                    why.contains(&names[0]),
+                    "there are disks and the message does not list them: {why}"
+                );
+            }
+            // A machine with no block devices at all — a container, usually.
+            // The claim then is the opposite one, and it is still a claim.
+            _ => assert!(
+                why.contains("neither is any other disk") || why.contains("could not be read"),
+                "no disks here, and the message did not say so: {why}"
+            ),
+        }
     }
 
     #[test]

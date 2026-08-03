@@ -249,7 +249,8 @@ contrario, y esa diferencia es cómo se comprueba que la frase no está cableada
 | Pánico inmediato sin ninguna línea de Thalyx | Falta algo del kernel: `CONFIG_BLK_DEV_INITRD`, `CONFIG_DEVTMPFS` o la consola serie. Pégame las últimas 20 líneas. |
 | Arranca pero algún `no  mounted` | **No es fatal, es el diseño.** Falta esa opción en `thalyx.config`. Pégame cuáles. |
 | `no  thalyx-lsm` | **Esperado.** Es el hueco conocido: el cargador invocaba `bpftool` y no hay bpftool en la imagen. Ver abajo. |
-| `no  store        /dev/vda is not a device` | El disco no llegó. O no corriste el paso 4b, o QEMU no lo adjuntó. `make run` avisa antes de arrancar cuando el archivo no existe. |
+| `no  store ... neither is any other disk` | No llegó ningún disco. O el paso 4b no se hizo, o QEMU no lo adjuntó. Desde el 2026-08-03 `make run` **se niega a arrancar** sin store, así que esto solo sale con `STORELESS=1`. |
+| `no  store ... The disks that are: X` | Sí hay discos y ninguno se llama como dice `thalyx.store=`. Cambia `STOREDEV` en `image/Makefile` por el que aparezca. |
 | `no  store        ... is there and did not mount` | El disco está adjunto y no es un store. Casi siempre: se creó con una versión anterior, o el `mkfs` se interrumpió. Rehazlo con el paso 4b. |
 
 ## Paso 6 — que haga algo
