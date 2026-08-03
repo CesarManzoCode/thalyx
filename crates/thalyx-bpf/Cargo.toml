@@ -1,0 +1,14 @@
+[package]
+name = "thalyx-bpf"
+description = "Reading a BPF object file, without libbpf and without bpftool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
