@@ -1,0 +1,24 @@
+[package]
+name = "dev-thalyx-greeter"
+description = "The first module written against Thalyx's internal API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "greeter"
+path = "src/main.rs"
+
+[dependencies]
+thalyx-abi.workspace = true
+thalyx-syscall.workspace = true
+
+[dev-dependencies]
+thalyx-core.workspace = true
+thalyx-manifest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

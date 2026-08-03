@@ -21,9 +21,10 @@ tags: [continuidad, punto-actual, sesiones]
 > no tiene, y esperó una instrucción. **Es la primera vez que Thalyx existe como
 > máquina y no como programa sobre la máquina de alguien más.**
 >
-> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos. Los tres
-> eran conocidos y están anotados abajo. Lo siguiente es el primero de ellos que
-> tiene arreglo: **cargar `thalyx-lsm` desde dentro**.
+> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos. **El
+> tercero ya está resuelto fuera de la imagen**: existe un módulo real que habla
+> con Thalyx por la API interna. Falta meterlo en la máquina, que es lo que
+> necesita el store de Btrfs.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -38,21 +39,21 @@ kernel de Linux y `thalyx`, y nada más.** Ninguna distro, nunca. Ver
 
 Eso convirtió la **API interna de módulos** en la pieza que seguía: sin shell y
 sin utilidades, un módulo no puede ser un script y no tiene con quién hablar
-excepto Thalyx. **Diseñada el 2026-08-03** en [[API-Interna-de-Modulos]], y su
-protocolo construido en `crates/thalyx-abi`. Falta conectarla a la ejecución
-real de un módulo.
+excepto Thalyx. **Diseñada y construida el 2026-08-03** en
+[[API-Interna-de-Modulos]]: protocolo, servidor, el canal por el sandbox, y
+`dev.thalyx.greeter`, el primer módulo escrito contra ella.
 
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real. Desde
-entonces: **490 pruebas**, el agente mínimo que lleva un enunciado hasta un
+entonces: **509 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
 construye para sí mismo.
 
-**Arrancar la imagen ya ocurrió.** Para cerrar la fase faltan dos: **la API
-interna de módulos** y **el modelo del agente** — más el enforcement dentro de
-la imagen, que no es de la lista original porque hasta hoy no había imagen
-donde faltara.
+**Arrancar la imagen ya ocurrió, y la API interna ya existe.** Para cerrar la
+fase falta **el modelo del agente**, y para que la máquina sirva le faltan dos
+que no eran de la lista original porque hasta hoy no había máquina donde
+faltaran: **el store de Btrfs** y **el enforcement dentro de la imagen**.
 
 ## Última corrida verificada
 
@@ -235,6 +236,48 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-03 (11) — hay un módulo, y habla
+`dev.thalyx.greeter` existe: el primer módulo desde que se borró el que era un
+script de shell. Se instala desde un bundle firmado, corre, y **habla con
+Thalyx por un socket que nunca abrió**. Lo que sale por pantalla:
+
+```
+  dev.thalyx.greeter said:
+    I am dev.thalyx.greeter 1.0.0, speaking protocol 1, holding 1 grant(s).
+    read 27 byte(s) from .../notes.txt: the vault is the authority
+    I asked for /etc/shadow and was refused, which is correct.
+```
+
+Las tres líneas dicen cosas distintas. La primera: **un módulo no sabe quién
+es**, pregunta, y lo que le contestan sale del manifiesto firmado. La segunda:
+la línea base. La tercera: la denegación — sin la segunda no probaría nada,
+porque un Thalyx que negara todo se vería igual.
+
+Y una cuarta que no sale por pantalla: **ejecutado a mano no arranca**. No
+porque compruebe una licencia, sino porque en el descriptor 3 no hay nadie.
+Eso es [[Filosofia-Fundacional]] vuelta comprobación.
+
+Lo construido: `thalyx-syscall` coloca el descriptor (`place_on`,
+`spawn_with_channel`, `inherited_channel`), `launch.rs` lo lleva por las dos
+etapas del sandbox, y `thalyx-core/api.rs` es el servidor.
+
+**El hallazgo que más importa está en `api.rs`, y es de seguridad.** El
+servidor **no está dentro del sandbox**: corre como Thalyx, con el alcance de
+Thalyx. Un módulo que pide una ruta le está pidiendo a *Thalyx* que la abra, así
+que la raíz vacía del sandbox y el LSM no protegen nada ahí. Cada ruta se
+comprueba dos veces: por el nombre, y por **lo que el kernel resuelve** — que es
+lo único que atrapa un symlink plantado dentro de un directorio que el módulo
+puede escribir. Esa era la vía que sí habría funcionado.
+
+Etapa 12 en `verify.sh`, con su control. Y **una guarda mía salió mal primero**:
+se disparaba con "cgroup2 montado" cuando la condición real es "el LSM está
+cargado", así que exigió a este contenedor algo que no puede hacer y reportó
+roto a Thalyx. Es la regla 3 otra vez: un salto que se dispara solo se ve
+idéntico a un fallo real.
+
+Falta la ruta confinada —el canal por dos `exec` y un filtro seccomp— que solo
+se puede comprobar en máquina con LSM.
 
 ### 2026-08-03 (10) — la API interna deja de ser una línea de una nota
 Decretada en [[API-Interna-de-Modulos]] y construida en `crates/thalyx-abi`:

@@ -113,6 +113,31 @@ capacidad que se apoyaba en la base envejeció callada cuando la base se cayó.*
 Un módulo que necesite algo que hoy sería "ejecutar un comando" necesita, en
 realidad, que esa cosa sea una operación de esta API o un módulo.
 
+## Qué está construido
+
+Todo lo de arriba, el 2026-08-03:
+
+| Pieza | Dónde |
+|---|---|
+| Protocolo: marco, mensajes, cliente y servidor | `crates/thalyx-abi` |
+| El servidor de Thalyx, contra los permisos reales | `crates/thalyx-core/api.rs` |
+| El descriptor, colocado y heredado | `crates/thalyx-syscall` |
+| El descriptor, por las dos etapas del sandbox | `crates/thalyx-sandbox/launch.rs` |
+| El primer módulo escrito contra esto | `modules/dev.thalyx.greeter` |
+
+**Lo que aprendió construirlo, y no estaba en este decreto:** el servidor no
+está dentro del sandbox. Corre como Thalyx, fuera de los namespaces del módulo
+y con el alcance de Thalyx, así que ni la raíz vacía ni el LSM protegen nada de
+lo que pasa por aquí — un módulo que pide una ruta le está pidiendo a Thalyx que
+la abra. De ahí que cada ruta se compruebe **dos veces**: por el nombre, y por
+lo que el kernel resuelve. Sin la segunda, un symlink plantado dentro de un
+directorio que el módulo puede escribir alcanza cualquier archivo de la máquina.
+Es la única de estas defensas cuya ausencia habría sido explotable.
+
+Sin comprobar todavía: la ruta confinada. El canal atraviesa dos `exec` y un
+filtro seccomp, y eso necesita una máquina con cgroup v2 delegado y el LSM
+cargado.
+
 ## Cómo se comprueba que sirve
 
 La regla es la de [[Estrategia-de-Pruebas]]: una prueba de que el protocolo

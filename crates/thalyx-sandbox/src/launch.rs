@@ -85,6 +85,23 @@ pub struct LaunchSpec {
     /// the core, which owns the map from module to user; the launcher only
     /// applies it.
     pub uid: Option<u32>,
+    /// The descriptor carrying the module's channel to Thalyx, as numbered in
+    /// *this* process.
+    ///
+    /// It travels as a number rather than as a descriptor because that is all
+    /// there is to carry: `exec` preserves descriptor numbers, so the same
+    /// integer names the same socket in every stage. What it does not preserve
+    /// is `FD_CLOEXEC`, which is why the parent clears it before the first
+    /// `exec` and why the last stage moves the descriptor onto
+    /// [`thalyx_syscall::CHANNEL_FD`] with `dup2` rather than leaving it
+    /// wherever it happened to land.
+    ///
+    /// `None` runs a module with no channel at all. That is not a degraded
+    /// mode to reach for: a module without it has no system to talk to, and
+    /// the only reason it exists is the sandbox's own tests, which launch
+    /// programs that are not modules.
+    #[serde(default)]
+    pub channel_fd: Option<i32>,
 }
 
 /// What a re-executed `thalyx` was asked to do.
@@ -343,6 +360,26 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
         }
     }
 
+    // The channel, onto the number the module looks for.
+    //
+    // Before the seccomp filter, because `dup2` is on the allowlist but this
+    // does not need to depend on that staying true — and after everything that
+    // could still fail, so a module never starts holding a channel to a system
+    // that then refused to confine it.
+    //
+    // The socket itself was created by the parent and inherited across both
+    // `exec`s. Nothing here opens anything: `socket` is deliberately absent
+    // from the allowlist, so a module can use the channel it was given and
+    // cannot make itself another.
+    if let Some(number) = spec.channel_fd
+        && let Err(source) = thalyx_syscall::place_on(number, thalyx_syscall::CHANNEL_FD)
+    {
+        return SandboxError::ChannelNotPlaced {
+            number: thalyx_syscall::CHANNEL_FD,
+            source,
+        };
+    }
+
     // Last, because everything above needs syscalls the filter denies. From
     // here the process may only do what the allowlist permits — including the
     // `execve` on the next line, and nothing after it that the module has not
@@ -459,6 +496,7 @@ mod tests {
             ),
             program: PathBuf::from("/opt/thalyx/modules/org.thalyx.demo/1.0.0/bin/demo"),
             uid: Some(700_000),
+            channel_fd: Some(7),
         }
     }
 

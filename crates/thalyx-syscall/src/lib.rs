@@ -575,3 +575,174 @@ pub mod mount_flags {
 
 /// `EBUSY`, which for a mount means "already mounted" and is not a failure.
 pub const EBUSY: i32 = libc::EBUSY;
+
+// ─────────────────────────────────────────────── the channel a module speaks on
+//
+// `vault/02-Arquitectura/API-Interna-de-Modulos.md` gives a module one socket,
+// already open, on a fixed descriptor. Everything a module can do to the system
+// arrives on it, so how it gets there is part of the security argument and not
+// plumbing: a path could resolve elsewhere, an environment variable could be
+// forged, and an inherited descriptor can be neither.
+
+/// The descriptor a module finds its channel on.
+///
+/// Kept here as well as in `thalyx-abi` because both sides have to agree and
+/// neither depends on the other: `thalyx-abi` must stay free of `unsafe`, and
+/// this crate must stay free of everything else.
+pub const CHANNEL_FD: std::os::fd::RawFd = 3;
+
+/// Let a descriptor survive `exec`.
+///
+/// Rust sets `FD_CLOEXEC` on everything it opens, which is the right default
+/// and exactly wrong for the one descriptor whose entire purpose is to outlive
+/// two `exec`s and arrive in the module.
+pub fn clear_cloexec(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `fcntl` with `F_GETFD` reads no memory and takes no pointer; the
+    // descriptor is borrowed for the duration of the call, so it cannot have
+    // been closed by another owner in between.
+    #[allow(unsafe_code)]
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: same call, with an integer argument. `flags` came from the
+    // kernel one line above, so clearing one bit of it cannot produce a set
+    // the kernel did not already accept.
+    #[allow(unsafe_code)]
+    let outcome = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    if outcome < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Put a descriptor on a specific number, and leave it open across `exec`.
+///
+/// `dup2` deliberately does not copy `FD_CLOEXEC` to the new descriptor, which
+/// is the property this relies on: the copy that lands on [`CHANNEL_FD`] is the
+/// one that survives into the module.
+///
+/// A no-op when the descriptor is already on that number — `dup2` onto itself
+/// is defined to do nothing, *including* not clearing the flag, which would
+/// leave the channel silently closed at the next `exec`.
+///
+/// Takes numbers rather than a [`std::os::fd::BorrowedFd`] because that is what
+/// the caller has. The descriptor crossed two `exec`s to get here, so no Rust
+/// value owns it and none can be made to without `unsafe` — which would have to
+/// happen in a crate that is not allowed any. An invalid number comes back as
+/// `EBADF`, which is the same answer a borrowed descriptor would have given.
+pub fn place_on(from: std::os::fd::RawFd, onto: std::os::fd::RawFd) -> io::Result<()> {
+    if from == onto {
+        // SAFETY: `fcntl` with `F_GETFD` reads no memory and takes no pointer.
+        // A number that names nothing returns `EBADF` rather than misbehaving.
+        #[allow(unsafe_code)]
+        let flags = unsafe { libc::fcntl(from, libc::F_GETFD) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: same call with an integer argument, built from a flag set the
+        // kernel returned one line above.
+        #[allow(unsafe_code)]
+        let outcome = unsafe { libc::fcntl(from, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+        if outcome < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+
+    // SAFETY: two integers, no memory. If `onto` names an open descriptor the
+    // kernel closes it atomically, which is the documented behaviour and the
+    // reason this is not a close-then-dup race.
+    #[allow(unsafe_code)]
+    let outcome = unsafe { libc::dup2(from, onto) };
+    if outcome < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The channel Thalyx left open, from inside a module.
+///
+/// Refuses anything that is not a socket. Without that check a module started
+/// by hand would pick up whatever happened to be on descriptor 3 — a log file,
+/// a terminal — and start writing frames into it, which looks from the outside
+/// like a module talking to a system that is not there.
+pub fn inherited_channel() -> io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::FromRawFd;
+
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+
+    // SAFETY: `fstat` writes one `struct stat` through the pointer, which
+    // points at a live allocation of exactly that type and outlives the call.
+    #[allow(unsafe_code)]
+    let outcome = unsafe { libc::fstat(CHANNEL_FD, stat.as_mut_ptr()) };
+    if outcome < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "there is no channel on descriptor 3: this program was not started by Thalyx",
+        ));
+    }
+
+    // SAFETY: `fstat` returned success, so it initialised the whole struct.
+    #[allow(unsafe_code)]
+    let mode = unsafe { stat.assume_init() }.st_mode;
+    if mode & libc::S_IFMT != libc::S_IFSOCK {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "descriptor 3 is not a socket: this program was not started by Thalyx",
+        ));
+    }
+
+    // SAFETY: the descriptor is open — `fstat` just succeeded on it — and
+    // nothing else in this process owns it, because it arrived across `exec`
+    // rather than from any Rust code that could still hold it.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(CHANNEL_FD) })
+}
+
+/// Start a program with its channel already on [`CHANNEL_FD`].
+///
+/// The confined path does not need this: it re-executes `thalyx` twice, and the
+/// last stage places the descriptor itself with [`place_on`] before becoming
+/// the module. Nothing re-executes on the unconfined path, so the only moment
+/// left to renumber the descriptor is between `fork` and `exec` — which is what
+/// `pre_exec` is, and which needs `unsafe`.
+///
+/// Kept here rather than at the call site for that reason alone. `thalyx-core`
+/// forbids `unsafe`, and a mode that exists to be honest about what it degrades
+/// should not have to degrade that too.
+pub fn spawn_with_channel(
+    command: &mut std::process::Command,
+    channel: std::os::fd::RawFd,
+) -> io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: `pre_exec` runs between `fork` and `exec`, where only
+    // async-signal-safe calls are allowed. `dup2` is one — it is on POSIX's
+    // list — and the closure makes no allocation, takes no lock, and touches no
+    // memory shared with the parent. It captures one integer by copy.
+    #[allow(unsafe_code)]
+    unsafe {
+        command.pre_exec(move || {
+            if channel == CHANNEL_FD {
+                let flags = libc::fcntl(channel, libc::F_GETFD);
+                if flags < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::fcntl(channel, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            if libc::dup2(channel, CHANNEL_FD) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    command.spawn()
+}

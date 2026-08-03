@@ -8,6 +8,7 @@
 //!
 //! See `vault/11-Seguridad/Modelo-de-Amenaza.md` and `vault/02-Arquitectura/Core.md`.
 
+pub mod api;
 pub mod bundle;
 pub mod commit;
 pub mod fault;

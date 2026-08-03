@@ -96,6 +96,7 @@ fn launch(
         rootfs,
         program: program.to_path_buf(),
         uid: None,
+        channel_fd: None,
     };
 
     Command::new(env!("CARGO_BIN_EXE_thalyx"))
@@ -391,6 +392,7 @@ fn a_program_launched_with_no_namespaces_at_all_still_lands_in_the_cgroup() {
         rootfs: None,
         program: PathBuf::from("/bin/sh"),
         uid: None,
+        channel_fd: None,
     };
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
         .args(
@@ -708,6 +710,7 @@ fn a_module_runs_as_a_user_of_its_own() {
         rootfs: Some(rootfs),
         program: module.program(),
         uid: Some(thalyx_core::uids::FIRST_UID),
+        channel_fd: None,
     };
 
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
@@ -767,6 +770,7 @@ fn dropping_to_its_own_user_is_what_stops_the_module_writing() {
             rootfs: Some(rootfs),
             program: module.program(),
             uid,
+            channel_fd: None,
         };
         let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
             .args(
@@ -849,6 +853,7 @@ fn a_write_grant_on_someone_elses_directory_works_through_an_idmapped_mount() {
         rootfs: Some(rootfs),
         program: module.program(),
         uid: Some(thalyx_core::uids::FIRST_UID),
+        channel_fd: None,
     };
 
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
@@ -925,6 +930,7 @@ fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
         rootfs: Some(rootfs),
         program: module.program(),
         uid: Some(thalyx_core::uids::FIRST_UID),
+        channel_fd: None,
     };
 
     let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))

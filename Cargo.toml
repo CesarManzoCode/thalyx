@@ -16,6 +16,7 @@ members = [
     "crates/thalyx-snapshot",
     "crates/thalyx-core",
     "crates/thalyx-cli",
+    "modules/dev.thalyx.greeter",
 ]
 
 [workspace.package]

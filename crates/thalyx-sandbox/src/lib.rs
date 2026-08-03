@@ -196,6 +196,20 @@ pub enum SandboxError {
         source: std::io::Error,
     },
 
+    /// The module's channel to Thalyx could not be put where the module looks
+    /// for it.
+    ///
+    /// Fatal rather than degraded, and that is the whole point: a module that
+    /// started without its channel would run with no way to reach the system,
+    /// discover it on its first request, and report the absence as though
+    /// Thalyx had refused it.
+    #[error("could not place the module's channel on descriptor {number}: {source}")]
+    ChannelNotPlaced {
+        number: i32,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Seccomp(#[from] crate::seccomp::SeccompError),
 
@@ -343,6 +357,12 @@ impl<'a> Confinement<'a> {
     /// same permissions the policy was written from. Two mechanisms, one
     /// source: the LSM refuses opens it was not told to allow, and the root
     /// contains nothing else to open.
+    ///
+    /// `channel` is the module's end of its socket to Thalyx. The caller keeps
+    /// ownership — this only borrows it long enough to let it survive `exec`
+    /// and to record which number it is on. `None` starts a program with no
+    /// channel, which is what the sandbox's own tests need and what no real
+    /// module should ever get: see [`launch::LaunchSpec::channel_fd`].
     pub fn spawn(
         &self,
         helper: &Path,
@@ -350,6 +370,7 @@ impl<'a> Confinement<'a> {
         program: &Path,
         uid: Option<u32>,
         args: &[std::ffi::OsString],
+        channel: Option<std::os::fd::BorrowedFd<'_>>,
     ) -> Result<std::process::Child> {
         let uid = if self.profile.own_user { uid } else { None };
         let rootfs = if self.profile.pivot_root {
@@ -362,6 +383,25 @@ impl<'a> Confinement<'a> {
             None
         };
 
+        // Rust marks everything it opens close-on-exec, which is right for
+        // every descriptor except this one: the channel exists precisely to
+        // outlive two `exec`s. Cleared here rather than at creation so that the
+        // window where it could leak into an unrelated child is as short as the
+        // code allows.
+        let channel_fd = match channel {
+            Some(fd) => {
+                use std::os::fd::AsRawFd;
+                thalyx_syscall::clear_cloexec(fd).map_err(|source| {
+                    SandboxError::ChannelNotPlaced {
+                        number: fd.as_raw_fd(),
+                        source,
+                    }
+                })?;
+                Some(fd.as_raw_fd())
+            }
+            None => None,
+        };
+
         let spec = launch::LaunchSpec {
             cgroup: self.cgroup.path().to_path_buf(),
             profile: self.profile.name.to_string(),
@@ -369,6 +409,7 @@ impl<'a> Confinement<'a> {
             rootfs,
             program: program.to_path_buf(),
             uid,
+            channel_fd,
         };
 
         launch::spawn(helper, &spec, args)

@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thalyx-abi.workspace = true
+thalyx-syscall.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
 thalyx-snapshot.workspace = true

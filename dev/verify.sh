@@ -1000,15 +1000,154 @@ else
 fi
 
 # What none of that touches.
+#
+# The kernel builds and the image boots — that was done on 2026-08-03 and is
+# recorded in Primer-Arranque.md. What this script still cannot say is whether
+# it boots *now*, from this checkout, because booting it needs qemu and several
+# minutes. The gap is narrower than it was and it is still a gap.
 if command -v qemu-system-x86_64 > /dev/null; then
-    IMAGE_GAP="qemu is here, but the kernel has never been built and the image has never booted"
+    IMAGE_GAP="qemu is here, but this script does not boot the image; run 'make -C image run'"
 else
-    IMAGE_GAP="qemu is not installed; the image has never booted, and the kernel has never been built"
+    IMAGE_GAP="qemu is not installed here, so this checkout's image has not been booted"
 fi
 if [ "${THALYX_REQUIRE_IMAGE_TESTS:-0}" = 1 ]; then
     failed "$IMAGE_GAP"
 else
     unproven "$IMAGE_GAP"
+fi
+
+# --------------------------------------------- 12. a module talks to Thalyx
+
+step "12. a module reaches the system through the API and nothing else"
+
+# The claim from API-Interna-de-Modulos.md, and from the founding decree behind
+# it: a program written for Thalyx runs on Thalyx and nowhere else. Everything
+# below uses the real greeter binary, the real bundle format and the real
+# install path — the module's half of every exchange crosses an `exec`, which
+# is the part that unit tests cannot reach.
+
+GSTORE="$WORK/greeter-store"
+GRANTED_DIR="$WORK/greeter-granted"
+GPAYLOAD="$WORK/greeter-payload"
+mkdir -p "$GSTORE" "$GRANTED_DIR" "$GPAYLOAD/bin"
+echo "the vault is the authority" > "$GRANTED_DIR/notes.txt"
+
+# Built by the workspace build at the top of this script; named here rather
+# than rebuilt so that what gets packed is the same binary everything else was
+# checked against.
+GREETER="$ROOT/dev/.verify-target/debug/greeter"
+
+if [ ! -x "$GREETER" ]; then
+    failed "the greeter module was not built into $GREETER"
+else
+    cp "$GREETER" "$GPAYLOAD/bin/greeter"
+    # `dev pack` overwrites publisher_key with the public half of the signing
+    # key, so the placeholder below is never what gets signed.
+    "$THALYX" dev keygen --out "$WORK/greeter.key" > /dev/null 2>&1
+
+    cat > "$WORK/greeter-manifest.toml" <<MANIFEST
+format_version = 1
+id             = "dev.thalyx.greeter"
+name           = "Greeter"
+version        = "1.0.0"
+description    = "The first module written against Thalyx's internal API"
+license        = "GPL-3.0-or-later"
+publisher_key  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+distribution   = "prebuilt"
+
+[artifact]
+hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+size = 0
+
+[requires]
+thalyx = ">=0.1.0"
+
+[[permissions]]
+resource = "$GRANTED_DIR"
+action   = "read"
+type     = "persistent"
+
+[entrypoints]
+run = "bin/greeter"
+MANIFEST
+
+    "$THALYX" dev pack "$GPAYLOAD" --manifest "$WORK/greeter-manifest.toml" \
+        --key "$WORK/greeter.key" --out "$WORK/greeter.thmod" > "$WORK/greeter-pack.log" 2>&1
+    THALYX_ROOT="$GSTORE" "$THALYX" module install "$WORK/greeter.thmod" --yes \
+        > "$WORK/greeter-install.log" 2>&1
+
+    if THALYX_ROOT="$GSTORE" "$THALYX" module run dev.thalyx.greeter --unconfined \
+            -- "$GRANTED_DIR/notes.txt" > "$WORK/greeter-run.log" 2>&1; then
+
+        # It learned its own name. A module cannot state its identity; it asks,
+        # and what comes back is read from the signed manifest.
+        if grep -q "I am dev.thalyx.greeter 1.0.0" "$WORK/greeter-run.log"; then
+            proven "a module asked Thalyx who it was and was told"
+        else
+            failed "the module did not learn its identity; see $WORK/greeter-run.log"
+        fi
+
+        # The baseline: something it may do.
+        if grep -q "the vault is the authority" "$WORK/greeter-run.log"; then
+            proven "a module read a file its manifest granted, through the API"
+        else
+            failed "the module could not read a granted file; see $WORK/greeter-run.log"
+        fi
+
+        # The denial. Without the baseline above this would also pass on a
+        # Thalyx that refused everything, which is why both are here.
+        if grep -q "asked for /etc/shadow and was refused" "$WORK/greeter-run.log"; then
+            proven "a module was refused a file nobody granted it"
+        else
+            failed "the module was not refused /etc/shadow; see $WORK/greeter-run.log"
+        fi
+        if grep -q "AND GOT IT" "$WORK/greeter-run.log"; then
+            failed "a module read /etc/shadow through the API"
+        fi
+    else
+        failed "the module did not run; see $WORK/greeter-run.log"
+    fi
+
+    # It does not run anywhere else. Not by checking a licence — by there being
+    # nothing on the other end of a channel it never opened.
+    if "$GPAYLOAD/bin/greeter" /etc/hostname > "$WORK/greeter-alone.log" 2>&1; then
+        failed "the module ran with no Thalyx behind it"
+    elif grep -q "does not run on its own" "$WORK/greeter-alone.log"; then
+        proven "the module refuses to run outside Thalyx, and says why"
+    else
+        failed "the module failed outside Thalyx for the wrong reason"
+        sed 's/^/     /' "$WORK/greeter-alone.log"
+    fi
+fi
+
+# What this stage does not reach: the confined path. Running the module under
+# the sandbox puts the channel through two `exec`s and a seccomp filter rather
+# than one `fork`, and only a machine with cgroup v2 delegation can do it.
+# Guarded on `LOADED`, the same condition the earlier confined run uses, and
+# not on cgroup2 being mounted. Those are different facts: this container has
+# cgroup2 mounted with no delegated controllers and no LSM, so a guard on the
+# mount alone demanded something the machine cannot do and reported Thalyx
+# broken for it. A skip that fires on the wrong condition is worse than no
+# skip — it looks exactly like a real failure.
+if [ "${LOADED:-0}" = 1 ]; then
+    GCONF="$WORK/greeter-store-confined"
+    mkdir -p "$GCONF"
+    if THALYX_ROOT="$GCONF" "$THALYX" module install "$WORK/greeter.thmod" --yes \
+            > /dev/null 2>&1 &&
+       THALYX_ROOT="$GCONF" "$THALYX" module run dev.thalyx.greeter \
+            -- "$GRANTED_DIR/notes.txt" > "$WORK/greeter-confined.log" 2>&1 &&
+       grep -q "the vault is the authority" "$WORK/greeter-confined.log"; then
+        proven "the channel survives the sandbox: two exec stages and a seccomp filter"
+    else
+        failed "the module could not talk to Thalyx from inside the sandbox; see $WORK/greeter-confined.log"
+    fi
+else
+    CHANNEL_GAP="the module's channel has not been tried through the sandbox; that needs the LSM attached, and Thalyx refuses to run a module nothing can enforce"
+    if [ "${THALYX_REQUIRE_CGROUP_TESTS:-0}" = 1 ]; then
+        failed "$CHANNEL_GAP"
+    else
+        unproven "$CHANNEL_GAP"
+    fi
 fi
 
 # ---------------------------------------------------------------- summary
