@@ -39,6 +39,22 @@ tags: [continuidad, punto-actual, sesiones]
 > **Nada de eso se ha ejercido dentro de QEMU todavía.** Ver "Lo que falta
 > comprobar" abajo.
 >
+> ## Y arrancó con su disco puesto — 2026-08-03
+>
+> ```
+>   ok  store        /dev/vda — three subvolumes
+>   ok  filesystem   btrfs
+>   ok  modules      1: dev.thalyx.greeter 1.0.0
+> ```
+>
+> **De tres `no` en el primer arranque a uno.** El que queda es el enforcement,
+> que es el hueco de arquitectura que sigue. La máquina arranca, monta su store
+> de Btrfs, y sabe qué tiene instalado.
+>
+> Cuatro cosas se rompieron entre construir el store y verlo montado, y las
+> cuatro fueron del constructor y no del sistema — están abajo, en "Los cuatro
+> fallos del camino", porque tres de ellas son la misma regla.
+>
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
 
@@ -80,16 +96,38 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 | `make -C image store-stage` y `sudo make -C image store` | El `Makefile` en sí. La etapa 13 hace lo mismo por su cuenta, así que un fallo aquí es del `Makefile`, no del store. |
 | El disco arrancando dentro de QEMU | Pasos 5 y 6 de [[Primer-Arranque]]. |
 
-**El primer intento del paso 4b falló y enseñó algo.** Era un solo comando,
-`sudo make -C image store`, con `store` dependiendo de `store-stage`. Se cayó de
-inmediato porque `sudo` reinicia el `PATH` y `rustup` vive en el home del
-usuario — y ese es el problema chico. De haber funcionado habría corrido toda la
-compilación de Rust como root: los scripts de build de cada dependencia con
-privilegio, y archivos de root en `target/` que el siguiente `cargo build`
-normal no podría reemplazar. **La frontera de privilegio es la frontera de
-target**: `store-stage` construye y no necesita nada; `store` formatea y se
-niega en vez de construir. Hay dos pruebas que leen el `Makefile` para que no
-vuelva a juntarse.
+## Los cuatro fallos del camino, y por qué tres son el mismo
+
+Entre que el store quedó escrito y que la máquina arrancó con él montado, nada
+de lo que falló fue del sistema. Los cuatro fueron del constructor:
+
+1. **`sudo make store` no encontraba `rustup`.** `sudo` reinicia el `PATH`. Eso
+   es lo chico: de haber funcionado habría corrido toda la compilación de Rust
+   como root, con los scripts de build de cada dependencia con privilegio y
+   archivos de root en `target/`. **La frontera de privilegio es la frontera de
+   target** — `store-stage` construye, `store` formatea y se niega a construir.
+2. **`NOT STATIC` sobre un binario perfectamente estático.** La comprobación era
+   `file | grep 'statically linked'` y Rust enlaza musl como *static-pie*, que
+   `file` llama `static-pie linked`. Ahora lee el segmento `INTERP` del ELF.
+3. **QEMU no pudo abrir el disco.** La comprobación era `test -r` y QEMU abre el
+   disco para escribir. Y el disco había quedado de root: son **dos
+   pertenencias distintas** —el archivo es del host, lo de adentro es de la
+   máquina— y confundirlas da un store que o QEMU no abre o la máquina no posee.
+4. **Backticks dentro de un mensaje de ayuda**, dos veces. `echo "corre \`sudo
+   make store\`"` es sustitución de comandos: el mensaje que explica qué correr
+   lo habría corrido.
+
+El 2, el 3 y el 4 son **la misma regla**: comprobar un sustituto de la
+propiedad en vez de la propiedad, o escribir sobre una herramienta en vez de
+preguntarle. Está escrita en [[Estrategia-de-Pruebas]].
+
+Y hay una lección de arriba de todas: **el 2 mintió durante un rato y la máquina
+ya lo había desmentido.** La imagen había arrancado con ese mismo binario como
+`/init`; uno dinámico habría dado `No working init found`. Cuando una
+comprobación contradice algo que la máquina ya demostró, la comprobación es la
+sospechosa. Van siete.
+
+Hay pruebas para los cuatro, y tres de ellas leen el `Makefile`.
 
 ## Última corrida verificada
 

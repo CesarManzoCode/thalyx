@@ -252,6 +252,7 @@ Sale por la consola serie. Para salir de QEMU: `Ctrl-a` y luego `x`.
   ok  mounted /sys/fs/cgroup
   ok  store        /dev/vda — three subvolumes
   no  thalyx-lsm: /lib/thalyx/thalyx_lsm.bpf.o is not in the image
+  ok  kernel talk  warnings and worse only; `nucleo` shows the rest
 
   Thalyx.
 
@@ -284,6 +285,16 @@ Con el store montado, la sesión tiene un módulo instalado:
 
   > correr dev.thalyx.greeter
 ```
+
+**Sobre `kernel talk`:** hasta ese punto del arranque el kernel escribiendo
+encima de Thalyx es inofensivo y muchas veces es la única pista de qué salió
+mal. A partir de ahí hay una persona en un prompt, y un mensaje de nivel
+informativo llegando a media línea lo pisa — la máquina parece que dejó de
+escuchar. Se baja el volumen a advertencias y peores, y **no se esconde nada**:
+`nucleo` muestra lo que el kernel reportó como problema, `nucleo todo` muestra
+las cientos de líneas completas. Bajarle el volumen sin devolver la forma de
+mirarlo sería esconderlo, y en una máquina sin shell no hay `dmesg` al que
+recurrir.
 
 **Esto se va a negar**, y está bien:
 
@@ -323,7 +334,7 @@ llama: preguntó. No sabe qué puede leer: preguntó, porque `correr` no le pasa
 ningún argumento. Pidió algo que no le concedieron y se lo negaron. Y todo eso
 pasó por un socket que él no abrió, dentro de la máquina, sin shell.
 
-Para apagar: `apagar`.
+Para ver qué dijo el kernel: `nucleo`. Para apagar: `apagar`.
 
 | Si falla | Qué significa y qué hacer |
 |---|---|

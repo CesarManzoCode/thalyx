@@ -286,6 +286,69 @@ fn power_off(standing: &Standing) {
     }
 }
 
+/// What the kernel has been saying, since PID 1 stopped it saying it here.
+///
+/// This exists because turning the console down without giving the messages
+/// back would be hiding them, and on a machine with no shell there is no
+/// `dmesg` to fall back on. `nucleo` shows what went wrong; `nucleo todo` shows
+/// everything, which is usually a lot and occasionally the only thing that
+/// helps.
+fn show_kernel(everything: bool) {
+    println!();
+    let messages = match thalyx_syscall::kernel_messages() {
+        Ok(messages) => messages,
+        Err(error) => {
+            // Rule 10 at the one place a human would read silence as calm.
+            println!("  I could not read what the kernel said: {error}");
+            println!("  That is not the same as it having said nothing.");
+            println!();
+            return;
+        }
+    };
+
+    let shown: Vec<_> = messages
+        .iter()
+        .filter(|m| everything || m.is_trouble())
+        .collect();
+
+    if shown.is_empty() {
+        if everything {
+            println!("  The kernel's buffer is empty, which is stranger than it sounds.");
+        } else {
+            println!("  The kernel has reported nothing at warning level or worse.");
+            println!(
+                "  `nucleo todo` shows everything it said, which is {} lines.",
+                messages.len()
+            );
+        }
+        println!();
+        return;
+    }
+
+    for message in &shown {
+        // The marker says how bad the kernel thought it was, not how bad this
+        // thinks it is. Thalyx does not re-grade somebody else's report.
+        let marker = if message.priority <= 3 {
+            "x"
+        } else if message.is_trouble() {
+            "!"
+        } else {
+            " "
+        };
+        println!("  {marker} [{:>9.6}] {}", message.seconds, message.text);
+    }
+
+    println!();
+    if !everything {
+        println!(
+            "  {} of {} lines. `nucleo todo` for all of them.",
+            shown.len(),
+            messages.len()
+        );
+        println!();
+    }
+}
+
 /// What is installed, read from the store rather than from anything remembered.
 fn list_modules(store: &Store) {
     println!();
@@ -426,9 +489,13 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 
     println!();
     if unreadable > 0 {
+        // "1 of those" reads fine; the count below did not, and the machine's
+        // own voice is the last place to leave an obvious slip.
         println!("  {unreadable} of those I could not check at all. Not absent — unchecked.",);
     }
-    if absent > 0 {
+    if absent == 1 {
+        println!("  1 is not here. I will not pretend otherwise later.");
+    } else if absent > 1 {
         println!("  {absent} are not here. I will not pretend otherwise later.");
     }
     if unreadable == 0 && absent == 0 {
@@ -443,10 +510,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     match &standing {
         Standing::TheMachine => {
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
-            println!("  `estado` re-reads the machine, `apagar` turns it off.");
+            println!("  `estado` re-reads the machine, `nucleo` shows what the");
+            println!("  kernel has been saying, `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
-            println!("  `modulos`, `correr <id>`, `estado`. `salir` to leave.");
+            println!("  `modulos`, `correr <id>`, `estado`, `nucleo`. `salir` to leave.");
         }
     }
     // Said wherever it is true, and nowhere it is not. Both standings hit the
@@ -500,6 +568,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "modulos" | "módulos" => {
                 list_modules(store);
+            }
+            "nucleo" | "núcleo" | "kernel" | "dmesg" => {
+                show_kernel(false);
+            }
+            "nucleo todo" | "núcleo todo" | "kernel all" => {
+                show_kernel(true);
             }
             _ if line.starts_with("correr ") || line.starts_with("run ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");

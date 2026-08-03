@@ -746,3 +746,172 @@ pub fn spawn_with_channel(
 
     command.spawn()
 }
+
+// ────────────────────────────────────────────── what the kernel has been saying
+//
+// On a machine with no shell there is no `dmesg`, and the kernel's console
+// output is the only place some failures ever appear. That is fine while it
+// scrolls past during boot and stops being fine the moment somebody is trying
+// to type: an info-level message arriving mid-line steps on the prompt, and the
+// human cannot tell whether the machine is waiting for them.
+//
+// So Thalyx turns the console down and gives back a way to look. Turning it
+// down without the second half would be hiding, which is the one thing this
+// system is not allowed to do.
+
+/// Where the kernel keeps what it has said.
+const KMSG: &str = "/dev/kmsg";
+
+/// How loud the kernel is on the console, as `/proc/sys/kernel/printk` sets it.
+const PRINTK: &str = "/proc/sys/kernel/printk";
+
+/// One line the kernel emitted.
+pub struct KernelMessage {
+    /// Syslog priority: 0 is emergency, 7 is debug.
+    pub priority: u8,
+    /// Seconds since boot, as the kernel counts them.
+    pub seconds: f64,
+    pub text: String,
+}
+
+impl KernelMessage {
+    /// Whether this is something that went wrong, rather than something that
+    /// happened. `KERN_WARNING` is 4; anything below it is worse.
+    pub fn is_trouble(&self) -> bool {
+        self.priority <= 4
+    }
+}
+
+/// Set how much of the kernel's own output reaches the console.
+///
+/// 4 keeps warnings and errors and drops the rest. Nothing is lost: the ring
+/// buffer still has everything, and [`kernel_messages`] reads it.
+pub fn set_console_loglevel(level: u8) -> io::Result<()> {
+    std::fs::write(PRINTK, format!("{level}\n"))
+}
+
+/// Everything in the kernel's ring buffer, oldest first.
+///
+/// Opened non-blocking because a plain read at the end of the buffer waits for
+/// the next message forever, and this is called from a session that has a human
+/// in front of it.
+///
+/// Each `read` returns exactly one record and fails with `EINVAL` if the buffer
+/// is too small for it, which is why this uses a fixed 8 KiB one rather than
+/// anything line-oriented — the failure mode of getting that wrong is reading
+/// nothing at all and reporting a quiet kernel.
+pub fn kernel_messages() -> io::Result<Vec<KernelMessage>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(KMSG)?;
+
+    let mut out = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                if let Some(message) = parse_kmsg(&buffer[..read]) {
+                    out.push(message);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            // The reader fell behind and records were overwritten. The kernel
+            // says so and the next read resumes; losing the oldest lines is not
+            // a reason to report none.
+            Err(error) if error.raw_os_error() == Some(libc::EPIPE) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(out)
+}
+
+/// One `/dev/kmsg` record: `priority,sequence,microseconds,flags;text`.
+///
+/// Checked against a real record rather than one written here, per the rule
+/// about invented fixtures:
+///
+/// ```text
+/// 5,0,0,-;Linux version 6.18.5 (builder@sandboxing) (gcc (GCC) 15.2.0, ...
+/// ```
+///
+/// Anything that does not parse is dropped rather than guessed at. A record
+/// this does not understand is a record from a kernel that changed the format,
+/// and inventing a priority for it would be worse than not showing it.
+fn parse_kmsg(record: &[u8]) -> Option<KernelMessage> {
+    let record = String::from_utf8_lossy(record);
+    let (header, rest) = record.split_once(';')?;
+    let mut fields = header.split(',');
+    let priority: u8 = fields.next()?.trim().parse().ok()?;
+    let _sequence = fields.next()?;
+    let microseconds: u64 = fields.next()?.trim().parse().ok()?;
+
+    // Continuation lines start with a space and belong to the record above.
+    // Kept on one line so a message never arrives split in half.
+    let text = rest
+        .lines()
+        .next()?
+        .trim_end_matches('\n')
+        .replace("\\x0a", " ");
+
+    Some(KernelMessage {
+        priority,
+        seconds: microseconds as f64 / 1_000_000.0,
+        text: text.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod kmsg_tests {
+    use super::*;
+
+    #[test]
+    fn a_real_record_parses_into_its_three_parts() {
+        // Captured verbatim from /dev/kmsg on 2026-08-03, not written to match
+        // what the parser expects.
+        let record = b"5,0,0,-;Linux version 6.18.5 (builder@sandboxing) (gcc (GCC) 15.2.0)";
+        let message = parse_kmsg(record).expect("a record this shape parses");
+        assert_eq!(message.priority, 5);
+        assert_eq!(message.seconds, 0.0);
+        assert!(message.text.starts_with("Linux version 6.18.5"));
+        assert!(!message.is_trouble(), "notice level is not trouble");
+    }
+
+    #[test]
+    fn a_timestamp_in_microseconds_becomes_seconds() {
+        let message = parse_kmsg(b"6,42,1287361,-;BTRFS: device label thalyx-store").unwrap();
+        assert!(
+            (message.seconds - 1.287361).abs() < 1e-9,
+            "{}",
+            message.seconds
+        );
+    }
+
+    #[test]
+    fn an_error_is_told_apart_from_something_that_merely_happened() {
+        // The whole reason priority is kept. Without this the session would
+        // print a kernel panic in the same ink as a device being scanned.
+        assert!(
+            parse_kmsg(b"3,1,0,-;something failed")
+                .unwrap()
+                .is_trouble()
+        );
+        assert!(parse_kmsg(b"0,1,0,-;emergency").unwrap().is_trouble());
+        assert!(!parse_kmsg(b"7,1,0,-;debugging").unwrap().is_trouble());
+    }
+
+    #[test]
+    fn a_record_that_does_not_parse_is_dropped_rather_than_guessed_at() {
+        // A kernel that changed the format, or a partial read. Inventing a
+        // priority for it would put an unknown line under a heading that
+        // claims to know how bad it is.
+        assert!(parse_kmsg(b"no semicolon here").is_none());
+        assert!(parse_kmsg(b"notanumber,0,0,-;text").is_none());
+        assert!(parse_kmsg(b"5,0,notanumber,-;text").is_none());
+        assert!(parse_kmsg(b"").is_none());
+    }
+}

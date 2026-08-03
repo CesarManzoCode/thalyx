@@ -176,6 +176,21 @@ pub fn run() -> Fallible {
         Err(reason) => println!("  no  thalyx-lsm: {reason}"),
     }
 
+    // Turned down only now, with the boot's own reporting already printed.
+    //
+    // Until this point the kernel talking over Thalyx is harmless and often the
+    // only clue about what went wrong. From here there is a human at a prompt,
+    // and an info-level message arriving mid-line steps on it — the machine
+    // looks like it stopped listening. Warnings and errors still come through,
+    // and `nucleo` in the session reads the whole ring buffer, so this turns the
+    // volume down and hides nothing.
+    match thalyx_syscall::set_console_loglevel(4) {
+        Ok(()) => println!("  ok  kernel talk  warnings and worse only; `nucleo` shows the rest"),
+        // Not fatal, and not silent: a machine whose prompt keeps getting
+        // interrupted should say why rather than leave you guessing.
+        Err(error) => println!("  no  kernel talk  still at full volume: {error}"),
+    }
+
     println!();
 
     // The session, forever. If it exits, it comes back: there is nothing else

@@ -65,7 +65,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Primer módulo | `modules/dev.thalyx.greeter` | Escrito contra la API. Lee lo concedido, es rechazado en `/etc/shadow`, y **no arranca fuera de Thalyx** |
 | Sesión del sistema | `crates/thalyx-cli/session.rs` | Lo que init arranca; solo dice que es la máquina cuando lo es |
 | PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **Corrido como PID 1 el 2026-08-03**: los siete montajes salieron `ok` |
-| El disco del store | `crates/thalyx-cli/store_disk.rs`, `image/Makefile` | Tres subvolúmenes Btrfs; PID 1 los monta por `thalyx.store=` y **nunca los crea**. El disco se hace al construir. **Mecanismo probado en máquina real** (etapa 13); el arranque con disco dentro de QEMU, no todavía |
+| El disco del store | `crates/thalyx-cli/store_disk.rs`, `image/Makefile` | Tres subvolúmenes Btrfs; PID 1 los monta por `thalyx.store=` y **nunca los crea**. **Arrancó con el disco montado y el módulo instalado el 2026-08-03** |
+| Lo que dijo el kernel | `crates/thalyx-syscall` (`kernel_messages`) | PID 1 baja el volumen de la consola antes de la sesión; `nucleo` lee el ring buffer entero. Sin shell no hay `dmesg`, así que callar sin devolver la vista sería esconder |
 | Constructor de la imagen | `crates/thalyx-cli/image.rs` | cpio `newc` escrito por Thalyx; probado, reproducible byte a byte |
 | Kernel y arranque | `image/` | Makefile y `thalyx.config` desde `allnoconfig`. **Ejecutados: 6.12.101 compila y la imagen arranca en QEMU** — procedimiento en [[Primer-Arranque]] |
 
@@ -103,7 +104,6 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
 | Cargar `thalyx-lsm` sin `bpftool` | Que la imagen tenga enforcement — el hueco grande |
 | Binario estático contra musl | Hoy enlaza glibc dinámicamente, o sea depende de la libc del host |
-| Arrancar la imagen con el disco puesto | Que el store deje de estar probado solo fuera de QEMU |
 
 ### Las advertencias que quedan
 
@@ -140,7 +140,7 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-520 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+529 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
