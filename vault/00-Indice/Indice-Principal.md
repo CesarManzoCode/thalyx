@@ -35,6 +35,8 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 - [[Sistema-de-Modulos]] — el ecosistema de módulos `.thmod`
 - [[Formato-Manifiesto-Thmod]] — el schema del manifiesto
 - [[Agente-Conversacional]] — el traductor de intención
+- [[Gamas-de-Modelo]] — cuatro gamas que elige el usuario, y qué garantiza la gramática
+- [[Agente-Minimo]] — el primer agente: un solo caso de uso
 - [[Decision-Kernel-vs-Userspace]] — qué vive dónde, y el umbral de migración
 - [[Criterio-de-Inclusion-de-Primitivas]] — el filtro metodológico para decidir qué se construye ahora
 

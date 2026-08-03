@@ -72,15 +72,17 @@ Alcance: router de reglas más un modelo con decodificación restringida por
 gramática, sobre **un solo caso de uso** —instalar un módulo—, no un agente
 general.
 
-**Falta un decreto antes de escribirlo**, y ya tiene forma decidida: no un
-modelo anclado sino **3–4 modelos por gama** (ligera, media, avanzada) que el
-usuario elige según su hardware, con pruebas hechas y capacidades
-documentadas. Anclar un modelo de 5 GB dejaría fuera a una máquina de 8 GB, y
-el criterio de salida exige justamente que alguien de fuera lo use. Con
-gramática restringida la estructura del contrato es inviolable en todas las
-gamas; lo que cambia entre ellas es el acierto al interpretar la intención, no
-la seguridad. Falta escribirlo como revisión en [[Agente-Conversacional]] y
-[[Debate-Agente-Fine-Tuning]].
+**El decreto que lo bloqueaba ya está escrito:** [[Gamas-de-Modelo]]. No un
+modelo anclado sino **cuatro gamas de una sola familia** que el usuario elige
+según su hardware, con `llama.cpp` invocado como proceso y decodificación
+restringida por gramática. Anclar un modelo de 5 GB dejaría fuera a una máquina
+de 8 GB, y el criterio de salida exige justamente que alguien de fuera lo use.
+Con la gramática, un contrato mal formado es imposible en las cuatro gamas: lo
+que cambia entre ellas es el acierto al interpretar la intención, no la
+seguridad. Y **el modelo nunca escribe la procedencia** — la pone el
+ensamblador, porque una gramática obliga a la forma y no a la verdad.
+
+El alcance del primero está en [[Agente-Minimo]].
 
 Lo que sí está listo para el agente cuando exista: el contrato estructurado con
 marcado de origen, el camino confiable, la memoria persistente, y el principio
@@ -105,7 +107,7 @@ por ancestros— así que es una mejora de rendimiento, no de corrección. Ver
 
 Ninguno bloquea excepto el primero.
 
-- [ ] **Modelo concreto del agente** ← el que bloquea. Forma ya decidida (gamas elegibles por el usuario); falta escribir el decreto y correr el banco.
+- [ ] **Correr el banco de las gamas** — el decreto ya está ([[Gamas-de-Modelo]]); faltan las cifras medidas. Necesita `llama.cpp` y los pesos, que el contenedor de desarrollo no puede tener.
 - [ ] Métricas de benchmark de la Fase 2 (el umbral ya está decretado; falta el instrumento)
 - [ ] Técnicas de interpretabilidad aplicables al agente
 - [ ] Arquitectura del índice semántico a mayor escala (SQLite alcanza para Fase 1)

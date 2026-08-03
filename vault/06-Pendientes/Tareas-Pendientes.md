@@ -21,7 +21,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de decreto formal
 
-- [ ] **Modelo concreto del agente** — qué modelo local de 3B-7B, con qué prompting y qué router de reglas. No bloquea la Fase 1, pero es el riesgo técnico más grande del proyecto. Ver [[Debate-Agente-Fine-Tuning]].
+- [ ] **Confirmar las gamas con el banco** — [[Gamas-de-Modelo]] decreta cuatro gamas de una familia como hipótesis de partida. Falta correrlas y sustituir los tamaños estimados por los medidos. Requiere una máquina con `llama.cpp` y acceso a los pesos; el contenedor de desarrollo no tiene ninguna de las dos.
 - [ ] **Métricas de benchmark concretas** para la Fase 2 — qué se mide exactamente para el índice semántico y los permisos JIT, con qué carga y contra qué línea base. El umbral de decisión ya está decretado, lo que falta es el instrumento. Ver [[Decision-Kernel-vs-Userspace]].
 - [ ] **Técnicas de interpretabilidad** aplicables al agente. Ver [[Interpretabilidad-Mecanicista]].
 - [ ] **Arquitectura del índice semántico a mayor escala** — SQLite alcanza para Fase 1; falta saber a partir de qué volumen deja de alcanzar.
@@ -59,6 +59,8 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Resueltos el 2026-08-03
 
+- [x] **Modelo concreto del agente** — el decreto que bloqueaba. No es un modelo: son cuatro gamas de una sola familia que elige el usuario según su hardware, con `llama.cpp` como proceso y gramática restringida. Ver [[Gamas-de-Modelo]] y [[Agente-Minimo]].
+- [x] **Quién escribe la procedencia en el contrato** — el ensamblador, desde el canal de entrada; nunca el modelo. Ver [[Agente-Conversacional]].
 - [x] **Límites de recursos contra un kernel que delegue controladores** — la corrida en Fedora 43 tenía `memory` y `pids` delegados, así que `verify.sh` activó `THALYX_REQUIRE_CONTROLLER_TESTS=1` y los saltos habrían sido fallos. Con `not proven 0`, se ejercitaron.
 - [x] **Snapshots y `restore`** — la operación destructiva, con diff de lo que se pierde, confirmación por el camino confiable e intercambio atómico. Ver [[Rollback-vs-Restore]].
 - [x] **Acotar la cuenta de mutaciones al árbol** — atribución subiendo por los ancestros del dentry, con la ausencia de montajes debajo como precondición comprobada. Verificado en hardware: 5000 escrituras dentro contadas, las mismas 5000 fuera ignoradas.

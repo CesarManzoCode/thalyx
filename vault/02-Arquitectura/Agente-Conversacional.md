@@ -10,7 +10,7 @@ tags: [arquitectura, agente, ia]
 - **Nombre:** `thalyx-agent`.
 - **Función:** Traductor de intención. Convierte lenguaje natural en acciones de sistema.
 - **Especialización:** No es un LLM genérico. Conoce la documentación del Core, la API de módulos, la estructura de permisos y los comandos del sistema.
-- **Modelo:** Local y cuantizado (3B-7B). **En Fase 1 no hay llamadas a modelos remotos** — ver la sección de nube más abajo.
+- **Modelo:** Local y cuantizado. **No es un modelo, son cuatro gamas que elige el usuario según su hardware** — ver [[Gamas-de-Modelo]]. **En Fase 1 no hay llamadas a modelos remotos** — ver la sección de nube más abajo.
 - **Posición en la arquitectura de seguridad:** el agente **está fuera de la TCB**. Ver [[Modelo-de-Amenaza]].
 
 ## Flujo de uso típico
@@ -50,6 +50,31 @@ Cuando se habiliten, será bajo estas condiciones: apagadas por defecto, opt-in 
 El agente guarda el historial de interacciones en la base de datos persistente. Puede retomar conversaciones días después. Ver [[Memoria-Persistente]].
 
 ## Revisiones
+
+### 2026-08-03 — El modelo deja de ser uno y pasa a ser cuatro gamas
+**Antes:** "modelo local y cuantizado (3B-7B)", sin decir cuál, y con el modelo
+concreto pendiente como el único decreto que bloqueaba al agente.
+**Ahora:** cuatro gamas de una sola familia, elegidas por el usuario según su
+hardware, con inferencia por `llama.cpp` como proceso y decodificación
+restringida por gramática. Ver [[Gamas-de-Modelo]].
+**Motivo:** anclar un modelo de 5 GB obliga a tener 16 GB de RAM antes de poder
+*intentar* usar Thalyx, y el [[Criterio-de-Salida-Fase-1|criterio de salida]]
+exige que una persona ajena al proyecto lo use. Un requisito de hardware que
+excluye las máquinas normales no es un detalle de rendimiento: vuelve
+incumplible el criterio que cierra la fase.
+
+### 2026-08-03 — La procedencia deja de ser algo que el modelo pueda escribir
+**Antes:** la nota decía que cada campo del contrato declara su procedencia, sin
+decir **quién** la escribe.
+**Ahora:** la escribe el ensamblador, desde el canal por el que entró cada
+texto. La gramática del contrato no incluye los campos de origen.
+**Motivo:** una revisión externa señaló que toda la defensa depende de la
+calidad de la frontera que etiqueta los orígenes, y tenía razón. Una gramática
+obliga a la forma, no a la verdad: un modelo que procesó contenido hostil podría
+emitir `origen: usuario` con forma perfecta y el schema quedaría contento
+mientras [[Marcado-de-Origen]] se cae en silencio. Es la misma regla que ya
+aplica en otras capas — el núcleo recalcula el hash en vez de aceptar el que le
+reporten — llevada al único lugar donde faltaba.
 
 ### 2026-08-01 — Se elimina la nube de la Fase 1
 **Antes:** el agente podía llamar a modelos remotos "con consentimiento explícito del usuario".
