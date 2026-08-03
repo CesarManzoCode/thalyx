@@ -167,6 +167,36 @@ existe: la ruta directa sigue abierta **precisamente** para que la ruta inferida
 se pueda cerrar sin dejar a nadie sin salida. Sin doble ruta, esta defensa sería
 inaceptable; con ella, no le cuesta nada al usuario.
 
+### Revisión del 2026-08-03 (2) — la regla se abre por tarea
+
+**Cómo se escribió esto la primera vez importa:** la propiedad de arriba se
+presentó como un hallazgo elegante, y era una decisión de producto grande
+tomada sin consultarla. El caso de uso más natural de un sistema donde la IA es
+ciudadana de primera clase es *"lee esto y haz X"*, y esa regla lo volvía
+imposible por la ruta del modelo. Segura y potencialmente inservible.
+
+**Decreto:** la regla se mantiene **cerrada por defecto** y se abre con un
+opt-in **por tarea, nunca global** — la misma forma que [[Agente-Conversacional]]
+ya le da a las llamadas a modelos remotos. En la CLI es `--foreign-may-act`, que
+no se recuerda entre invocaciones.
+
+Lo que la concesión **no** concede, y es la mitad que no se mueve:
+
+| | Sin concesión | Con concesión |
+|---|---|---|
+| El modelo puede actuar tras leer algo ajeno | No | **Sí** |
+| El texto ajeno puede decir *qué* instalar | No | **No** |
+
+Los objetivos se atribuyen igual en ambos casos, así que un id que solo aparece
+en una página sigue rechazado, por el núcleo, antes de abrir nada.
+
+> *"Lee esta página e instala lo que te diga"* sigue siendo imposible.
+> *"Lee esta página y luego instala lo que yo nombré"* se vuelve posible.
+
+Esa separación es lo que hace ofrecible la concesión. Sin ella, conceder "puedes
+actuar tras leer" concedería en silencio "la página puede elegir", que es el
+ataque entero.
+
 ## Relacionado
 - [[Gamas-de-Modelo]] — qué modelo, cómo corre, qué garantiza la gramática
 - [[Principio-Doble-Ruta]] — por qué se puede cerrar la ruta inferida

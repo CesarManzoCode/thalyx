@@ -76,7 +76,7 @@ pub fn run(command: DevCommand) -> Fallible {
 }
 
 fn agent_probe(utterance: &str, foreign: &[String], behaviour: &str) -> Fallible {
-    use thalyx_agent::{HostileModel, Misbehaviour, Segment, Transcript};
+    use thalyx_agent::{ForeignText, HostileModel, Misbehaviour, Segment, Transcript};
 
     let misbehaviour = match behaviour {
         "faithful" => Misbehaviour::Faithful,
@@ -101,7 +101,12 @@ fn agent_probe(utterance: &str, foreign: &[String], behaviour: &str) -> Fallible
         request_id: "probe".to_string(),
     };
 
-    match thalyx_agent::plan(&transcript, &HostileModel::new(misbehaviour), caller) {
+    match thalyx_agent::plan(
+        &transcript,
+        &HostileModel::new(misbehaviour),
+        ForeignText::NeverActs,
+        caller,
+    ) {
         Ok(plan) => {
             println!("A CONTRACT WAS PRODUCED — the model got through.");
             println!("{}", plan.contract.to_json());

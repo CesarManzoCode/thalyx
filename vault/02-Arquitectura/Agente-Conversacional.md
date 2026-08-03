@@ -51,6 +51,20 @@ El agente guarda el historial de interacciones en la base de datos persistente. 
 
 ## Revisiones
 
+### 2026-08-03 — Actuar después de leer algo ajeno es un opt-in por tarea
+**Antes:** el agente no podía originar ninguna acción por la ruta del modelo si
+había texto ajeno en la conversación. Sin excepción.
+**Ahora:** sigue cerrado por defecto, y se abre por tarea, nunca global,
+igual que las llamadas remotas de más abajo. La concesión permite *actuar tras
+haber leído*; **no** permite que ese texto elija qué hacer. Ver
+[[Agente-Minimo]].
+**Motivo:** la regla cerrada volvía imposible el caso de uso más natural del
+sistema —"lee esto y haz X"— y se había decretado sin consultarlo, presentada
+como una consecuencia técnica cuando era una decisión de producto. Un sistema
+donde la IA es ciudadana de primera clase no puede prohibir de raíz que la IA
+lea algo y después actúe; lo que sí puede es exigir que quien decide *qué* se
+hace sea el humano y no el documento.
+
 ### 2026-08-03 — El modelo deja de ser uno y pasa a ser cuatro gamas
 **Antes:** "modelo local y cuantizado (3B-7B)", sin decir cuál, y con el modelo
 concreto pendiente como el único decreto que bloqueaba al agente.

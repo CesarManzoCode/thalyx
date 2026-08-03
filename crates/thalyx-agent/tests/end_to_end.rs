@@ -11,7 +11,7 @@
 //! appeared in two places — passed thirty-nine unit tests and three deliberate
 //! mutations, and was found in three seconds by typing a sentence at the CLI.
 
-use thalyx_agent::{Model, ModelError, Segment, Transcript, UnconfiguredModel};
+use thalyx_agent::{ForeignText, Model, ModelError, Segment, Transcript, UnconfiguredModel};
 use thalyx_contract::Caller;
 use thalyx_core::test_support::write_bundle;
 use thalyx_core::{Store, install::AllowAll};
@@ -37,7 +37,8 @@ fn install_from(
     repo: &std::path::Path,
     store: &Store,
 ) -> Result<String, String> {
-    let plan = thalyx_agent::plan(transcript, model, caller()).map_err(|e| e.to_string())?;
+    let plan = thalyx_agent::plan(transcript, model, ForeignText::NeverActs, caller())
+        .map_err(|e| e.to_string())?;
     let target = plan.contract.targets.first().ok_or("no target")?.clone();
     let resolved = thalyx_core::repo::resolve(repo, &target, plan.contract.constraint.as_deref())
         .map_err(|e| e.to_string())?;

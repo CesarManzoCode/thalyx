@@ -44,7 +44,7 @@ pub mod recollection;
 pub mod router;
 pub mod transcript;
 
-pub use assemble::Path;
+pub use assemble::{ForeignText, Path};
 pub use attribution::AttributionError;
 pub use model::{HostileModel, Misbehaviour, Model, ModelError, UnconfiguredModel};
 pub use proposal::{Proposal, ProposalError, ProposedOperation};
@@ -89,6 +89,7 @@ pub struct Plan {
 pub fn plan(
     transcript: &Transcript,
     model: &dyn Model,
+    foreign: ForeignText,
     caller: Caller,
 ) -> Result<Plan, AgentError> {
     if transcript.is_empty() {
@@ -102,12 +103,12 @@ pub fn plan(
                 targets: vec![target],
                 constraint,
             };
-            assemble::assemble(transcript, &proposal, Path::Rules, caller)
+            assemble::assemble(transcript, &proposal, Path::Rules, foreign, caller)
         }
         Route::AskTheModel => {
             let raw = model.propose(transcript)?;
             let proposal = Proposal::parse(&raw)?;
-            assemble::assemble(transcript, &proposal, Path::Model, caller)
+            assemble::assemble(transcript, &proposal, Path::Model, foreign, caller)
         }
     }
 }
@@ -134,7 +135,8 @@ mod tests {
     #[test]
     fn an_explicit_command_is_carried_out_without_any_model_at_all() {
         let transcript = Transcript::new().with(Segment::typed("install dev.thalyx.demo@^1.0"));
-        let plan = plan(&transcript, &NeverAsked, caller()).expect("the rules cover this");
+        let plan = plan(&transcript, &NeverAsked, ForeignText::NeverActs, caller())
+            .expect("the rules cover this");
 
         assert_eq!(plan.path, Path::Rules);
         assert_eq!(plan.contract.targets, ["dev.thalyx.demo"]);
@@ -160,7 +162,12 @@ mod tests {
             Misbehaviour::NeverStops,
             Misbehaviour::Fails,
         ] {
-            let outcome = plan(&transcript, &HostileModel::new(behaviour), caller());
+            let outcome = plan(
+                &transcript,
+                &HostileModel::new(behaviour),
+                ForeignText::NeverActs,
+                caller(),
+            );
             assert!(
                 outcome.is_err(),
                 "{behaviour:?} produced a contract: {:?}",
@@ -177,6 +184,7 @@ mod tests {
         let plan = plan(
             &transcript,
             &HostileModel::new(Misbehaviour::Faithful),
+            ForeignText::NeverActs,
             caller(),
         )
         .expect("the human is the sovereign; they may install what they name");
@@ -188,7 +196,7 @@ mod tests {
     #[test]
     fn a_contract_the_agent_produced_survives_being_written_and_read_back() {
         let transcript = Transcript::new().with(Segment::typed("install dev.thalyx.demo"));
-        let plan = plan(&transcript, &NeverAsked, caller()).unwrap();
+        let plan = plan(&transcript, &NeverAsked, ForeignText::NeverActs, caller()).unwrap();
 
         let reparsed = Contract::parse(&plan.contract.to_json())
             .expect("what the agent hands the core has to survive the trip");
@@ -197,7 +205,12 @@ mod tests {
 
     #[test]
     fn saying_nothing_is_an_error_rather_than_an_empty_contract() {
-        let outcome = plan(&Transcript::new(), &NeverAsked, caller());
+        let outcome = plan(
+            &Transcript::new(),
+            &NeverAsked,
+            ForeignText::NeverActs,
+            caller(),
+        );
         assert!(matches!(outcome, Err(AgentError::NothingSaid)));
     }
 }

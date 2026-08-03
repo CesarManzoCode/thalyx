@@ -10,7 +10,7 @@
 use crate::render;
 use clap::Subcommand;
 use std::path::PathBuf;
-use thalyx_agent::{Path as AgentPath, Segment, Transcript, UnconfiguredModel};
+use thalyx_agent::{ForeignText, Path as AgentPath, Segment, Transcript, UnconfiguredModel};
 use thalyx_contract::Caller;
 use thalyx_core::Store;
 
@@ -31,6 +31,14 @@ pub enum AgentCommand {
         /// flag is to make that demonstrable from a terminal.
         #[arg(long)]
         foreign: Vec<String>,
+        /// Let the model act on this task even after reading the text above.
+        ///
+        /// Off by default and never remembered: a conclusion drawn while
+        /// reading someone else's document is one that document had a chance to
+        /// shape. This does NOT let that text choose what to install — a module
+        /// named only there is still refused.
+        #[arg(long)]
+        foreign_may_act: bool,
     },
 
     /// Turn a sentence into a contract and carry it out
@@ -49,6 +57,14 @@ pub enum AgentCommand {
         /// restarted and the agent still knows what the task was.
         #[arg(long)]
         task: Option<String>,
+        /// Let the model act on this task even after reading the text above.
+        ///
+        /// Off by default and never remembered: a conclusion drawn while
+        /// reading someone else's document is one that document had a chance to
+        /// shape. This does NOT let that text choose what to install — a module
+        /// named only there is still refused.
+        #[arg(long)]
+        foreign_may_act: bool,
     },
 }
 
@@ -58,7 +74,14 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             utterance,
             repo,
             foreign,
-        } => plan(&utterance, repo.as_deref(), &foreign, request_id),
+            foreign_may_act,
+        } => plan(
+            &utterance,
+            repo.as_deref(),
+            &foreign,
+            policy(foreign_may_act),
+            request_id,
+        ),
 
         AgentCommand::Do {
             utterance,
@@ -66,15 +89,29 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             foreign,
             yes,
             task,
+            foreign_may_act,
         } => act(
             store,
-            &utterance,
-            &repo,
-            &foreign,
-            yes,
-            task.as_deref(),
-            request_id,
+            Doing {
+                utterance: &utterance,
+                repo: &repo,
+                foreign: &foreign,
+                yes,
+                task: task.as_deref(),
+                policy: policy(foreign_may_act),
+                request_id,
+            },
         ),
+    }
+}
+
+/// The concession is per invocation and never stored, which is what "per task
+/// and never global" means in a command-line shape.
+fn policy(may_act: bool) -> ForeignText {
+    if may_act {
+        ForeignText::MayActThisTask
+    } else {
+        ForeignText::NeverActs
     }
 }
 
@@ -104,12 +141,19 @@ fn plan(
     utterance: &str,
     repo: Option<&std::path::Path>,
     foreign: &[String],
+    policy: ForeignText,
     request_id: &str,
 ) -> Fallible {
     let transcript = transcript(utterance, foreign);
-    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, caller(request_id))?;
+    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));
+    if policy == ForeignText::MayActThisTask {
+        println!(
+            "note: you allowed the model to act after reading foreign text, for \
+             this one command.\n      It still cannot choose what to install."
+        );
+    }
     println!();
     println!("{}", plan.contract.to_json());
     println!();
@@ -138,17 +182,32 @@ fn plan(
     Ok(())
 }
 
-fn act(
-    store: &Store,
-    utterance: &str,
-    repo: &std::path::Path,
-    foreign: &[String],
+/// One `agent do`, gathered so the shape of the request is one thing rather
+/// than eight positional arguments that can be swapped without the compiler
+/// noticing.
+struct Doing<'a> {
+    utterance: &'a str,
+    repo: &'a std::path::Path,
+    foreign: &'a [String],
     yes: bool,
-    task: Option<&str>,
-    request_id: &str,
-) -> Fallible {
+    task: Option<&'a str>,
+    policy: ForeignText,
+    request_id: &'a str,
+}
+
+fn act(store: &Store, doing: Doing<'_>) -> Fallible {
+    let Doing {
+        utterance,
+        repo,
+        foreign,
+        yes,
+        task,
+        policy,
+        request_id,
+    } = doing;
+
     let transcript = transcript(utterance, foreign);
-    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, caller(request_id))?;
+    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));
 
