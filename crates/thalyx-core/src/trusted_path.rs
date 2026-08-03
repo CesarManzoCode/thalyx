@@ -88,6 +88,86 @@ pub fn render_untrusted_note(text: &str) -> String {
     out
 }
 
+/// The confirmation for a restore.
+///
+/// A second kind of prompt rather than a reuse of the capability one, because
+/// they ask about different things and the human must be able to tell them
+/// apart at a glance. A capability prompt says what a module will be allowed
+/// to do; this one says what is about to be destroyed.
+///
+/// It carries the banner for the same reason: the human has to be able to tell
+/// Thalyx apart from anything running inside it. Nothing here is free text
+/// from a caller — every line is generated from the plan.
+pub struct RestorePrompt {
+    pub snapshot: String,
+    pub subvolume: String,
+    pub deleted: usize,
+    pub reverted: usize,
+    pub returned: usize,
+    /// A bounded sample of the paths that would be deleted outright.
+    pub examples: Vec<String>,
+    pub unreadable: usize,
+}
+
+impl RestorePrompt {
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        out.push_str("┌─ Thalyx — this destroys work ────────────────────────\n");
+        out.push_str(&format!("│ returning {}\n", self.subvolume));
+        out.push_str(&format!("│ to        {}\n", self.snapshot));
+        out.push_str("│\n");
+
+        // Deletions first and named that way. A file created since the
+        // snapshot has no older version to go back to, so this does not revert
+        // it — it removes it, and that is the only line that can turn a yes
+        // into a no.
+        if self.deleted > 0 {
+            out.push_str(&format!(
+                "│ {} file(s) created since then will be DELETED:\n",
+                self.deleted
+            ));
+            for path in &self.examples {
+                out.push_str(&format!("│     {path}\n"));
+            }
+            if self.deleted > self.examples.len() {
+                out.push_str(&format!(
+                    "│     … and {} more\n",
+                    self.deleted - self.examples.len()
+                ));
+            }
+        } else {
+            out.push_str("│ Nothing created since then; no work is lost outright.\n");
+        }
+
+        if self.reverted > 0 {
+            out.push_str(&format!(
+                "│ {} file(s) will go back to their older contents\n",
+                self.reverted
+            ));
+        }
+        if self.returned > 0 {
+            out.push_str(&format!(
+                "│ {} file(s) deleted since then will come back\n",
+                self.returned
+            ));
+        }
+        if self.unreadable > 0 {
+            // Never rounded down to nothing. What could not be compared is not
+            // the same as what did not change, and a confirmation that
+            // silently merges them understates its own cost.
+            out.push_str(&format!(
+                "│ {} path(s) could NOT be compared, so this may cost more\n",
+                self.unreadable
+            ));
+        }
+
+        out.push_str("│\n");
+        out.push_str("│ The tree being replaced is kept, not deleted.\n");
+        out.push_str("└──────────────────────────────────────────────────────");
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

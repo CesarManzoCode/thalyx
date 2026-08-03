@@ -466,8 +466,250 @@ pub mod directories {
                 copy_tree(&entry.path(), &target)?;
             } else {
                 std::fs::copy(entry.path(), &target).map_err(|e| io(&entry.path(), e))?;
+
+                // Carry the modification time over. A real snapshot shares the
+                // inode, so every timestamp is identical by construction; a
+                // copy that did not do this would differ from its source in
+                // every file, and a fake that fails the property under test is
+                // not a fake, it is a different system.
+                if let Ok(metadata) = entry.metadata()
+                    && let Ok(modified) = metadata.modified()
+                    && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
+                {
+                    let _ = thalyx_syscall::set_mtime(&target, since.as_nanos() as i64);
+                }
             }
         }
         Ok(())
     }
+}
+
+/// What a subvolume gained, lost and changed since a snapshot.
+///
+/// Produced before a restore, so the human is told what a restore would cost
+/// in the same terms it will cost it. `vault/04-Flujo-Canonico/Rollback-vs-Restore.md`
+/// requires exactly this: the confirmation shows the diff of what will be lost.
+///
+/// It is bounded. A subvolume can hold a million files, and a confirmation
+/// nobody can read is a confirmation nobody gives meaningfully — so the lists
+/// stop at [`Difference::SHOWN`] and the counts keep going.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Difference {
+    /// Files that exist now and are not in the snapshot. **These are lost.**
+    pub added: Vec<String>,
+    /// Files whose contents differ. Restoring returns them to the old version.
+    pub modified: Vec<String>,
+    /// Files in the snapshot that are gone now. Restoring brings them back.
+    pub removed: Vec<String>,
+    pub added_total: usize,
+    pub modified_total: usize,
+    pub removed_total: usize,
+    /// Paths neither tree could be read at. Counted as differences, because
+    /// what cannot be compared must not be reported as identical.
+    pub unreadable: Vec<String>,
+}
+
+impl Difference {
+    /// How many paths of each kind are listed before the counts take over.
+    pub const SHOWN: usize = 20;
+
+    pub fn is_empty(&self) -> bool {
+        self.added_total == 0
+            && self.modified_total == 0
+            && self.removed_total == 0
+            && self.unreadable.is_empty()
+    }
+
+    /// Work that would be destroyed, as opposed to merely reverted.
+    ///
+    /// A file created since the snapshot has no older version to go back to:
+    /// restoring does not change it, it deletes it. That distinction is the
+    /// one the human most needs before answering.
+    pub fn lost_outright(&self) -> usize {
+        self.added_total
+    }
+}
+
+/// Compare a live tree against a snapshot of it.
+///
+/// By size and modification time, not by content. Reading every byte of a
+/// subvolume to render a confirmation would make the confirmation take longer
+/// than the restore — and this is the same comparison the index's freshness
+/// check makes, so a file Thalyx would call changed is a file this calls
+/// changed.
+pub fn difference(live: &Path, snapshot: &Path) -> Difference {
+    let mut difference = Difference::default();
+    let mut here = std::collections::BTreeMap::new();
+    let mut there = std::collections::BTreeMap::new();
+
+    collect(live, live, &mut here, &mut difference);
+    collect(snapshot, snapshot, &mut there, &mut difference);
+
+    for (path, stat) in &here {
+        match there.get(path) {
+            None => {
+                difference.added_total += 1;
+                if difference.added.len() < Difference::SHOWN {
+                    difference.added.push(path.clone());
+                }
+            }
+            Some(other) if other != stat => {
+                difference.modified_total += 1;
+                if difference.modified.len() < Difference::SHOWN {
+                    difference.modified.push(path.clone());
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    for path in there.keys() {
+        if !here.contains_key(path) {
+            difference.removed_total += 1;
+            if difference.removed.len() < Difference::SHOWN {
+                difference.removed.push(path.clone());
+            }
+        }
+    }
+
+    difference
+}
+
+fn collect(
+    root: &Path,
+    directory: &Path,
+    into: &mut std::collections::BTreeMap<String, (u64, i64)>,
+    difference: &mut Difference,
+) {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => {
+            // Not skipped. A directory that cannot be read is a difference
+            // nobody can rule out, and reporting it as identical is how a
+            // confirmation ends up understating what it costs.
+            difference
+                .unreadable
+                .push(relative(root, directory).to_string());
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // A subvolume's snapshots live beside it, but a nested one would
+        // otherwise be compared against itself.
+        if entry.file_name() == SNAPSHOT_DIR {
+            continue;
+        }
+
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_dir() => collect(root, &path, into, difference),
+            Ok(metadata) => {
+                let mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as i64)
+                    .unwrap_or(0);
+                into.insert(relative(root, &path).to_string(), (metadata.len(), mtime));
+            }
+            Err(_) => difference
+                .unreadable
+                .push(relative(root, &path).to_string()),
+        }
+    }
+}
+
+fn relative<'a>(root: &Path, path: &'a Path) -> std::borrow::Cow<'a, str> {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy()
+}
+
+/// What a completed restore did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    pub snapshot: String,
+    /// Where the tree that was replaced now lives.
+    ///
+    /// Kept rather than deleted. A restore is destructive by design, and
+    /// keeping what it replaced costs nothing on Btrfs while turning "this
+    /// destroys your work" into "this destroys your work and here is where it
+    /// went". Removing it is a separate, deliberate act.
+    pub replaced_kept_as: String,
+    /// Whether the swap was a single atomic event.
+    pub atomic: bool,
+}
+
+impl<V: Volumes> Snapshots<V> {
+    /// Return the subvolume to a snapshot.
+    ///
+    /// **Destructive.** Everything created since the snapshot is gone from the
+    /// live tree. This function does not ask; the caller must have asked, by
+    /// the trusted path, having shown [`difference`].
+    ///
+    /// The swap is one `RENAME_EXCHANGE` where the filesystem supports it. The
+    /// obvious alternative — move the live tree aside, move the restored copy
+    /// in — has a window where the directory the human works in does not
+    /// exist, and a tree that vanishes for a millisecond is exactly the "half"
+    /// that build-then-commit exists to rule out. Where the exchange is not
+    /// available it falls back, and says so, so the journal can record that
+    /// this restore had a window and the atomic ones did not.
+    pub fn restore(&self, name: &str, timestamp: &str) -> Result<Restored> {
+        let snapshot = self.find(name)?;
+
+        let directory = self.directory();
+        let staging = directory.join(format!(".restoring-{}", std::process::id()));
+        let _ = self.volumes.delete(&staging);
+
+        // A writable copy first, and never the snapshot itself. Moving the
+        // snapshot into place would consume the moment it records — a restore
+        // that could only be done once, and that silently destroyed the thing
+        // it restored from.
+        self.volumes.restore_from(&snapshot.path, &staging)?;
+
+        let kept = format!("replaced-{}", sanitise(timestamp));
+        let kept_path = directory.join(&kept);
+
+        let atomic = match thalyx_syscall::exchange_paths(&staging, &self.subvolume) {
+            Ok(()) => true,
+            Err(_) => {
+                // No exchange on this filesystem. Two renames, with the live
+                // tree moved out of the way first so the failure mode is "the
+                // tree is missing and the journal says where it went" rather
+                // than "the restore half happened".
+                std::fs::rename(&self.subvolume, &kept_path).map_err(|source| {
+                    SnapshotError::Io {
+                        path: self.subvolume.clone(),
+                        source,
+                    }
+                })?;
+                std::fs::rename(&staging, &self.subvolume).map_err(|source| SnapshotError::Io {
+                    path: staging.clone(),
+                    source,
+                })?;
+                return Ok(Restored {
+                    snapshot: snapshot.name,
+                    replaced_kept_as: kept,
+                    atomic: false,
+                });
+            }
+        };
+
+        // After the exchange the staging name holds the tree that was live.
+        // Renaming it is tidying: if this fails the restore already happened
+        // and nothing is lost, only oddly named.
+        let _ = std::fs::rename(&staging, &kept_path);
+
+        Ok(Restored {
+            snapshot: snapshot.name,
+            replaced_kept_as: kept,
+            atomic,
+        })
+    }
+}
+
+fn sanitise(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }

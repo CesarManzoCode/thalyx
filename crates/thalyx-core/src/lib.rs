@@ -15,6 +15,7 @@ pub mod install;
 pub mod keystore;
 pub mod permissions;
 pub mod reconcile;
+pub mod restore;
 pub mod rollback;
 pub mod run;
 pub mod snapshots;

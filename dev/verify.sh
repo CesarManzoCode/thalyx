@@ -596,7 +596,7 @@ else
         fi
 
         # Read-only, or it will quietly drift from the moment it claims to be.
-        if echo tampered > "$(dirname "$SCRATCH")/.thalyx-snapshots/$KEPT/notes.txt" 2>/dev/null; then
+        if ( echo tampered > "$(dirname "$SCRATCH")/.thalyx-snapshots/$KEPT/notes.txt" ) 2>/dev/null; then
             failed "the snapshot was writable"
         else
             proven "the snapshot is read-only, so it cannot drift from its moment"
@@ -612,6 +612,44 @@ else
             proven "the journal recorded it, with the name it got"
         else
             failed "a snapshot was taken and the journal does not say so"
+        fi
+
+        # And the destructive one, on a tree with real work in it.
+        echo "work done after the snapshot" > "$SCRATCH/new-work.txt"
+        echo "edited after the snapshot" > "$SCRATCH/notes.txt"
+
+        if "$THALYX" restore "$KEPT" "$SCRATCH" --yes > "$WORK/restore.log" 2>&1; then
+            if [ "$(cat "$SCRATCH/notes.txt")" = "as it was" ]; then
+                proven "restore returned the subvolume to the snapshot"
+            else
+                failed "restore ran and the contents are not the snapshot's"
+            fi
+
+            if [ -e "$SCRATCH/new-work.txt" ]; then
+                failed "restore left work created after the snapshot in place"
+            else
+                proven "work created after the snapshot was destroyed, as it says"
+            fi
+
+            # The part that turns "this destroys your work" into "and here is
+            # where it went". Without it the command is just a data loss tool.
+            REPLACED="$(awk "/kept as/ { print \$NF }" "$WORK/restore.log")"
+            if [ -n "$REPLACED" ] &&
+               [ -e "$(dirname "$SCRATCH")/.thalyx-snapshots/$REPLACED/new-work.txt" ]; then
+                proven "the destroyed work is kept, and the output named where"
+            else
+                failed "restore destroyed work and it is nowhere: ${REPLACED:-<unnamed>}"
+            fi
+
+            if grep -q "no instant with no tree" "$WORK/restore.log" ||
+               "$THALYX" journal --limit 5 2>/dev/null | grep -q restore; then
+                proven "the journal recorded the restore and how it swapped"
+            else
+                failed "a restore happened and the journal does not say so"
+            fi
+        else
+            failed "restore failed; see $WORK/restore.log"
+            sed 's/^/     /' "$WORK/restore.log"
         fi
 
         "$THALYX" snapshot forget "$KEPT" "$SCRATCH" > /dev/null 2>&1

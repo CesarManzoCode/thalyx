@@ -377,6 +377,76 @@ fn check(result: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Swap two paths, atomically.
+///
+/// `renameat2` with `RENAME_EXCHANGE`. Both paths must exist; afterwards each
+/// name refers to what the other one did, and there is no instant in between
+/// where either is missing.
+///
+/// This is what makes returning a subvolume to a snapshot a single event. The
+/// obvious alternative — move the live tree aside, move the snapshot in — has
+/// a window where the tree the human works in does not exist at all. The data
+/// is not lost there, but "published or not published, never half" is the
+/// claim this project is built on, and a directory that vanishes for a
+/// millisecond is half.
+///
+/// Not every filesystem implements it. The error is returned rather than
+/// worked around here, so the caller can decide whether a slower path with a
+/// recorded intent is acceptable.
+pub fn exchange_paths(one: &Path, other: &Path) -> io::Result<()> {
+    const RENAME_EXCHANGE: libc::c_uint = 1 << 1;
+
+    let one = path_to_c(one)?;
+    let other = path_to_c(other)?;
+
+    // SAFETY: both pointers come from `CString`s that outlive the call, and
+    // `AT_FDCWD` makes the paths resolve the way they read. glibc has no
+    // wrapper for `renameat2` on every version Thalyx supports, so it goes
+    // through `syscall(2)`.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            one.as_ptr(),
+            libc::AT_FDCWD,
+            other.as_ptr(),
+            RENAME_EXCHANGE,
+        ) as libc::c_int
+    };
+    check(result)
+}
+
+/// Set a file's modification time, in nanoseconds since the epoch.
+///
+/// `utimensat`. The standard library can read a modification time and cannot
+/// write one, and copying a tree without carrying the times over produces
+/// something that differs from its source in every file — which is exactly the
+/// thing a snapshot must not do.
+pub fn set_mtime(path: &Path, nanos: i64) -> io::Result<()> {
+    let path = path_to_c(path)?;
+    let times = [
+        // UTIME_OMIT for the access time: reading a file is not a change, and
+        // rewriting the atime here would make the copy differ from its source
+        // in the one field nobody intended to touch.
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: nanos.div_euclid(1_000_000_000),
+            tv_nsec: nanos.rem_euclid(1_000_000_000),
+        },
+    ];
+
+    // SAFETY: the path pointer comes from a `CString` that outlives the call,
+    // and `times` is a two-element array of exactly the type the kernel
+    // expects, alive for the duration.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) };
+    check(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

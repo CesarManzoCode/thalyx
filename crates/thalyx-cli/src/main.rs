@@ -9,6 +9,7 @@ mod enforce;
 mod graph;
 mod memory;
 mod render;
+mod restore;
 mod run;
 mod snapshot;
 
@@ -68,6 +69,20 @@ enum Command {
         /// Say what would be undone, and do nothing
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Return a subvolume to a snapshot, destroying what came after
+    ///
+    /// The wide, destructive one. It shows exactly what would be lost and
+    /// stops until somebody who saw that says so. `rollback` is the cheap one.
+    Restore {
+        /// The snapshot to go back to
+        snapshot: String,
+        #[arg(default_value = ".")]
+        subvolume: PathBuf,
+        /// Skip the confirmation. For something a human is watching.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Keep and list moments of a Btrfs subvolume
@@ -210,6 +225,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("undone.");
             Ok(())
+        }
+        Command::Restore {
+            snapshot,
+            subvolume,
+            yes,
+        } => {
+            let store = Store::open(&root)?;
+            restore::run(&store, &snapshot, subvolume, yes, &new_request_id())
         }
         Command::Snapshot(command) => {
             let store = Store::open(&root)?;

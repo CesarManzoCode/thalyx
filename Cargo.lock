@@ -918,6 +918,7 @@ name = "thalyx-snapshot"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "thalyx-syscall",
  "thiserror",
 ]
 

@@ -58,6 +58,21 @@ Construirlo dejó dos cosas que el decreto no había anticipado:
 
 Y una regla que salió sola: **nombrar una entrada que no se puede deshacer se niega, no cae hacia atrás a la última que sí.** El humano nombró una solicitud; deshacer otra no es una versión más pequeña de lo que pidió.
 
+### 2026-08-03 — `restore` construido, y cómo se resolvió la contradicción aparente
+El decreto dice dos cosas que suenan opuestas: **"si hay cambios que Thalyx no originó, se detiene"** y **"exige confirmación mostrando el diff de lo que se perderá"**. Si se detiene, ¿para qué el diff?
+
+No se contradicen. **La deriva es el caso normal**: la demostración de adopción entera es un humano deshaciendo *su propio* trabajo, que es deriva por definición. Lo que el decreto prohíbe es seguir **sin que el humano se haya enterado**. Así que se detiene, muestra exactamente lo que encontró, y no avanza hasta que alguien que vio eso diga que sí.
+
+Tres decisiones que salieron al construirlo:
+
+**Lo que se reemplaza se conserva, no se borra.** En Btrfs no cuesta nada, y convierte "esto destruye tu trabajo" en "esto destruye tu trabajo y aquí quedó". Borrarlo es un acto aparte y deliberado.
+
+**El intercambio es un solo `RENAME_EXCHANGE`.** La alternativa obvia —mover el árbol vivo a un lado, mover la copia restaurada a su lugar— tiene una ventana donde el directorio en el que trabaja el humano **no existe**. Un árbol que desaparece por un milisegundo es exactamente la "mitad" que build-then-commit existe para descartar. Donde el filesystem no lo soporta se cae al camino de dos renames, y **el journal registra cuál de los dos fue**: son dos garantías distintas, y una auditoría que no las distingue no puede decir si una interrupción habría sido sobrevivible.
+
+**Se escribe la palabra, no una tecla.** `y` es memoria muscular. La cantidad de archivos que se van a borrar está en pantalla justo encima, y tener que escribir `restore` es la última oportunidad de leerla. Sin terminal la respuesta es no: silencio no es consentimiento, y un restore lanzado por un script que nadie miraba es justo lo que convierte una función de seguridad en un reporte de pérdida de datos.
+
+Y una que se decidió sin que el decreto la mencionara: **el snapshot sobrevive a restaurar desde él.** Mover el snapshot a su lugar consumiría el momento que registra — un restore que solo se puede hacer una vez, y que destruye en silencio aquello desde lo que restauró. Se hace una copia escribible primero.
+
 ## Relacionado
 - [[Coherencia-Doble-Ruta]]
 - [[Journal-y-Snapshots]]
