@@ -21,10 +21,23 @@ tags: [continuidad, punto-actual, sesiones]
 > no tiene, y esperó una instrucción. **Es la primera vez que Thalyx existe como
 > máquina y no como programa sobre la máquina de alguien más.**
 >
-> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos. **El
-> tercero ya está resuelto fuera de la imagen**: existe un módulo real que habla
-> con Thalyx por la API interna. Falta meterlo en la máquina, que es lo que
-> necesita el store de Btrfs.
+> Se describió con tres `no`: sin Btrfs, sin enforcement, sin módulos.
+>
+> ## Y ahora tiene dónde guardar cosas — 2026-08-03, esa misma noche
+>
+> **Dos de los tres `no` están cerrados.** El store existe: `sudo make -C image
+> store` formatea un disco Btrfs con los tres subvolúmenes decretados e instala
+> el `greeter` adentro; PID 1 lo monta por el nombre que le da `thalyx.store=` y
+> **nunca lo crea**. La sesión sabe `modulos`, `correr <id>` y `apagar`.
+>
+> Lo que hace la máquina ahora, entero: arranca, monta su disco, lista el módulo
+> que tiene instalado, lo corre, y el módulo le pregunta a Thalyx quién es y qué
+> puede leer —porque `correr` no le pasa ningún argumento—, lee lo que le
+> concedieron y le niegan `/etc/shadow`. Todo por un socket que él no abrió,
+> dentro de la máquina, sin shell.
+>
+> **Nada de eso se ha ejercido dentro de QEMU todavía.** Ver "Lo que falta
+> comprobar" abajo.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -46,14 +59,31 @@ excepto Thalyx. **Diseñada y construida el 2026-08-03** en
 La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
 el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 44 comprobaciones en máquina real. Desde
-entonces: **510 pruebas**, el agente mínimo que lleva un enunciado hasta un
-módulo instalado sin modelo alguno, `thalyx` como PID 1, y la imagen que Thalyx
-construye para sí mismo.
+entonces: **520 pruebas**, el agente mínimo que lleva un enunciado hasta un
+módulo instalado sin modelo alguno, `thalyx` como PID 1, la imagen que Thalyx
+construye para sí mismo, y el disco donde guarda lo que le instalan.
 
-**Arrancar la imagen ya ocurrió, y la API interna ya existe.** Para cerrar la
-fase falta **el modelo del agente**, y para que la máquina sirva le faltan dos
-que no eran de la lista original porque hasta hoy no había máquina donde
-faltaran: **el store de Btrfs** y **el enforcement dentro de la imagen**.
+**Queda un solo hueco de arquitectura: el enforcement dentro de la imagen.**
+Mientras `thalyx-lsm` no cargue desde dentro, el núcleo se niega a correr un
+módulo confinado —correctamente, porque nada haría cumplir sus permisos— y la
+única forma de correrlo es `correr <id> sin-confinar`, que existe para que ese
+estado sea algo que alguien escribió y no una degradación callada. Para cerrar
+la fase falta además **el modelo del agente**.
+
+## Lo que falta comprobar
+
+Escrito aparte para que no se confunda con lo que sí está probado:
+
+| Qué | Dónde se probaría |
+|---|---|
+| `sudo make -C image store` | La máquina de Cesar. Nunca ha corrido: el contenedor no tiene Btrfs en el kernel ni el target de musl. |
+| El disco arrancando dentro de QEMU | `make -C image run`, paso 5 y 6 de [[Primer-Arranque]]. |
+| El mecanismo del store sin QEMU | Etapa 13 de `verify.sh`. **Su cuerpo nunca se ha ejecutado**; el contenedor la salta por falta de Btrfs en el kernel, diciéndolo. |
+
+La etapa 13 es la que conviene correr primero: prueba formatear, montar, hacer
+los subvolúmenes, instalar el módulo adentro, y volver a montar el disco para
+ver si sobrevivió — sin necesitar QEMU. Si algo del store está mal, ahí sale con
+un mensaje que dice cuál de los cuatro pasos fue.
 
 ## Última corrida verificada
 
@@ -149,7 +179,7 @@ marcado de origen, el camino confiable, la memoria persistente, y el principio
 de doble ruta implementado (todo lo que el agente podrá hacer, un humano ya
 puede hacerlo por la CLI).
 
-### 2. La imagen ya arranca; le faltan tres cosas y las nombra
+### 2. La imagen ya arranca; le faltaban tres cosas y queda una
 
 El arranque está hecho y verificado. Lo que la máquina dijo de sí misma:
 
@@ -171,14 +201,15 @@ Las tres, en el orden en que se resuelven:
    busca `/lib/thalyx/thalyx_lsm.bpf.o`, que es un segundo archivo y por lo
    tanto está prohibido por [[Filosofia-Fundacional]]** — el objeto BPF tiene
    que ir *dentro* del binario, no junto a él. Ver el decreto abierto abajo.
-2. **El store.** `store.qcow2` se crea vacío: no tiene Btrfs ni los tres
-   subvolúmenes, así que PID 1 monta lo que no existe y la máquina lo dice. Es
-   el mismo problema de forma que el LSM —hace falta `mkfs.btrfs`, que tampoco
-   puede estar en la imagen— y sin él no se puede instalar nada.
-3. **La API interna de módulos** ([[Core-Nucleo]]). Decretada desde el 31 de
-   julio, sin una línea escrita. Sin userland debajo, es la única superficie que
-   un módulo puede tocar — y es lo que hace que un programa escrito para Thalyx
-   no corra en ningún otro lado.
+2. ~~**El store.**~~ **Hecho el 2026-08-03.** El disco se hace al construir con
+   `sudo make -C image store` —Btrfs, tres subvolúmenes, el `greeter` instalado
+   adentro— porque `mkfs.btrfs` no puede estar en la imagen, que es la misma
+   forma que el problema del LSM y la misma respuesta: el trabajo se mueve al
+   momento de construir. PID 1 lo monta por `thalyx.store=` y nunca lo crea. Ver
+   [[Construccion-del-ISO]] y la tabla de montajes en [[Journal-y-Snapshots]].
+3. ~~**La API interna de módulos.**~~ **Hecha el 2026-08-03.** Protocolo,
+   servidor, el canal atravesando el sandbox y `dev.thalyx.greeter`. Ver
+   [[API-Interna-de-Modulos]].
 
 ### 3. Reindexado incremental
 

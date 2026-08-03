@@ -399,6 +399,34 @@ Tres consecuencias:
    canal está muerto, sin la segunda el canal es un agujero, y separadas cada
    una pasaría sola.
 
+## Regla derivada: la limpieza de una prueba puede destruir más que la prueba
+
+**Si una prueba monta algo, su limpieza tiene que desmontarlo antes de borrar, y
+tiene que negarse a borrar si no pudo desmontar.**
+
+`verify.sh` termina siempre con `rm -rf "$WORK"`, y eso estuvo bien mientras
+`$WORK` fuera un directorio de archivos. La etapa que prueba el store monta un
+disco de bucle **adentro** de `$WORK`. Una corrida interrumpida —Ctrl-C, un
+error, el `trap` disparando por cualquier motivo— deja el montaje puesto, y en
+ese estado `rm -rf` no borra el archivo que contiene el filesystem: **borra el
+contenido del filesystem, a través del punto de montaje**.
+
+La forma general: una prueba que cambia el estado de la máquina —montar, cargar
+un módulo del kernel, crear un subvolumen— tiene una limpieza que ya no es
+simétrica con lo que creó. Y la limpieza corre justo en los casos donde algo
+salió mal, que es cuando menos se sabe en qué estado quedó todo.
+
+Tres cosas, en este orden:
+
+1. **Desmontar antes de borrar**, no después ni en paralelo.
+2. **Comprobar que se desmontó.** `umount` falla, y falla precisamente cuando
+   algo sigue usando el punto de montaje.
+3. **Si sigue montado, no borrar y decirlo.** Dejar basura es reparable; borrar
+   el disco de alguien no.
+
+Esto se escribió antes de que costara nada, que es la única vez que se puede
+escribir una regla de esta clase.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -55,12 +55,25 @@ fn permissions(grants: &[(&str, &str)]) -> Vec<Permission> {
 /// Run the real module against a real Thalyx, and return what it said plus its
 /// exit code.
 fn run_greeter(grants: &[(&str, &str)], argument: &str) -> (Vec<(Level, String)>, Option<i32>) {
+    run_greeter_with(grants, Some(argument))
+}
+
+/// The same, with the argument optional.
+///
+/// Separate rather than a default, because "nobody said which file" is a state
+/// the module has to handle and not an oversight in the test.
+fn run_greeter_with(
+    grants: &[(&str, &str)],
+    argument: Option<&str>,
+) -> (Vec<(Level, String)>, Option<i32>) {
     let (thalyx_end, module_end) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
 
     let mut child = {
         use std::os::fd::AsRawFd;
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_greeter"));
-        command.arg(argument);
+        if let Some(argument) = argument {
+            command.arg(argument);
+        }
         thalyx_syscall::spawn_with_channel(&mut command, module_end.as_raw_fd())
             .expect("starting the module")
     };
@@ -165,6 +178,53 @@ fn a_module_granted_nothing_is_refused_the_very_file_it_was_told_to_read() {
         "a module with no grants read a file anyway: {said:?}"
     );
     assert!(said_anything_like(&said, "I was refused"), "{said:?}");
+}
+
+#[test]
+fn told_nothing_the_module_reads_what_thalyx_said_it_may_read() {
+    // This is how the module runs on the machine: the session starts it with no
+    // arguments at all, so the only way it can know what to touch is to have
+    // asked. A module that needed to be told would be a module carrying an
+    // assumption about where the human keeps things.
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let file = home.path().join("notes.txt");
+    std::fs::write(&file, b"found without being told").expect("a file to read");
+
+    let (said, code) = run_greeter_with(&[(file.to_str().unwrap(), "read")], None);
+
+    assert_eq!(code, Some(0), "{said:?}");
+    assert!(
+        said_anything_like(&said, "found without being told"),
+        "the module did not find its grant: {said:?}"
+    );
+}
+
+#[test]
+fn told_nothing_and_granted_nothing_the_module_says_so_rather_than_guessing() {
+    // The control for the test above. Without it, a module that quietly fell
+    // back to some path of its own would pass the first one and be doing the
+    // one thing the arrangement forbids.
+    let (said, code) = run_greeter_with(&[], None);
+
+    assert_eq!(code, Some(64), "{said:?}");
+    assert!(
+        said_anything_like(&said, "nothing granted"),
+        "the module did not say why it had nothing to do: {said:?}"
+    );
+}
+
+#[test]
+fn a_network_grant_is_not_mistaken_for_a_file_to_read() {
+    // `net` is a grant and is not a path. A module that sent it to ReadFile
+    // would be refused and would report the refusal as a permissions problem,
+    // sending whoever read that message to look at the wrong thing entirely.
+    let (said, code) = run_greeter_with(&[("net", "outbound")], None);
+
+    assert_eq!(code, Some(64), "{said:?}");
+    assert!(
+        said_anything_like(&said, "nothing granted"),
+        "a network grant was treated as a file: {said:?}"
+    );
 }
 
 #[test]

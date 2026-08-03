@@ -4,6 +4,7 @@
 #   make kernel     fetch and build Linux with our configuration
 #   make binary     build thalyx, statically linked
 #   make image      pack the root filesystem
+#   sudo make store format the store disk and put the first module on it
 #   make run        boot it in QEMU
 #   make count      list what is really inside the image
 #
@@ -49,10 +50,25 @@ BZIMAGE  := $(BUILD)/bzImage
 
 THALYX    := $(ROOT)/target/$(TARGET)/release/thalyx
 INITRAMFS := $(BUILD)/initramfs.cpio
-DISK      := $(BUILD)/store.qcow2
 MEMORY    := 2048
 
-.PHONY: all kernel binary image run count clean toolchain config-check
+# The store disk. Raw and not qcow2: a raw image can be formatted and mounted
+# with mkfs.btrfs and a loop device, which every Linux has, while qcow2 needs
+# `qemu-nbd`, a kernel module and a device to attach it to. The disk is sparse,
+# so eight gigabytes of it occupy what is written and nothing more.
+STORE     := $(BUILD)/store.img
+STORESIZE := 8G
+STAGE     := $(BUILD)/store-stage
+MNT       := $(BUILD)/store-mnt
+STOREDEV  := /dev/vda
+
+# The first module. It is not in the image and must not be: the image carries
+# the kernel and one program. A module lives on the store, which is the whole
+# distinction between what Thalyx *is* and what has been installed on it.
+GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
+
+.PHONY: all kernel binary image run count clean toolchain config-check \
+        store store-stage greeter
 
 all: kernel binary image
 	@echo
@@ -151,28 +167,140 @@ count: $(INITRAMFS)
 # ─────────────────────────────────────────────────────────────────── the store
 #
 # Persistent state lives on its own disk, so the root can be a tmpfs that keeps
-# nothing. The three subvolumes are the ones Core-Nucleo decrees; PID 1 mounts
-# them, and does not create them, because a machine that silently made itself a
-# store on every boot could never tell you it had lost one.
+# nothing. The three subvolumes are the ones Journal-y-Snapshots decrees; PID 1
+# mounts them, and does not create them, because a machine that silently made
+# itself a store on every boot could never tell you it had lost one.
+#
+# So they are made here, once, on a machine that has btrfs-progs. The image does
+# not have btrfs-progs and cannot: it has one program in it. That is the same
+# shape as the bpftool problem and it has the same answer — the work moves to
+# build time rather than a second binary moving into the image.
+#
+# Two targets on purpose. `store-stage` fills a plain directory and needs no
+# privilege, so everything that can go wrong about *contents* — the module not
+# being static, the bundle not verifying, the install not committing — goes
+# wrong there, where the error is readable. `store` is only mkfs, mount, three
+# subvolumes and a copy, and it is the only part that needs root.
 
-$(DISK): | $(BUILD)
-	qemu-img create -f qcow2 $@ 8G
+# The module, built for the machine rather than for the host that builds it.
+# Static for the same reason `thalyx` is: there is no libc on the store either.
+$(GREETER): toolchain
+	cd $(ROOT) && cargo build --release --target $(TARGET) -p dev-thalyx-greeter
+
+greeter: $(GREETER)
+	@file $(GREETER) | grep -q 'statically linked' \
+	    || { echo "NOT STATIC — the module could not run on the machine"; exit 1; }
+	@echo "  static: $$(du -h $(GREETER) | cut -f1)"
+
+# What goes on the disk, built where anyone can look at it.
+#
+# The manifest grants one file, by the path it will have *inside the machine* —
+# /opt/thalyx/data/greeter/notes.txt, which is the `modules` subvolume. Not the
+# directory around it: the module reads whatever it was granted when nobody
+# names a file, and a grant naming a directory would send it to read a directory
+# and report the failure as a permissions problem.
+store-stage: binary greeter
+	rm -rf $(STAGE)
+	mkdir -p $(STAGE)/system $(STAGE)/modules/greeter $(STAGE)/user
+	mkdir -p $(BUILD)/pack/bin
+	cp $(GREETER) $(BUILD)/pack/bin/greeter
+	$(THALYX) dev keygen --out $(BUILD)/store-signing.key
+	printf '%s\n' \
+	    'Thalyx es el sistema operativo. El kernel de Linux es un componente' \
+	    'que Thalyx gestiona, no el anfitrion sobre el que descansa.' \
+	    > $(STAGE)/modules/greeter/notes.txt
+	printf '%s\n' \
+	    'format_version = 1' \
+	    'id             = "dev.thalyx.greeter"' \
+	    'name           = "Greeter"' \
+	    'version        = "1.0.0"' \
+	    'description    = "The first module written against Thalyx internal API"' \
+	    'license        = "GPL-3.0-or-later"' \
+	    'publisher_key  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"' \
+	    'distribution   = "prebuilt"' \
+	    '' \
+	    '[artifact]' \
+	    'hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
+	    'size = 0' \
+	    '' \
+	    '[requires]' \
+	    'thalyx = ">=0.1.0"' \
+	    '' \
+	    '[[permissions]]' \
+	    'resource = "/opt/thalyx/data/greeter/notes.txt"' \
+	    'action   = "read"' \
+	    'type     = "persistent"' \
+	    '' \
+	    '[entrypoints]' \
+	    'run = "bin/greeter"' \
+	    > $(BUILD)/greeter-manifest.toml
+	$(THALYX) dev pack $(BUILD)/pack --manifest $(BUILD)/greeter-manifest.toml \
+	    --key $(BUILD)/store-signing.key --out $(BUILD)/greeter.thmod
+	THALYX_ROOT=$(STAGE)/system $(THALYX) module install $(BUILD)/greeter.thmod --yes
+	@THALYX_ROOT=$(STAGE)/system $(THALYX) module list | grep -q dev.thalyx.greeter \
+	    || { echo "the module did not install into the stage"; exit 1; }
+	@echo
+	@echo "  staged: $(STAGE)"
+
+# The disk itself. Needs root, for the loop device and for the mount.
+#
+# `current` is a relative symlink and nothing else on the store records an
+# absolute path of its own, which is what lets the stage be built at one path
+# and mounted at another. If that stops being true, this copy is where it will
+# show, and it will show as a module that installed and cannot be found.
+store: store-stage
+	@test "$$(id -u)" = 0 || { \
+	    echo "  make store needs root: it formats a disk and mounts it."; \
+	    echo "  sudo make -C image store"; \
+	    exit 1; \
+	}
+	@command -v mkfs.btrfs > /dev/null || { \
+	    echo "  no mkfs.btrfs. Thalyx requires Btrfs; install btrfs-progs."; \
+	    exit 1; \
+	}
+	rm -f $(STORE)
+	truncate -s $(STORESIZE) $(STORE)
+	mkfs.btrfs -q -L thalyx-store $(STORE)
+	mkdir -p $(MNT)
+	mount -o loop $(STORE) $(MNT)
+	btrfs subvolume create $(MNT)/system
+	btrfs subvolume create $(MNT)/modules
+	btrfs subvolume create $(MNT)/user
+	cp -a $(STAGE)/system/. $(MNT)/system/
+	cp -a $(STAGE)/modules/. $(MNT)/modules/
+	cp -a $(STAGE)/user/. $(MNT)/user/
+	btrfs subvolume list $(MNT)
+	umount $(MNT)
+	@echo
+	@echo "  store: $(STORE) — three subvolumes, one module installed"
 
 # ────────────────────────────────────────────────────────────────────── boot
 #
 # No bootloader and no partition table: QEMU is handed the kernel and the
 # archive. `lsm=` puts bpf in the LSM order, which thalyx-lsm needs and which no
-# distribution enables by default.
+# distribution enables by default. `thalyx.store=` names the disk rather than
+# leaving PID 1 to probe for it — a probe finds the wrong disk exactly once, and
+# the failure is Thalyx writing its store onto somebody else's filesystem.
+#
+# The store is a prerequisite that is deliberately not built here: `make store`
+# needs root, and a `run` that quietly asked for a password would be a `run`
+# nobody could put in a script.
 
-run: $(BZIMAGE) $(INITRAMFS) $(DISK)
+run: $(BZIMAGE) $(INITRAMFS)
+	@test -f $(STORE) || { \
+	    echo "  no store disk at $(STORE)."; \
+	    echo "  The machine will boot and say so, and nothing will survive it."; \
+	    echo "  To make one:  sudo make -C image store"; \
+	    echo; \
+	}
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
 	    -smp 2 \
 	    -kernel $(BZIMAGE) \
 	    -initrd $(INITRAMFS) \
-	    -drive file=$(DISK),if=virtio,format=qcow2 \
+	    $$(test -f $(STORE) && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
-	    -append "console=ttyS0 lsm=capability,bpf panic=-1"
+	    -append "console=ttyS0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
 
 clean:
 	rm -rf $(BUILD)

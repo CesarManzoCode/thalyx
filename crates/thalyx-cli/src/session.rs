@@ -249,6 +249,138 @@ fn gather(store: &Store) -> Vec<Reading> {
     ]
 }
 
+/// Turn the machine off.
+///
+/// It exists because the `salir` branch has been telling people to type
+/// `apagar` since the first boot, and nothing understood the word. A machine
+/// whose only documented way out is a verb it does not implement leaves
+/// `Ctrl-a x` — which is QEMU's, not Thalyx's, and would be nothing at all on
+/// real hardware.
+///
+/// The kernel is asked to power off directly. There is no `shutdown` to call
+/// and nothing else running that would need to be told first: the session is
+/// the only child, and PID 1 is what invoked it.
+fn power_off(standing: &Standing) {
+    match standing {
+        Standing::TheMachine => {
+            println!();
+            println!("  Turning off. Anything not written to the store is gone,");
+            println!("  because the root filesystem is memory and always was.");
+            println!();
+            let _ = std::io::stdout().flush();
+            // Only returns on failure: on success the machine is already off.
+            // Reported rather than swallowed, because a poweroff that silently
+            // did nothing leaves a prompt that looks like it ignored the human.
+            let error = thalyx_syscall::reboot(thalyx_syscall::RebootCommand::PowerOff);
+            println!("  the kernel refused to power off: {error}");
+            println!("  that needs privilege I do not have here.");
+            println!();
+        }
+        Standing::AProgram { under } => {
+            println!();
+            println!("  No. I am a program under {under}, and turning this machine");
+            println!("  off would turn off something that is not mine. `salir`");
+            println!("  leaves; on the image this same word powers the machine down.");
+            println!();
+        }
+    }
+}
+
+/// What is installed, read from the store rather than from anything remembered.
+fn list_modules(store: &Store) {
+    println!();
+    match store.installed() {
+        Ok(list) if list.is_empty() => {
+            println!("  Nothing is installed.");
+            println!();
+            println!("  If a store was expected here, the first lines of the boot say");
+            println!("  whether one was mounted. An empty store and an absent one look");
+            println!("  the same from this list, and only the boot told them apart.");
+        }
+        Ok(list) => {
+            for (id, version) in &list {
+                println!("  {id} {version}");
+            }
+            println!();
+            println!("  `correr <id>` runs one.");
+        }
+        Err(error) => {
+            // Not "nothing is installed". Rule 10 again, at the one place a
+            // human is most likely to read the answer as an inventory.
+            println!("  I could not read the store: {error}");
+            println!("  That is not the same as it being empty, and I will not");
+            println!("  report it as empty.");
+        }
+    }
+    println!();
+}
+
+/// The word that makes running without enforcement a thing somebody typed.
+const UNCONFINED_WORD: &str = "sin-confinar";
+
+/// Run an installed module from the session.
+///
+/// The whole run goes through `thalyx_core::run` by way of the same CLI code
+/// `thalyx module run` uses. `Coherencia-Doble-Ruta.md` is the reason it is not
+/// written a second time here: two orchestrations of the same operation drift,
+/// and the drift shows up as the human's route and the agent's route leaving
+/// the machine in different states.
+///
+/// ## Why there is no fallback
+///
+/// Confined is the default and the core refuses it outright when nothing can
+/// enforce a permission. A session that noticed the refusal and quietly ran the
+/// module unconfined would be doing the one thing `RunRequest::unconfined` was
+/// written to prevent: reaching the degraded state by accident instead of
+/// deliberately. So the refusal is printed, the word that means it is named,
+/// and the human types it or does not.
+fn start_module(store: &Store, rest: &str) {
+    let (id, unconfined) = match rest.split_once(' ') {
+        Some((id, tail)) => (id.trim(), tail.trim() == UNCONFINED_WORD),
+        None => (rest, false),
+    };
+
+    if id.is_empty() {
+        println!();
+        println!("  Which one. `modulos` lists them.");
+        println!();
+        return;
+    }
+
+    if !store.is_installed(id) {
+        println!();
+        println!("  `{id}` is not installed. `modulos` lists what is.");
+        println!();
+        return;
+    }
+
+    let Err(error) = crate::run::run(
+        store.root(),
+        id,
+        "default",
+        thalyx_core::run::DEFAULT_ENTRYPOINT,
+        Vec::new(),
+        unconfined,
+        crate::new_request_id(),
+    ) else {
+        return;
+    };
+
+    println!();
+    println!("  {id} did not run: {error}");
+    if !unconfined {
+        println!();
+        println!("  If that is the kernel side being absent, it is the known gap and");
+        println!("  not this module: nothing here can enforce a permission yet, and");
+        println!("  Thalyx will not pretend to. To run it anyway, knowing that:");
+        println!();
+        println!("      correr {id} {UNCONFINED_WORD}");
+        println!();
+        println!("  The journal records that run as degraded, because it is.");
+    }
+    println!();
+}
+
 pub fn run(store: &Store, once: bool) -> Fallible {
     let standing = standing();
     let readings = gather(store);
@@ -308,7 +440,24 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     }
 
     println!();
-    println!("  Say what you want. `salir` to leave.");
+    match &standing {
+        Standing::TheMachine => {
+            println!("  `modulos` lists what is installed, `correr <id>` runs one,");
+            println!("  `estado` re-reads the machine, `apagar` turns it off.");
+        }
+        Standing::AProgram { .. } => {
+            println!("  `modulos`, `correr <id>`, `estado`. `salir` to leave.");
+        }
+    }
+    // Said wherever it is true, and nowhere it is not. Both standings hit the
+    // same wall — the core refuses a confined run with no policy map — and a
+    // machine with the LSM attached must not be told its enforcement is
+    // missing, which is the kind of hardcoded sentence this file exists not to
+    // have.
+    if matches!(enforcement(), Outcome::Absent(_)) {
+        println!("  Nothing here enforces a permission yet, so `correr` will say");
+        println!("  so and stop. `correr <id> {UNCONFINED_WORD}` runs it anyway.");
+    }
     println!();
 
     loop {
@@ -345,6 +494,21 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                         reading.text()
                     );
                 }
+            }
+            "apagar" | "poweroff" => {
+                power_off(&standing);
+            }
+            "modulos" | "módulos" => {
+                list_modules(store);
+            }
+            _ if line.starts_with("correr ") || line.starts_with("run ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                start_module(store, rest);
+            }
+            "correr" | "run" => {
+                println!();
+                println!("  Which one. `modulos` lists them.");
+                println!();
             }
             _ => {
                 println!();

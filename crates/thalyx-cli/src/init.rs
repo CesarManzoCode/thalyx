@@ -29,8 +29,10 @@
 //! the same ones this produced — so a half-mounted machine boots into an honest
 //! description of itself instead of a kernel panic.
 //!
-//! The exception is the root subvolumes: without the store there is no Thalyx
-//! to be, and that is said plainly rather than papered over.
+//! The store is the same: it is mounted here, reported here, and **never
+//! created here**. See `store_disk`, which holds the reasoning and the layout.
+//! A boot with no store still comes up, and says in as many words that nothing
+//! it is told will survive it.
 
 use std::path::Path;
 use thalyx_syscall::mount_flags::HARDENED;
@@ -163,6 +165,12 @@ pub fn run() -> Fallible {
         println!("  no  {target}: {error}");
     }
 
+    // After the mounts because it reads /proc/cmdline, and before the session
+    // because the session reports what is installed — and reading that from an
+    // unmounted /opt/thalyx would report an empty machine rather than an
+    // unmounted one.
+    crate::store_disk::mount().report();
+
     match attach_lsm() {
         Ok(()) => println!("  ok  thalyx-lsm attached"),
         Err(reason) => println!("  no  thalyx-lsm: {reason}"),
@@ -223,6 +231,8 @@ pub fn describe() {
         println!("  {:<24} {}", needed.target, needed.fstype);
         println!("  {:<24} {}", "", needed.because);
     }
+    println!();
+    crate::store_disk::describe();
     println!();
     println!("then attach thalyx-lsm, then start the session and reap orphans");
     println!("for as long as the machine is on.");
