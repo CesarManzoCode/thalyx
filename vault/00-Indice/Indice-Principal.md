@@ -85,7 +85,7 @@ Punto de entrada de la bóveda. Si eres tú retomando el proyecto después de ti
 
 ## Estado global del proyecto (snapshot al 3 de agosto de 2026)
 
-Las cuatro primitivas y el flujo canónico están construidos y **verificados en hardware real**: 392 pruebas y 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs, sin nada por probar y sin fallos. Falta el agente y el ISO. Ver [[Punto-Actual]] para el detalle vivo y [[Estado-de-Implementacion]] por crate.
+Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de Fase 2— y el flujo canónico están construidos y **verificados en hardware real**: 392 pruebas y 44 comprobaciones en una máquina con BPF LSM, cgroup2 y Btrfs, sin nada por probar y sin fallos. Falta el agente y el ISO. Ver [[Punto-Actual]] para el detalle vivo y [[Estado-de-Implementacion]] por crate.
 
 | Área | Estado |
 |---|---|
@@ -119,7 +119,7 @@ Las cuatro primitivas y el flujo canónico están construidos y **verificados en
 | Perfil `module_standard` (namespaces, seccomp, límites) | ✅ Implementado y verificado contra el kernel |
 | Raíz propia del módulo (`pivot_root`) | ✅ Implementada y verificada |
 | Disciplina de cobertura del índice | ✅ Implementada y probada |
-| Memoria persistente (4ª primitiva) | ✅ Implementada y probada |
+| Memoria persistente (3ª primitiva) | ✅ Implementada y probada |
 | uid por módulo | ✅ Decretado e implementado |
 | Montajes idmapped para rutas concedidas | ✅ Implementados y verificados |
 | Sockets `AF_UNIX` | ✅ Decretado: fuera, reversible |

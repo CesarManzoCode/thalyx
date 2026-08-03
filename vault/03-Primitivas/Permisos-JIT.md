@@ -103,7 +103,7 @@ Mismo cgroup, misma política, mismo destino. Lo único que cambió entre las do
 
 Esa última línea es la que importa tanto como la denegación: una política que rompiera todo se vería idéntica a una que funciona si solo se mirara desde dentro. Reproducible con `make -C lsm demo`.
 
-**Esta es la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Las otras tres siguen siendo diseño.
+**Esta fue la primera de las cuatro primitivas con evidencia de que hace lo que el decreto dice.** Desde entonces también la tienen el [[FS-en-Grafo]] y la [[Memoria-Persistente]]; la que sigue siendo diseño es el [[Scheduler-Predictivo]], y por decreto es de Fase 2.
 
 Reproducido el 2 de agosto de 2026 en Fedora 43 con kernel 7.0, ya no como demostración aislada sino dentro de `dev/verify.sh`, junto con el resto del sandbox.
 

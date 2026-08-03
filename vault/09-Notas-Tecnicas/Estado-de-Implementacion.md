@@ -91,19 +91,30 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 ### Las advertencias que quedan
 
-**1. Los límites de recursos siguen sin probarse contra un kernel.** El código los aplica y rechaza correr si no puede, pero este contenedor no delega ningún controlador de cgroup. `THALYX_REQUIRE_CONTROLLER_TESTS=1` convierte ese salto en fallo, para una máquina que sí los tenga.
+**1. El perfil no crea un user namespace para el módulo.** Lo que sí hay es un
+uid propio por módulo, al que el lanzador desciende con `setresuid` y **relee el
+uid efectivo** antes de ejecutar nada, porque un `setuid` que reporta éxito sin
+haber cambiado nada se ve igual que uno que funcionó. Un user namespace daría
+además un mapa de ids propio; su ausencia no significa que el módulo corra con
+el uid de Thalyx. Ver [[Sandbox-Ejecucion]].
 
 **2. El atajo del índice ya se puede encender, y solo ganándoselo.** El contador cubre todo lo que un proceso puede hacerle a un archivo y está acotado al árbol: verificado en hardware con 5000 escrituras dentro contadas y las mismas 5000 fuera ignoradas. `thalyx graph trust --counter` corre la verificación y se niega si no coincide. Se devuelve solo cuando el kernel deja de poder responder. Ver [[FS-en-Grafo]].
 
-**3. `restore` no existe.** `rollback` sí, y es la operación acotada: deshace lo que Thalyx publicó y no toca nada más, por eso corre sin preguntar. La destructiva necesita Btrfs y se escribirá donde pueda ejecutarse, no a ciegas. Ver [[Rollback-vs-Restore]].
+**3. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
 
-**4. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
+**4. `verify.sh` no exige las pruebas de Btrfs aunque haya Btrfs.** Activa
+`THALYX_REQUIRE_CGROUP_TESTS`, `_CONTROLLER_TESTS` y `_LSM_TESTS`, pero no
+`_BTRFS_TESTS`; comprueba los snapshots en etapas propias y deja que las del
+arnés de Rust se salten en silencio. Es el hueco de la regla 3 dentro de la
+herramienta que existe para hacerla cumplir.
 
 ## Pruebas
 
 392 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay tres variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS` y `_CONTROLLER_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay cuatro variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS` y `_BTRFS_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+
+De las cuatro, `verify.sh` solo activa tres: ver la advertencia 4 más arriba.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

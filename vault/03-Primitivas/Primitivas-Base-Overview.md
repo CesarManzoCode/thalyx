@@ -18,6 +18,13 @@ Este es el mapa de contenido (MOC) de las cuatro primitivas que forman la **Cara
 
 Ver [[Decision-Kernel-vs-Userspace]] para la justificación completa de por qué cada una vive donde vive.
 
+**Esta tabla es la lista canónica, y son cuatro. Nada que no esté en ella
+cuenta como primitiva** — en particular [[Parser-Mecanico]], que es un
+*componente* del [[FS-en-Grafo]] por decreto propio y no una quinta entrada.
+Contarlo llevó a decir "las cuatro primitivas están construidas" cuando la
+cuarta es el [[Scheduler-Predictivo]] y es de Fase 2. Al terminar la Fase 1
+habrá **tres de las cuatro**.
+
 Para primitivas identificadas pero **no construidas todavía**, ver [[Criterio-de-Inclusion-de-Primitivas]] (sección "primitivas futuras").
 
 ## Revisiones

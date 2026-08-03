@@ -155,6 +155,41 @@ Resultado: un watcher que estaba contando perfectamente se reportó ilegible.
 
 Y el corolario, que es la quinta vez que este proyecto lo aprende en otra capa: **un fallo al leer se reportó como un fallo al existir.** `thalyx graph watcher` trataba cualquier error como "el watcher no está cargado", así que mandaba al humano a recargar algo que llevaba todo el rato funcionando. Ahora distingue las dos cosas y dice cuál es: una es algo que ir a arreglar afuera, la otra es un defecto de Thalyx.
 
+## Regla derivada: una afirmación de ausencia caduca sola, y nadie la revisa
+
+Una revisión externa leyó la bóveda y encontró que `Estado-de-Implementacion`
+decía las dos cosas a la vez: la tabla listaba `restore` con su archivo, y una
+sección más abajo decía **"`restore` no existe"**. Lo mismo con los límites de
+recursos, declarados sin probar en una nota mientras `verify.sh` tenía la etapa
+que los probaba. Al ir a corregirlo aparecieron tres más, incluida una en un
+comentario de módulo de Rust que afirmaba que un módulo corre con el uid de
+Thalyx cuando `thalyx-core/uids.rs` lleva días dándole uno propio.
+
+Las cinco tienen la misma forma. **Una afirmación de que algo funciona la
+rompe el código: falla un test. Una afirmación de que algo *falta* no la rompe
+nada** — se construye la cosa, pasan todas las pruebas, y la frase que dice que
+no existe sigue ahí, verde y falsa. Las secciones "lo que todavía no está" son
+las únicas partes de un documento vivo que envejecen sin que nada avise.
+
+Tres consecuencias, en orden de fuerza:
+
+1. **Construir algo incluye buscar quién dijo que no existía.** `grep -rn` del
+   nombre de la pieza por `vault/` y por los comentarios de módulo, antes de
+   dar por terminado. Es el paso que faltó cinco veces.
+2. **Una afirmación de ausencia se escribe con su comprobación al lado.** No
+   "`restore` no existe", sino "no existe `crates/thalyx-core/restore.rs`" —
+   que es falsable mirando el disco, y por lo tanto automatizable.
+3. **Un conteo se escribe una sola vez.** "Las cuatro primitivas" vivía en seis
+   notas y en el README; tres decían cuatro construidas contando un componente
+   que su propio decreto llama componente. Un número repetido en siete lugares
+   es siete oportunidades de divergir y ninguna de detectarlo.
+
+El corolario incómodo: esto no lo encontró ninguna prueba, ni `verify.sh`, ni
+yo. Lo encontró alguien de fuera leyendo. **El arnés cubre lo que Thalyx
+afirma; no cubre lo que la bóveda afirma sobre Thalyx**, y la bóveda es la
+autoridad. Ver la advertencia 4 de [[Estado-de-Implementacion]] para el mismo
+agujero en la otra dirección: `verify.sh` exige tres de sus cuatro variables.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

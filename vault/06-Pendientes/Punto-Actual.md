@@ -16,7 +16,8 @@ tags: [continuidad, punto-actual, sesiones]
 
 ## Dónde estamos, en una frase
 
-La Fase 1 tiene sus cuatro primitivas y su flujo canónico **construidos y
+La Fase 1 tiene **sus tres primitivas** —de las cuatro decretadas; la cuarta es
+el [[Scheduler-Predictivo]] y es de Fase 2— y su flujo canónico **construidos y
 verificados en hardware real**: 392 pruebas, 44 comprobaciones en máquina real,
 0 sin probar, 0 fallidas. Lo que falta para cerrar la fase es el **agente** y el
 **ISO booteable**.
@@ -48,7 +49,7 @@ git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
 | Contador de mutaciones del kernel, 10 hooks | Sí — 5000 escrituras por descriptor abierto, todas contadas |
 | Contador acotado al árbol | Sí — 5000 dentro contadas, 5000 fuera ignoradas |
 | El atajo del índice (`graph trust`) | Sí — se gana con verificación, y un cambio real sigue saliendo obsoleto |
-| Memoria persistente (4ª primitiva) | Sí — el hecho deja de ser afirmable al editar el archivo por fuera |
+| Memoria persistente (3ª primitiva) | Sí — el hecho deja de ser afirmable al editar el archivo por fuera |
 | `rollback` | Sí — quita el módulo y sus permisos; se niega la segunda vez |
 | Snapshots de Btrfs | Sí — de solo lectura, conservan el contenido viejo |
 | `restore` | Sí — restaura, destruye lo posterior, y conserva lo destruido |
@@ -57,15 +58,29 @@ Detalle por crate en [[Estado-de-Implementacion]].
 
 ## Lo que sigue, en orden
 
-### 1. El agente (`thalyx-agent`) — el riesgo técnico más grande
+### 1. Un agente mínimo (`thalyx-agent`) — decidido el 2026-08-03
 
-Bloquea todo el flujo conversacional y es lo único que falta para que Thalyx
-sea lo que dice ser en vez de una CLI muy cuidadosa.
+Va primero, y el motivo es de descubrimiento, no de avance. El ISO desbloquea
+cinco de los seis pasos del [[Criterio-de-Salida-Fase-1|criterio de salida]]
+contra uno del agente, pero el ISO **integra piezas ya probadas: no puede
+enseñar nada que no se sepa ya**. El agente sí puede invalidar el diseño del
+contrato. Descubrir tarde que la procedencia por campo no sobrevive a varias
+inferencias costaría mucho más que un ISO retrasado, y la regla 1 de
+`CLAUDE.md` dice que todos los defectos reales salieron de correr el sistema.
 
-**No se puede empezar sin un decreto:** cuál modelo local de 3B–7B, con qué
-prompting y qué router de reglas. Ver [[Debate-Agente-Fine-Tuning]] y
-[[Agente-Conversacional]]. **Esta es la pregunta que hay que hacerle a Cesar
-antes que ninguna otra.**
+Alcance: router de reglas más un modelo con decodificación restringida por
+gramática, sobre **un solo caso de uso** —instalar un módulo—, no un agente
+general.
+
+**Falta un decreto antes de escribirlo**, y ya tiene forma decidida: no un
+modelo anclado sino **3–4 modelos por gama** (ligera, media, avanzada) que el
+usuario elige según su hardware, con pruebas hechas y capacidades
+documentadas. Anclar un modelo de 5 GB dejaría fuera a una máquina de 8 GB, y
+el criterio de salida exige justamente que alguien de fuera lo use. Con
+gramática restringida la estructura del contrato es inviolable en todas las
+gamas; lo que cambia entre ellas es el acierto al interpretar la intención, no
+la seguridad. Falta escribirlo como revisión en [[Agente-Conversacional]] y
+[[Debate-Agente-Fine-Tuning]].
 
 Lo que sí está listo para el agente cuando exista: el contrato estructurado con
 marcado de origen, el camino confiable, la memoria persistente, y el principio
@@ -74,7 +89,10 @@ puede hacerlo por la CLI).
 
 ### 2. El ISO booteable
 
-Ver [[Construccion-del-ISO]]. Independiente del agente; se puede hacer antes.
+Ver [[Construccion-del-ISO]]. Independiente del agente. El criterio de salida
+**no cambia**: sigue exigiendo arrancar la imagen en QEMU y apagar la máquina,
+porque esos dos pasos prueban integración del sistema y no solo de los
+componentes.
 
 ### 3. Reindexado incremental
 
@@ -87,7 +105,7 @@ por ancestros— así que es una mejora de rendimiento, no de corrección. Ver
 
 Ninguno bloquea excepto el primero.
 
-- [ ] **Modelo concreto del agente** ← el que bloquea
+- [ ] **Modelo concreto del agente** ← el que bloquea. Forma ya decidida (gamas elegibles por el usuario); falta escribir el decreto y correr el banco.
 - [ ] Métricas de benchmark de la Fase 2 (el umbral ya está decretado; falta el instrumento)
 - [ ] Técnicas de interpretabilidad aplicables al agente
 - [ ] Arquitectura del índice semántico a mayor escala (SQLite alcanza para Fase 1)
@@ -131,6 +149,30 @@ corrida. Para encenderlo a mano:
 
 ## Historial de sesiones
 
+### 2026-08-03 (2) — una revisión externa encontró que la bóveda se contradecía
+Una lectura externa del repo —solo código y documentación, sin el contexto de
+la filosofía— encontró que `Estado-de-Implementacion` afirmaba a la vez que
+`restore` estaba construido y que **no existe**, y que los límites de recursos
+seguían sin probarse cuando `verify.sh` ya tenía la etapa. Al corregirlo
+aparecieron tres más: dos listas incompatibles de "las cuatro primitivas"
+(contando [[Parser-Mecanico]], que su propio decreto llama *componente*), un
+comentario en `thalyx-sandbox/src/lib.rs` que decía que un módulo corre con el
+uid de Thalyx cuando `uids.rs` lleva días dándole uno propio, y "tres
+variables" de salto donde hay cuatro.
+
+Las cinco tienen la misma forma y de ahí sale la regla nueva de
+[[Estrategia-de-Pruebas]]: **una afirmación de que algo falta no la rompe
+nada**. El código rompe las afirmaciones de que algo funciona; las de ausencia
+envejecen calladas.
+
+También quedó anotado el hueco simétrico: `verify.sh` activa tres de sus cuatro
+variables `THALYX_REQUIRE_*`, no la de Btrfs.
+
+De la misma revisión se descartaron dos cosas: la supuesta inconsistencia de
+fechas (2 de agosto 22:13 en CDMX **son** las 04:13 UTC del 3; la bóveda fecha
+en UTC) y el reproche de que Thalyx "todavía no es un sistema operativo", que
+es [[Decision-Capa-vs-SO-Nuevo|un decreto deliberado]] y no un hallazgo.
+
 ### 2026-08-03 — todo verde en hardware, y las dos operaciones del decreto
 Se cerró el ciclo del contador de mutaciones (10 hooks, por CPU, acotado al
 árbol), se abrió la puerta del atajo (`graph trust`), y se construyeron las dos
@@ -138,7 +180,7 @@ operaciones de [[Rollback-vs-Restore]]: `rollback` y `restore`, con snapshots
 de Btrfs debajo. Cuatro defectos encontrados y arreglados, **tres de ellos del
 arnés y no de Thalyx** — de ahí las reglas 5 y 6 de `CLAUDE.md`.
 
-### 2026-08-02 — la cuarta primitiva y el enforcement real
+### 2026-08-02 — la tercera primitiva y el enforcement real
 Memoria persistente, montajes idmapped, un uid por módulo, `pivot_root`, perfil
 `module_standard`, y la primera demostración de que el LSM deniega de verdad en
 hardware.

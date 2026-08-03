@@ -4,12 +4,14 @@ An open-source operating system designed from the kernel outward, where AI is a
 first-class citizen rather than one more application, and the human stays
 sovereign.
 
-> **Status: Phase 1, everything but the agent.** The four base primitives and
-> the canonical flow are built and **verified on real hardware** — 392 tests
-> and 44 checks on a machine with a BPF LSM, cgroup v2 and Btrfs, with nothing
-> left unproven. Modules install atomically, run confined, and can be rolled
+> **Status: Phase 1, core infrastructure built.** Three of the four base
+> primitives — the fourth, the predictive scheduler, is Phase 2 — and the
+> canonical flow are built and **verified on real hardware**: 392 tests and 44
+> checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
+> unproven *there*. Modules install atomically, run confined, and can be rolled
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
-> restored. What is missing is the conversational agent and the bootable image.
+> restored. Missing: the conversational agent, the bootable image, and any use
+> by a person outside the project — which is what actually ends Phase 1.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.

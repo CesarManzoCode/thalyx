@@ -41,15 +41,25 @@
 //!
 //! ## What is still not here
 //!
-//! **The user namespace.** The decree names it and this does not implement it,
-//! because doing it usefully means deciding which uid a module runs as and who
-//! owns the files in the module store — a policy question, not an
-//! implementation one. A user namespace that mapped root to root would satisfy
-//! the letter of the decree and isolate nothing, and this project does not
-//! ship theatre and call it protection.
+//! **The user namespace for the module itself.** The decree names it and this
+//! does not implement it. A user namespace that mapped root to root would
+//! satisfy the letter of the decree and isolate nothing, and this project does
+//! not ship theatre and call it protection.
 //!
-//! A module today therefore still runs as the uid Thalyx runs as. Everything
-//! else in the profile holds.
+//! What blocked it was a policy question — which uid a module runs as, and who
+//! owns the files in the store — and that question has since been answered
+//! elsewhere: `thalyx-core`'s `uids` hands each module a uid that is never
+//! recycled (it is not a dependency of this crate — the caller passes the uid
+//! down in [`LaunchSpec`]), [`launch`] descends to it and re-reads the
+//! effective uid before executing anything, and [`idmap`] holds a user
+//! namespace open purely to describe the id translation for granted paths.
+//! **So a module does not run as
+//! the uid Thalyx runs as** — this paragraph said it did long after it stopped
+//! being true, which is the failure mode a status comment has: it keeps
+//! claiming the state of the world on the day it was written.
+//!
+//! What is still missing is narrower than it was: an id map of the module's
+//! own, rather than the uid drop plus idmapped mounts that stand in for one.
 
 pub mod cgroup;
 pub mod idmap;
