@@ -23,7 +23,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Firma ed25519 sobre forma canónica | `crates/thalyx-manifest` | Completo |
 | Journal append-only con fsync | `crates/thalyx-journal` | Completo |
 | Registro de intención y reconciliación | `crates/thalyx-core/reconcile.rs` | Completo |
-| Lectura y desempaquetado seguro de bundles | `crates/thalyx-core/bundle.rs` | Completo |
+| Lectura y desempaquetado seguro de bundles | `crates/thalyx-core/bundle.rs` | Completo, con límites de tamaño **antes** de la firma y tope de expansión al desempaquetar |
 | Verificación de artefacto | `crates/thalyx-core/install.rs` | Completo |
 | Commit atómico | `crates/thalyx-core/commit.rs` | Completo |
 | Anclaje de clave de publicador (TOFU) | `crates/thalyx-core/keystore.rs` | Completo |
@@ -116,7 +116,7 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-431 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+436 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

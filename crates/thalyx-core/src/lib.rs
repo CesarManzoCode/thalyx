@@ -135,6 +135,26 @@ pub enum CoreError {
     #[error("archive entry `{path}` is a {kind}; only regular files and directories are accepted")]
     UnsafeArchiveEntry { path: String, kind: String },
 
+    #[error(
+        "bundle member `{member}` is {found} bytes, past the {allowed} a bundle is read with.\n  \
+         Nothing here has been verified yet, so the size is all there is to go on."
+    )]
+    BundleMemberTooLarge {
+        member: String,
+        found: u64,
+        allowed: u64,
+    },
+
+    #[error(
+        "the artifact expands past {allowed} bytes, and stopped being unpacked there.\n  \
+         Its {compressed} compressed bytes are signed and their digest matches, so this is a \
+         module that ships more than it declares, not a corrupted download."
+    )]
+    ArtifactExpandsTooFar { allowed: u64, compressed: u64 },
+
+    #[error("the artifact holds more than {allowed} entries")]
+    ArtifactTooManyEntries { allowed: usize },
+
     #[error("`{module_id}` version {version} is already installed")]
     AlreadyInstalled { module_id: String, version: String },
 

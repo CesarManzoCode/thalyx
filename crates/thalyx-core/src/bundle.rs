@@ -30,6 +30,44 @@ pub const ARTIFACT_MEMBER: &str = "artifact.tar.gz";
 /// name are refused rather than overwritten.
 pub const RESERVED_DIR: &str = ".thalyx";
 
+/// What a manifest is allowed to weigh.
+///
+/// It is TOML describing a module. The largest one this project has produced is
+/// under two kilobytes, so this is three orders of magnitude of headroom and
+/// still small enough that reading it costs nothing.
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+/// What a detached ed25519 signature is allowed to weigh.
+const MAX_SIGNATURE_BYTES: u64 = 8 * 1024;
+
+/// What a compressed artifact is allowed to weigh.
+///
+/// A Phase 1 module larger than this is outside what the phase is for, and the
+/// number is a decree that can be raised when a real module needs it. What it
+/// must not be is absent: see the note on [`Bundle::read`].
+const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// How many members a bundle may hold before it stops being a bundle.
+const MAX_BUNDLE_MEMBERS: usize = 64;
+
+/// How much larger than its compressed self an artifact may unpack.
+///
+/// Fifty is generous for anything real: source text gzips around 4:1, and even
+/// a tree of near-identical files rarely passes twenty. It is the ratio and not
+/// an absolute number because the absolute number would have to be large enough
+/// for the biggest legitimate module, which makes it useless against the
+/// smallest bomb.
+const MAX_EXPANSION_RATIO: u64 = 50;
+
+/// The smallest budget any artifact gets, however tiny it is compressed.
+const MIN_EXPANSION_BUDGET: u64 = 32 * 1024 * 1024;
+
+/// The ceiling no artifact passes, whatever its ratio works out to.
+const MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How many files an artifact may hold.
+const MAX_ARTIFACT_ENTRIES: usize = 100_000;
+
 /// A bundle read into memory, not yet trusted in any way.
 pub struct Bundle {
     pub manifest: Manifest,
@@ -47,6 +85,21 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// Read a bundle off disk. **Nothing here has been verified yet.**
+    ///
+    /// This is the first thing that touches an attacker-supplied file and it
+    /// runs before the signature is checked, before the digest is recomputed,
+    /// and before any key is consulted — it has to, because those checks need
+    /// the bytes this produces. So every bound in this function is a bound that
+    /// applies to a stranger's file.
+    ///
+    /// It used to have none. A 768 MB `.thmod` with no signature at all drove
+    /// the peak RSS of the process to a gigabyte, because each member was read
+    /// whole into memory *before* the match that decides whether the member is
+    /// even one of the three that matter — so padding the archive with a member
+    /// Thalyx ignores was enough. A machine that can be pushed out of memory by
+    /// a file it was about to reject has no signature check worth the name in
+    /// front of it.
     pub fn read(path: &Path) -> Result<Self> {
         let file = std::fs::File::open(path).map_err(|e| CoreError::io(path, e))?;
         let mut archive = tar::Archive::new(file);
@@ -54,6 +107,7 @@ impl Bundle {
         let mut manifest_src = None;
         let mut signature_src = None;
         let mut artifact = None;
+        let mut seen = 0usize;
 
         for entry in archive
             .entries()
@@ -66,16 +120,54 @@ impl Bundle {
                 .to_string_lossy()
                 .into_owned();
 
+            seen += 1;
+            if seen > MAX_BUNDLE_MEMBERS {
+                return Err(CoreError::MalformedBundle(format!(
+                    "more than {MAX_BUNDLE_MEMBERS} members"
+                )));
+            }
+
+            let allowed = match name.as_str() {
+                MANIFEST_MEMBER => MAX_MANIFEST_BYTES,
+                SIGNATURE_MEMBER => MAX_SIGNATURE_BYTES,
+                ARTIFACT_MEMBER => MAX_ARTIFACT_BYTES,
+                // Unknown members are skipped without being read. Reading one
+                // to ignore it is doing an attacker's work for them.
+                _ => continue,
+            };
+
+            // The header's size is a claim, so it is checked *and* the read is
+            // capped. Believing the header would let a small declared size hide
+            // a large body; capping alone would silently truncate rather than
+            // refuse. Both, and they disagree only on a malformed archive.
+            let declared = entry.header().size().unwrap_or(u64::MAX);
+            if declared > allowed {
+                return Err(CoreError::BundleMemberTooLarge {
+                    member: name,
+                    found: declared,
+                    allowed,
+                });
+            }
+
             let mut buffer = Vec::new();
-            entry
+            let read = (&mut entry)
+                .take(allowed.saturating_add(1))
                 .read_to_end(&mut buffer)
-                .map_err(|e| CoreError::MalformedBundle(e.to_string()))?;
+                .map_err(|e| CoreError::MalformedBundle(e.to_string()))?
+                as u64;
+            if read > allowed {
+                return Err(CoreError::BundleMemberTooLarge {
+                    member: name,
+                    found: read,
+                    allowed,
+                });
+            }
 
             match name.as_str() {
                 MANIFEST_MEMBER => manifest_src = Some(buffer),
                 SIGNATURE_MEMBER => signature_src = Some(buffer),
                 ARTIFACT_MEMBER => artifact = Some(buffer),
-                _ => {} // unknown members are ignored, never executed
+                _ => unreachable!("every other name was skipped above"),
             }
         }
 
@@ -127,10 +219,33 @@ pub fn unpack_artifact(artifact: &[u8], destination: &Path) -> Result<Vec<String
     let mut archive = tar::Archive::new(decoder);
     let mut written = Vec::new();
 
+    // What the artifact is allowed to become.
+    //
+    // Measured before this existed: 510 KB of `artifact.tar.gz` wrote 512 MB to
+    // disk in under four seconds, and would have kept going. Everything here is
+    // signed and its digest matched, so this is not an unauthenticated attack —
+    // it is a module shipping far more than it declared, and the ratio is the
+    // only thing that can tell the two apart, because the *compressed* size is
+    // pinned twice over and says nothing about the expanded one.
+    //
+    // The floor exists so a small module is not squeezed by its own smallness:
+    // a 4 KB artifact that unpacks to 2 MB of text is ordinary, not an attack.
+    let budget = (artifact.len() as u64)
+        .saturating_mul(MAX_EXPANSION_RATIO)
+        .clamp(MIN_EXPANSION_BUDGET, MAX_UNPACKED_BYTES);
+    let mut spent: u64 = 0;
+    let mut entries = 0usize;
+
     for entry in archive
         .entries()
         .map_err(|e| CoreError::MalformedBundle(e.to_string()))?
     {
+        entries += 1;
+        if entries > MAX_ARTIFACT_ENTRIES {
+            return Err(CoreError::ArtifactTooManyEntries {
+                allowed: MAX_ARTIFACT_ENTRIES,
+            });
+        }
         let mut entry = entry.map_err(|e| CoreError::MalformedBundle(e.to_string()))?;
         let path = entry
             .path()
@@ -164,7 +279,22 @@ pub fn unpack_artifact(artifact: &[u8], destination: &Path) -> Result<Vec<String
             std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
         }
         let mut out = std::fs::File::create(&target).map_err(|e| CoreError::io(&target, e))?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| CoreError::io(&target, e))?;
+        // Capped at what is left of the budget rather than checked afterwards:
+        // a check after the fact still writes the bytes it then complains
+        // about, which on a full disk is the whole of the damage.
+        let remaining = budget - spent;
+        let copied = std::io::copy(
+            &mut (&mut entry).take(remaining.saturating_add(1)),
+            &mut out,
+        )
+        .map_err(|e| CoreError::io(&target, e))?;
+        if copied > remaining {
+            return Err(CoreError::ArtifactExpandsTooFar {
+                allowed: budget,
+                compressed: artifact.len() as u64,
+            });
+        }
+        spent += copied;
 
         let declared = entry.header().mode().unwrap_or(0o644);
         set_mode(&target, safe_mode(declared))?;
@@ -269,6 +399,152 @@ mod tests {
             builder.append_data(&mut header, name, *contents).unwrap();
         }
         gzip(&builder.into_inner().unwrap())
+    }
+
+    /// Write a `.thmod` by hand, so a member can be any size and any name.
+    fn thmod_with(path: &Path, members: &[(&str, &[u8])]) {
+        let mut builder = tar::Builder::new(std::fs::File::create(path).unwrap());
+        for (name, contents) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *contents).unwrap();
+        }
+        builder.finish().unwrap();
+    }
+
+    /// Peak resident memory of this process, in bytes.
+    fn peak_rss() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("VmHWM"))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map(|kb| kb * 1024)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_member_thalyx_ignores_is_never_read_into_memory() {
+        // The bug this is here for: every member was read whole *before* the
+        // match that decides whether it is one of the three that matter, so
+        // padding a bundle with a member Thalyx ignores drove peak RSS to a
+        // gigabyte on a 768 MB file — with no signature on it, and before any
+        // key was consulted.
+        //
+        // On the direction of the measurement, per rule 7: `VmHWM` is a high
+        // water mark for the whole process and other tests share it, so noise
+        // can only push it *up*. That makes this test unable to produce a false
+        // failure, at the cost of being able to pass without proving anything
+        // if some other test has already allocated more. It fails reliably when
+        // run alone, which is what a regression test for this is worth.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("padded.thmod");
+        let padding = vec![0u8; 192 * 1024 * 1024];
+        thmod_with(&path, &[("padding.bin", &padding)]);
+        drop(padding);
+
+        let before = peak_rss();
+        let outcome = Bundle::read(&path);
+        let grew = peak_rss().saturating_sub(before);
+
+        assert!(
+            matches!(outcome, Err(CoreError::MalformedBundle(_))),
+            "it should still be rejected for having no manifest"
+        );
+        assert!(
+            grew < 64 * 1024 * 1024,
+            "reading a 192 MB member Thalyx ignores grew peak memory by {} MB",
+            grew / 1024 / 1024
+        );
+    }
+
+    #[test]
+    fn a_manifest_too_large_to_be_a_manifest_is_refused_by_size_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fat.thmod");
+        let fat = vec![b'#'; (MAX_MANIFEST_BYTES + 1) as usize];
+        thmod_with(&path, &[(MANIFEST_MEMBER, &fat)]);
+
+        match Bundle::read(&path) {
+            Err(CoreError::BundleMemberTooLarge {
+                member,
+                found,
+                allowed,
+            }) => {
+                assert_eq!(member, MANIFEST_MEMBER);
+                assert_eq!(allowed, MAX_MANIFEST_BYTES);
+                assert!(found > allowed);
+            }
+            Err(other) => panic!("expected a size refusal before any parsing, got {other:?}"),
+            Ok(_) => panic!("a manifest past every bound was accepted"),
+        }
+    }
+
+    #[test]
+    fn a_bundle_of_nothing_but_members_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("many.thmod");
+        let names: Vec<String> = (0..MAX_BUNDLE_MEMBERS + 5)
+            .map(|i| format!("filler-{i}.bin"))
+            .collect();
+        let members: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b""[..])).collect();
+        thmod_with(&path, &members);
+
+        assert!(
+            matches!(Bundle::read(&path), Err(CoreError::MalformedBundle(_))),
+            "a bundle has three members; thousands of them is not a bundle"
+        );
+    }
+
+    #[test]
+    fn an_artifact_that_expands_far_past_itself_stops_being_unpacked() {
+        // Measured before the bound existed: 510 KB wrote 512 MB in under four
+        // seconds and would have kept going.
+        let bomb = tar_gz_with(&[("payload.bin", &vec![0u8; 128 * 1024 * 1024])]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let outcome = unpack_artifact(&bomb, dir.path());
+        assert!(
+            matches!(outcome, Err(CoreError::ArtifactExpandsTooFar { .. })),
+            "expected the expansion bound to stop it, got {outcome:?}"
+        );
+
+        // And it stopped *while* writing rather than after: the file on disk is
+        // the budget, not the bomb. A check that ran afterwards would have
+        // written every byte it then complained about.
+        let written: u64 = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok()?.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        assert!(
+            written < 64 * 1024 * 1024,
+            "{} MB reached the disk before it was refused",
+            written / 1024 / 1024
+        );
+    }
+
+    #[test]
+    fn an_ordinary_small_module_is_not_squeezed_by_the_bound() {
+        // The control. Without it, a bound that refused everything would look
+        // exactly like one that works: a few kilobytes of source expanding to a
+        // couple of megabytes is a normal module, not a bomb.
+        let text = "fn main() { println!(\"hello\"); }\n".repeat(20_000);
+        let ordinary = tar_gz_with(&[("src/main.rs", text.as_bytes())]);
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(
+            ordinary.len() < 64 * 1024,
+            "the fixture has to be small compressed for this to mean anything"
+        );
+        assert!(
+            unpack_artifact(&ordinary, dir.path()).is_ok(),
+            "{} KB expanding to {} KB must stay allowed",
+            ordinary.len() / 1024,
+            text.len() / 1024
+        );
     }
 
     #[cfg(unix)]

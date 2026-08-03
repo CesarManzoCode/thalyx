@@ -155,6 +155,36 @@ Resultado: un watcher que estaba contando perfectamente se reportó ilegible.
 
 Y el corolario, que es la quinta vez que este proyecto lo aprende en otra capa: **un fallo al leer se reportó como un fallo al existir.** `thalyx graph watcher` trataba cualquier error como "el watcher no está cargado", así que mandaba al humano a recargar algo que llevaba todo el rato funcionando. Ahora distingue las dos cosas y dice cuál es: una es algo que ir a arreglar afuera, la otra es un defecto de Thalyx.
 
+## Regla derivada: la superficie previa a la comprobación se encuentra midiendo, no leyendo
+
+Una revisión externa entregó una lista de una docena de riesgos del desempaquetado
+de tar: enlaces duros, symlinks que escapan tras extraer, nodos de dispositivo,
+FIFOs, bombas de descompresión, límites de entradas, rutas duplicadas, nombres
+que no son UTF-8. Buena lista.
+
+Al comprobarlos uno por uno contra el código, **casi todos ya estaban cerrados**
+desde hacía semanas. Y el que sí estaba abierto no aparecía en la lista: los
+miembros del bundle que Thalyx *ignora* se leían enteros a memoria antes de
+decidir que se ignoraban. 768 MB de archivo sin firma → 1 GB de RSS, antes de
+consultar ninguna clave.
+
+Dos reglas de esto:
+
+1. **La pregunta que encuentra estos fallos no es "¿qué comprueba el código?"
+   sino "¿qué corre *antes* de la comprobación?"** Todo lo que se ejecuta para
+   poder verificar algo se ejecuta sobre un archivo que todavía no se verificó,
+   y por lo tanto sobre un archivo de un desconocido.
+2. **Una lista de riesgos genéricos es una lista de hipótesis, no de hallazgos.**
+   Cuesta un rato comprobarlas y el rendimiento es bajo — aquí, once de doce ya
+   estaban resueltas. Lo que rindió fue construir la bomba y medir el proceso.
+   Un riesgo enunciado y un riesgo demostrado se parecen mucho en un documento y
+   en nada en un arreglo.
+
+Corolario para las revisiones externas, que ya van dos veces: **son valiosas y
+hay que verificarlas igual que a Thalyx.** La misma revisión que encontró de
+verdad cinco contradicciones de la bóveda falló al restar seis horas de huso
+horario y listó once riesgos ya cerrados como si estuvieran abiertos.
+
 ## Regla derivada: dos defensas que se solapan hacen que la prueba grande no pruebe ninguna
 
 El agente mínimo tiene una prueba que parece la importante: nueve formas de
