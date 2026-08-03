@@ -107,12 +107,42 @@ else
     HAVE_BPF_LSM=0
 fi
 
+# Finding cargo under sudo.
+#
+# `sudo` resets PATH and HOME, and rustup installs into the invoking user's
+# home. So on the overwhelmingly common setup — rustup, plus `sudo` to get the
+# privileges this script genuinely needs — cargo is right there and invisible.
+# Reporting "cargo is missing" on a machine that has it is exactly the kind of
+# instrument failure this project keeps writing rules about.
+if ! command -v cargo >/dev/null 2>&1 && [ -n "${SUDO_USER:-}" ]; then
+    OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    if [ -x "$OWNER_HOME/.cargo/bin/cargo" ]; then
+        export PATH="$OWNER_HOME/.cargo/bin:$PATH"
+        # rustup's binaries are proxies: without RUSTUP_HOME they look for a
+        # toolchain under root's home and find nothing.
+        export RUSTUP_HOME="${RUSTUP_HOME:-$OWNER_HOME/.rustup}"
+        export CARGO_HOME="${CARGO_HOME:-$OWNER_HOME/.cargo}"
+    fi
+fi
+
 if command -v cargo >/dev/null 2>&1; then
-    proven "cargo present"
+    proven "cargo present ($(command -v cargo))"
 else
-    red "cargo is missing; nothing can be built or checked"
+    red "cargo is not on this root shell's PATH, and no rustup install was found"
+    red "under \$SUDO_USER's home."
+    echo
+    echo "  If you use rustup, try:"
+    echo "      sudo -E env \"PATH=\$PATH\" ./dev/verify.sh"
     exit 1
 fi
+
+# Build into a directory of this script's own.
+#
+# Everything below needs root — cgroups, namespaces, mounts — so cargo runs as
+# root, and cargo writes to its target directory. Using the normal one would
+# leave it owned by root, and the next ordinary `cargo build` would fail with
+# permission errors on a machine where nothing was wrong.
+export CARGO_TARGET_DIR="$ROOT/dev/.verify-target"
 
 # clang and bpftool are how the kernel side gets built, not claims Thalyx
 # makes. Missing them means this machine cannot check that part — it does not
@@ -142,12 +172,12 @@ else
     proven "clippy is clean, with warnings denied"
 fi
 
-if cargo build --release --quiet 2>&1 | tee "$WORK/build.log" | grep -q '^error'; then
+if cargo build --quiet 2>&1 | tee "$WORK/build.log" | grep -q '^error'; then
     failed "the workspace does not build (see $WORK/build.log)"
     exit 1
 fi
 proven "the workspace builds"
-THALYX="$ROOT/target/release/thalyx"
+THALYX="$CARGO_TARGET_DIR/debug/thalyx"
 
 # ------------------------------------------------------------ 3. the kernel
 
@@ -214,7 +244,7 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 [ "$LOADED" = 1 ]           && SUITE_ENV+=(THALYX_REQUIRE_LSM_TESTS=1)
 
 echo "   ${SUITE_ENV[*]}"
-if env "${SUITE_ENV[@]}" cargo test --workspace --release --quiet > "$WORK/tests.log" 2>&1; then
+if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
     COUNT="$(grep -Eo '^test result: ok\. [0-9]+' "$WORK/tests.log" | awk '{s+=$4} END {print s}')"
     proven "${COUNT:-?} tests pass, and none of them skipped a check this machine can make"
 else

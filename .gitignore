@@ -18,3 +18,6 @@ dev/.vm/
 # BPF build output
 lsm/*.o
 lsm/vmlinux.h
+
+# Build directory for dev/verify.sh, which runs as root.
+dev/.verify-target/
