@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 thalyx-manifest.workspace = true
+thalyx-syscall.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

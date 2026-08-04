@@ -354,6 +354,90 @@ mod layout {
             .unwrap_or_else(|_| panic!("`{line}` is not a length this can read"))
     }
 
+    /// The map-element arm of `union bpf_attr`, which is anonymous and so
+    /// cannot be reached by the walker above.
+    ///
+    /// Its fields are read straight out of the capture, in order, and the
+    /// offsets are computed the same way the walker computes them. A pointer
+    /// written at the wrong offset here does not fail quietly: the kernel takes
+    /// eight bytes from the middle of a neighbouring field as the cgroup id and
+    /// writes a policy for a cgroup nobody asked about, leaving the module that
+    /// is about to run with none.
+    fn map_elem_fields() -> Vec<(String, String)> {
+        let start = HEADER
+            .find("BPF_MAP_*_ELEM commands */")
+            .expect("the map-element arm is not in the captured header");
+        let mut out = Vec::new();
+        // Braces are counted rather than matched by shape, because the union
+        // inside closes with `};` and so does the struct around it. The first
+        // version stopped at the union's brace and never reached `flags` —
+        // which the test caught, since it names the fields it expects.
+        let mut depth = 1usize;
+        for line in HEADER[start..].lines().skip(1) {
+            let line = line.trim();
+            if line.starts_with('}') {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                continue;
+            }
+            if line.starts_with("union") || line.starts_with("struct") {
+                depth += 1;
+                continue;
+            }
+            if line == "{" {
+                continue;
+            }
+            let field = line.trim_end_matches(';').trim();
+            if let Some((kind, name)) = field.rsplit_once(char::is_whitespace) {
+                out.push((kind.trim().to_string(), name.trim().to_string()));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_map_element_arm_is_laid_out_where_thalyx_syscall_writes_it() {
+        let fields = map_elem_fields();
+        let names: Vec<&str> = fields.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["map_fd", "key", "value", "next_key", "flags"],
+            "the captured arm is not the shape this was written against: {fields:?}"
+        );
+
+        // Both arms of the union, so that reading either one as the value
+        // pointer is the same fact rather than a coincidence.
+        assert_eq!(fields[2].0, fields[3].0, "the union's arms differ in type");
+
+        // Computed, not typed. `map_fd` is four bytes and `key` is
+        // eight-aligned, so the padding between them is where a hand-written
+        // mirror goes wrong.
+        let mut offset = 0usize;
+        let mut computed = Vec::new();
+        for (kind, name) in &fields {
+            if name == "next_key" {
+                continue; // the same storage as `value`
+            }
+            let (size, align) = measure(kind);
+            offset = offset.div_ceil(align) * align;
+            computed.push((name.clone(), offset));
+            offset += size;
+        }
+
+        let at = |wanted: &str| {
+            computed
+                .iter()
+                .find(|(name, _)| name == wanted)
+                .map(|(_, o)| *o)
+                .unwrap()
+        };
+        assert_eq!(at("key"), thalyx_syscall::info_layout::ELEM_KEY_OFFSET);
+        assert_eq!(at("value"), thalyx_syscall::info_layout::ELEM_VALUE_OFFSET);
+        assert_eq!(at("flags"), thalyx_syscall::info_layout::ELEM_FLAGS_OFFSET);
+    }
+
     /// Walk a structure until `stop_after`, returning that field's offset and
     /// the size of the prefix ending with it.
     fn offset_of(structure: &str, stop_after: &str) -> (usize, usize) {

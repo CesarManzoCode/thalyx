@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use thalyx_core::Store;
 use thalyx_journal::Origin;
-use thalyx_permd::BpftoolStore;
+use thalyx_permd::KernelStore;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -21,7 +21,7 @@ pub fn run(
     request_id: String,
 ) -> Fallible {
     let store = Store::open(root)?;
-    let policies = BpftoolStore::default_map();
+    let policies = KernelStore::default_map();
 
     // The helper is this binary. It re-executes itself into the module's
     // cgroup and only then becomes the module, so the module's first

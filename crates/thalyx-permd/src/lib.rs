@@ -27,7 +27,7 @@ mod encoding;
 mod store;
 
 pub use encoding::{cgroup_key_bytes, policy_bytes};
-pub use store::{BpftoolStore, MemoryStore, PolicyStore, StoreError};
+pub use store::{KernelStore, MemoryStore, PolicyStore, StoreError};
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

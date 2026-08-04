@@ -40,9 +40,19 @@ pub fn policy_bytes(policy: &Policy) -> [u8; 16] {
     bytes
 }
 
-/// Format bytes the way `bpftool map update ... key hex ...` expects.
-pub fn as_hex_args(bytes: &[u8]) -> Vec<String> {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// How many bytes a policy occupies in the map.
+pub const POLICY_BYTES: usize = 16;
+
+/// The inverse of [`policy_bytes`], for reading an entry back.
+///
+/// Native byte order on both sides, because the writer and the reader are the
+/// same machine — the map is in its kernel, not on a wire.
+pub fn policy_from_bytes(bytes: &[u8; POLICY_BYTES]) -> Policy {
+    Policy {
+        allowed: u32::from_ne_bytes(bytes[0..4].try_into().expect("four bytes")),
+        flags: u32::from_ne_bytes(bytes[4..8].try_into().expect("four bytes")),
+        expires_ns: u64::from_ne_bytes(bytes[8..16].try_into().expect("eight bytes")),
+    }
 }
 
 #[cfg(test)]
@@ -93,11 +103,16 @@ mod tests {
     }
 
     #[test]
-    fn hex_arguments_are_two_digits_each() {
-        // bpftool parses these positionally; a single-digit byte would shift
-        // every later one and write a different policy than intended.
-        let args = as_hex_args(&cgroup_key_bytes(5));
-        assert_eq!(args, vec!["05", "00", "00", "00", "00", "00", "00", "00"]);
-        assert!(args.iter().all(|a| a.len() == 2));
+    fn a_policy_survives_the_round_trip_through_the_map() {
+        // The bytes go into the kernel and come back out of it, and nothing
+        // in between says what they mean. A field written at one offset and
+        // read at another produces a policy that is plausible and wrong —
+        // which is a permission granted for something nobody asked about.
+        let policy = Policy {
+            allowed: 0x2,
+            flags: 0x1,
+            expires_ns: 1_700_000_000_000_000_000,
+        };
+        assert_eq!(policy_from_bytes(&policy_bytes(&policy)), policy);
     }
 }

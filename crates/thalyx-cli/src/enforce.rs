@@ -12,7 +12,7 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use thalyx_core::Store;
 use thalyx_core::permissions::Registry;
-use thalyx_permd::{BpftoolStore, PolicyStore};
+use thalyx_permd::{KernelStore, PolicyStore};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -91,7 +91,7 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
     }
 
     let store = Store::open(store_root)?;
-    let kernel = BpftoolStore::default_map();
+    let kernel = KernelStore::default_map();
 
     match command {
         EnforceCommand::Status => status(&store, &kernel),
@@ -204,7 +204,7 @@ fn hooks() -> Fallible {
     Ok(())
 }
 
-fn status(store: &Store, kernel: &BpftoolStore) -> Fallible {
+fn status(store: &Store, kernel: &KernelStore) -> Fallible {
     let available = kernel.is_available();
 
     match attachment() {
@@ -250,7 +250,7 @@ fn status(store: &Store, kernel: &BpftoolStore) -> Fallible {
     Ok(())
 }
 
-fn require_kernel(kernel: &BpftoolStore) -> Fallible {
+fn require_kernel(kernel: &KernelStore) -> Fallible {
     if kernel.is_available() {
         return Ok(());
     }

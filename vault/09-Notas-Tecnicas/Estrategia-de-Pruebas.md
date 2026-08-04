@@ -690,6 +690,36 @@ que hace falta la tiene el kernel corriendo y nadie más. **Lo único que cerrar
 la clase entera es arrancar la imagen dentro de `verify.sh`** en vez de a mano,
 que es una de las dos `NOT PROVEN` que la corrida arrastra desde que existe.
 
+## Regla derivada: preguntarle a una herramienta ajena por algo que ella no hizo
+
+**Cuatro veces, la misma forma.** Una comprobación le pregunta a `bpftool` por
+un estado que `bpftool` no creó, y contesta por la implementación equivocada —
+siempre en la dirección de decir «no hay nada» sobre algo que sí está.
+
+| Cuándo | Qué preguntaba | Qué contestaba de verdad |
+|---|---|---|
+| 2026-08-03 | `test -d /sys/fs/bpf/thalyx/lsm` | Si el cargador fue `bpftool` |
+| 2026-08-03 | La sesión, por un mapa fijado | Si había `bpftool`, y si un mapa estaba puesto — que no es si algo aplica |
+| 2026-08-03 | `verify.sh`, contando enlaces LSM | Cuántos enlaces hay en la máquina, de quien sea |
+| **2026-08-04** | **`is_available()`, antes de correr un módulo** | **Si `bpftool` existe** |
+
+La cuarta es la peor y salió arrancando la imagen. `bpftool map show pinned` es
+lo que decidía entre **confinar un módulo y negarse a arrancarlo**, y adentro de
+la máquina no hay `bpftool` — así que una máquina que había atachado su propio
+enforcement, con los dos hooks vivos y los tres mapas fijados, se negó a correr
+un módulo confinado y ofreció `sin-confinar` como salida. **El enforcement era
+real y lo único que no podía verlo era el código que decidía si usarlo.**
+
+Y no era solo la pregunta: `set()` también escribía con `bpftool`, así que
+adentro de la imagen **ninguna política se podía escribir**. La comprobación
+estaba equivocada y también tenía razón.
+
+La regla general: **una capacidad que se comprueba con una herramienta se está
+comprobando en la máquina de quien la instaló, no en la que va a correr.** Si
+el programa puede hacer la operación él mismo, la pregunta correcta es
+intentarla. `KernelStore` abre el pin con `bpf(2)` y esa apertura *es* la
+respuesta.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

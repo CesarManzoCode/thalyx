@@ -70,3 +70,27 @@ struct bpf_link_info {
 	__u32 prog_id;
 };
 
+
+/* And the arm of `union bpf_attr` that BPF_MAP_*_ELEM uses, captured verbatim
+ * from include/uapi/linux/bpf.h at v6.12 on 2026-08-04.
+ *
+ * It is anonymous in the kernel's header, so the walker above cannot reach it
+ * by name; the test beside it reads these lines directly. It is here for the
+ * same reason as everything else in this file — `thalyx-syscall` declares a
+ * `repr(C)` mirror of it, and `key` at the wrong offset hands the kernel a
+ * pointer into the middle of a field instead of a cgroup id.
+ *
+ * The kernel would then write a permission against whatever those eight bytes
+ * spell: a policy for a cgroup nobody asked about, and none for the module
+ * that is about to run.
+ */
+
+	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
+		__u32		map_fd;
+		__aligned_u64	key;
+		union {
+			__aligned_u64 value;
+			__aligned_u64 next_key;
+		};
+		__u64		flags;
+	};

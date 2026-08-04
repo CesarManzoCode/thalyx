@@ -7,20 +7,22 @@
 //! an engine that can be swapped.
 
 use crate::Policy;
-use crate::encoding::{as_hex_args, cgroup_key_bytes, policy_bytes};
-use std::path::PathBuf;
+use crate::encoding::{POLICY_BYTES, cgroup_key_bytes, policy_bytes, policy_from_bytes};
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("could not run bpftool: {0}")]
-    Spawn(#[source] std::io::Error),
-
-    #[error("bpftool failed: {0}")]
-    Bpftool(String),
-
     #[error("the policy map is not pinned at {0}; is thalyx-lsm loaded?")]
     NotPinned(PathBuf),
+
+    #[error("{what}: {source}")]
+    Kernel {
+        what: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 pub trait PolicyStore {
@@ -32,141 +34,132 @@ pub trait PolicyStore {
     ///
     /// Callers about to run module code have to ask, because the answer
     /// decides between confining it and refusing to start it. Defaults to
-    /// `true` for stores that are always writable; [`BpftoolStore`] overrides
+    /// `true` for stores that are always writable; [`KernelStore`] overrides
     /// it, since its map only exists while the kernel side is loaded.
     fn is_available(&self) -> bool {
         true
     }
 }
 
-/// Writes policy through `bpftool`.
+/// Writes policy with `bpf(2)`, through the pin the loader left.
 ///
-/// Shelling out rather than linking libbpf is a deliberate Phase 1 choice.
-/// It has no build-time dependency on kernel headers, works identically to
-/// what a person would type by hand while debugging, and every write can be
-/// checked with `bpftool map dump` outside the program. A libbpf backend
-/// replaces this later without the policy logic noticing.
-pub struct BpftoolStore {
+/// ## Why this replaced shelling out to bpftool
+///
+/// `BpftoolStore` needs two things the image does not have and cannot have: a
+/// second program, and a shell to invoke it from. So inside the machine every
+/// answer it gave was the same answer — the map is not there — no matter what
+/// the kernel actually held.
+///
+/// That was not a cosmetic wrongness. `is_available()` is what decides between
+/// confining a module and refusing to start it, so on 2026-08-04 a machine
+/// that had attached its own enforcement, with both hooks live and all three
+/// maps pinned, refused to run a module confined and offered `sin-confinar` as
+/// the way out. Enforcement was real and the only thing that could not see it
+/// was the code deciding whether to use it.
+///
+/// It is the third time this project has asked bpftool a question about
+/// something bpftool did not do, and the vault has a rule about it. The fix is
+/// the same each time: ask the kernel.
+///
+/// ## What went away with bpftool, and is not missed
+///
+/// `BpftoolStore` prefixed its writes with `sudo` when Thalyx was not root.
+/// That is gone rather than reimplemented: a process that cannot open the map
+/// cannot write policy, and quietly acquiring the privilege to do it anyway is
+/// not something the thing that enforces permissions should be doing on its
+/// own. Confining a module needs namespaces and cgroups regardless, so the
+/// caller was already privileged or already failing.
+///
+/// ## Why the descriptor is opened per operation
+///
+/// A held descriptor would keep a map alive across `thalyx enforce detach`,
+/// so a detached machine would still have somewhere to write policy — and
+/// writes would appear to succeed into a map nothing reads. Opening the pin
+/// each time means the answer always comes from what is pinned now.
+pub struct KernelStore {
     map: PathBuf,
-    bpftool: PathBuf,
-    /// Writing to bpffs needs root. When Thalyx runs as a service this is
-    /// false, because the service already has the privilege.
-    use_sudo: bool,
 }
 
-impl BpftoolStore {
+impl KernelStore {
     pub const DEFAULT_MAP: &'static str = "/sys/fs/bpf/thalyx/maps/thalyx_policy";
 
     pub fn new(map: impl Into<PathBuf>) -> Self {
-        Self {
-            map: map.into(),
-            bpftool: PathBuf::from("bpftool"),
-            use_sudo: !running_as_root(),
-        }
+        Self { map: map.into() }
     }
 
     pub fn default_map() -> Self {
         Self::new(Self::DEFAULT_MAP)
     }
 
-    pub fn with_bpftool(mut self, path: impl Into<PathBuf>) -> Self {
-        self.bpftool = path.into();
-        self
+    pub fn path(&self) -> &Path {
+        &self.map
     }
 
-    fn command(&self, args: &[&str]) -> Result<std::process::Output, StoreError> {
-        let mut command = if self.use_sudo {
-            let mut c = std::process::Command::new("sudo");
-            c.arg(&self.bpftool);
-            c
-        } else {
-            std::process::Command::new(&self.bpftool)
-        };
-        command.args(args);
-        command.output().map_err(StoreError::Spawn)
-    }
-
-    fn run(&self, args: &[&str]) -> Result<String, StoreError> {
-        let output = self.command(args)?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if message.contains("No such file") {
-                return Err(StoreError::NotPinned(self.map.clone()));
+    fn open(&self) -> Result<std::os::fd::OwnedFd, StoreError> {
+        thalyx_syscall::bpf_obj_get(&self.map).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                StoreError::NotPinned(self.map.clone())
+            } else {
+                StoreError::Kernel {
+                    what: "opening the policy map",
+                    source: error,
+                }
             }
-            return Err(StoreError::Bpftool(message));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        })
     }
 }
 
-/// Effective uid, read from procfs rather than through libc.
-///
-/// Defaults to "not root" if it cannot be determined: assuming the privilege
-/// is there and being wrong means every policy write fails at the point of
-/// use, while assuming it is absent costs one `sudo` that turns into a no-op.
-fn running_as_root() -> bool {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find(|line| line.starts_with("Uid:"))
-                .and_then(|line| line.split_whitespace().nth(2))
-                .and_then(|uid| uid.parse::<u32>().ok())
-        })
-        .is_some_and(|uid| uid == 0)
-}
-
-impl PolicyStore for BpftoolStore {
-    /// Whether the map the kernel side pinned is actually there.
+impl PolicyStore for KernelStore {
+    /// Whether the map the kernel side pinned is really there and can be
+    /// opened.
     ///
-    /// Checked through the same privilege the writes use: bpffs is mode 700,
-    /// so an unprivileged existence check reports "missing" for a map that is
-    /// present — the same mistake that once made the tooling read as disarmed
-    /// while it was armed.
+    /// Opening it, rather than asking whether the path exists. bpffs is mode
+    /// 700, so an unprivileged existence check reports missing for a map that
+    /// is present — the mistake that once made the tooling read as disarmed
+    /// while it was armed — and a path can exist while the object behind it is
+    /// something else entirely.
     fn is_available(&self) -> bool {
-        self.command(&["map", "show", "pinned", &self.map.to_string_lossy()])
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        self.open().is_ok()
     }
 
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError> {
-        let map = self.map.to_string_lossy().into_owned();
-        let key = as_hex_args(&cgroup_key_bytes(cgroup));
-        let value = as_hex_args(&policy_bytes(&policy));
-
-        let mut args: Vec<&str> = vec!["map", "update", "pinned", &map, "key", "hex"];
-        args.extend(key.iter().map(String::as_str));
-        args.push("value");
-        args.push("hex");
-        args.extend(value.iter().map(String::as_str));
-
-        self.run(&args)?;
-        Ok(())
+        let map = self.open()?;
+        thalyx_syscall::bpf_map_update(
+            map.as_fd(),
+            &cgroup_key_bytes(cgroup),
+            &policy_bytes(&policy),
+        )
+        .map_err(|source| StoreError::Kernel {
+            what: "writing a policy",
+            source,
+        })
     }
 
     fn remove(&self, cgroup: u64) -> Result<(), StoreError> {
-        let map = self.map.to_string_lossy().into_owned();
-        let key = as_hex_args(&cgroup_key_bytes(cgroup));
-
-        let mut args: Vec<&str> = vec!["map", "delete", "pinned", &map, "key", "hex"];
-        args.extend(key.iter().map(String::as_str));
-
-        match self.run(&args) {
-            Ok(_) => Ok(()),
+        let map = self.open()?;
+        match thalyx_syscall::bpf_map_delete(map.as_fd(), &cgroup_key_bytes(cgroup)) {
+            Ok(()) => Ok(()),
             // Removing a grant that is not there is the desired end state, not
             // a failure. Revocation has to be idempotent: it is what runs on
             // the recovery paths, where the state is by definition unknown.
-            Err(StoreError::Bpftool(message)) if message.contains("No such") => Ok(()),
-            Err(error) => Err(error),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StoreError::Kernel {
+                what: "removing a policy",
+                source,
+            }),
         }
     }
 
-    fn get(&self, _cgroup: u64) -> Result<Option<Policy>, StoreError> {
-        // Reading back a single entry is only needed for diagnostics, and
-        // `bpftool map dump` already serves that outside the program. Left
-        // unimplemented rather than half-implemented.
-        Ok(None)
+    fn get(&self, cgroup: u64) -> Result<Option<Policy>, StoreError> {
+        let map = self.open()?;
+        let mut value = [0u8; POLICY_BYTES];
+        let found =
+            thalyx_syscall::bpf_map_lookup(map.as_fd(), &cgroup_key_bytes(cgroup), &mut value)
+                .map_err(|source| StoreError::Kernel {
+                    what: "reading a policy back",
+                    source,
+                })?;
+        Ok(found.then(|| policy_from_bytes(&value)))
     }
 }
 
@@ -307,7 +300,7 @@ mod tests {
             makefile.contains("MAPDIR  := $(PINDIR)/maps"),
             "the LSM Makefile no longer pins maps where BpftoolStore looks"
         );
-        assert!(BpftoolStore::DEFAULT_MAP.starts_with("/sys/fs/bpf/thalyx/maps/"));
-        assert!(BpftoolStore::DEFAULT_MAP.ends_with("thalyx_policy"));
+        assert!(KernelStore::DEFAULT_MAP.starts_with("/sys/fs/bpf/thalyx/maps/"));
+        assert!(KernelStore::DEFAULT_MAP.ends_with("thalyx_policy"));
     }
 }

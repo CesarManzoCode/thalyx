@@ -151,7 +151,7 @@ fn running_without_the_kernel_side_is_refused_rather_than_silently_unenforced() 
     // meant that a run failing for any *other* reason was read as the refusal
     // this test is looking for — and on a machine with the LSM loaded it read
     // as a failure of Thalyx.
-    if std::path::Path::new(thalyx_permd::BpftoolStore::DEFAULT_MAP).exists() {
+    if std::path::Path::new(thalyx_permd::KernelStore::DEFAULT_MAP).exists() {
         eprintln!("NOT PROVEN: the kernel policy map is present, so the refusal path");
         eprintln!("  cannot be reached here. This test did not exercise what it names.");
         return;

@@ -958,8 +958,12 @@ const SYS_BPF: libc::c_long = 280;
 /// happened once here, to `BPF_LSM_MAC`.
 pub mod bpf_cmd {
     pub const MAP_CREATE: u32 = 0;
+    pub const MAP_LOOKUP_ELEM: u32 = 1;
+    pub const MAP_UPDATE_ELEM: u32 = 2;
+    pub const MAP_DELETE_ELEM: u32 = 3;
     pub const PROG_LOAD: u32 = 5;
     pub const OBJ_PIN: u32 = 6;
+    pub const OBJ_GET: u32 = 7;
     pub const PROG_GET_FD_BY_ID: u32 = 13;
     pub const OBJ_GET_INFO_BY_FD: u32 = 15;
     pub const RAW_TRACEPOINT_OPEN: u32 = 17;
@@ -1213,6 +1217,90 @@ pub fn bpf_obj_pin(object: BorrowedFd<'_>, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Open something that was pinned into bpffs, by its path.
+///
+/// The other half of [`bpf_obj_pin`]. `thalyx-permd` writes a module's
+/// permissions into the policy map, and it is a different process from the one
+/// that created it — the pin is the only way back to that map.
+///
+/// This used to be `bpftool map update pinned ...`, which is a second program
+/// and a shell to invoke it from. Inside the image there is neither, so every
+/// permission write failed and `correr` refused to run anything confined,
+/// **including on a machine whose enforcement was attached and working.**
+pub fn bpf_obj_get(path: &Path) -> io::Result<OwnedFd> {
+    let path = path_to_c(path)?;
+    let attr = ObjPinAttr {
+        pathname: path.as_ptr() as u64,
+        bpf_fd: 0,
+        file_flags: 0,
+    };
+    let descriptor = bpf(bpf_cmd::OBJ_GET, as_bytes(&attr))?;
+    Ok(owned(descriptor))
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MapElemAttr {
+    map_fd: u32,
+    /// The kernel reads a `u64` here even on 32-bit, and the field after it is
+    /// where the padding of the previous one would otherwise land. Written out
+    /// rather than left to alignment, because a wrong offset here is a key read
+    /// from the wrong bytes and a permission granted to the wrong cgroup.
+    _pad: u32,
+    key: u64,
+    value_or_next_key: u64,
+    flags: u64,
+}
+
+/// Write one entry. `flags` is BPF_ANY: create it or replace it.
+///
+/// The buffers have to outlive the call and the kernel copies out of them, so
+/// they are borrowed rather than owned — a caller that passed a temporary would
+/// be handing the kernel a pointer into a dropped allocation.
+pub fn bpf_map_update(map: BorrowedFd<'_>, key: &[u8], value: &[u8]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let attr = MapElemAttr {
+        map_fd: map.as_raw_fd() as u32,
+        key: key.as_ptr() as u64,
+        value_or_next_key: value.as_ptr() as u64,
+        ..Default::default()
+    };
+    bpf(bpf_cmd::MAP_UPDATE_ELEM, as_bytes(&attr))?;
+    Ok(())
+}
+
+/// Remove one entry. `ENOENT` is the caller's to interpret.
+pub fn bpf_map_delete(map: BorrowedFd<'_>, key: &[u8]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let attr = MapElemAttr {
+        map_fd: map.as_raw_fd() as u32,
+        key: key.as_ptr() as u64,
+        ..Default::default()
+    };
+    bpf(bpf_cmd::MAP_DELETE_ELEM, as_bytes(&attr))?;
+    Ok(())
+}
+
+/// Read one entry back, into a buffer the caller sized.
+///
+/// `Ok(false)` means the kernel said ENOENT — there is no such key. Every other
+/// error is returned, because "I could not look" and "it is not there" are
+/// different answers and collapsing them is rule 10.
+pub fn bpf_map_lookup(map: BorrowedFd<'_>, key: &[u8], value: &mut [u8]) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let attr = MapElemAttr {
+        map_fd: map.as_raw_fd() as u32,
+        key: key.as_ptr() as u64,
+        value_or_next_key: value.as_mut_ptr() as u64,
+        ..Default::default()
+    };
+    match bpf(bpf_cmd::MAP_LOOKUP_ELEM, as_bytes(&attr)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct IdAttr {
@@ -1292,6 +1380,12 @@ pub mod info_layout {
     pub const PROG_PREFIX_LEN: usize = std::mem::size_of::<ProgInfo>();
     pub const LINK_PROG_ID_OFFSET: usize = std::mem::offset_of!(LinkInfo, prog_id);
     pub const LINK_PREFIX_LEN: usize = std::mem::size_of::<LinkInfo>();
+
+    use super::MapElemAttr;
+
+    pub const ELEM_KEY_OFFSET: usize = std::mem::offset_of!(MapElemAttr, key);
+    pub const ELEM_VALUE_OFFSET: usize = std::mem::offset_of!(MapElemAttr, value_or_next_key);
+    pub const ELEM_FLAGS_OFFSET: usize = std::mem::offset_of!(MapElemAttr, flags);
 }
 
 /// One link that is live in the kernel right now, and the program it runs.

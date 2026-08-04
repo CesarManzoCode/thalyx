@@ -294,6 +294,43 @@ tags: [continuidad, punto-actual, sesiones]
 > cuelgue—. La etapa en sí **nunca ha corrido contra una imagen de verdad**: el
 > contenedor no tiene QEMU ni kernel que arrancar.
 >
+> ## La imagen atachó su enforcement, y se negó a usarlo — 2026-08-04
+>
+> **La etapa 16 corrió por primera vez y sirvió de inmediato.** Lo que salió en
+> verde, todo dentro de la máquina y sin shell: arrancó, **atachó su propio
+> enforcement** (`ok thalyx-lsm` — el tercero de los tres `no` del primer
+> arranque, cerrado), dijo que no recordaba nada, listó su repositorio, presentó
+> el camino confiable, instaló sobre su disco Btrfs, revirtió, y se apagó sola.
+>
+> Y falló en una: **`correr` se negó**, diciendo que el mapa de política no
+> estaba cargado — tres líneas después de reportar el enforcement puesto.
+>
+> `BpftoolStore::is_available()` corría `bpftool map show pinned`. **Adentro no
+> hay `bpftool`**, así que contestaba «no» pasara lo que pasara, y esa respuesta
+> es la que decide entre confinar un módulo y negarse a arrancarlo. El
+> enforcement era real y lo único que no podía verlo era el código que decidía
+> si usarlo.
+>
+> Peor: `set()` también escribía con `bpftool`, así que **ninguna política se
+> podía escribir adentro de la imagen**. La comprobación estaba equivocada y
+> además tenía razón.
+>
+> `KernelStore` lo reemplaza entero: `BPF_OBJ_GET` sobre el pin y
+> `MAP_UPDATE_ELEM` / `MAP_DELETE_ELEM` / `MAP_LOOKUP_ELEM`, con la rama de
+> `union bpf_attr` capturada verbatim del uapi y una prueba que calcula sus
+> offsets desde la captura. **`BpftoolStore` se borró**: dos implementaciones de
+> lo mismo terminan por no coincidir, y aquí el desacuerdo sería una máquina que
+> aplica permisos en un lado y no en el otro.
+>
+> Es la **cuarta** vez que algo le pregunta a `bpftool` por algo que `bpftool`
+> no hizo. La tabla completa está en [[Estrategia-de-Pruebas]].
+>
+> **Y el arnés de la etapa 16 tenía su propio fallo**, que Cesar notó antes de
+> que terminara: se quedaba callado y colgado. `wait` no alcanzaba, porque la
+> sesión termina con EOF y **PID 1 no** — sigue cosechando huérfanos, como debe,
+> así que QEMU nunca salía. Ahora imprime cada 15 segundos qué está esperando y
+> mata QEMU por la ruta del disco, que es de esa corrida y de nada más.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y

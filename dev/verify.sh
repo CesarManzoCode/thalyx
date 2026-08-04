@@ -1705,7 +1705,7 @@ boot_and_type() {
     mkfifo "$fifo" || return 1
     : > "$log"
 
-    ( cd "$ROOT" && timeout 300 make -C image boot STORE="$BOOT_STORE" ) \
+    ( cd "$ROOT" && make -C image boot STORE="$BOOT_STORE" ) \
         < "$fifo" > "$log" 2>&1 &
     local machine=$!
 
@@ -1717,9 +1717,17 @@ boot_and_type() {
     until grep -q "There is no shell behind this" "$log" 2>/dev/null; do
         sleep 1
         waited=$((waited + 1))
+
+        # Said out loud, because this is the one stage that can be slow with
+        # nothing on screen, and a script that has gone quiet for a minute
+        # looks exactly like one that has hung. It looked exactly like one on
+        # 2026-08-04, and it was one.
+        if [ $((waited % 15)) = 0 ]; then
+            printf '   ... waiting for the machine to come up (%ss)\n' "$waited"
+        fi
+
         if [ "$waited" -gt 90 ] || ! kill -0 "$machine" 2>/dev/null; then
-            exec 9>&-
-            wait "$machine" 2>/dev/null
+            end_the_machine "$machine"
             return 1
         fi
     done
@@ -1733,18 +1741,37 @@ boot_and_type() {
         sleep 1
     done
 
-    # `apagar` is always the last line, so this is the machine turning itself
-    # off rather than the timeout killing it. If it is still running after the
-    # grace period, that is a failure to power off and the wait says so.
+    # `apagar` is always the last line, so the machine should be turning itself
+    # off. Waited for rather than killed, so that "it powered down" and "it had
+    # to be stopped" stay different facts — and then stopped, because they are
+    # different facts only if the second one ends.
     local ending=0
     while kill -0 "$machine" 2>/dev/null && [ "$ending" -lt 30 ]; do
         sleep 1
         ending=$((ending + 1))
     done
-    exec 9>&-
-    wait "$machine" 2>/dev/null
+    end_the_machine "$machine"
     rm -f "$fifo"
     return 0
+}
+
+# Close the console and make sure nothing is left running.
+#
+# `wait` alone was not enough and that was the bug: the session ends on EOF and
+# **PID 1 does not** — it goes on reaping orphans forever, exactly as it should,
+# so QEMU never exits and the wait blocked until an outer timeout nobody was
+# watching. Ten minutes of silence, twice, and the run looked hung because it
+# was.
+#
+# QEMU is matched by the store path, which belongs to this run and to nothing
+# else on the machine. Killing by name would reach somebody else's virtual
+# machine.
+end_the_machine() {
+    exec 9>&- 2>/dev/null
+    pkill -f "$BOOT_STORE" 2>/dev/null
+    sleep 1
+    pkill -9 -f "$BOOT_STORE" 2>/dev/null
+    wait "$1" 2>/dev/null
 }
 
 # A skip here can be demanded to be a failure, like every other skip in this
@@ -1835,7 +1862,7 @@ else
         if grep -q "I asked for /etc/shadow and was refused" "$BOOT_LOG_1"; then
             proven "the module ran confined inside the machine and was denied what nobody granted it"
         else
-            failed "the module did not run confined inside the machine; see $BOOT_LOG_1"
+            failed "the module did not run confined inside the machine; the image has no bpftool, so anything that asks bpftool answers no in there"
             grep -A6 "correr" "$BOOT_LOG_1" | tail -20 | sed 's/^/     /'
         fi
 
