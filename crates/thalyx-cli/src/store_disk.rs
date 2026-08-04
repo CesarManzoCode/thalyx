@@ -281,6 +281,99 @@ mod tests {
             .collect()
     }
 
+    /// A README file from the repository root.
+    fn readme(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(name)
+            .canonicalize()
+            .unwrap_or_else(|_| panic!("{name} is part of the repository"));
+        std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("reading {name}"))
+    }
+
+    /// Every apt package `doctor` can name, taken from the Makefile itself.
+    fn packages_doctor_can_name(makefile: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+
+        for line in makefile.lines() {
+            // `$(call need,<command>,<package>,<why>)`
+            if let Some(rest) = line.trim().strip_prefix("$(call need,")
+                && let Some(package) = rest.split(',').nth(1)
+            {
+                found.push(package.trim().to_string());
+            }
+            // `echo "<package>" >> $(BUILD)/doctor.packages`
+            if line.contains("doctor.packages")
+                && let Some(start) = line.find('"')
+                && let Some(end) = line[start + 1..].find('"')
+            {
+                found.push(line[start + 1..start + 1 + end].to_string());
+            }
+        }
+
+        // `rust` does not come from apt and `kernel-pin` is not a package at
+        // all; both are explained separately in the READMEs and deliberately
+        // kept out of the install line.
+        //
+        // Anything holding a `$` is the `define need` macro's own body — the
+        // literal `$(2)` — rather than a package. Caught by this test failing
+        // on its first run, which is the parser being checked by the thing it
+        // feeds rather than by inspection.
+        found.retain(|p| p != "rust" && p != "kernel-pin" && !p.is_empty() && !p.contains('$'));
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    #[test]
+    fn both_readmes_name_every_package_the_doctor_asks_for() {
+        // The exit criterion is a person outside the project following **only**
+        // the README. If `doctor` grows a prerequisite and the README does not,
+        // that person installs an incomplete list, re-runs, and is sent round
+        // again — which is the one-at-a-time misery `doctor` exists to end,
+        // moved into the document instead of the build.
+        //
+        // Read from the Makefile rather than hardcoded here, so this cannot
+        // drift the same way. `libbpf-dev` is in the list because it was
+        // missing from both for a while: `clang` is present and the BPF headers
+        // are a separate package, so the build failed after the kernel had
+        // already been compiled.
+        let makefile = image_makefile();
+        let wanted = packages_doctor_can_name(&makefile);
+
+        assert!(
+            wanted.len() > 5,
+            "the package list came back suspiciously short ({wanted:?}); the \
+             parser above has probably stopped matching the Makefile"
+        );
+
+        for name in ["README.md", "README.es.md"] {
+            let text = readme(name);
+            for package in &wanted {
+                assert!(
+                    text.contains(package.as_str()),
+                    "{name} never mentions `{package}`, which `doctor` will ask \
+                     for — so somebody following only that file installs an \
+                     incomplete list"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_english_readme_points_at_the_spanish_one_and_back() {
+        // The person these are written for reads Spanish. A translation nothing
+        // links to is a translation nobody finds.
+        assert!(
+            readme("README.md").contains("README.es.md"),
+            "the English README does not link to the Spanish one"
+        );
+        assert!(
+            readme("README.es.md").contains("README.md"),
+            "the Spanish README does not link back"
+        );
+    }
+
     #[test]
     fn the_kernel_tarball_is_never_built_without_a_digest_to_check_it_against() {
         // Thalyx compiles its own kernel, so the tarball is not a dependency —

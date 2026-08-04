@@ -213,6 +213,29 @@ doctor: | $(BUILD)
 	    echo "  at all. There may be more to install after this round." \
 	        >> $(BUILD)/doctor.unchecked; \
 	fi
+	@# The BPF headers, which are clang's business and not gcc's.
+	@#
+	@# `clang` being present is not enough and the difference is not
+	@# academic: `thalyx_lsm.bpf.c` includes <bpf/bpf_helpers.h>, which comes
+	@# from libbpf's development package and not from the compiler. Without
+	@# it `make -C image lsm` fails — *after* this target said everything was
+	@# here, and after the kernel has already been downloaded and built.
+	@#
+	@# That is the exact failure this whole target exists to prevent, and it
+	@# was here until 2026-08-04. It was found by a build in a container that
+	@# had clang and not libbpf, which is a very ordinary machine to be.
+	@if command -v clang > /dev/null 2>&1; then \
+	    echo '#include <bpf/bpf_helpers.h>' | clang -E -xc - > /dev/null 2>&1 || { \
+	        echo "    bpf/bpf_helpers.h — the BPF programs; clang alone cannot build them" \
+	            >> $(BUILD)/doctor.missing; \
+	        echo "libbpf-dev" >> $(BUILD)/doctor.packages; \
+	    }; \
+	else \
+	    echo "  clang is not here, so the BPF headers could not be checked" \
+	        >> $(BUILD)/doctor.unchecked; \
+	    echo "  either. There may be more to install after this round." \
+	        >> $(BUILD)/doctor.unchecked; \
+	fi
 	@# Rust is last and separate: it does not come from apt, and telling
 	@# somebody to `apt install cargo` gets them a version that is older than
 	@# this workspace needs and a rustup that is not there to add the musl
