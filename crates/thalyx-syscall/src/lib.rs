@@ -878,6 +878,182 @@ pub fn spawn_with_channel(
     command.spawn()
 }
 
+// ─────────────────────────────────────────────────────── a terminal of our own
+//
+// `TerminalConfirmer` refuses to confirm when stdin is not a terminal, because
+// silence is not consent. That is correct, and it means anything that drives
+// the session prompt has to give it a real terminal — inside QEMU the serial
+// console is one, and in a test harness something has to make one.
+//
+// The harness used `script(1)`, and that is how the most important stage in
+// `dev/verify.sh` came to be skipped in its entirety. Fedora ships `script` in
+// `util-linux-script`, a subpackage that is not installed by default, so on the
+// one machine that can actually verify Thalyx the stage covering four of the
+// six exit-criterion steps printed NOT PROVEN and moved on.
+//
+// Rule 5 of `Estrategia-de-Pruebas.md`: the instrument includes the harness.
+// A criterion that cannot be checked without a tool the machine may not have is
+// a criterion that will not be checked. Thalyx already writes its own initramfs
+// and loads its own BPF rather than inheriting a fourth thing nobody chose;
+// eighty lines of `posix_openpt` is the same decision, and it removes an
+// external dependency from the verification of the one thing that ends Phase 1.
+
+/// A pseudoterminal pair: the side to drive from, and the side to hand a child.
+pub struct Pty {
+    /// What the driver reads and writes. The child's output arrives here and
+    /// what is written here appears on the child's stdin.
+    pub controller: std::os::fd::OwnedFd,
+    /// What the child gets as its stdin, stdout and stderr.
+    pub follower: std::os::fd::OwnedFd,
+}
+
+/// Open a pseudoterminal.
+///
+/// `posix_openpt` then `grantpt`, `unlockpt` and `ptsname` — in that order,
+/// which is not stylistic: the follower cannot be opened until `unlockpt` has
+/// run, and `ptsname` is what says which device to open.
+///
+/// `ptsname` returns a pointer into storage the C library owns and reuses, so
+/// the name is copied out immediately rather than held. A second call anywhere
+/// in the process would otherwise change what the first one returned.
+pub fn open_pty() -> io::Result<Pty> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    // SAFETY: takes an integer flag set and returns a descriptor or -1. No
+    // memory is touched.
+    #[allow(unsafe_code)]
+    let controller = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    if controller < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: the descriptor was returned by the kernel one line above and is
+    // owned here; nothing else holds it. Wrapped before the fallible calls
+    // below so that an early return closes it rather than leaking it.
+    #[allow(unsafe_code)]
+    let controller = unsafe { OwnedFd::from_raw_fd(controller) };
+
+    {
+        use std::os::fd::AsRawFd;
+        let raw = controller.as_raw_fd();
+
+        // SAFETY: both take the descriptor and touch no memory.
+        #[allow(unsafe_code)]
+        let granted = unsafe { libc::grantpt(raw) };
+        if granted < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        #[allow(unsafe_code)]
+        let unlocked = unsafe { libc::unlockpt(raw) };
+        if unlocked < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    let name = {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: `ptsname` returns a pointer to storage the C library owns, or
+        // NULL. It is checked for NULL and the bytes are copied out before this
+        // scope ends, so nothing here outlives the library's buffer — which is
+        // reused by the next call from anywhere in the process.
+        #[allow(unsafe_code)]
+        let pointer = unsafe { libc::ptsname(controller.as_raw_fd()) };
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the pointer is non-NULL and, by `ptsname`'s contract, points
+        // at a NUL-terminated string.
+        #[allow(unsafe_code)]
+        let bytes = unsafe { std::ffi::CStr::from_ptr(pointer) };
+        bytes.to_bytes().to_vec()
+    };
+
+    let path = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "pty name contains a NUL"))?;
+
+    // SAFETY: the pointer comes from a `CString` that outlives the call.
+    #[allow(unsafe_code)]
+    let follower = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+    if follower < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: freshly returned by the kernel, owned by nothing else.
+    #[allow(unsafe_code)]
+    let follower = unsafe { OwnedFd::from_raw_fd(follower) };
+
+    Ok(Pty {
+        controller,
+        follower,
+    })
+}
+
+/// Start a child whose stdin, stdout and stderr are a terminal it controls.
+///
+/// The `setsid` and `TIOCSCTTY` have to happen between `fork` and `exec`, which
+/// is why this lives here: a terminal is not a controlling terminal until a
+/// session leader claims it, and a process that merely has a pty on descriptor
+/// 0 will still fail `isatty`-adjacent expectations around job control and
+/// signals.
+///
+/// The order is load-bearing. `setsid` first, because a process that is already
+/// a group leader cannot create a session; `TIOCSCTTY` second, because only a
+/// session leader with no controlling terminal may claim one.
+pub fn spawn_with_terminal(
+    command: &mut std::process::Command,
+    follower: std::os::fd::BorrowedFd<'_>,
+) -> io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let follower = follower.as_raw_fd();
+
+    // SAFETY: `pre_exec` runs between `fork` and `exec`, where only
+    // async-signal-safe calls are permitted. `setsid`, `ioctl`, `dup2` and
+    // `close` are all on that list. The closure allocates nothing, takes no
+    // lock, and captures one integer by copy.
+    #[allow(unsafe_code)]
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(follower, libc::TIOCSCTTY, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                if libc::dup2(follower, target) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            // The original is closed only when it is not one of the three it was
+            // just copied onto. Closing it unconditionally would shut the
+            // terminal the child is about to use.
+            if follower > libc::STDERR_FILENO {
+                libc::close(follower);
+            }
+            Ok(())
+        });
+    }
+
+    command.spawn()
+}
+
+/// Whether a descriptor is a terminal.
+///
+/// Used to answer the question honestly rather than by inference. A caller that
+/// concluded "no terminal" from a failed read would be reporting the wrong
+/// thing.
+pub fn is_a_terminal(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: takes a descriptor and touches no memory. Returns 1 or 0.
+    #[allow(unsafe_code)]
+    let answer = unsafe { libc::isatty(fd.as_raw_fd()) };
+    answer == 1
+}
+
 // ────────────────────────────────────────────── what the kernel has been saying
 //
 // On a machine with no shell there is no `dmesg`, and the kernel's console

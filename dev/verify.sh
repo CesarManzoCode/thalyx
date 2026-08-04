@@ -1465,19 +1465,46 @@ step "15. what a person can do from inside the machine, with no shell"
 #
 # A pty is required and is not a detail: `TerminalConfirmer` refuses to confirm
 # when stdin is not a terminal, because silence is not consent. Inside QEMU the
-# serial console is a terminal, so `script` is what makes this run the same way
-# there and here.
+# serial console is a terminal, so something has to make one here.
+#
+# That used to be `script(1)`, and the dependency cost the whole stage. Fedora
+# ships `script` in `util-linux-script`, a subpackage that is not installed by
+# default — so on 2026-08-04, on the one machine that can actually verify
+# Thalyx, this stage skipped itself entirely and four of the six exit-criterion
+# steps went unchecked. The criterion that ends Phase 1 was not being tested
+# because of a package nobody had.
+#
+# `thalyx dev pty` is Thalyx's own, so the check now needs nothing the machine
+# running Thalyx does not already have. Rule 5: the instrument includes the
+# harness.
 
 SESSION_STORE="$WORK/session-store"
 mkdir -p "$SESSION_STORE/repo"
 
-if ! command -v script > /dev/null 2>&1; then
-    # Named per distribution, because this one skip takes the whole of step 6
-    # with it and "install util-linux" is wrong advice on the machine most
-    # likely to hit it: Fedora already has util-linux and ships `script` in a
-    # subpackage of its own.
-    unproven "\`script\` is absent, so the session prompt cannot be driven with a terminal (Fedora: util-linux-script; Debian and derivatives: bsdutils)"
-elif [ ! -f "$WORK/greeter.thmod" ]; then
+# The harness, before it is trusted to say anything about the system.
+#
+# Rule 5 again, applied to the replacement: `thalyx dev pty` is now what decides
+# whether four exit-criterion steps pass, so a version of it that quietly failed
+# to make a terminal would make every check below meaningless — the confirmer
+# would refuse for the harness's reason and the stage would read as a system
+# that will not confirm.
+#
+# Asked with a control, because "is a tty" with nothing to compare against would
+# also pass if the answer were hardcoded.
+if [ -x "$THALYX" ]; then
+    INSIDE=$(printf '' | "$THALYX" dev pty -- sh -c 'test -t 0 && echo yes || echo no' 2>/dev/null | tr -d '\r\n ')
+    OUTSIDE=$(sh -c 'test -t 0 && echo yes || echo no' < /dev/null 2>/dev/null | tr -d '\r\n ')
+
+    if [ "$INSIDE" = "yes" ] && [ "$OUTSIDE" = "no" ]; then
+        proven "Thalyx makes its own terminal, so this stage needs no script(1)"
+    elif [ "$INSIDE" = "yes" ]; then
+        failed "the control failed: stdin looks like a terminal even without the pty, so the check proves nothing"
+    else
+        failed "\`thalyx dev pty\` did not supply a terminal; everything below would refuse for the harness's reason"
+    fi
+fi
+
+if [ ! -f "$WORK/greeter.thmod" ]; then
     failed "no signed bundle to put in the repository; stage 12 should have packed one"
 else
     cp "$WORK/greeter.thmod" "$SESSION_STORE/repo/"
@@ -1485,7 +1512,7 @@ else
     # Feed the prompt and keep everything it said.
     at_the_prompt() {
         printf '%s\n' "$@" | \
-            THALYX_ROOT="$SESSION_STORE" script -qec "$THALYX session" /dev/null 2>&1
+            THALYX_ROOT="$SESSION_STORE" "$THALYX" dev pty -- "$THALYX" session 2>&1
     }
 
     # --- the repository is visible, and says what it holds ------------------

@@ -44,7 +44,20 @@ use thalyx_manifest::{Manifest, Permission};
 /// Long enough for any honest name, short enough that no single field can
 /// push the permission list off a terminal — which is the same attack as
 /// hiding a permission, performed with length instead of escapes.
+///
+/// **This applies to labels, never to what is being authorised.** See
+/// [`sanitise_permission`], and the note there about why the difference is not
+/// a matter of taste.
 const MAX_FIELD: usize = 72;
+
+/// How wide a wrapped permission line is drawn.
+const WRAP_AT: usize = 60;
+
+/// How many lines one permission may occupy before its middle is elided.
+///
+/// Six is past any real path and short of a screen. A publisher who writes a
+/// four-thousand-character resource still cannot scroll the prompt away.
+const MAX_WRAPPED_LINES: usize = 6;
 
 /// Make a publisher-supplied string safe to draw inside the frame.
 ///
@@ -80,6 +93,74 @@ pub fn sanitise(text: &str) -> String {
     } else {
         cleaned.to_string()
     }
+}
+
+/// Render one permission across as many lines as it honestly needs.
+///
+/// ## Why this is not just [`sanitise`]
+///
+/// It was, and that was a bug introduced by the fix for the forgery one. A
+/// permission is **what the human is authorising**, and truncating it hides
+/// exactly the part that distinguishes one grant from another: cut
+/// `/home/user/projects/secrets` at seventy-two characters on a machine with a
+/// long home directory and it becomes `/home/user/…`, which is also what
+/// `/home/user/projects/public` becomes. The human then confirms a sentence
+/// that is true of both.
+///
+/// Under-reporting is the dangerous direction — the module docs say so about
+/// showing a subset of the permissions, and a truncated permission is the same
+/// failure inside one line. So the name, the id and the version may be cut,
+/// because they are labels; this may not, because it is the decision.
+///
+/// Length is still bounded, or a publisher could push the rest of the list off
+/// the screen with one enormous resource. Past [`MAX_WRAPPED_LINES`] the
+/// **middle** is elided rather than the end, so both the root of the path and
+/// its final component survive — the two parts that say what is being granted.
+pub fn sanitise_permission(permission: &Permission) -> Vec<String> {
+    let text = sanitise_control(&permission.describe());
+    if text.is_empty() {
+        return vec!["(blank)".to_string()];
+    }
+
+    let characters: Vec<char> = text.chars().collect();
+    let budget = WRAP_AT * MAX_WRAPPED_LINES;
+
+    let shown: String = if characters.len() <= budget {
+        text
+    } else {
+        // Keep the head and the tail. The tail is not decoration: for a path it
+        // is the leaf, which is the whole of what distinguishes two grants that
+        // share a parent.
+        let tail = WRAP_AT.min(characters.len() / 3);
+        let head = budget.saturating_sub(tail + 3);
+        format!(
+            "{}…{}",
+            characters[..head].iter().collect::<String>(),
+            characters[characters.len() - tail..]
+                .iter()
+                .collect::<String>()
+        )
+    };
+
+    shown
+        .chars()
+        .collect::<Vec<char>>()
+        .chunks(WRAP_AT)
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
+/// Replace control characters, without touching length.
+///
+/// The half of [`sanitise`] that is about forgery rather than about fitting on
+/// a screen. Split out because the permission renderer needs the first and must
+/// not have the second.
+fn sanitise_control(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '·' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// An authorisation prompt, ready to be displayed.
@@ -134,7 +215,13 @@ impl CapabilityPrompt {
         for permission in &self.permissions {
             // `describe` interpolates the resource, which is a publisher
             // string. The sentence around it is Thalyx's; what it names is not.
-            out.push_str(&format!("│   · {}\n", sanitise(&permission.describe())));
+            //
+            // Wrapped rather than truncated, because this line *is* the
+            // decision. See `sanitise_permission`.
+            for (index, line) in sanitise_permission(permission).iter().enumerate() {
+                let marker = if index == 0 { "·" } else { " " };
+                out.push_str(&format!("│   {marker} {line}\n"));
+            }
         }
         out.push_str("│\n");
         out.push_str("│ These permissions come from the module's signed manifest.\n");
@@ -269,6 +356,7 @@ impl RestorePrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thalyx_manifest::PermissionKind;
 
     fn manifest_with(permissions: &str) -> Manifest {
         let src = format!(
@@ -458,6 +546,92 @@ type     = "persistent"
             "an escape reached the screen through a permission resource"
         );
         assert!(rendered.contains("\u{b7}[2Kdocs"));
+    }
+
+    #[test]
+    fn two_grants_that_share_a_long_prefix_are_still_told_apart() {
+        // The bug the first version of the sanitiser introduced, and the reason
+        // a permission is wrapped rather than cut.
+        //
+        // A machine with a long home directory pushes the distinguishing part
+        // of a path past any fixed width. Truncating there makes
+        // `.../projects/public` and `.../projects/secrets` render identically,
+        // and the human confirms a sentence that is true of both. Hiding what
+        // is being authorised is the same failure as showing a subset of the
+        // permissions, performed inside one line.
+        let prefix = "/home/a-rather-long-user-name/nested/deeply/inside/projects";
+
+        let public = Permission {
+            resource: format!("{prefix}/public"),
+            action: "read".to_string(),
+            kind: PermissionKind::Persistent,
+        };
+        let secrets = Permission {
+            resource: format!("{prefix}/secrets"),
+            action: "read".to_string(),
+            kind: PermissionKind::Persistent,
+        };
+
+        let shown = |permission| sanitise_permission(permission).join("");
+
+        assert_ne!(
+            shown(&public),
+            shown(&secrets),
+            "two different grants render identically, so confirming one confirms either"
+        );
+        assert!(shown(&public).contains("public"));
+        assert!(shown(&secrets).contains("secrets"));
+    }
+
+    #[test]
+    fn an_enormous_resource_keeps_both_its_root_and_its_leaf() {
+        // Bounded, still. A publisher must not be able to push the rest of the
+        // list off the screen with one resource — but what survives the bound
+        // has to be the two parts that say what is being granted, so the middle
+        // goes and the ends stay.
+        let permission = Permission {
+            resource: format!("/home/user/{}/target-directory", "x".repeat(4000)),
+            action: "write".to_string(),
+            kind: PermissionKind::Persistent,
+        };
+
+        let lines = sanitise_permission(&permission);
+        assert!(
+            lines.len() <= MAX_WRAPPED_LINES,
+            "one permission took {} lines",
+            lines.len()
+        );
+
+        let shown = lines.join("");
+        assert!(shown.contains("/home/user/"), "the root was lost: {shown}");
+        assert!(
+            shown.contains("target-directory"),
+            "the leaf was lost, which is what distinguishes one grant from another"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_permission_cannot_forge_a_second_bullet() {
+        // Wrapping adds lines, and a line the publisher influences must not be
+        // able to look like a new permission. Only the first line carries the
+        // bullet; the continuations are indented under it.
+        let manifest = manifest_with(
+            r#"
+[[permissions]]
+resource = "net"
+action   = "outbound"
+type     = "persistent"
+"#,
+        );
+        let mut prompt = CapabilityPrompt::for_manifest(&manifest).unwrap();
+        prompt.permissions[0].resource = "/home/user/".to_string() + &"a".repeat(200);
+
+        let rendered = prompt.render();
+        let bullets = rendered.lines().filter(|line| line.contains("· ")).count();
+        assert_eq!(
+            bullets, 1,
+            "a single permission drew {bullets} bullets:\n{rendered}"
+        );
     }
 
     #[test]

@@ -71,6 +71,29 @@ pub enum DevCommand {
         #[arg(long, default_value = "obeys-foreign-text")]
         behaviour: String,
     },
+
+    /// Run a command with a terminal of its own, feeding it this process's stdin
+    ///
+    /// The session prompt refuses to confirm anything when stdin is not a
+    /// terminal, because silence is not consent. So anything that drives it —
+    /// a test, `dev/verify.sh` — has to supply a real one.
+    ///
+    /// That used to be `script(1)`, and the dependency cost more than it looked
+    /// like it would: Fedora ships `script` in `util-linux-script`, which is not
+    /// installed by default, so on the one machine that can actually verify
+    /// Thalyx the stage covering four of the six exit-criterion steps skipped
+    /// itself entirely and said NOT PROVEN. The criterion that ends Phase 1 went
+    /// unchecked because of a subpackage.
+    ///
+    /// Rule 5: the instrument includes the harness. Thalyx writes its own
+    /// initramfs and loads its own BPF rather than inherit a tool it did not
+    /// choose; this is the same decision, and it means the exit criterion can be
+    /// verified on any machine that can run Thalyx at all.
+    Pty {
+        /// The command, then its arguments
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        argv: Vec<std::ffi::OsString>,
+    },
 }
 
 pub fn run(command: DevCommand) -> Fallible {
@@ -93,7 +116,104 @@ pub fn run(command: DevCommand) -> Fallible {
             foreign,
             behaviour,
         } => agent_probe(&utterance, &foreign, &behaviour),
+        DevCommand::Pty { argv } => pty(&argv),
     }
+}
+
+/// Run a command on a pseudoterminal, and get out of the way.
+///
+/// Two directions, and both have to happen at once: what arrives on this
+/// process's stdin goes to the child's terminal, and what the child writes
+/// comes back out on this process's stdout. A copy that did one and then the
+/// other would deadlock against a program that speaks before it is spoken to —
+/// which is exactly what a prompt is.
+///
+/// The exit status is passed through, including the signal case: a child killed
+/// by a signal exits `128 + n`, the shell convention, so a caller reading `$?`
+/// can tell "refused" from "died".
+fn pty(argv: &[std::ffi::OsString]) -> Fallible {
+    use std::io::Read;
+    use std::os::fd::AsFd;
+
+    let (program, arguments) = argv.split_first().ok_or("no command to run")?;
+
+    let terminal = thalyx_syscall::open_pty()?;
+
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+
+    let mut child = thalyx_syscall::spawn_with_terminal(&mut command, terminal.follower.as_fd())?;
+
+    // The follower is closed here on purpose, and it is the whole reason the
+    // loop below ever ends. The child holds its own copy; while this process
+    // also held one, reading the controller would block forever waiting for a
+    // writer that is this process — the same shape as the module channel in
+    // `thalyx_core::run`, and the same fix.
+    drop(terminal.follower);
+
+    let controller = std::sync::Arc::new(terminal.controller);
+
+    // Feeding happens on a thread because the child may write before it reads,
+    // and it may never read at all.
+    let writing = {
+        let controller = std::sync::Arc::clone(&controller);
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut input = Vec::new();
+            if std::io::stdin().read_to_end(&mut input).is_err() {
+                return;
+            }
+            let mut sink = std::fs::File::from(
+                controller
+                    .try_clone()
+                    .expect("a descriptor that is open can be cloned"),
+            );
+            let _ = sink.write_all(&input);
+            let _ = sink.flush();
+        })
+    };
+
+    // And this side reads until the child's terminal has no writers left.
+    //
+    // `EIO` is the *normal* end of a pty read, not a failure: it is what the
+    // kernel returns once the last process holding the follower is gone.
+    // Reporting it as an error would make every successful run look broken.
+    let mut source = std::fs::File::from(
+        controller
+            .try_clone()
+            .expect("a descriptor that is open can be cloned"),
+    );
+    let mut buffer = [0u8; 4096];
+    loop {
+        match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                use std::io::Write;
+                std::io::stdout().write_all(&buffer[..count])?;
+                std::io::stdout().flush()?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.raw_os_error() == Some(5) => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let status = child.wait()?;
+    let _ = writing.join();
+
+    let code = {
+        use std::os::unix::process::ExitStatusExt;
+        match (status.code(), status.signal()) {
+            (Some(code), _) => code,
+            (None, Some(signal)) => 128 + signal,
+            (None, None) => 1,
+        }
+    };
+
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 fn agent_probe(utterance: &str, foreign: &[String], behaviour: &str) -> Fallible {
