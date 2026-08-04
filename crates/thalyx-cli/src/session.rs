@@ -623,6 +623,21 @@ const SESSION_TASK: &str = "session";
 /// The word that makes running without enforcement a thing somebody typed.
 const UNCONFINED_WORD: &str = "sin-confinar";
 
+/// The profile a module gets when it is started from the prompt.
+///
+/// Taken from `thalyx-sandbox` rather than written out here. It was written
+/// out here once, as `"default"`, which is not the name of any profile — and
+/// the run failed with that on the machine's own console after installing
+/// correctly, which is the worst place to find it.
+///
+/// Nothing caught it, and the reason is structural rather than an oversight:
+/// the name is only looked up once the kernel side is found present, so every
+/// machine that cannot enforce reported the honest gap instead and never got
+/// as far as the name. The one machine that could enforce was the image. See
+/// `thalyx_core::run` — the lookup now happens before that gate, so a name no
+/// profile has is a wrong name everywhere.
+const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
+
 /// What the machine still knows, re-checked against the disk right now.
 ///
 /// The same function `thalyx agent recall` runs, indented to match the session.
@@ -700,7 +715,7 @@ fn start_module(store: &Store, rest: &str) {
     let Err(error) = crate::run::run(
         store.root(),
         id,
-        "default",
+        SESSION_PROFILE,
         thalyx_core::run::DEFAULT_ENTRYPOINT,
         Vec::new(),
         unconfined,
@@ -902,4 +917,37 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The profile the prompt asks for has to be one that exists.
+    ///
+    /// Cheap, and it would have saved a kernel build and a boot: `"default"`
+    /// sat here for as long as the prompt could run a module, and the only
+    /// thing that could tell was a machine with enforcement live — which for
+    /// most of that time was no machine at all.
+    #[test]
+    fn the_profile_the_prompt_runs_modules_under_is_one_that_resolves() {
+        thalyx_sandbox::profile::resolve(SESSION_PROFILE).unwrap_or_else(|error| {
+            panic!("the prompt would ask for a profile nothing can resolve: {error}")
+        });
+    }
+
+    /// And it is a profile that actually isolates.
+    ///
+    /// `diagnostic` resolves too, and a prompt that quietly ran modules under
+    /// it would pass the test above while confining nothing beyond the cgroup.
+    /// The run would announce itself as degraded, which is the only reason
+    /// this is a second claim rather than the same one.
+    #[test]
+    fn and_one_that_isolates_rather_than_merely_being_a_name() {
+        let profile = thalyx_sandbox::profile::resolve(SESSION_PROFILE).expect("resolves");
+        assert!(
+            profile.isolates(),
+            "the prompt runs modules under `{SESSION_PROFILE}`, which isolates nothing"
+        );
+    }
 }

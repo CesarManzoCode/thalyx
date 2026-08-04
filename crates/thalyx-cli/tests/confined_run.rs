@@ -178,6 +178,40 @@ fn running_a_module_that_is_not_installed_says_so() {
     );
 }
 
+/// A profile name nothing resolves is wrong everywhere, not only where the
+/// kernel can enforce.
+///
+/// The lookup used to happen after the kernel side was found present, and the
+/// ordering was what let `thalyx session` ask for a profile called `default`
+/// for as long as the prompt could run a module: every machine without the
+/// policy map — every machine but the image — answered with the honest gap and
+/// never reached the name. The image answered with the name, on its own
+/// console, after an install had already succeeded.
+///
+/// So this asserts the ordering rather than the message: on a machine that
+/// cannot enforce anything, a bad profile name still comes back as a bad
+/// profile name.
+#[test]
+fn a_profile_no_profile_is_called_is_refused_before_the_kernel_is_asked() {
+    let fixture = Fixture::new();
+    assert!(fixture.install().success());
+
+    let status = fixture.run(&[
+        "module",
+        "run",
+        Fixture::MODULE_ID,
+        "--profile",
+        "no-profile-is-called-this",
+    ]);
+
+    assert!(!status.success());
+    assert!(
+        status.stderr().contains("is not a sandbox profile"),
+        "the name was never looked at; the run failed for some other reason: {}",
+        status.stderr()
+    );
+}
+
 #[test]
 fn an_entrypoint_the_module_does_not_declare_is_refused() {
     let fixture = Fixture::new();

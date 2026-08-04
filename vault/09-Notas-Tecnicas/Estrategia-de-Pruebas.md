@@ -720,6 +720,56 @@ el programa puede hacer la operación él mismo, la pregunta correcta es
 intentarla. `KernelStore` abre el pin con `bpf(2)` y esa apertura *es* la
 respuesta.
 
+## Regla derivada: una comprobación que va después de una puerta solo se hace del otro lado
+
+`thalyx session` le pedía al núcleo un perfil de sandbox llamado `default`.
+Ningún perfil se llama así. El único perfil que existe para un módulo es
+`module_standard`, y el nombre estaba escrito a mano en `session.rs` en lugar de
+tomado de la constante que ya estaba a tres líneas de ahí en `main.rs`.
+
+Eso vivió ahí desde que el prompt puede correr un módulo, con la suite entera en
+verde, y salió **en la consola de la máquina, después de que la instalación ya
+había salido bien**. El peor lugar posible: la persona que estaba probando los
+seis pasos ya había confirmado un permiso y visto `installed`, y lo siguiente que
+leyó fue un error sobre un perfil.
+
+Lo que lo escondió no fue el descuido, fue el **orden**:
+
+```
+if !policies.is_available() { return Err(NothingCanEnforce) }   ← la puerta
+let profile = profile::resolve(request.profile)?;               ← el nombre
+```
+
+En toda máquina sin el mapa de políticas fijado — es decir, en todas menos la
+imagen — la puerta contestaba primero, con una respuesta **honesta y correcta**,
+y el nombre no se miraba nunca. La imagen fue la primera máquina que pasó la
+puerta, y por eso fue la primera que miró el nombre.
+
+**Un dato que solo se valida después de una condición solo está validado en las
+máquinas que cumplen la condición.** Si la validación no tiene efectos —
+resolver un nombre no toca nada — va antes de la puerta, y entonces un nombre
+que no existe es un nombre que no existe en cualquier máquina. Movido: ahora
+`resolve` corre antes de `is_available`, y lo sostiene
+`a_profile_no_profile_is_called_is_refused_before_the_kernel_is_asked`, que se
+comprobó fallando con el orden viejo.
+
+Y la razón de fondo, que es la regla 1 otra vez: **la etapa 15 maneja el prompt
+de verdad y no tecleaba `correr`.** Era el único verbo del prompt sin ejercitar,
+y era el único roto. Ahora lo teclea, y lo que exige no es que el módulo corra
+—eso lo decide el kernel y lo pregunta la etapa 16— sino que si falla, falle por
+una razón que signifique que llegó hasta el kernel.
+
+### Y el mensaje de la falla apuntaba al lado equivocado
+
+La línea que reportó esto decía «the image has no bpftool, so anything that asks
+bpftool answers no in there». Se escribió cuando esa era la causa probable y se
+quedó ahí después de dejar de serlo. La causa verdadera estaba impresa cuatro
+renglones más abajo, en el propio log.
+
+**Un mensaje de falla que nombra una causa que no midió es peor que uno que no
+nombra ninguna: dice dónde no hay que buscar.** Un `failed` dice qué no pasó e
+imprime lo que la máquina dijo. Por qué es de quien lea.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

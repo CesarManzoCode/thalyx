@@ -1563,6 +1563,28 @@ else
         failed "the session reported an install that is not on disk"
     fi
 
+    # --- and `correr` reaches the kernel, whatever the kernel then says -----
+    #
+    # This stage drove every verb the prompt has except the one that runs a
+    # module, and that is the one that was broken: it asked for a profile named
+    # `default`, which nothing is called. It survived because the name was only
+    # looked up after the kernel side was found present, so every machine that
+    # could not enforce reported the honest gap and stopped before the name —
+    # and the machine that could enforce was the image, where it was found, on
+    # the console, after an install had already succeeded.
+    #
+    # So this does not require the run to succeed: whether it can is the
+    # kernel's business and stage 16 asks that. It requires it to fail, if it
+    # fails, for a reason that means it got all the way to the kernel.
+    at_the_prompt "correr dev.thalyx.greeter" salir > "$WORK/session-run.log"
+    if grep -q "  ran: " "$WORK/session-run.log" \
+       || grep -q "the kernel policy map is not loaded" "$WORK/session-run.log"; then
+        proven "the prompt's own route to running a module reaches the kernel"
+    else
+        failed "\`correr\` broke before the kernel had a say; see $WORK/session-run.log"
+        grep -A4 "did not run" "$WORK/session-run.log" | sed 's/^/     /'
+    fi
+
     # --- step 6: the task outlives the process that did it ------------------
     #
     # Every `at_the_prompt` is a separate process with nothing carried over, so
@@ -1862,7 +1884,15 @@ else
         if grep -q "I asked for /etc/shadow and was refused" "$BOOT_LOG_1"; then
             proven "the module ran confined inside the machine and was denied what nobody granted it"
         else
-            failed "the module did not run confined inside the machine; the image has no bpftool, so anything that asks bpftool answers no in there"
+            failed "the module did not run confined inside the machine; what it said is below"
+            # No guess about why, and that is deliberate. This line used to
+            # carry one — "the image has no bpftool, so anything that asks
+            # bpftool answers no in there" — written when that was the likely
+            # cause and left standing after it stopped being true. It was read
+            # as the diagnosis, and the actual cause, printed directly beneath
+            # it, was a profile name no profile has. A failure message that
+            # names a cause it did not measure is worse than one that names
+            # none: it tells you where not to look.
             grep -A6 "correr" "$BOOT_LOG_1" | tail -20 | sed 's/^/     /'
         fi
 

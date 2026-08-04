@@ -331,12 +331,44 @@ tags: [continuidad, punto-actual, sesiones]
 > así que QEMU nunca salía. Ahora imprime cada 15 segundos qué está esperando y
 > mata QEMU por la ruta del disco, que es de esa corrida y de nada más.
 >
+> ## Y el módulo pedía un perfil que no existe — 2026-08-04
+>
+> Con `KernelStore` puesto, la etapa 16 volvió a correr y volvió a fallar en la
+> misma línea, **por otra razón**:
+>
+> ```
+>   dev.thalyx.greeter did not run: `default` is not a sandbox profile Thalyx knows
+> ```
+>
+> `session.rs` tenía el nombre del perfil escrito a mano —`"default"`— en lugar
+> de tomado de `thalyx_sandbox::profile::MODULE_STANDARD`, que es lo que hace
+> `main.rs` tres archivos más allá. **Ningún perfil se llama `default`.**
+>
+> Vivió ahí desde que el prompt puede correr un módulo, con los 599 tests en
+> verde, y salió **en la consola de la máquina, después de que la instalación ya
+> había salido bien** — el peor lugar posible para encontrarlo.
+>
+> Lo escondió el **orden**, no el descuido: el nombre se resolvía *después* de
+> comprobar que el mapa de política estuviera cargado. En toda máquina sin ese
+> mapa —todas menos la imagen— contestaba primero la puerta, con una respuesta
+> honesta, y el nombre no se miraba nunca. Ahora `resolve` va antes: un nombre
+> que no existe es un nombre que no existe en cualquier máquina.
+>
+> Y la razón de fondo es la regla 1 otra vez: **la etapa 15 maneja el prompt de
+> verdad y no tecleaba `correr`.** Era el único verbo sin ejercitar, y era el
+> único roto. Ahora lo teclea.
+>
+> **El mensaje de la falla apuntaba al lado equivocado**: decía que la imagen no
+> tiene `bpftool`, que era cierto la corrida anterior y ya no. La causa real
+> estaba impresa cuatro renglones debajo. Ese texto se quitó. Ambas reglas
+> quedaron en [[Estrategia-de-Pruebas]].
+>
 > ## Lo que sigue sin verse
 >
-> **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
-> el kernel de la imagen tiene `CONFIG_BPF_LSM=y` y `CONFIG_DEBUG_INFO_BTF=y`,
-> así que debería salir `ok thalyx-lsm`. Sería el tercero de los tres `no` del
-> primer arranque, cerrado. Nadie lo ha visto: se ve con `make -C image run`.
+> **La etapa 16 entera en verde.** Con esto arreglado, `correr` debería confinar
+> adentro de la máquina y el módulo debería reportar que le negaron
+> `/etc/shadow` — lo que cierra los seis pasos dentro de la máquina, de arranque
+> frío a arranque frío. Nadie lo ha visto.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -623,6 +655,28 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-04 (2) — la máquina corrió los seis pasos y falló en el quinto
+La etapa 16 —arrancar la imagen y teclearle los seis pasos— corrió por primera
+vez contra una imagen real. Sirvió de inmediato y encontró dos defectos, uno
+detrás del otro, en la misma línea.
+
+**El primero:** `is_available()` preguntaba por `bpftool`, que adentro de la
+imagen no existe, y esa respuesta decide entre confinar un módulo y negarse a
+arrancarlo. `KernelStore` lo reemplaza con `bpf(2)` directo y `BpftoolStore` se
+borró. Cuarta vez que algo le pregunta a `bpftool` por algo que `bpftool` no
+hizo.
+
+**El segundo:** el prompt pedía un perfil de sandbox llamado `default`, que no
+existe. Lo escondió el orden —el nombre se resolvía después de comprobar el
+mapa de política, así que solo la imagen llegaba a mirarlo— y lo dejó pasar que
+la etapa 15 maneja el prompt de verdad y **no tecleaba `correr`**: el único
+verbo sin ejercitar era el único roto.
+
+Los dos son la misma forma vista desde dos lados: **una comprobación que
+depende de una condición solo se hace en las máquinas que la cumplen.** Tres
+reglas nuevas en [[Estrategia-de-Pruebas]], incluida la del mensaje de falla que
+nombraba una causa que nadie midió y mandaba a buscar al lado equivocado.
 
 ### 2026-08-04 — los seis pasos existen
 El objetivo pasó a ser cerrar la Fase 1, y quedaban dos pasos del criterio de

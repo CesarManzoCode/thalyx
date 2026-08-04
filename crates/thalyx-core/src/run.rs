@@ -221,6 +221,20 @@ fn run_inner(
         return run_unconfined(&manifest, &program, request, permissions);
     }
 
+    // The profile name, before the kernel is asked anything.
+    //
+    // This used to sit below the `is_available` gate, and the ordering hid a
+    // caller that asked for a profile no name matches: on every machine that
+    // could not enforce — which was every machine but the image — the honest
+    // "nothing can enforce this" came back first and the name was never looked
+    // at. The one place the lookup ran was the machine's own console, after an
+    // install had already succeeded.
+    //
+    // A name nothing resolves is wrong on a machine with no BPF at all, so it
+    // is reported there too. Nothing is established yet, so there is nothing
+    // to unwind.
+    let profile = thalyx_sandbox::profile::resolve(request.profile)?;
+
     if !policies.is_available() {
         return Err(CoreError::NothingCanEnforce {
             module_id: manifest.id.clone(),
@@ -232,7 +246,6 @@ fn run_inner(
     //
     // Before the confinement is established, so a module that cannot be given
     // a user does not get a cgroup and a policy first.
-    let profile = thalyx_sandbox::profile::resolve(request.profile)?;
     let uid = if profile.own_user {
         let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
         Some(uids.assign(&manifest.id)?)
