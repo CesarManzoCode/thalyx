@@ -65,6 +65,19 @@ está resuelto; el otro sigue abierto.**
    segundo programa. La respuesta probablemente sea que el modelo del agente es
    **un módulo**, enlazado contra la API como cualquier otro, que es justo lo que
    este decreto describe — pero eso lo decide Cesar, no se deduce aquí.
+3. **Los módulos son binarios de Linux, y hoy hablan POSIX.** Abierto desde el
+   2026-08-04, encontrado por una auditoría externa. El decreto dice que los
+   módulos se comunican *exclusivamente* por la API de Thalyx, no por POSIX y no
+   por libc; el sandbox monta `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin` y `/etc`
+   de sólo lectura, y el filtro seccomp permite alrededor de ciento veinte
+   llamadas al sistema. El propio `rootfs.rs` ya lo admitía en su
+   documentación —*no es una frontera de seguridad, es casi una distribución*—
+   y el README no. **La distinción que faltaba está escrita en
+   [[Sistema-de-Modulos]]**: la API de Thalyx es la única superficie *mediada*,
+   que no es lo mismo que la única superficie alcanzable. Cerrar la brecha del
+   todo es una decisión de Fase 2 sobre cómo se construyen los módulos —
+   estáticos, sin libc, con un rootfs sin `/usr` — y está en
+   [[Tareas-Pendientes]].
 
 ## Declaración central
 

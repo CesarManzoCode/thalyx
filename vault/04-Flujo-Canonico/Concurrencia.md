@@ -25,6 +25,52 @@ Un lock global elimina de un golpe toda una clase de defectos —contratos que s
 
 El paralelismo por recurso, con su detección de deadlocks y su ordenamiento de locks, es la optimización que corresponde **cuando exista contención medida**. Es la aplicación directa del [[Criterio-de-Inclusion-de-Primitivas]]: no se resuelve antes de tiempo un problema que aparece con la escala, y la frontera del lock es fácil de estrechar después, no de introducir después.
 
+## Estado: implementado
+
+Desde el 4 de agosto de 2026 el lock existe: `Store::lock()` toma un `flock(2)`
+exclusivo sobre `state/lock`, y lo toman `install`, `remove`, `rollback`,
+`restore` y la asignación de uid dentro de `run`.
+
+`flock` se eligió sobre `fcntl` por una razón concreta: un lock de `fcntl` se
+suelta cuando **cualquier** descriptor del archivo se cierra en el proceso, lo
+que lo vuelve frágil en un programa que abre el almacén desde varios lugares. El
+de `flock` pertenece a la descripción de archivo abierta y se libera cuando esa
+descripción desaparece — es decir, cuando el proceso termina, incluido cuando lo
+matan. Un corte a mitad de una instalación no puede dejar la máquina incapaz de
+volver a instalar.
+
+Lo prueban dos tests, y el que importa lanza un **proceso** hijo, no un hilo: un
+hilo comparte la descripción de archivo abierta y `flock` lo dejaría pasar
+directo, así que la prueba habría pasado sin que la propiedad existiera.
+
+### Lo que el lock no promete
+
+**El orden de llegada.** `flock` despierta a *un* esperante, no al que lleva más
+tiempo esperando. Lo que este decreto dice sobre encolar "por orden de llegada"
+no se cumple: se cumple la serialización, no el orden.
+
+Se deja así deliberadamente. En Fase 1 hay un usuario y un agente, de modo que
+no existen dos contratos en contención cuyo orden alguien pueda observar, y una
+cola justa necesitaría un proceso intermediario — una cosa más grande que el
+problema. Está escrito aquí en vez de quedar como una diferencia silenciosa
+entre lo que el decreto dice y lo que la máquina hace.
+
+## Revisiones
+
+### 2026-08-04 — El lock decretado se implementa, y se corrige lo que el decreto prometía de más
+**Antes:** el decreto describía un lock global y ningún código lo tomaba. Cada
+escritura individual era atómica —un `rename`— y de ahí se había concluido, sin
+que nadie lo escribiera, que el conjunto también lo era.
+**Ahora:** existe el lock, y este decreto dice qué garantiza y qué no.
+**Motivo:** una instalación escribe cuatro archivos separados —el registro de
+permisos, el keystore, el registro de uids y el enlace `current`—. Un `rename`
+es atómico; una transacción sobre cuatro archivos no lo es, y ninguna
+disposición de renames la vuelve atómica. Dos instalaciones simultáneas podían
+entregar el mismo uid a dos módulos distintos, o dejar las concesiones de una
+bajo el commit de la otra.
+**Cómo se encontró:** una auditoría externa preguntó dónde estaba el lock. No
+estaba en ninguna parte, y llevaba tres días decretado.
+
 ## Relacionado
 - [[Debate-Conflicto-Recursos]]
 - [[Core]]

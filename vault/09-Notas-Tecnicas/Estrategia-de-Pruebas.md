@@ -912,6 +912,102 @@ corrección que le hicimos al cgroup2 dos rondas antes, y por la misma razón: l
 pantalla de arranque no puede salir limpia en una máquina donde ningún módulo
 puede correr.
 
+## Regla derivada: una prueba que sólo ejerce el primer caso decide el diseño sin que nadie lo note
+
+Encontrada el 2026-08-04, por una auditoría externa y no por una prueba.
+
+El registro de permisos escribía las concesiones **antes** del commit, y el
+comentario que lo justificaba era correcto y estaba incompleto. Decía: hasta que
+el enlace `current` se mueva, ningún módulo apunta al registro, así que es
+inerte. Cierto — **para una instalación nueva**. En una actualización la versión
+1 es la actual durante toda la ventana, de modo que un corte ahí dejaba a la
+versión 1 corriendo con los permisos confirmados para la versión 2.
+
+Trece pruebas de inyección de fallos cubrían esa ventana. Ninguna la vio, porque
+**todas instalaban un módulo por primera vez**. La ventana estaba probada
+exhaustivamente en el único caso donde el defecto no aparece.
+
+La regla:
+
+**Una prueba de una transición tiene que ejercerla desde un estado previo que no
+sea el vacío.** Instalar sobre nada y instalar sobre algo son transiciones
+distintas, y la primera es la que menos se equivoca. Lo mismo vale para
+cualquier "actualizar", "reemplazar" o "revocar": el caso inicial es el fácil, y
+probar sólo el fácil es cómo un invariante llega a estar escrito, comentado y
+roto al mismo tiempo.
+
+El corolario es sobre los comentarios, no sobre las pruebas: **un comentario que
+justifica una decisión con "en este caso no puede pasar" tiene que nombrar el
+caso.** El de aquí decía "ningún módulo apunta al registro". Si hubiera dicho
+"ninguna *versión*", el hueco habría sido visible al leerlo.
+
+## Regla derivada: una comprobación y el uso que la sigue son dos momentos
+
+El API interna resolvía la ruta con `canonicalize`, comparaba el resultado
+contra la concesión y después abría la ruta resuelta. Cada paso era correcto y
+la secuencia no lo era, porque es una secuencia: entre la comparación y la
+apertura hay un instante, y un módulo que puede escribir dentro de su propia
+concesión puede usar ese instante para reemplazar el nombre por un symlink a
+otro lado. Thalyx abría el nuevo destino, con el alcance de Thalyx — que corre
+**fuera** del sandbox a propósito.
+
+**Nada comprobado en espacio de usuario cierra eso.** La comprobación y el uso
+tienen que ser la misma llamada al sistema, o no son una comprobación:
+`openat2` con `RESOLVE_BENEATH` contra un descriptor del directorio concedido,
+abierto una sola vez.
+
+La forma general, que aplica a cualquier recurso y no sólo a rutas:
+
+**Si entre comprobar y usar hay un nombre que alguien más puede redefinir, la
+comprobación no vale.** Lo que hay que sostener no es el resultado de la
+comprobación: es el objeto. Un descriptor sostiene el objeto; una ruta sostiene
+un nombre.
+
+Y el costo se escribe: `RESOLVE_BENEATH` rechaza **todo** symlink absoluto,
+incluido uno que habría caído dentro de la concesión. Es una pérdida real y es
+la dirección correcta de pérdida — a un módulo se le niega algo que debía poder
+hacer, lo cual alguien reporta, en vez de permitírsele algo que no debía, lo
+cual no nota nadie. Hay una prueba que nombra ese costo para que el día que
+alguien se pregunte por qué su enlace dejó de andar, la respuesta esté en la
+suite y no en la memoria de alguien.
+
+## Regla derivada: lo que un componente no confiable acumula en el confiable tiene que tener techo
+
+Cada `Notify` que un módulo manda se guarda hasta que la corrida termina, para
+poder mostrárselo al humano. El límite de cuadro acotaba **un** mensaje en un
+mebibyte y nada acotaba **cuántos**. El cgroup del módulo no lo veía: la memoria
+crecía en Thalyx, que dentro de la imagen es el pid 1.
+
+**Un límite sobre el tamaño de una unidad no es un límite sobre el total.** Cada
+vez que un componente que no se confía elige cuántas veces hacer algo, el techo
+va sobre la acumulación y no sobre la pieza — y hacen falta los dos, porque
+doscientos cincuenta y seis mensajes de un mebibyte es el mismo ataque con menos
+pasos.
+
+Y lo que se descarta se **cuenta y se dice**. Una lista que dejó de crecer en
+silencio se ve idéntica a un módulo que se calló, y son cosas distintas.
+
+## Regla derivada: un estado de confianza que no se puede leer no es un estado de confianza vacío
+
+`Keystore::load` hacía `unwrap_or_default()`. Un `keys.json` corrupto se volvía
+un keystore **vacío**, y un keystore vacío confía en todo lo que le ofrezcan —
+eso es lo que significa confianza en primer uso. Así que dañar un archivo
+degradaba a todos los publicadores anclados a un primer avistamiento, y el
+siguiente paquete ofrecido para cualquier id instalado, firmado por quien fuera,
+habría sido aceptado. No hacía falta romper ninguna criptografía: bastaba una
+escritura cortada a la mitad.
+
+Ya existía la regla 10 —*una falla de lectura no es una falla de existencia*— y
+no se había aplicado aquí. La forma específica que faltaba:
+
+**Ausente y corrupto son respuestas opuestas, no dos formas de "nada".** Para un
+almacén de confianza, ausente significa que nunca se ancló nada y confiar en la
+primera clave es la política; corrupto significa que **sí** se ancló algo y
+nadie sabe qué. El código que las colapsa elige la insegura.
+
+El control importa tanto como el caso: negarse a leer **ambas** dejaría una
+máquina nueva incapaz de instalar nada. Hay una prueba para cada una.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

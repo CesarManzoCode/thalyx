@@ -14,6 +14,62 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Lo último: una auditoría externa encontró nueve defectos reales — 2026-08-04
+>
+> **Es lo primero que hay que leer y lo único pendiente de comprobar.**
+>
+> Alguien de fuera revisó el repositorio y escribió una auditoría de seguridad.
+> Se verificó afirmación por afirmación contra el código: la mayoría eran
+> ciertas, tres son críticas, y varias de las que no eran ciertas también se
+> respondieron por escrito en vez de quedar en una conversación.
+>
+> Los tres críticos, en una línea cada uno:
+>
+> 1. **El lock global decretado no existía.** [[Concurrencia]] lo decretaba
+>    desde el 1 de agosto y ningún código lo tomaba. Una instalación escribe
+>    cuatro archivos separados; cada `rename` es atómico y el conjunto no.
+> 2. **Una actualización interrumpida podía darle a la versión vieja los
+>    permisos de la nueva.** El registro se indexaba sólo por id de módulo y la
+>    comprobación preguntaba "¿está instalado?" en vez de "¿es *esta* versión?".
+>    Trece pruebas de inyección de fallos cubrían esa ventana y ninguna lo vio,
+>    porque todas instalaban por primera vez.
+> 3. **Un keystore corrupto se leía como uno vacío**, y uno vacío confía en
+>    todo lo que le ofrezcan. Dañar un archivo degradaba a todos los
+>    publicadores anclados a un primer avistamiento.
+>
+> Los seis restantes: los permisos `session` no existían (se guardaban como
+> `persistent` y nunca se revocaban); `net/outbound` quitaba el namespace de red
+> y seccomp seguía prohibiendo `socket`, así que costaba aislamiento y no daba
+> capacidad; el camino confiable dibujaba texto del publicador sin sanear y el
+> módulo heredaba la terminal donde se dibuja; el API interna comprobaba la ruta
+> y la abría después, con una carrera en medio; un módulo podía hacer crecer sin
+> límite la memoria de Thalyx mandando notificaciones; y el journal se negaba a
+> leerse entero si su última línea estaba cortada — justo lo que deja un corte.
+>
+> **Todo está corregido, con pruebas que se comprobó que fallan sin el arreglo.**
+> 641 tests pasan, `clippy` limpio, `cargo fmt` aplicado.
+>
+> ### Lo que falta, y es de Cesar
+>
+> 1. **Correr `sudo ./dev/verify.sh`.** Nada de esto se ejerció en hardware. Los
+>    cambios tocan el sandbox (`stdio` del módulo, seccomp según la concesión) y
+>    el arranque los usa.
+> 2. **Anclar el digest del kernel.** `image/Makefile` ahora se niega a
+>    construir con `KSHA256 := UNPINNED`, porque Thalyx compila su propio kernel
+>    y ese tarball se bajaba sin verificar nada más que TLS. `make -C image
+>    pin-kernel` imprime los cuatro comandos; el tercero tiene que decir *Good
+>    signature*. **Hasta que lo hagas, `make -C image` falla a propósito.**
+> 3. **Decidir sobre lo que quedó nombrado y no resuelto**: los módulos son
+>    binarios de Linux que hablan POSIX, y el decreto dice que no. La distinción
+>    que sí se sostiene está escrita en [[Sistema-de-Modulos]] —la API es la
+>    única superficie *mediada*— y cerrar la brecha entera es Fase 2. Ver
+>    [[Tareas-Pendientes]].
+>
+> Un costo que se aceptó a propósito y conviene saber: el API interna ahora usa
+> `openat2` con `RESOLVE_BENEATH`, que rechaza **todo** symlink absoluto,
+> incluido uno que apunte dentro de la misma concesión. Los relativos siguen
+> andando. Hay una prueba que nombra esa pérdida.
+
 > ## La máquina arrancó — 2026-08-03
 >
 > `make -C image run`, en la Fedora de Cesar, con kernel 6.12.101 propio y un

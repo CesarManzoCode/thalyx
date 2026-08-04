@@ -145,9 +145,67 @@ Esta distinción de tres tipos no estaba en el diseño original — surgió al t
 **Motivo:** el decreto no era implementable. Un LSM no puede ser un módulo cargable en Linux mainline — `security_add_hooks()` no está exportado y el registro ocurre en el arranque. La intención del decreto (enforcement real en el kernel, no cooperativo) se conserva entera; lo que cambia es el mecanismo, y de paso el ciclo de iteración pasa de quince minutos a segundos.
 **Qué no cambia:** se sigue rechazando Landlock por la misma razón de antes. BPF LSM no es una política ajena que se acata, es infraestructura del kernel sobre la que Thalyx escribe la suya.
 
+### 2026-08-04 — La vigencia se ata a la versión, no a "estar instalado"
+**Antes:** la regla decía que una concesión tiene fuerza "mientras el módulo al
+que pertenece sea la versión actual", y el código preguntaba `is_installed` —
+que responde *alguna* versión, no *esta*. El registro estaba indexado sólo por
+id de módulo.
+**Ahora:** cada concesión graba la versión para la que fue confirmada, y sólo
+tiene fuerza si esa versión es la que `current` nombra.
+**Motivo:** el razonamiento anterior era correcto para una instalación nueva —
+hasta que el enlace se mueve no existe ninguna versión de ese id, así que el
+registro no otorga nada— y falso para una **actualización**. La versión 1 es la
+actual durante todo el tiempo en que se escriben las concesiones de la versión
+2, de modo que un proceso muerto en esa ventana dejaba a la versión 1, que es la
+que corre, con los permisos que el humano confirmó para la versión 2.
+**Además:** las concesiones de la versión que sigue instalada se **conservan**
+junto a las nuevas en vez de reemplazarse. Descartarlas era seguro y era
+incorrecto: un módulo que el humano autorizó dejaría de funcionar en silencio, y
+el único síntoma aparecería en otro lado.
+**Cómo se encontró:** una auditoría externa. Ninguna prueba de inyección de
+fallos podía verlo, porque todas instalaban un módulo por primera vez y ninguna
+actualizaba a una versión que pidiera algo distinto. Ahora hay dos que sí.
+
+### 2026-08-04 — Los permisos de sesión existen de verdad
+**Antes:** `session` estaba en el esquema, en el manifiesto y en el prompt, y se
+guardaba exactamente igual que `persistent`. Nunca se revocaba. Una promesa de
+expiración que nada ejecutaba.
+**Ahora:** hay un identificador de sesión en `state/session`. Una concesión de
+tipo `session` graba la sesión en que se hizo y deja de tener fuerza en cuanto
+ese identificador cambia.
+**Motivo:** terminar una sesión es **una escritura**, no un barrido sobre el
+registro. Un barrido falla abierto cuando se interrumpe — el proceso muere a la
+mitad y las concesiones que no alcanzó siguen vivas. Escribir un identificador
+nuevo invalida todas a la vez, sin que nada tenga que encontrarlas.
+**Cuando nunca hubo sesión:** el `boot_id` del kernel. Una máquina que no abrió
+una sesión con nombre igual tiene un límite — una concesión `session` muere en
+el próximo arranque en vez de vivir para siempre. Y si el `boot_id` tampoco se
+puede leer, la sesión actual es un valor que no coincide con nada grabado, así
+que esas concesiones quedan inertes en lugar de eternas.
+
+### 2026-08-04 — `net/outbound` pasa a ser una capacidad y no sólo una etiqueta
+**Antes:** conceder `net/outbound` quitaba el namespace de red —para que el
+módulo pudiera usarla— y el filtro seccomp seguía prohibiendo `socket`,
+`connect` y `bind` incondicionalmente. El módulo concedido no podía abrir una
+conexión, y había recibido el namespace de red del anfitrión a cambio de nada.
+Era la única combinación peor que cualquiera de las dos alternativas: costaba
+aislamiento y no entregaba capacidad.
+**Ahora:** el allowlist deja de ser fijo. `Profile::for_permissions` mueve las
+dos mitades juntas: quita el namespace **y** añade `socket`, `connect` y el
+puñado que un resolver necesita, sólo para el módulo que tiene la concesión.
+**Motivo:** un módulo sin permiso de red sigue teniendo dos negativas
+independientes —el namespace vacío y el filtro—; uno con permiso tiene el
+enforcement del LSM bajo el que fue concedido. Ninguno de los dos termina con
+menos de lo que debería.
+**Por qué nadie lo vio:** la prueba del LSM demuestra que el hook deniega, y
+ninguna prueba preguntaba nunca si un módulo **concedido** podía conectarse.
+Falta todavía esa prueba de punta a punta en hardware; ver
+[[Estado-de-Implementacion]].
+
 ## Relacionado
 - [[Caso-Instalar-Modulo]]
 - [[Tres-Categorias-de-Autorizacion]]
 - [[Camino-Confiable]]
 - [[Modelo-de-Amenaza]]
 - [[Flujo-Canonico-Overview]]
+- [[Concurrencia]]

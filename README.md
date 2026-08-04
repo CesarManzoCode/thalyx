@@ -16,7 +16,7 @@ sovereign.
 
 > **Status: Phase 1, core infrastructure built.** Three of the four base
 > primitives — the fourth, the predictive scheduler, is Phase 2 — and the
-> canonical flow are built and **verified on real hardware**: 595 tests and 72
+> canonical flow are built and **verified on real hardware**: 641 tests and 72
 > checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
 > unproven *there*. Modules install atomically, run confined, and can be rolled
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
@@ -38,6 +38,15 @@ sovereign.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.
+>
+> **Not yet re-verified on hardware:** an external security audit on 2026-08-04
+> found nine real defects — among them a decreed global lock that nothing
+> implemented, an interrupted upgrade that could leave the running version
+> holding the *next* version's permissions, and a corrupt keystore that parsed
+> as an empty one, which trusts every publisher it is offered. All are fixed and
+> covered by tests that were confirmed to fail without the fix. The 72 hardware
+> checks have not been run since. Until they are, that half of this paragraph
+> describes the commit before this one.
 
 ## Boot it
 
@@ -211,6 +220,26 @@ never goes through the agent at all.
 | Just-in-time permissions | The agent requests temporary access; the OS grants and revokes it | Kernel (`thalyx-lsm`) + userspace broker |
 | Persistent memory | Task state survives across sessions and reboots | Userspace |
 | Predictive scheduler | Adjust process priority from context | Userspace (Phase 2) |
+
+Three limits of the current enforcement, stated here rather than discovered:
+
+- **The LSM enforces by class of action, not by path.** Every absolute read
+  grant becomes one `FS_READ` bit and every write grant one `FS_WRITE` bit, and
+  the BPF program checks the bit. What confines a module to the *particular*
+  paths it was granted is the root filesystem — which contains nothing else —
+  the module's own uid, and the checks in Thalyx's internal API, which resolve
+  under a descriptor for the granted directory with the kernel refusing to leave
+  it. The LSM is a second, coarser layer. Calling it a per-path enforcement
+  would be claiming more than it does.
+- **`net/outbound` has not been exercised end to end on hardware.** The LSM
+  denying a connection to a module without the grant is proven and reproducible
+  (`make -C lsm demo`). A module *with* the grant opening a connection is
+  implemented and covered by unit tests, and has not yet run on a machine.
+- **Snapshots need `btrfs-progs`, which the image does not have and cannot.**
+  `thalyx-snapshot` shells out to `btrfs`, so snapshot and restore work on a
+  host with it installed — where `dev/verify.sh` exercises them — and not inside
+  the minimal image, which carries one program. Making it native to Thalyx means
+  the ioctls, and that is not built.
 
 ## Two principles that constrain everything
 
