@@ -112,6 +112,11 @@ pub fn apply<V: Volumes>(
     plan: &Plan,
     request_id: &str,
 ) -> Result<Restored> {
+    // The global lock. A restore replaces a whole subvolume; an install
+    // committing into it halfway through would be published into a tree that
+    // is about to be replaced, and would vanish with no record of why.
+    let _lock = store.lock()?;
+
     let journal = Journal::open(store.journal_path())?;
 
     let entry = |outcome: Outcome, notes: Vec<String>| Entry {

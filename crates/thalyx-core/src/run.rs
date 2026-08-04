@@ -82,6 +82,10 @@ pub struct RunOutcome {
     pub exit_code: Option<i32>,
     /// What the module said to the human over its channel, in order.
     pub said: Vec<(thalyx_abi::Level, String)>,
+    /// Notices refused because the module was past the ceiling Thalyx holds
+    /// for one run. Carried so the caller can say so: a truncated list and a
+    /// module that went quiet look identical otherwise.
+    pub dropped_notices: usize,
     /// Why the channel stopped, when it stopped badly.
     ///
     /// Carried rather than logged because a module whose requests went
@@ -246,7 +250,16 @@ fn run_inner(
     //
     // Before the confinement is established, so a module that cannot be given
     // a user does not get a cgroup and a policy first.
+    // Assigned under the global lock, and only for as long as that takes.
+    //
+    // The uid registry is shared mutable state — two first runs of different
+    // modules racing here could be handed the same number, which is exactly
+    // the sharing `uids.rs` exists to prevent. But a run must not hold the
+    // lock while the module executes: a module that runs for an hour would
+    // block every install for an hour, and the decree serialises contracts,
+    // not the programs they start.
     let uid = if profile.own_user {
+        let _lock = store.lock()?;
         let mut uids = crate::uids::UidRegistry::load(store.uids_path())?;
         Some(uids.assign(&manifest.id)?)
     } else {
@@ -321,6 +334,7 @@ fn run_inner(
     // like one that finished — and the difference is whether the work happened.
     let channel_error = served.err().map(|error| error.to_string());
     let said = api.said().to_vec();
+    let dropped_notices = api.dropped_notices();
 
     // Teardown happens whatever the module did. `release` is a no-op while
     // another instance is still inside, so a second run is not stripped of its
@@ -339,6 +353,7 @@ fn run_inner(
         permissions,
         exit_code: status.code(),
         said,
+        dropped_notices,
         channel_error,
     })
 }
@@ -370,6 +385,18 @@ fn run_unconfined(
         use std::os::fd::AsRawFd;
         let mut command = std::process::Command::new(program);
         command.args(&request.args);
+
+        // The terminal is withheld here too, and that is not a second thing
+        // being degraded — it is the same thing not being degraded.
+        // `--unconfined` means no cgroup and no kernel policy. It has never
+        // meant "may forge the trusted path", and a module that could draw
+        // Thalyx's confirmation frame on the human's screen would be doing
+        // exactly that. See `thalyx_sandbox::launch::spawn`.
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
         thalyx_syscall::spawn_with_channel(&mut command, module_end.as_raw_fd())
             .map_err(|source| CoreError::io(program, source))?
     };
@@ -402,6 +429,7 @@ fn run_unconfined(
         permissions,
         exit_code: status.code(),
         said: api.said().to_vec(),
+        dropped_notices: api.dropped_notices(),
         channel_error: served.err().map(|error| error.to_string()),
     })
 }

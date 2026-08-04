@@ -18,6 +18,7 @@ thalyx-core.workspace = true
 thalyx-syscall.workspace = true
 thalyx-bpf.workspace = true
 thalyx-journal.workspace = true
+uuid.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
 thalyx-memory.workspace = true

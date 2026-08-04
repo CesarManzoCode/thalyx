@@ -292,3 +292,144 @@ fn an_interrupted_upgrade_leaves_the_previous_version_serving() {
     assert_eq!(fixture.effective_permissions().len(), 2);
     assert_invariant(&fixture, "interrupted upgrade");
 }
+
+/// An upgrade interrupted between the grant record and the symlink swap.
+///
+/// This is the window the permission registry used to get wrong, and it is
+/// worth stating why it was invisible for so long. Every fault-injection test
+/// above installs a module for the *first* time, and for a first install the
+/// old reasoning was correct: the grants are written before the commit, but
+/// until the symlink swings no version of that id exists, so the record grants
+/// nothing.
+///
+/// An upgrade breaks the premise. Version 1 is current the whole time version
+/// 2's grants are being written, and the check was `is_installed` — which
+/// answers "some version", not "this one". So a process killed here left
+/// version 1, still the version that runs, holding the permissions a human
+/// confirmed for version 2.
+///
+/// Nothing in the suite could catch it, because nothing upgraded a module to a
+/// version that asked for something different.
+#[test]
+fn an_interrupted_upgrade_never_gives_the_old_version_the_new_version_s_permissions() {
+    let fixture = Fixture::new();
+
+    // Version 1 asks for one thing: to read the granted directory.
+    let v1 = fixture.build_bundle_with_permissions(
+        "1.0.0",
+        Some(&format!(
+            r#"[[permissions]]
+resource = "{}"
+action   = "read"
+type     = "persistent""#,
+            fixture.granted_path().display()
+        )),
+    );
+    assert!(fixture.install_bundle_at(&v1).success());
+    assert_eq!(fixture.effective_permissions().len(), 1);
+
+    // Version 2 asks for that *and* the network.
+    let v2 = fixture.build_bundle_with_permissions(
+        "2.0.0",
+        Some(&format!(
+            r#"[[permissions]]
+resource = "{}"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "net"
+action   = "outbound"
+type     = "persistent""#,
+            fixture.granted_path().display()
+        )),
+    );
+
+    // Killed inside the commit: the grants for version 2 are on disk, the
+    // symlink has not moved.
+    let status = fixture.install_bundle_with_fault(&v2, FaultPoint::MidCommit);
+    assert!(status.aborted(), "expected the injected fault to abort");
+
+    // Version 1 is still what runs.
+    assert_eq!(
+        fixture
+            .store()
+            .installed_version(Fixture::MODULE_ID)
+            .as_deref(),
+        Some("1.0.0"),
+        "the symlink moved despite the fault"
+    );
+
+    // And it holds exactly what version 1 was confirmed for. Not version 2's
+    // set, which is the defect; and not nothing, which would be safe but would
+    // silently strip a module the human authorised.
+    let effective = fixture.effective_permissions();
+    assert_eq!(
+        effective.len(),
+        1,
+        "version 1 holds {} permissions, not the 1 it was confirmed for",
+        effective.len()
+    );
+    assert!(
+        !effective.iter().any(|grant| grant.resource == "net"),
+        "the running version was handed the network permission that was \
+         confirmed for a version that never became current"
+    );
+}
+
+/// The control for the test above.
+///
+/// Without it, a registry that refused every upgrade's grants would pass —
+/// and refusing everything looks identical to getting the window right.
+#[test]
+fn an_upgrade_that_completes_does_hand_over_the_new_version_s_permissions() {
+    let fixture = Fixture::new();
+
+    let v1 = fixture.build_bundle_with_permissions(
+        "1.0.0",
+        Some(&format!(
+            r#"[[permissions]]
+resource = "{}"
+action   = "read"
+type     = "persistent""#,
+            fixture.granted_path().display()
+        )),
+    );
+    assert!(fixture.install_bundle_at(&v1).success());
+
+    let v2 = fixture.build_bundle_with_permissions(
+        "2.0.0",
+        Some(&format!(
+            r#"[[permissions]]
+resource = "{}"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "net"
+action   = "outbound"
+type     = "persistent""#,
+            fixture.granted_path().display()
+        )),
+    );
+    assert!(
+        fixture.install_bundle_at(&v2).success(),
+        "the upgrade itself failed"
+    );
+
+    assert_eq!(
+        fixture
+            .store()
+            .installed_version(Fixture::MODULE_ID)
+            .as_deref(),
+        Some("2.0.0")
+    );
+
+    let effective = fixture.effective_permissions();
+    assert_eq!(
+        effective.len(),
+        2,
+        "the upgrade's grants did not take effect"
+    );
+    assert!(effective.iter().any(|grant| grant.resource == "net"));
+}

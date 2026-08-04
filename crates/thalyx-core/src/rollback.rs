@@ -153,6 +153,11 @@ pub fn plan(store: &Store, request: Option<&str>) -> Result<Plan> {
 /// removed it. What differs is the journal entry: an operation undone and one
 /// that was never wanted read differently to anyone auditing later.
 pub fn apply(store: &Store, plan: &Plan, request_id: &str) -> Result<()> {
+    // The global lock. Rollback re-checks the plan against the disk below, and
+    // that check is only worth anything if nothing can change the disk between
+    // the check and the unpublish that follows it.
+    let _lock = store.lock()?;
+
     let journal = Journal::open(store.journal_path())?;
 
     // Re-checked here, not trusted from the plan. Anything could have happened
@@ -596,15 +601,20 @@ mod tests {
 
         let mut registry = crate::permissions::Registry::load(store.permissions_path()).unwrap();
         registry
-            .make_effective(&crate::permissions::PendingGrants::new(
-                "org.example.tool",
-                "req-install",
-                vec![Permission {
-                    resource: "network:example.org:443".to_string(),
-                    action: "connect".to_string(),
-                    kind: PermissionKind::Persistent,
-                }],
-            ))
+            .make_effective(
+                &crate::permissions::PendingGrants::new(
+                    "org.example.tool",
+                    "1.0.0",
+                    "req-install",
+                    "session-a",
+                    vec![Permission {
+                        resource: "network:example.org:443".to_string(),
+                        action: "connect".to_string(),
+                        kind: PermissionKind::Persistent,
+                    }],
+                ),
+                None,
+            )
             .unwrap();
 
         let plan = plan(&store, None).unwrap();

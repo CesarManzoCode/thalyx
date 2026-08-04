@@ -332,9 +332,24 @@ fn an_installed_module_is_actually_executable() {
     // not — the unpacker was dropping the archive's mode, so every module
     // installed unrunnable while the whole suite stayed green.
     let fixture = Fixture::new();
+
+    // The proof that it ran is its **exit code**, not anything it printed.
+    //
+    // This test used to `echo` and look for the text on Thalyx's stdout, which
+    // worked because the module inherited Thalyx's terminal. It no longer has
+    // one, deliberately: a module sharing a terminal with the trusted path can
+    // read the human's answer to a confirmation prompt and can draw Thalyx's
+    // own frame. See `thalyx_sandbox::launch::spawn`.
+    //
+    // So the observable had to change, and the claim did not. A distinctive
+    // exit status is a signal only the module's own code can produce, and it
+    // travels the way a module's result is supposed to — reported by Thalyx,
+    // not written to a screen by the module.
+    const PROOF: i32 = 7;
+
     std::fs::write(
         fixture.base().join("payload/bin/demo"),
-        "#!/bin/sh\necho the module ran\n",
+        format!("#!/bin/sh\nexit {PROOF}\n"),
     )
     .unwrap();
     make_executable(&fixture.base().join("payload/bin/demo"));
@@ -353,13 +368,63 @@ fn an_installed_module_is_actually_executable() {
         status.stderr()
     );
     assert!(
-        status.stdout().contains("the module ran"),
-        "the module produced no output:\n{}",
+        status
+            .stdout()
+            .contains(&format!("exited with status {PROOF}")),
+        "the module's own code never ran — an unrunnable entrypoint and a \
+         module that did nothing look identical without this:\n{}",
         status.stdout()
     );
     assert!(
         status.stdout().contains("RAN UNCONFINED"),
         "an unenforced run must say so:\n{}",
+        status.stdout()
+    );
+}
+
+#[test]
+fn a_module_never_gets_the_terminal_the_trusted_path_uses() {
+    // The confirmation prompt is drawn on Thalyx's stdout and answered on
+    // Thalyx's stdin. A module that inherited those could read what the human
+    // types at a prompt meant for Thalyx, and could draw the prompt itself —
+    // and the frame is the whole mechanism by which a human tells Thalyx apart
+    // from what runs inside it.
+    //
+    // Checked from outside, by having the module try: a module that only ever
+    // behaved would demonstrate nothing about whether it could misbehave.
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.base().join("payload/bin/demo"),
+        "#!/bin/sh\n\
+         echo '┌─ Thalyx — capability authorisation'\n\
+         echo 'FORGED BY THE MODULE'\n\
+         exit 0\n",
+    )
+    .unwrap();
+    make_executable(&fixture.base().join("payload/bin/demo"));
+
+    let bundle = fixture.build_bundle("1.0.0");
+    assert!(fixture.install_bundle_at(&bundle).success());
+
+    let status = fixture.run(&["module", "run", Fixture::MODULE_ID, "--unconfined"]);
+
+    assert!(
+        !status.stdout().contains("FORGED BY THE MODULE"),
+        "a module wrote straight to the terminal Thalyx draws the trusted \
+         path on:\n{}",
+        status.stdout()
+    );
+    assert!(
+        !status.stderr().contains("FORGED BY THE MODULE"),
+        "a module wrote straight to Thalyx's stderr:\n{}",
+        status.stderr()
+    );
+
+    // The control: the run itself worked, so the absence above is the module
+    // being unable to reach the terminal and not the module failing to start.
+    assert!(
+        status.stdout().contains("exited cleanly"),
+        "the module did not run at all, so this proves nothing:\n{}",
         status.stdout()
     );
 }

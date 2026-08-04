@@ -57,6 +57,34 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 > **El paso 1** tenía máquina y no tenía camino. Ver "Lo que detiene a esa
 > persona no es un problema difícil".
 
+## Cómo se comprueban los seis, desde el 2026-08-04
+
+Cuatro de los seis ocurren en el prompt de la sesión, y **ninguno de esos cuatro
+necesita hardware**: no hace falta BPF, ni Btrfs, ni un cgroup delegado. Hace
+falta una terminal, porque el confirmador se niega sin ella.
+
+Durante un día eso los dejó sin comprobar en ningún lado. La etapa 15 de
+`verify.sh` era lo único que los cubría y necesitaba `script(1)`, que Fedora
+trae en un subpaquete que no se instala solo — así que en la única máquina que
+puede verificar Thalyx la etapa se saltaba entera y decía `NOT PROVEN`. El
+criterio que cierra la fase dependía de que una persona corriera un comando a
+mano, y ese comando había dejado de comprobarlo.
+
+Ahora:
+
+- **Thalyx hace su propia terminal** (`thalyx dev pty`), así que `verify.sh` no
+  necesita nada que la máquina que corre Thalyx no tenga ya.
+- **Los pasos 2, 3, 4 y 6 son pruebas del workspace**, en
+  `crates/thalyx-cli/tests/exit_criterion.rs`. Corren en cada cambio, contra el
+  disco y desde fuera de la sesión que dice haber hecho las cosas.
+- **En `verify.sh` queda lo que sí necesita una máquina**: arrancar la imagen
+  (paso 1), que el kernel deniegue de verdad, y un reinicio real (la mitad del
+  paso 6 que un proceso nuevo no ejercita).
+
+**Esto no cierra ningún paso.** Los cierra una persona ajena haciéndolos. Lo que
+cambió es que ahora un cambio que rompa cualquiera de los cuatro se nota el
+mismo día, en vez de la próxima vez que alguien se acuerde de correr el script.
+
 ## Qué cuenta como el paso 6
 
 Decidido por Cesar el 2026-08-04, porque la bóveda decía dos cosas que no son

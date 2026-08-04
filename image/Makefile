@@ -59,6 +59,29 @@ KTARBALL := $(BUILD)/linux-$(KVERSION).tar.xz
 KURL     := https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$(KVERSION).tar.xz
 BZIMAGE  := $(BUILD)/bzImage
 
+# The digest of the kernel tarball, pinned.
+#
+# Thalyx compiles its own kernel, so this file is not a dependency — it becomes
+# the most privileged half of the machine. It used to be fetched over HTTPS and
+# built, and TLS is the wrong instrument for the question: it says who served
+# the bytes, not what the bytes were. A CDN that served something else, or a
+# `KVERSION` bumped without anybody looking, would produce a kernel nobody
+# checked, and the image would boot and say nothing.
+#
+# `UNPINNED` fails the build on purpose. Filling it in is a one-time act by a
+# human who verified the digest against kernel.org's **signed** list, which is
+# the only step that establishes anything — a digest taken from the same
+# download it is meant to check proves only that the file did not change
+# between two reads of it:
+#
+#     curl -O https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
+#     gpg --locate-keys torvalds@kernel.org gregkh@kernel.org
+#     gpg --verify sha256sums.asc
+#     grep 'linux-6.12.101.tar.xz$$' sha256sums.asc
+#
+# then put the digest here. `make -C image pin-kernel` prints these steps.
+KSHA256  := UNPINNED
+
 THALYX    := $(ROOT)/target/$(TARGET)/release/thalyx
 INITRAMFS := $(BUILD)/initramfs.cpio
 MEMORY    := 2048
@@ -80,7 +103,7 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor hook-check boot
+        store store-stage greeter lsm doctor hook-check boot pin-kernel
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -190,12 +213,50 @@ doctor: | $(BUILD)
 	    echo "  at all. There may be more to install after this round." \
 	        >> $(BUILD)/doctor.unchecked; \
 	fi
+	@# The BPF headers, which are clang's business and not gcc's.
+	@#
+	@# `clang` being present is not enough and the difference is not
+	@# academic: `thalyx_lsm.bpf.c` includes <bpf/bpf_helpers.h>, which comes
+	@# from libbpf's development package and not from the compiler. Without
+	@# it `make -C image lsm` fails — *after* this target said everything was
+	@# here, and after the kernel has already been downloaded and built.
+	@#
+	@# That is the exact failure this whole target exists to prevent, and it
+	@# was here until 2026-08-04. It was found by a build in a container that
+	@# had clang and not libbpf, which is a very ordinary machine to be.
+	@if command -v clang > /dev/null 2>&1; then \
+	    echo '#include <bpf/bpf_helpers.h>' | clang -E -xc - > /dev/null 2>&1 || { \
+	        echo "    bpf/bpf_helpers.h — the BPF programs; clang alone cannot build them" \
+	            >> $(BUILD)/doctor.missing; \
+	        echo "libbpf-dev" >> $(BUILD)/doctor.packages; \
+	    }; \
+	else \
+	    echo "  clang is not here, so the BPF headers could not be checked" \
+	        >> $(BUILD)/doctor.unchecked; \
+	    echo "  either. There may be more to install after this round." \
+	        >> $(BUILD)/doctor.unchecked; \
+	fi
 	@# Rust is last and separate: it does not come from apt, and telling
 	@# somebody to `apt install cargo` gets them a version that is older than
 	@# this workspace needs and a rustup that is not there to add the musl
 	@# target with.
 	@command -v cargo > /dev/null 2>&1 && command -v rustup > /dev/null 2>&1 || \
 	    echo "rust" >> $(BUILD)/doctor.packages
+	@# The kernel digest, reported in the same round as everything else.
+	@#
+	@# It belongs here and not at the download for the reason this whole
+	@# target exists: a person told "everything is here", who then loses the
+	@# fetch and the configure before hitting a wall nobody warned them
+	@# about, has been failed in exactly the way `doctor` was written to
+	@# prevent. It is not an apt package, so it goes in its own marker and is
+	@# explained separately — but it is found in the same run.
+	@if [ "$(KSHA256)" = "UNPINNED" ]; then \
+	    echo "    the kernel tarball's digest — nothing has verified what this" \
+	        >> $(BUILD)/doctor.missing; \
+	    echo "      build compiles into the most privileged half of the machine" \
+	        >> $(BUILD)/doctor.missing; \
+	    echo "kernel-pin" >> $(BUILD)/doctor.packages; \
+	fi
 	@if [ -s $(BUILD)/doctor.packages ]; then \
 	    echo; \
 	    echo "  Not here yet:"; \
@@ -205,11 +266,21 @@ doctor: | $(BUILD)
 	        echo "    cargo, rustup — building thalyx itself"; \
 	    fi; \
 	    echo; \
-	    apt=$$(grep -vx rust $(BUILD)/doctor.packages | sort -u); \
+	    apt=$$(grep -vx rust $(BUILD)/doctor.packages | grep -vx kernel-pin | sort -u); \
 	    if [ -n "$$apt" ]; then \
 	        echo "  On Linux Mint, Ubuntu or Debian, all of them at once:"; \
 	        echo; \
 	        echo "      sudo apt install" $$apt; \
+	        echo; \
+	    fi; \
+	    if grep -qx kernel-pin $(BUILD)/doctor.packages; then \
+	        echo "  The kernel digest is not a package. Thalyx compiles its own"; \
+	        echo "  kernel, so the tarball is not a dependency — it becomes the"; \
+	        echo "  machine. TLS says who served the bytes, not what they were:"; \
+	        echo; \
+	        echo "      make -C image pin-kernel"; \
+	        echo; \
+	        echo "  prints the four commands and where to put the answer."; \
 	        echo; \
 	    fi; \
 	    if grep -qx rust $(BUILD)/doctor.packages; then \
@@ -233,10 +304,68 @@ doctor: | $(BUILD)
 $(BUILD):
 	mkdir -p $(BUILD)
 
+# How to establish the kernel digest, printed rather than performed.
+#
+# Deliberately not automated. A target that fetched the tarball and recorded
+# its own hash would look like verification and be none: it would prove the
+# file did not change between two reads of it, which nobody was ever worried
+# about. What establishes anything is the signature on kernel.org's list, and
+# checking a signature means a human deciding whose key to trust.
+pin-kernel:
+	@echo
+	@echo "  Pinning the kernel tarball for $(KVERSION)."
+	@echo
+	@echo "  The digest has to come from kernel.org's SIGNED list, not from"
+	@echo "  the tarball you are about to build. Four commands:"
+	@echo
+	@echo "    curl -O https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+	@echo "    gpg --locate-keys torvalds@kernel.org gregkh@kernel.org"
+	@echo "    gpg --verify sha256sums.asc"
+	@echo "    grep 'linux-$(KVERSION).tar.xz$$' sha256sums.asc"
+	@echo
+	@echo "  The third one must say 'Good signature'. If it does not, stop —"
+	@echo "  an unsigned list of digests establishes nothing at all."
+	@echo
+	@echo "  Then set KSHA256 in image/Makefile to what the fourth prints."
+	@echo "  Current value: $(KSHA256)"
+	@echo
+
 # ───────────────────────────────────────────────────────────────── the kernel
 
 $(KTARBALL): | $(BUILD)
-	curl -fL -o $@ $(KURL)
+	@if [ "$(KSHA256)" = "UNPINNED" ]; then \
+	    echo; \
+	    echo "  the kernel tarball has no pinned digest."; \
+	    echo; \
+	    echo "  Thalyx compiles its own kernel, so this download becomes the"; \
+	    echo "  most privileged half of the machine. Building it unverified"; \
+	    echo "  would mean the image boots a kernel nobody checked, and says"; \
+	    echo "  nothing about it — which is the failure with no symptom."; \
+	    echo; \
+	    echo "  Run 'make -C image pin-kernel' for the four commands that"; \
+	    echo "  establish the digest, then set KSHA256 in this Makefile."; \
+	    echo; \
+	    exit 1; \
+	fi
+	@# Downloaded to a temporary name and only given the real one once the
+	@# digest matches. A partial download that kept the final name would be
+	@# treated as done by every later run, and `make` would never fetch it
+	@# again.
+	curl -fL -o $@.part $(KURL)
+	@echo "$(KSHA256)  $@.part" | sha256sum -c - > /dev/null || { \
+	    echo; \
+	    echo "  the kernel tarball does not match the digest this image pins."; \
+	    echo "  expected: $(KSHA256)"; \
+	    echo "  got:      $$(sha256sum $@.part | cut -d' ' -f1)"; \
+	    echo; \
+	    echo "  Thalyx compiles its own kernel, so this file becomes the"; \
+	    echo "  privileged half of the machine. A mismatch is refused rather"; \
+	    echo "  than built: TLS says who served the bytes, not what they were."; \
+	    rm -f $@.part; \
+	    exit 1; \
+	}
+	mv $@.part $@
+	@echo "  kernel tarball: sha256 matches the pinned digest"
 
 $(KSOURCE): $(KTARBALL)
 	tar -C $(BUILD) -xf $<

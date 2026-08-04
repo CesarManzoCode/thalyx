@@ -399,9 +399,41 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
 }
 
 /// The parent half: start the outer stage.
+///
+/// ## Why the module does not get the terminal
+///
+/// `stdin` is closed and `stdout`/`stderr` go to the null device, and that is
+/// a security property rather than tidiness.
+///
+/// The module used to inherit all three from Thalyx, which meant it shared a
+/// terminal with the trusted path. Two things follow from that, and both
+/// undo what `vault/11-Seguridad/Camino-Confiable.md` is for:
+///
+/// - **It could read `stdin`.** The confirmation prompt is answered by typing
+///   at that same descriptor. A running module racing the human's `y` gets to
+///   consume it, or worse, gets to see what the human is answering to a
+///   different question.
+/// - **It could write `stdout`.** Anything at all, including a box-drawn frame
+///   that says `┌─ Thalyx — capability authorisation`. The frame exists so the
+///   human can tell Thalyx apart from what runs inside it, and a module with
+///   the terminal can draw the frame itself.
+///
+/// The channel on descriptor 3 is how a module talks to the human, through
+/// Thalyx, labelled and bounded. That is the whole design — a module has a
+/// channel precisely so it does not need a terminal, and `dev.thalyx.greeter`
+/// says so in its own module docs: *over the channel rather than to a terminal,
+/// because a terminal is not something it has.* It had one.
 pub fn spawn(helper: &Path, spec: &LaunchSpec, args: &[OsString]) -> Result<std::process::Child> {
+    use std::process::Stdio;
+
     std::process::Command::new(helper)
         .args(argv(ENTER_MARKER, spec, args)?)
+        // Null rather than a pipe nobody reads: a pipe whose reader never
+        // drains it blocks the module forever on its first write, which turns
+        // a containment measure into a hang.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|source| SandboxError::Exec {
             program: helper.to_path_buf(),

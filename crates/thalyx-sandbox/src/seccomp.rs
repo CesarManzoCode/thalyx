@@ -204,6 +204,10 @@ fn ret(action: u32) -> Instruction {
 /// module without network permission cannot even construct a socket to be
 /// denied on.
 ///
+/// A module that **was** granted `net/outbound` gets them added, by
+/// [`for_permissions`]. That is not a weakening of this list — it is what
+/// makes the grant mean anything. See the note there.
+///
 /// `recvfrom` and `sendto` **are** present, and the distinction is the whole
 /// point. They act on a descriptor the module already holds and cannot create
 /// one, so with `socket` absent the only socket a module can ever have is the
@@ -359,6 +363,46 @@ pub fn module_standard() -> Allowlist {
         libc::SYS_prlimit64,
         libc::SYS_getrusage,
     ])
+}
+
+/// The syscalls a module needs to *use* an outbound network grant.
+///
+/// Kept apart from [`module_standard`] and added only for a module the human
+/// granted `net/outbound`, which is the point: an allowlist that always
+/// contained these would give every module the ability to build a socket and
+/// lean entirely on the LSM to refuse it. Two independent denials is the
+/// arrangement `Sandbox-Ejecucion.md` asks for, and this is the half that
+/// lives in the sandbox.
+///
+/// ## The state this closes
+///
+/// Before this existed, a grant of `net/outbound` did something strictly
+/// perverse. `Profile::for_permissions` dropped the network namespace so the
+/// module *could* reach the network, and the filter went on refusing `socket`
+/// unconditionally — so the granted module could not open a connection either
+/// way, and had been handed the host's network namespace for nothing. It was
+/// the one combination that cost isolation and returned no capability.
+///
+/// Deliberately narrow. `socket` and `connect` are what an outbound
+/// conversation needs; `bind` and `listen` are not here, because inbound is a
+/// different permission that nothing grants yet, and `getsockopt`/`setsockopt`
+/// are present only because a connecting libc asks for them before it will
+/// report an error.
+pub fn outbound_network() -> impl IntoIterator<Item = i64> {
+    [
+        libc::SYS_socket,
+        libc::SYS_connect,
+        libc::SYS_getsockopt,
+        libc::SYS_setsockopt,
+        libc::SYS_getsockname,
+        libc::SYS_getpeername,
+        // Name resolution reads `/etc/resolv.conf` and talks UDP, and a libc
+        // resolver uses these on the socket it just made. Without them a
+        // granted module can reach an address and not a name, which is a
+        // distinction nobody asked for.
+        libc::SYS_recvmsg,
+        libc::SYS_sendmsg,
+    ]
 }
 
 #[cfg(test)]

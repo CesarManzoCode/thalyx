@@ -180,19 +180,36 @@ fn diagnostic() -> Profile {
 impl Profile {
     /// Adjust the profile for what the module was actually granted.
     ///
-    /// Only one thing varies today: the network namespace. An empty netns is
-    /// the strongest possible denial — there is no route, no address, nothing
-    /// to connect through — but a module that *was* granted outbound network
-    /// has to be able to use it, and Phase 1 does not build veth pairs. So the
+    /// Only one thing varies today, and it varies in two places at once: the
+    /// network namespace and the seccomp filter. An empty netns is the
+    /// strongest possible denial — there is no route, no address, nothing to
+    /// connect through — but a module that *was* granted outbound network has
+    /// to be able to use it, and Phase 1 does not build veth pairs. So the
     /// namespace is dropped for those modules and `thalyx-lsm` enforces the
     /// grant instead.
     ///
     /// The asymmetry is deliberate. A module with no network permission gets
     /// two independent denials; a module with one gets the enforcement it was
     /// granted under. Neither ends up with less than it should.
+    ///
+    /// ## Why the filter has to move too
+    ///
+    /// This used to adjust only the namespace, and the result was the one
+    /// arrangement that is worse than either alternative: the grant removed
+    /// the network namespace, and the filter went on refusing `socket`
+    /// unconditionally. So a module granted `net/outbound` could not open a
+    /// connection — and had been given the host's network namespace in
+    /// exchange for nothing. The permission cost isolation and delivered no
+    /// capability, and every test passed, because the LSM test proved the hook
+    /// denies and no test ever asked whether a *granted* module could connect.
+    ///
+    /// Both halves move together now, from the same grant, in one place.
     pub fn for_permissions(mut self, permissions: &[Permission]) -> Self {
-        if self.namespaces.network && grants_network(permissions) {
+        if grants_network(permissions) {
             self.namespaces.network = false;
+            self.seccomp = self
+                .seccomp
+                .map(|allowlist| allowlist.allow_all(crate::seccomp::outbound_network()));
         }
         self
     }
@@ -311,6 +328,65 @@ mod tests {
         assert!(profile.namespaces.mount);
         assert!(profile.namespaces.pid);
         assert!(profile.seccomp.is_some());
+    }
+
+    #[test]
+    fn a_granted_module_can_actually_build_a_socket_and_an_ungranted_one_cannot() {
+        // The pair of claims the grant is supposed to mean. Written as one
+        // test because either half alone is a state Thalyx was actually in:
+        //
+        // - Without the first, `net/outbound` drops the network namespace and
+        //   the filter still refuses `socket`, so the grant costs a layer of
+        //   isolation and hands back nothing. That is exactly what shipped.
+        // - Without the second, every module can build a socket and the whole
+        //   denial rests on the LSM, which is one layer where the decree asks
+        //   for two.
+        let ungranted = module_standard().for_permissions(&[permission("/home/user", "read")]);
+        let granted = module_standard().for_permissions(&[permission("net", "outbound")]);
+
+        for syscall in [libc::SYS_socket, libc::SYS_connect] {
+            assert!(
+                !ungranted
+                    .seccomp
+                    .as_ref()
+                    .expect("the standard profile filters")
+                    .contains(syscall),
+                "syscall {syscall} is allowed for a module that was granted no network"
+            );
+            assert!(
+                granted
+                    .seccomp
+                    .as_ref()
+                    .expect("the standard profile filters")
+                    .contains(syscall),
+                "syscall {syscall} is denied to a module the human granted the network to, \
+                 so the grant does nothing but remove its network namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn a_network_grant_does_not_quietly_hand_over_anything_else() {
+        // The control on the widening. `for_permissions` adds a named handful
+        // and must not become the place where the allowlist grows generally —
+        // in particular not `bind`, which is inbound, a permission nothing
+        // grants.
+        let granted = module_standard().for_permissions(&[permission("net", "outbound")]);
+        let filter = granted.seccomp.as_ref().expect("a filter");
+
+        for syscall in [
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_accept,
+            libc::SYS_ptrace,
+            libc::SYS_mount,
+            libc::SYS_unshare,
+        ] {
+            assert!(
+                !filter.contains(syscall),
+                "a network grant let {syscall} through"
+            );
+        }
     }
 
     #[test]

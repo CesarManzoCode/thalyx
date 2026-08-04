@@ -143,7 +143,7 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-574 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+657 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
@@ -152,6 +152,32 @@ Las pruebas de aislamiento corren contra el kernel real y **le preguntan al mód
 `verify.sh` activa las cuatro primeras cuando la máquina las soporta. La quinta
 es distinta por naturaleza: no hay máquina que la satisfaga todavía, porque lo
 que le falta al agente no es hardware sino código.
+
+## Lo que la auditoría del 2026-08-04 cambió
+
+Nueve defectos reales encontrados desde fuera, ninguno de los cuales veía
+ninguna de las 612 pruebas de entonces. Corregidos, con pruebas que se comprobó
+que fallan sin el arreglo — pero **nada de esto se ha ejercido en hardware**.
+Ver [[Punto-Actual]] para lo que falta correr.
+
+| Qué estaba mal | Dónde | Cómo quedó |
+|---|---|---|
+| El lock global de [[Concurrencia]] no existía | `thalyx-core/store.rs` | `flock(2)` sobre `state/lock`, probado entre procesos |
+| Una actualización interrumpida daba a la versión vieja los permisos de la nueva | `thalyx-core/permissions.rs` | La concesión graba su versión; sólo vale si `current` la nombra |
+| Un keystore corrupto se leía como vacío, y uno vacío confía en todo | `thalyx-core/keystore.rs` | `StateUnreadable`: ausente y corrupto dejan de ser lo mismo |
+| Los permisos `session` nunca se revocaban | `thalyx-core/session.rs` | Id de sesión en `state/session`; terminarla es una escritura |
+| `net/outbound` quitaba el netns y seccomp seguía prohibiendo `socket` | `thalyx-sandbox/profile.rs` | El allowlist se amplía con la concesión, no antes |
+| El camino confiable dibujaba texto del publicador sin sanear | `thalyx-core/trusted_path.rs` | `sanitise` en cada campo; el marco no se puede falsificar |
+| El módulo heredaba la terminal donde se dibuja el prompt | `thalyx-sandbox/launch.rs` | `stdin` cerrado, `stdout`/`stderr` a null, también con `--unconfined` |
+| Comprobar la ruta y abrirla eran dos momentos | `thalyx-core/api.rs` | `openat2` con `RESOLVE_BENEATH` sobre un descriptor de la concesión |
+| Un módulo podía hacer crecer sin límite la memoria de Thalyx | `thalyx-core/api.rs` | Techo por cantidad y por bytes; lo descartado se cuenta y se dice |
+
+Menores, del mismo pase: el journal tolera una última línea cortada —lo que deja
+un corte— y sigue rechazando una corrupta en el medio; los `request_id` son uuid
+y no nanosegundos del reloj; el manifiesto rechaza campos desconocidos; un
+paquete con dos `manifest.toml` se rechaza en vez de resolverse; los archivos de
+estado se escriben con `fsync` y nombre temporal único; y el tarball del kernel
+exige un digest anclado.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

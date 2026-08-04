@@ -62,7 +62,29 @@ pub enum ManifestError {
 /// Construction goes through [`Manifest::parse`], so an instance of this type is
 /// always structurally valid. It says nothing about whether the signature checks
 /// out — that is [`Manifest::verify_signature`].
+///
+/// ## Why unknown fields are refused
+///
+/// `deny_unknown_fields` here is doing the same work it does in
+/// `thalyx-agent`'s proposal schema, for the same reason. A manifest is the
+/// authority on what a module may do, and the failure mode of ignoring a field
+/// is silent in the dangerous direction:
+///
+/// - A publisher writing `permision` instead of `permissions` ships a module
+///   that asks for nothing, is confirmed by nobody, and does not work — which
+///   is survivable. A publisher writing a field this build has never heard of
+///   because it was added in a *later* schema is the other case, and there the
+///   right answer is to refuse rather than to install something whose meaning
+///   this build cannot see.
+/// - The signature covers the canonical form derived from *these* fields.
+///   Anything the parser drops is, by construction, outside what was signed —
+///   so silently accepting unknown fields means a bundle can carry text no
+///   signature vouches for, into a file Thalyx then keeps on disk.
+///
+/// `format_version` already refuses a schema from the future. This refuses the
+/// case that slips past it: a field added without the version being bumped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub format_version: u32,
     pub id: String,
@@ -97,12 +119,14 @@ pub enum Distribution {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub hash: String,
     pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Requires {
     #[serde(default = "default_thalyx_req")]
     pub thalyx: String,
@@ -130,6 +154,7 @@ impl Default for Requires {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Permission {
     pub resource: String,
     pub action: String,

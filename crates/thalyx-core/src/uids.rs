@@ -115,13 +115,18 @@ impl UidRegistry {
         self.stored.assigned.iter()
     }
 
+    /// Write the registry through the same atomic, durable path as every other
+    /// piece of state.
+    ///
+    /// This used to be a plain `write` straight over the live file, which is
+    /// the one place in the store where a crash could destroy state rather
+    /// than merely fail to add to it. It matters more here than anywhere else:
+    /// [`UidRegistry::load`] refuses to parse a damaged file — correctly, since
+    /// guessing at a uid map is how a module inherits another module's files —
+    /// so a truncated write did not fail open, it bricked the machine. Every
+    /// install and every confined run would refuse from then on.
     fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        let contents = serde_json::to_string_pretty(&self.stored)
-            .map_err(|e| CoreError::io(&self.path, std::io::Error::other(e)))?;
-        std::fs::write(&self.path, contents).map_err(|e| CoreError::io(&self.path, e))
+        crate::keystore::save_json(&self.path, &self.stored)
     }
 }
 

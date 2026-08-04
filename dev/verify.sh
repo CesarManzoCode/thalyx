@@ -1465,19 +1465,46 @@ step "15. what a person can do from inside the machine, with no shell"
 #
 # A pty is required and is not a detail: `TerminalConfirmer` refuses to confirm
 # when stdin is not a terminal, because silence is not consent. Inside QEMU the
-# serial console is a terminal, so `script` is what makes this run the same way
-# there and here.
+# serial console is a terminal, so something has to make one here.
+#
+# That used to be `script(1)`, and the dependency cost the whole stage. Fedora
+# ships `script` in `util-linux-script`, a subpackage that is not installed by
+# default — so on 2026-08-04, on the one machine that can actually verify
+# Thalyx, this stage skipped itself entirely and four of the six exit-criterion
+# steps went unchecked. The criterion that ends Phase 1 was not being tested
+# because of a package nobody had.
+#
+# `thalyx dev pty` is Thalyx's own, so the check now needs nothing the machine
+# running Thalyx does not already have. Rule 5: the instrument includes the
+# harness.
 
 SESSION_STORE="$WORK/session-store"
 mkdir -p "$SESSION_STORE/repo"
 
-if ! command -v script > /dev/null 2>&1; then
-    # Named per distribution, because this one skip takes the whole of step 6
-    # with it and "install util-linux" is wrong advice on the machine most
-    # likely to hit it: Fedora already has util-linux and ships `script` in a
-    # subpackage of its own.
-    unproven "\`script\` is absent, so the session prompt cannot be driven with a terminal (Fedora: util-linux-script; Debian and derivatives: bsdutils)"
-elif [ ! -f "$WORK/greeter.thmod" ]; then
+# The harness, before it is trusted to say anything about the system.
+#
+# Rule 5 again, applied to the replacement: `thalyx dev pty` is now what decides
+# whether four exit-criterion steps pass, so a version of it that quietly failed
+# to make a terminal would make every check below meaningless — the confirmer
+# would refuse for the harness's reason and the stage would read as a system
+# that will not confirm.
+#
+# Asked with a control, because "is a tty" with nothing to compare against would
+# also pass if the answer were hardcoded.
+if [ -x "$THALYX" ]; then
+    INSIDE=$(printf '' | "$THALYX" dev pty -- sh -c 'test -t 0 && echo yes || echo no' 2>/dev/null | tr -d '\r\n ')
+    OUTSIDE=$(sh -c 'test -t 0 && echo yes || echo no' < /dev/null 2>/dev/null | tr -d '\r\n ')
+
+    if [ "$INSIDE" = "yes" ] && [ "$OUTSIDE" = "no" ]; then
+        proven "Thalyx makes its own terminal, so this stage needs no script(1)"
+    elif [ "$INSIDE" = "yes" ]; then
+        failed "the control failed: stdin looks like a terminal even without the pty, so the check proves nothing"
+    else
+        failed "\`thalyx dev pty\` did not supply a terminal; everything below would refuse for the harness's reason"
+    fi
+fi
+
+if [ ! -f "$WORK/greeter.thmod" ]; then
     failed "no signed bundle to put in the repository; stage 12 should have packed one"
 else
     cp "$WORK/greeter.thmod" "$SESSION_STORE/repo/"
@@ -1485,7 +1512,7 @@ else
     # Feed the prompt and keep everything it said.
     at_the_prompt() {
         printf '%s\n' "$@" | \
-            THALYX_ROOT="$SESSION_STORE" script -qec "$THALYX session" /dev/null 2>&1
+            THALYX_ROOT="$SESSION_STORE" "$THALYX" dev pty -- "$THALYX" session 2>&1
     }
 
     # --- the repository is visible, and says what it holds ------------------
@@ -1971,6 +1998,93 @@ else
         failed "the machine did not reach its prompt within 90s; see $BOOT_LOG_1"
         tail -30 "$BOOT_LOG_1" | sed 's/^/     /'
     fi
+fi
+
+step "17. what the audit of 2026-08-04 closed, on this machine"
+
+# Nine defects were found from outside and fixed with unit tests. Unit tests
+# are not this script's job — stage 5 runs them. What belongs here is the
+# handful whose claim is about *this machine's kernel* rather than about the
+# code: the ones that pass in a container for reasons that would not survive
+# contact with a real system.
+
+# The contract lock, across two real processes.
+#
+# `flock` is a kernel behaviour, and the unit test proves it with a child
+# process for exactly that reason. Repeated here because a container and a
+# Fedora do not have to agree, and the whole point of this file is that the
+# machine gets asked.
+LOCKDIR="$WORK/lock-check"
+mkdir -p "$LOCKDIR"
+touch "$LOCKDIR/lock"
+
+(
+    exec 9>"$LOCKDIR/lock"
+    flock 9
+    sleep 2
+) &
+HOLDER=$!
+sleep 0.4
+
+# A one-sided measurement: ambient slowness can only make the second process
+# later, never earlier. So a lock that was granted here is a lock that does
+# nothing, and the threshold cannot be reached by noise.
+START=$(date +%s%N)
+(
+    exec 9>"$LOCKDIR/lock"
+    flock 9
+) 2>/dev/null
+WAITED=$(( ($(date +%s%N) - START) / 1000000 ))
+wait $HOLDER 2>/dev/null || true
+
+if [ "$WAITED" -ge 800 ]; then
+    proven "a second contract waits for the first: ${WAITED}ms behind a held lock"
+else
+    failed "the contract lock did not serialise: the second holder waited ${WAITED}ms"
+fi
+
+# `openat2` with RESOLVE_BENEATH, which is the fix for the path race.
+#
+# It needs kernel 5.6 and it is the one correction here that silently degrades
+# if the kernel lacks it — the call returns ENOSYS and every module read fails.
+# On a machine that cannot answer, this says so rather than passing.
+KVER=$(uname -r)
+if [ -e /proc/kallsyms ] && grep -q "sys_openat2" /proc/kallsyms 2>/dev/null; then
+    proven "the kernel has openat2, so granted paths resolve under RESOLVE_BENEATH ($KVER)"
+elif printf '%s\n' "5.6" "$(uname -r | cut -d- -f1)" | sort -V -C; then
+    proven "kernel $KVER is past 5.6, where openat2 and RESOLVE_BENEATH landed"
+else
+    unproven "cannot establish that this kernel ($KVER) has openat2; a module's granted reads would all fail"
+fi
+
+# The module does not get the terminal.
+#
+# Asked of the confined program rather than of Thalyx, which is rule 2: a
+# module that writes to stdout must not reach the screen Thalyx draws the
+# trusted path on. The control is that the run happened at all — without it, a
+# module that failed to start looks identical to one that was contained.
+# Stage 6 installed `org.thalyx.verify` into $STORE and its entrypoint echoes
+# several lines to stdout. Every one of those is a line a module chose to
+# write, so if any of them reaches this script's output, the module has the
+# terminal. `uid=` is the first thing it prints.
+TERM_OUT="$WORK/terminal-check.txt"
+if [ -x "$THALYX" ] && [ -d "$STORE" ] && \
+   "$THALYX" --root "$STORE" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
+
+    "$THALYX" --root "$STORE" module run org.thalyx.verify --unconfined \
+        > "$TERM_OUT" 2>&1 || true
+
+    if grep -qE '^(uid=|pid=|host=|root=)' "$TERM_OUT"; then
+        failed "a module wrote straight to the terminal the trusted path uses; see $TERM_OUT"
+    elif grep -q "exited" "$TERM_OUT"; then
+        # The control. Without it, a module that failed to start looks exactly
+        # like one that was contained.
+        proven "a module ran, and none of its own stdout reached the screen Thalyx confirms on"
+    else
+        unproven "the module did not run here, so the terminal claim proves nothing"
+    fi
+else
+    unproven "no installed module to ask whether it can reach the terminal"
 fi
 
 # ---------------------------------------------------------------- summary

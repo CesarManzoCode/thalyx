@@ -392,6 +392,122 @@ fn check(result: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Take an exclusive lock on an open file, waiting for whoever holds it.
+///
+/// `flock(2)` rather than `fcntl` locking, and the difference matters: an
+/// `fcntl` lock is dropped when *any* descriptor on the file is closed in the
+/// process, which makes it fragile in a program that opens the store from
+/// several places. A `flock` lock belongs to the open file description and is
+/// released when that description goes — which for Thalyx means when the
+/// process holding it exits, including when it is killed.
+///
+/// That last property is what makes it safe to hold across a commit. A crash
+/// mid-operation releases the lock without anything having to notice, so the
+/// next run reconciles rather than waiting forever on a dead holder.
+pub fn lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `flock` takes a descriptor and a flag word, and touches no
+    // memory. The descriptor is borrowed, so it is open for the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) };
+    check(result)
+}
+
+/// Take an exclusive lock only if nobody holds it. `Ok(false)` means somebody does.
+///
+/// Exists for the diagnostic that answers "is another Thalyx running?" without
+/// blocking behind it.
+pub fn try_lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: as [`lock_exclusive`]; `LOCK_NB` only changes whether the call
+    // waits.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EWOULDBLOCK) => Ok(false),
+        _ => Err(error),
+    }
+}
+
+/// `struct open_how`, the third argument of `openat2(2)`.
+///
+/// Passed by pointer with its size, so the kernel reads exactly the structure
+/// this build compiled. A field added to a later kernel's version is not our
+/// problem: it reads `size` bytes and rejects anything it does not recognise.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OpenHow {
+    pub flags: u64,
+    pub mode: u64,
+    pub resolve: u64,
+}
+
+/// Refuse to resolve outside the directory the descriptor names.
+///
+/// Absolute paths, `..` past the root, and symlinks pointing out are all
+/// rejected by the kernel *during* resolution — which is the property no
+/// userspace check can have, because a userspace check and the open that
+/// follows it are two separate moments.
+pub const RESOLVE_BENEATH: u64 = 0x08;
+
+/// Refuse to traverse `/proc/self/fd`-style links, which are not really links.
+pub const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+
+/// Refuse to cross a mount point during resolution.
+pub const RESOLVE_NO_XDEV: u64 = 0x01;
+
+/// Open a path relative to a directory, with the kernel enforcing containment.
+///
+/// This exists because [`std::fs::canonicalize`] followed by `File::open` is
+/// two operations with a gap between them, and anything that can write inside
+/// the directory can swap a name for a symlink in that gap. The check and the
+/// open have to be the same syscall or they are not a check at all.
+pub fn open_beneath(
+    dirfd: std::os::fd::BorrowedFd<'_>,
+    relative: &Path,
+    flags: i32,
+    mode: u32,
+    resolve: u64,
+) -> io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let relative = path_to_c(relative)?;
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: mode as u64,
+        resolve,
+    };
+
+    // SAFETY: both pointers outlive the call, and `open_how`'s size is passed
+    // explicitly so the kernel reads exactly the structure handed to it. There
+    // is no libc wrapper for this syscall.
+    #[allow(unsafe_code)]
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dirfd.as_raw_fd(),
+            relative.as_ptr(),
+            &how as *const OpenHow,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: the kernel returned a fresh descriptor that nothing else owns.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) })
+}
+
 /// Swap two paths, atomically.
 ///
 /// `renameat2` with `RENAME_EXCHANGE`. Both paths must exist; afterwards each
@@ -760,6 +876,182 @@ pub fn spawn_with_channel(
     }
 
     command.spawn()
+}
+
+// ─────────────────────────────────────────────────────── a terminal of our own
+//
+// `TerminalConfirmer` refuses to confirm when stdin is not a terminal, because
+// silence is not consent. That is correct, and it means anything that drives
+// the session prompt has to give it a real terminal — inside QEMU the serial
+// console is one, and in a test harness something has to make one.
+//
+// The harness used `script(1)`, and that is how the most important stage in
+// `dev/verify.sh` came to be skipped in its entirety. Fedora ships `script` in
+// `util-linux-script`, a subpackage that is not installed by default, so on the
+// one machine that can actually verify Thalyx the stage covering four of the
+// six exit-criterion steps printed NOT PROVEN and moved on.
+//
+// Rule 5 of `Estrategia-de-Pruebas.md`: the instrument includes the harness.
+// A criterion that cannot be checked without a tool the machine may not have is
+// a criterion that will not be checked. Thalyx already writes its own initramfs
+// and loads its own BPF rather than inheriting a fourth thing nobody chose;
+// eighty lines of `posix_openpt` is the same decision, and it removes an
+// external dependency from the verification of the one thing that ends Phase 1.
+
+/// A pseudoterminal pair: the side to drive from, and the side to hand a child.
+pub struct Pty {
+    /// What the driver reads and writes. The child's output arrives here and
+    /// what is written here appears on the child's stdin.
+    pub controller: std::os::fd::OwnedFd,
+    /// What the child gets as its stdin, stdout and stderr.
+    pub follower: std::os::fd::OwnedFd,
+}
+
+/// Open a pseudoterminal.
+///
+/// `posix_openpt` then `grantpt`, `unlockpt` and `ptsname` — in that order,
+/// which is not stylistic: the follower cannot be opened until `unlockpt` has
+/// run, and `ptsname` is what says which device to open.
+///
+/// `ptsname` returns a pointer into storage the C library owns and reuses, so
+/// the name is copied out immediately rather than held. A second call anywhere
+/// in the process would otherwise change what the first one returned.
+pub fn open_pty() -> io::Result<Pty> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    // SAFETY: takes an integer flag set and returns a descriptor or -1. No
+    // memory is touched.
+    #[allow(unsafe_code)]
+    let controller = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    if controller < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: the descriptor was returned by the kernel one line above and is
+    // owned here; nothing else holds it. Wrapped before the fallible calls
+    // below so that an early return closes it rather than leaking it.
+    #[allow(unsafe_code)]
+    let controller = unsafe { OwnedFd::from_raw_fd(controller) };
+
+    {
+        use std::os::fd::AsRawFd;
+        let raw = controller.as_raw_fd();
+
+        // SAFETY: both take the descriptor and touch no memory.
+        #[allow(unsafe_code)]
+        let granted = unsafe { libc::grantpt(raw) };
+        if granted < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        #[allow(unsafe_code)]
+        let unlocked = unsafe { libc::unlockpt(raw) };
+        if unlocked < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    let name = {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: `ptsname` returns a pointer to storage the C library owns, or
+        // NULL. It is checked for NULL and the bytes are copied out before this
+        // scope ends, so nothing here outlives the library's buffer — which is
+        // reused by the next call from anywhere in the process.
+        #[allow(unsafe_code)]
+        let pointer = unsafe { libc::ptsname(controller.as_raw_fd()) };
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the pointer is non-NULL and, by `ptsname`'s contract, points
+        // at a NUL-terminated string.
+        #[allow(unsafe_code)]
+        let bytes = unsafe { std::ffi::CStr::from_ptr(pointer) };
+        bytes.to_bytes().to_vec()
+    };
+
+    let path = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "pty name contains a NUL"))?;
+
+    // SAFETY: the pointer comes from a `CString` that outlives the call.
+    #[allow(unsafe_code)]
+    let follower = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+    if follower < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: freshly returned by the kernel, owned by nothing else.
+    #[allow(unsafe_code)]
+    let follower = unsafe { OwnedFd::from_raw_fd(follower) };
+
+    Ok(Pty {
+        controller,
+        follower,
+    })
+}
+
+/// Start a child whose stdin, stdout and stderr are a terminal it controls.
+///
+/// The `setsid` and `TIOCSCTTY` have to happen between `fork` and `exec`, which
+/// is why this lives here: a terminal is not a controlling terminal until a
+/// session leader claims it, and a process that merely has a pty on descriptor
+/// 0 will still fail `isatty`-adjacent expectations around job control and
+/// signals.
+///
+/// The order is load-bearing. `setsid` first, because a process that is already
+/// a group leader cannot create a session; `TIOCSCTTY` second, because only a
+/// session leader with no controlling terminal may claim one.
+pub fn spawn_with_terminal(
+    command: &mut std::process::Command,
+    follower: std::os::fd::BorrowedFd<'_>,
+) -> io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let follower = follower.as_raw_fd();
+
+    // SAFETY: `pre_exec` runs between `fork` and `exec`, where only
+    // async-signal-safe calls are permitted. `setsid`, `ioctl`, `dup2` and
+    // `close` are all on that list. The closure allocates nothing, takes no
+    // lock, and captures one integer by copy.
+    #[allow(unsafe_code)]
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(follower, libc::TIOCSCTTY, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                if libc::dup2(follower, target) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            // The original is closed only when it is not one of the three it was
+            // just copied onto. Closing it unconditionally would shut the
+            // terminal the child is about to use.
+            if follower > libc::STDERR_FILENO {
+                libc::close(follower);
+            }
+            Ok(())
+        });
+    }
+
+    command.spawn()
+}
+
+/// Whether a descriptor is a terminal.
+///
+/// Used to answer the question honestly rather than by inference. A caller that
+/// concluded "no terminal" from a failed read would be reporting the wrong
+/// thing.
+pub fn is_a_terminal(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: takes a descriptor and touches no memory. Returns 1 or 0.
+    #[allow(unsafe_code)]
+    let answer = unsafe { libc::isatty(fd.as_raw_fd()) };
+    answer == 1
 }
 
 // ────────────────────────────────────────────── what the kernel has been saying

@@ -1,5 +1,7 @@
 # Thalyx
 
+**[🇲🇽 Léelo en español →](README.es.md)**
+
 An open-source operating system designed from the kernel outward, where AI is a
 first-class citizen rather than one more application, and the human stays
 sovereign.
@@ -14,50 +16,142 @@ sovereign.
 > The image carries the Linux kernel and one program, and that is countable
 > rather than quotable: `make -C image count`.
 
-> **Status: Phase 1, core infrastructure built.** Three of the four base
-> primitives — the fourth, the predictive scheduler, is Phase 2 — and the
-> canonical flow are built and **verified on real hardware**: 595 tests and 72
-> checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
-> unproven *there*. Modules install atomically, run confined, and can be rolled
-> back; the kernel LSM actually denies; subvolumes can be snapshotted and
-> restored. **The image boots**: on 2026-08-03 a kernel built from `allnoconfig`
-> came up in QEMU with one program inside it, mounted its seven filesystems, and
-> said out loud what it does and does not have. It now has a store of its own —
-> a Btrfs disk made at build time, because `mkfs.btrfs` cannot live in an image
-> that holds one program — carrying the first module in a local repository, and
-> a session with no shell behind it that can install it, show what it asks for
-> on the trusted path, run it, and undo the whole thing. It also carries its own
-> BPF loader — no bpftool, no second file — and that loader attached enforcement
-> on real hardware, and the enforcement it attached denied a connection. What it
-> did through that session it writes down on its own disk, so a restart finds it
-> still knowing what was asked and re-checking what it did rather than repeating
-> it. **Every one of the six steps that end Phase 1 can now be performed** — see
-> **Boot it** below. Missing: a person outside the project performing them,
-> which is what actually ends it, and the conversational agent, which the
-> criterion does not ask for and the machine does not pretend to have.
->
-> Nothing here is claimed without a check that could have failed. Anything a
-> machine cannot verify is reported as `NOT PROVEN`, never as a pass.
+The last paragraph is a decree, and part of it is a *destination* rather than a
+description. What is true today is written where it can be checked: see
+[What is actually true right now](#what-is-actually-true-right-now).
 
-## Boot it
+---
 
-This is Thalyx as Thalyx: a kernel and one program, booting in QEMU, with no
-distribution underneath and no shell behind it. It is written for a machine
-running Linux Mint, Ubuntu or Debian, and it has been done on Fedora too.
+## What this is for
 
-**Start here.** It says everything that is missing, all of it at once, and
-prints the one command that installs the lot:
+Read this before running anything, because the commands only make sense once
+you know what they are trying to demonstrate.
+
+On Windows, Linux and macOS, an AI agent is a **guest**. To do anything it has
+to pretend to be a human: drive a keyboard and mouse, or call APIs that are a
+tracing of human interaction. Permissions were designed for human processes, the
+scheduler for human workloads, the filesystem for human hierarchy. Every one of
+those is a ceiling on what an agent can do fluently, and none of them can be
+lifted from inside an application.
+
+Thalyx inverts the relationship: instead of the AI adapting to the OS, the OS is
+built around the AI — while the human keeps a **complete, undegraded path** that
+never goes through the agent at all.
+
+That second half is the part that constrains everything. An OS where the AI is
+the only way to get things done is a worse OS, not a better one.
+
+### The two rules the whole design answers to
+
+**Double route.** Everything the agent can do, a human can do directly, without
+the agent and without losing capability. The agent is an accelerator, never a
+mandatory intermediary. This has a consequence the design is built around:
+Thalyx never has complete knowledge of its own filesystem — because you are free
+to change things behind its back — so no destructive operation is allowed to
+assume it does.
+
+**The agent is not trusted.** It sits outside the trusted computing base. It
+cannot execute anything directly, cannot compose the prompts you authorise
+against, and cannot let untrusted text it has read decide what happens. The core
+revalidates everything it produces.
+
+If you only take one idea from this repository, take the second one. Most
+systems that put an LLM near a shell are one prompt injection away from
+disaster. Thalyx is built on the assumption that the model **will** eventually
+be talked into trying something, and arranges for that to be survivable.
+
+---
+
+## Boot it: the whole thing, from nothing
+
+This is the part worth doing. At the end you will have booted an operating
+system that is a Linux kernel and exactly one program — no distribution, no
+shell, no `ls`, no package manager — installed a signed module into it, been
+asked to authorise what that module wanted, taken it back, and rebooted into a
+machine that still remembered the conversation.
+
+It is written for **Linux Mint**, and works the same on Ubuntu and Debian. It
+has also been done on Fedora.
+
+### What you need
+
+| | |
+|---|---|
+| **Disk** | ~15 GB free. The kernel source and build are most of it |
+| **RAM** | 4 GB. QEMU is given 2 GB |
+| **Time** | 20–60 minutes, almost entirely compiling the Linux kernel |
+| **Rights** | `sudo` exactly once, to format a disk image |
+| **Network** | To download the kernel source and the Rust toolchain |
+
+Your own machine is not modified. Nothing is installed outside this directory
+except the packages you choose to install and the Rust toolchain, and nothing
+touches your bootloader, your partitions or your running system. Thalyx boots
+**inside QEMU**, as a virtual machine.
+
+### Step 0 — get the code and ask what is missing
 
 ```sh
+git clone https://github.com/CesarManzoCode/thalyx.git
+cd thalyx
 make -C image doctor
 ```
 
-It downloads nothing and builds nothing. Missing packages are the only thing
-that stops people at this step, and finding them one at a time means finding
-each one *after* the last thing succeeded — so an absent `bc` costs the whole
-kernel build, and the tool after it costs another.
+`doctor` downloads nothing and builds nothing. It exists because of a specific
+kind of misery: what stops people here is never a hard problem, it is a missing
+package — found **one at a time**, each one only after everything before it
+succeeded. A missing `bc` costs you the entire kernel download and build before
+it surfaces, and then the next missing tool costs it again.
 
-Then, in order:
+So `doctor` finds them all at once and prints the single line that fixes them:
+
+```sh
+sudo apt install bc bison build-essential btrfs-progs clang curl dwarves \
+                 file flex libbpf-dev libelf-dev libssl-dev qemu-system-x86 \
+                 tar xz-utils
+```
+
+Run `make -C image doctor` again afterwards. It will tell you if anything is
+still missing, including things it could not check the first time.
+
+**Rust is separate**, because the version `apt` carries is older than this
+workspace needs and brings no `rustup` to add the static target with:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then open a new terminal, or `source "$HOME/.cargo/env"`.
+
+### Step 0b — pin the kernel you are about to compile
+
+`doctor` will also tell you the kernel tarball has no verified digest, and
+refuse to go on. This is not bureaucracy, and it is worth understanding because
+it is the whole difference between Thalyx and a distribution.
+
+**Thalyx compiles its own kernel.** That tarball is not a dependency it links
+against — it *becomes the most privileged half of the machine you are about to
+run*. HTTPS tells you who served the bytes. It does not tell you what the bytes
+were, and a CDN that served something else would produce a kernel nobody
+checked, on a machine that would boot and say nothing about it.
+
+```sh
+make -C image pin-kernel
+```
+
+prints four commands. They fetch kernel.org's list of digests, fetch the keys of
+the people who sign it, **verify that signature**, and pull out the line for the
+version this image builds. The third command must say `Good signature`. Put the
+digest it prints into `KSHA256` in `image/Makefile`.
+
+This is done once. If a later `make` says the digest does not match, stop: the
+file you downloaded is not the file kernel.org signed.
+
+> If `gpg --locate-keys` cannot reach a keyserver from your network, that is the
+> one step here that can fail for reasons unrelated to Thalyx. The digest is a
+> public constant for a given kernel version; get it from a source you trust,
+> and understand that you are then trusting that source.
+
+### Step 1 — build and boot
 
 ```sh
 make -C image              # kernel, program, image. The kernel is the long part
@@ -66,54 +160,220 @@ sudo make -C image store   # format it. The one command that needs root
 make -C image run          # boot
 ```
 
-`sudo` appears exactly once, and only to format a disk image with Btrfs and
-copy files into it. Nothing else in this asks for a password, and `make run`
-must not — a boot that needed root would put QEMU and everything inside it
-under root for no reason.
+`sudo` appears exactly once, and only to format a disk image with Btrfs and copy
+files into it. Nothing else asks for a password, and `make run` must not — a
+boot that needed root would put QEMU and everything inside it under root for no
+reason.
 
-### What to do at the prompt
+Before you go on, look at what you built:
+
+```sh
+make -C image count
+```
+
+It lists what is inside the image. The answer is the Linux kernel and **one**
+program. That is the founding claim of the project, and it is countable rather
+than quotable — if it ever says two, the claim is broken.
 
 The machine comes up, says what it does and does not have, and waits. There is
-no login, because there is nobody else to be. There is no shell behind it: what
-is not a word the session knows does not exist.
+**no login**, because there is nobody else to be. There is **no shell**: what is
+not a word the session knows does not exist.
+
+### Steps 2 to 6 — at the machine's own prompt
+
+Type these one at a time and read what comes back. The point is not the
+commands; it is what each one demonstrates.
 
 ```
-  > disponibles                     what the local repository holds
-  > instalar dev.thalyx.greeter     answer the permission prompt yourself
-  > permisos                        what is granted, and to whom
-  > correr dev.thalyx.greeter       the module speaks to Thalyx through its API
-  > revertir                        take the install back
-  > recuerdos                       what the machine will still know afterwards
-  > apagar
+> disponibles
 ```
 
-Then boot it again with `make -C image run` and type `recuerdos`. It will tell
-you what you asked it to do, and that the install it made no longer checks out
-— which is the difference between a memory and a log: it went and looked.
+What the local repository holds. The disk ships with a signed module — the
+`greeter` — **deliberately not installed**. A machine that booted with it
+already in place would make the next step impossible to perform.
 
-Those seven lines are the whole of
-`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`, which is the only
-thing that ends Phase 1. Not a list of components: a person outside the project
-doing exactly this, from this file, with nobody helping.
+```
+> instalar dev.thalyx.greeter
+```
+
+Thalyx verifies the signature against the publisher's key, recomputes the
+artifact's digest itself rather than believing the manifest, and then **stops
+and asks you**. What you see is drawn by Thalyx, inside a frame, listing every
+permission the module will hold:
+
+```
+┌─ Thalyx — capability authorisation ──────────────────
+│ Greeter (dev.thalyx.greeter)
+│ version 1.0.0
+│
+│ This module permanently requests:
+│   · read access to /opt/thalyx/data/greeter/notes.txt
+│
+│ These permissions come from the module's signed manifest.
+│ They stay in force until you revoke them by hand.
+└──────────────────────────────────────────────────────
+Confirm? [y/N]
+```
+
+**That frame is a security mechanism, not decoration.** It is generated by the
+core from the signed manifest — the agent cannot compose it, cannot reword it,
+and cannot show you a subset of what is being requested. Try answering `n`
+first: nothing is installed, and nothing is remembered either.
+
+Then install it for real, and look at what you granted:
+
+```
+> permisos
+> modulos
+```
+
+Now run it:
+
+```
+> correr dev.thalyx.greeter
+```
+
+The module asks Thalyx who it is — it does not know its own name — reads the one
+file it was granted, and is refused `/etc/shadow`, which it was not. Everything
+it says to you arrives **through Thalyx**, labelled, because a module has no
+terminal of its own. It cannot print to your screen.
+
+Take it back, then ask the machine what it will still know later:
+
+```
+> revertir
+> recuerdos
+> apagar
+```
+
+Now boot it again and ask once more:
+
+```sh
+make -C image run
+```
+
+```
+> recuerdos
+```
+
+It tells you what you asked it to do, **and that the installation it made no
+longer checks out** — with nobody having told it the module is gone. That is the
+difference between a memory and a log: it went and looked. A record that simply
+replayed what it was told would still be claiming the install stands.
+
+Those six steps are the entire exit criterion for Phase 1
+(`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`). Not a list of
+components: a person outside the project doing exactly this, from this file,
+with nobody helping.
 
 ### If something fails
 
-The machine is built to say which of "it is not there" and "I could not look"
-happened, so read what it printed before assuming the first. `make -C image
-count` says how many programs are inside the image, and the answer has to be
-one.
+Read what it printed before assuming the worst. The machine is built to
+distinguish **"it is not there"** from **"I could not look"**, and it says which
+one happened. `NOT PROVEN` never means the same as a pass.
+
+- **`make run` says nothing to boot** — `make -C image` did not finish.
+- **`make run` says no store disk** — you skipped `store-stage` or `store`.
+- **The prompt says nothing enforces a permission yet** — the kernel came up
+  without the BPF LSM. `correr` refuses rather than running a module with
+  nothing enforcing its permissions, which is deliberate: a module running
+  unconfined behaves exactly like a confined one right up until it does
+  something it should not have been able to do.
+- **Anything else** — `estado` re-reads the machine, `nucleo` shows what the
+  kernel has been saying. There is no `dmesg` in there; this is how you look.
+
+---
+
+## What is actually true right now
+
+Every claim in this section is either checkable with a command in this
+repository or marked as not yet checked. That distinction is the project's
+main working rule.
+
+**Built and covered by tests: 657 of them**, across unit tests, fault injection
+that kills the real binary at each point of the atomic commit, and end-to-end
+runs of the exit criterion. `cargo test --workspace` runs all of it.
+
+**Verified on real hardware**: 72 checks, on one machine with a BPF LSM, cgroup
+v2 and Btrfs — `sudo ./dev/verify.sh`. The BPF LSM has denied a real network
+connection to a process that lacked the permission, and only to that process.
+
+**The image boots.** On 2026-08-03 a kernel built from `allnoconfig` came up in
+QEMU with one program inside it, mounted its filesystems, and said out loud what
+it does and does not have. It now carries its own BPF loader — no `bpftool`, no
+second file — and that loader attached enforcement on real hardware.
+
+### Not yet true, stated plainly
+
+- **Nobody outside the project has done the six steps.** That is what ends
+  Phase 1, and it has not happened. If you are reading this and doing them, you
+  are the test.
+- **The conversational agent has no model.** The deterministic half is built and
+  works; there is no LLM behind it. The session says *"I have no model loaded"*
+  rather than pretending. Model selection is decreed
+  (`vault/03-Primitivas/Gamas-de-Modelo.md`) and not implemented.
+- **The predictive scheduler is Phase 2.** It is design, not code.
+- **The last security round has not been re-verified on hardware.** An external
+  audit on 2026-08-04 found nine real defects — among them a decreed global lock
+  that nothing implemented, an interrupted upgrade that could leave the running
+  version holding the *next* version's permissions, and a corrupt keystore that
+  parsed as an empty one, which trusts every publisher it is offered. All are
+  fixed, with tests confirmed to fail without the fix. The 72 hardware checks
+  have not been run since.
+
+### Three limits of the enforcement, stated rather than discovered
+
+- **The LSM enforces by class of action, not by path.** Every absolute read
+  grant becomes one `FS_READ` bit and every write grant one `FS_WRITE` bit, and
+  the BPF program checks the bit. What confines a module to the *particular*
+  paths it was granted is the root filesystem — which contains nothing else —
+  the module's own uid, and the checks in Thalyx's internal API, which open
+  under a descriptor for the granted directory with the kernel refusing to leave
+  it. The LSM is a second, coarser layer. Calling it per-path enforcement would
+  be claiming more than it does.
+- **`net/outbound` has not been exercised end to end on hardware.** The LSM
+  denying a connection to a module *without* the grant is proven and
+  reproducible (`make -C lsm demo`). A module *with* the grant opening a
+  connection is implemented and unit-tested, and has not yet run on a machine.
+- **Snapshots need `btrfs-progs`, which the image does not have and cannot.**
+  `thalyx-snapshot` shells out to `btrfs`, so snapshot and restore work on a
+  host that has it — where `dev/verify.sh` exercises them — and not inside the
+  minimal image, which carries one program.
+
+### And one contradiction, since it is the honest thing to publish
+
+The founding decree says modules speak to Thalyx **exclusively** through its
+API, not through POSIX and not through libc. Today a module is a dynamically
+linked Linux binary: the sandbox mounts `/usr`, `/lib`, `/bin` and `/etc`
+read-only so it can start at all, and the seccomp filter permits around 120
+syscalls.
+
+The distinction that does hold, and is what the code actually implements:
+
+> **The Thalyx API is the only *mediated* surface.** It is not the only
+> reachable one.
+
+Identity, permissions, granted files and speaking to the human exist through it
+and nowhere else. What stays reachable through POSIX is bounded by three layers
+that do exist: a root filesystem containing nothing that was not mounted into
+it, a filter that kills what is not on its allowlist, and the LSM. None of that
+makes a module a program that does not speak POSIX. It makes speaking POSIX get
+it nowhere the human did not authorise.
+
+Closing the gap fully — static modules, no libc, a much smaller filter — is a
+Phase 2 decision recorded in `vault/02-Arquitectura/Sistema-de-Modulos.md`.
+
+---
 
 ## Try it as a program instead
 
-Everything below runs Thalyx on top of a Linux you already have. That is a test
-bench and not a way to use Thalyx —
-`vault/05-Decisiones-y-Debates/Decision-Capa-vs-SO-Nuevo.md` calls it scaffold
-rather than destination — and the program itself will tell you so: started from
-a shell, the session says *this is not the machine*, because it reads its own
-parent to find out rather than being told.
+Everything below runs Thalyx on top of the Linux you already have. That is a
+**test bench and not a way to use Thalyx** — the vault calls it scaffold rather
+than destination — and the program will tell you so: started from a shell, the
+session says *this is not the machine*, because it reads its own parent to find
+out rather than being told.
 
-It is here because it is how the system gets verified — see **Verifying it on a
-real machine** below.
+It is here because it is how the system gets verified.
 
 ```sh
 cargo build
@@ -133,6 +393,18 @@ export THALYX_ROOT=/tmp/thalyx-demo
 # Undo the install. Narrow and cheap: it takes back only what Thalyx published.
 ./target/debug/thalyx rollback --dry-run
 ./target/debug/thalyx rollback
+```
+
+Watch the atomic commit survive being killed at its most dangerous instant —
+between the directory rename and the symlink swap:
+
+```sh
+THALYX_FAULT_POINT=mid-commit ./target/debug/thalyx module install demo.thmod --yes
+# process dies with SIGABRT: no unwinding, no cleanup, no chance to tidy up
+
+./target/debug/thalyx module list     # not installed
+./target/debug/thalyx store status    # one inert orphan, store consistent
+./target/debug/thalyx module install demo.thmod   # retry succeeds
 ```
 
 The semantic index, and letting the kernel tell it when it is still current:
@@ -159,49 +431,27 @@ thalyx snapshot list ~/work
 thalyx restore <name> ~/work            # shows what it would destroy, then asks
 ```
 
-To watch the atomic commit survive being killed in its most dangerous instant —
-between the directory rename and the symlink swap:
-
-```sh
-THALYX_FAULT_POINT=mid-commit ./target/debug/thalyx module install demo.thmod --yes
-# process dies with SIGABRT, no unwinding, no cleanup
-
-./target/debug/thalyx module list     # not installed
-./target/debug/thalyx store status    # one inert orphan, store consistent
-./target/debug/thalyx module install demo.thmod   # retry succeeds
-```
+---
 
 ## Verifying it on a real machine
 
-Most of what Thalyx claims cannot be checked in a container. The BPF LSM needs
-a kernel with `bpf` in its LSM order, resource limits need delegated cgroup
+Most of what Thalyx claims cannot be checked in a container. The BPF LSM needs a
+kernel with `bpf` in its LSM order, resource limits need delegated cgroup
 controllers, and "enforcement is real" means a connection actually gets denied.
-
-One command exercises all of it and reports what it managed to prove:
 
 ```sh
 sudo ./dev/verify.sh
 ```
 
-It never counts a check it could not make as a pass. Anything the machine
-cannot do is reported as `NOT PROVEN`, with the reason, and listed again in the
-summary — because a green run that exercised nothing looks exactly like a green
-run that exercised everything.
+It never counts a check it could not make as a pass. Anything the machine cannot
+do is reported as `NOT PROVEN`, with the reason, and listed again in the summary
+— because a green run that exercised nothing looks exactly like a green run that
+exercised everything.
 
 It leaves nothing loaded: the LSM is detached on the way out, including on
 Ctrl-C.
 
-## The idea
-
-On Windows, Linux and macOS, an AI agent is a guest. It has to simulate being a
-human: driving a keyboard and mouse, or calling APIs that are a tracing of human
-interaction. Permissions were designed for human processes, the scheduler for
-human workloads, the filesystem for human hierarchy. Every one of those is a
-ceiling on what an agent can do fluently.
-
-Thalyx inverts the relationship. Instead of the AI adapting to the OS, the OS is
-built around the AI — while the human keeps a complete, undegraded path that
-never goes through the agent at all.
+---
 
 ## The four base primitives
 
@@ -212,18 +462,7 @@ never goes through the agent at all.
 | Persistent memory | Task state survives across sessions and reboots | Userspace |
 | Predictive scheduler | Adjust process priority from context | Userspace (Phase 2) |
 
-## Two principles that constrain everything
-
-**Double route.** Everything the agent can do, the human can do directly,
-without the agent and without losing capability. The agent is an accelerator,
-never a mandatory intermediary. This has a consequence the design is built
-around: Thalyx never has complete knowledge of its own filesystem, so no
-destructive operation is allowed to assume it does.
-
-**The agent is not trusted.** It sits outside the trusted computing base. It
-cannot execute anything directly, cannot compose the prompts the human
-authorises against, and cannot let untrusted text it has read determine what a
-contract does. The core revalidates everything it produces.
+---
 
 ## Repository layout
 
@@ -242,39 +481,32 @@ crates/
   thalyx-journal/   append-only operation journal
   thalyx-core/      verification, staging, atomic commit, permissions, rollback
   thalyx-cli/       the `thalyx` binary
+  thalyx-bpf/       Thalyx's own BPF loader: no libbpf, no bpftool
 
 lsm/            BPF LSM programs: enforcement, and the filesystem watcher
+image/          the machine: kernel configuration, initramfs, store disk
 dev/            verify.sh — one command that checks every claim on real hardware
+modules/        dev.thalyx.greeter, the first module written against the API
 
 vault/          Design vault (Obsidian, Spanish)
-  00-Indice/            Entry point — start here
-  01-Filosofia/         Founding principles
-  02-Arquitectura/      System architecture
-  03-Primitivas/        The four base primitives
-  04-Flujo-Canonico/    How an action flows end to end
-  05-Decisiones-y-Debates/  Resolved debates and their reasoning
-  06-Pendientes/        Open work
-  07-Adopcion-y-Fases/  Roadmap and adoption gates
-  08-Investigacion/     Research directions
-  09-Notas-Tecnicas/    Implementation reference
-  10-Carrera-.../       Personal and career context
-  11-Seguridad/         Threat model and security decrees
 ```
 
-Start at `vault/00-Indice/Indice-Principal.md`. It carries the reading order and
-a snapshot of what is decided and what is still open.
+The vault is the authority: code implements decrees, it does not invent them.
+Start at `vault/00-Indice/Indice-Principal.md` for the reading order.
 `vault/06-Pendientes/Punto-Actual.md` says where the project stands right now
 and what the next step is; it is updated whenever something is finished.
 
 The vault is written in Spanish. Everything else — code, schemas, identifiers,
 commit messages, CLI output — is in English.
 
+---
+
 ## Roadmap
 
 - **Phase 1** — The machine and what runs on it: core, LSM, permission broker,
   semantic index, module manager, sandbox, local agent, CLI, Btrfs snapshots.
-  Ends when an outsider can boot it, install, revert and reboot unaided —
-  see **Boot it** above, which is that list of steps and nothing else.
+  Ends when an outsider can boot it, install, revert and reboot unaided — see
+  **Boot it** above, which is that list of steps and nothing else.
 - **Phase 2** — Empirical validation. Benchmarks decide whether primitives move
   into the kernel.
 - **Phase 3** — Kernel migration, if the numbers justify it.
@@ -283,4 +515,5 @@ commit messages, CLI output — is in English.
 ## License
 
 GPLv3 for userspace components. GPLv2 for anything that links against the Linux
-kernel, which is GPLv2-only — see `vault/05-Decisiones-y-Debates/Decision-Licencia.md`.
+kernel, which is GPLv2-only — see
+`vault/05-Decisiones-y-Debates/Decision-Licencia.md`.

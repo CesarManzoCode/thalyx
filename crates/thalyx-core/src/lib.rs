@@ -20,6 +20,7 @@ pub mod repo;
 pub mod restore;
 pub mod rollback;
 pub mod run;
+pub mod session;
 pub mod snapshots;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
@@ -33,22 +34,38 @@ pub use store::Store;
 
 /// The permissions a module actually holds right now.
 ///
-/// A grant recorded in the registry is in force **only while the module it
-/// belongs to is the current version**. That is what makes the `current`
-/// symlink the single atomic point deciding both "installed" and "authorised":
-/// there is no second transition that could be interrupted separately.
+/// A grant is in force **only while the version it was confirmed for is the
+/// one `current` points at**, and — for a `session` grant — only while the
+/// session it was made in is still the current one. That is what makes the
+/// `current` symlink the single atomic point deciding both "installed" and
+/// "authorised": there is no second transition that could be interrupted
+/// separately.
 ///
-/// A record left behind by an interrupted install is therefore inert, not a
-/// live grant. `thalyx store clean` reclaims it.
+/// ## The upgrade this exists to get right
+///
+/// This used to ask only whether the module was installed at all, which meant
+/// an interrupted **upgrade** — grants written for version 2, process killed
+/// before the symlink swung — left version 1 running under version 2's
+/// permissions. Everything downstream, the kernel policy included, read that
+/// as authorised. Comparing the version is what closes it, and the record left
+/// by an interrupted install is inert for the same reason it always was: no
+/// version points at it. `thalyx store clean` reclaims it.
 pub fn effective_permissions(
     store: &Store,
     registry: &permissions::Registry,
     module_id: &str,
 ) -> Vec<permissions::Grant> {
-    if !store.is_installed(module_id) {
+    let Some(version) = store.installed_version(module_id) else {
         return Vec::new();
-    }
-    registry.effective(module_id).to_vec()
+    };
+    let session = session::Session::current(store);
+
+    registry
+        .effective(module_id)
+        .iter()
+        .filter(|grant| grant.in_force(&version, &session))
+        .cloned()
+        .collect()
 }
 
 /// The runtime version that a manifest's `requires.thalyx` is matched against.
@@ -74,6 +91,24 @@ pub enum CoreError {
 
     #[error("bundle is malformed: {0}")]
     MalformedBundle(String),
+
+    /// State that exists and cannot be understood.
+    ///
+    /// Deliberately not the same as state that is absent. Absent means nothing
+    /// was ever recorded and the cautious answer is an empty set; unreadable
+    /// means something *was* recorded and nobody knows what — and for the
+    /// keystore those two answers are opposites, because an empty keystore
+    /// trusts every publisher it is offered.
+    #[error(
+        "{path} exists but could not be read as Thalyx state: {reason}\n  \
+         Refusing to continue: an unreadable record of what was authorised is \
+         not the same as a record that nothing was, and treating it as empty \
+         is what would re-trust a publisher key that was pinned."
+    )]
+    StateUnreadable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 
     #[error("signature verification failed for `{module_id}`")]
     SignatureRejected { module_id: String },

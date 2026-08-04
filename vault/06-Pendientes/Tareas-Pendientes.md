@@ -17,6 +17,9 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 - [ ] **Que `verify.sh` exija también `THALYX_REQUIRE_BTRFS_TESTS`.** Activa las otras tres cuando la máquina las soporta, pero no esta: comprueba los snapshots por su cuenta y deja que las pruebas de Btrfs del arnés de Rust se salten calladas. Ver [[Estado-de-Implementacion]].
 - [ ] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas son directorios**. Lo cubre ahora una prueba unitaria de `create_target_like` y la etapa 16 en hardware; falta un caso en `isolation.rs` que arme la raíz remapeada de verdad sobre un archivo. Ver [[Estrategia-de-Pruebas]].
+- [ ] **Correr `sudo ./dev/verify.sh` después de la auditoría del 2026-08-04.** Nueve defectos corregidos, ninguno ejercido en hardware, y dos tocan el arranque: el módulo ya no hereda `stdin`/`stdout`/`stderr`, y el filtro seccomp deja de ser fijo — se amplía sólo para el módulo con `net/outbound`. Ver [[Punto-Actual]].
+- [ ] **Anclar el digest del tarball del kernel.** `image/Makefile` tiene `KSHA256 := UNPINNED` y falla a propósito. Thalyx compila su propio kernel, así que ese archivo es la mitad más privilegiada de la máquina y se bajaba comprobando sólo TLS — que dice quién sirvió los bytes, no cuáles eran. `make -C image pin-kernel` imprime los cuatro comandos; el tercero tiene que decir *Good signature*.
+- [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para saber *qué* cambió, no solo que algo cambió. El atajo ya no lo necesita — lo resolvió la atribución por ancestros — así que esto solo hace falta para reindexar de forma incremental en vez de reconstruir. Ver [[FS-en-Grafo]].
 
 
@@ -28,6 +31,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Arquitectura del índice semántico a mayor escala** — SQLite alcanza para Fase 1; falta saber a partir de qué volumen deja de alcanzar.
 - [ ] **Sistema de reputación resistente a Sybil** — pospuesto deliberadamente. Ver [[Sistema-Reputacion-Sybil]].
 - [ ] **Dependencias entre módulos y resolver con backtracking** — pospuesto hasta que exista un módulo real que las necesite. Ver [[Resolucion-de-Versiones]].
+- [ ] **Decidir el ABI de los módulos: nativo de Linux o independiente de POSIX.** [[Filosofia-Fundacional]] dice que los módulos no hablan POSIX ni libc; hoy son binarios de Linux enlazados dinámicamente, con `/usr`, `/lib` y `/etc` montados de sólo lectura y unas ciento veinte llamadas al sistema permitidas. La distinción que sí se sostiene está escrita en [[Sistema-de-Modulos]] — la API es la única superficie *mediada*. Hacer verdadera la frase entera significa módulos estáticos sin libc, un rootfs sin `/usr`, un filtro mucho más chico, o un objetivo distinto como WASM. **Es barato ahora, con un módulo, y caro con un ecosistema encima**, así que decidirlo antes de escribir más módulos.
 - [ ] **Condiciones para habilitar llamadas a modelos remotos** — las reglas ya están escritas; falta decidir cuándo se activan. Ver [[Agente-Conversacional]].
 
 ## Resueltos el 2026-08-01
@@ -90,6 +94,10 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] Decidir si "resolver módulo" es contrato separado o sub-tarea sin contrato — sub-tarea sin contrato. Ver [[Resolver-vs-Instalar]].
 
 ## Lo que sigue sin validarse
+
+**El repositorio fue auditado desde fuera por primera vez el 2026-08-04**, y esa auditoría encontró nueve defectos reales — tres críticos — que ninguna de las 612 pruebas de entonces veía. Es la evidencia más directa que hay de que las pruebas escritas junto al código comparten sus supuestos, y de que la próxima victoria no es duplicar el tamaño sino que alguien hostil no pueda romper lo que ya se promete. Ver [[Punto-Actual]] y [[Estrategia-de-Pruebas]].
+
+
 
 **Ningún decreto de esta bóveda ha sido contrastado con una persona ajena al proyecto.** Todo el razonamiento sobre por qué alguien elegiría Thalyx sigue siendo a priori. Ver [[Por-Que-Elegirian-Este-SO]] y [[Riesgo-de-Ejecucion]].
 

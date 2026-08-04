@@ -80,17 +80,37 @@ pub fn run(
     // a module has no terminal, and everything it wants a human to see passes
     // through here. That is also why the marker says who is speaking — text
     // from a module must never be able to look like Thalyx talking.
+    //
+    // And why every line goes through `sanitise`. Routing the text through
+    // Thalyx accomplishes nothing on its own if the text may then contain a
+    // newline and repaint the marker, or an escape sequence and repaint the
+    // screen. The marker is only a marker if the module cannot draw one.
     if !outcome.said.is_empty() {
         println!();
-        println!("  {} said:", outcome.module_id);
+        println!(
+            "  {} said:",
+            thalyx_core::trusted_path::sanitise(&outcome.module_id)
+        );
         for (level, text) in &outcome.said {
             let marker = match level {
                 thalyx_abi::Level::Info => " ",
                 thalyx_abi::Level::Warning => "!",
                 thalyx_abi::Level::Error => "x",
             };
-            println!("  {marker} {text}");
+            for line in thalyx_core::trusted_path::sanitise_block(text) {
+                println!("  {marker} {line}");
+            }
         }
+    }
+
+    // A module that said more than Thalyx will hold has to be reported as
+    // such. A list that silently stopped growing looks exactly like a module
+    // that stopped talking, and the two are different events.
+    if outcome.dropped_notices > 0 {
+        println!(
+            "  … and {} more notice(s), past what Thalyx keeps for one run.",
+            outcome.dropped_notices
+        );
     }
 
     if let Some(error) = &outcome.channel_error {
