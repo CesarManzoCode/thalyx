@@ -187,11 +187,47 @@ fn cgroup2() -> Outcome {
             let (_, point, kind) = (f.next()?, f.next()?, f.next()?);
             (kind == "cgroup2").then(|| point.to_string())
         }) {
-            Some(point) => Outcome::Found(format!("mounted at {point}")),
+            Some(point) => match handed_down(Path::new(&point)) {
+                Ok(()) => Outcome::Found(format!("mounted at {point}")),
+                // Mounted and useless is not "mounted". This line said only
+                // `mounted at /sys/fs/cgroup` on a machine where no module
+                // could be given the limits its profile declares, so the boot
+                // screen was clean and the first `correr` was not — which is
+                // the failure with no symptom, in the one place built to have
+                // none.
+                Err(reason) => Outcome::Absent(format!("mounted at {point}, but {reason}")),
+            },
             None => Outcome::Absent("no cgroup2 filesystem".to_string()),
         },
         Err(error) => Outcome::Unreadable(format!("/proc/mounts: {error}")),
     }
+}
+
+/// Whether the cgroup root hands down what a module's profile needs.
+///
+/// Read rather than assumed, and read from the profile rather than from a list
+/// beside it. `thalyx_sandbox::limits::delegate` would *enable* them; this only
+/// looks, because a reading that changes the machine is not a reading.
+fn handed_down(root: &Path) -> Result<(), String> {
+    let profile = thalyx_sandbox::profile::module_standard();
+    let needed = profile.limits.controllers();
+
+    let enabled = thalyx_sandbox::limits::enabled_controllers(root)
+        .map_err(|error| format!("its controllers cannot be read: {error}"))?;
+
+    let missing: Vec<&str> = needed
+        .iter()
+        .copied()
+        .filter(|c| !enabled.iter().any(|e| e == c))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "it hands down no {} — a module could not be given the limits its profile declares",
+        missing.join(" or ")
+    ))
 }
 
 /// Is anything actually enforcing?
@@ -934,6 +970,64 @@ mod tests {
         thalyx_sandbox::profile::resolve(SESSION_PROFILE).unwrap_or_else(|error| {
             panic!("the prompt would ask for a profile nothing can resolve: {error}")
         });
+    }
+
+    /// The reading looks at what the root *hands down*, not at what it has.
+    ///
+    /// The two files sit next to each other and read almost the same:
+    /// `cgroup.controllers` is what a cgroup could hand down and
+    /// `cgroup.subtree_control` is what it does. A machine that had every
+    /// controller compiled in and delegated none of them would read as fine
+    /// through the wrong one — which is exactly the machine this was written
+    /// for, and exactly the machine the image was.
+    #[test]
+    fn a_root_that_could_hand_down_everything_and_hands_down_nothing_reads_as_absent() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("cgroup.controllers"),
+            "cpuset memory pids\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("cgroup.subtree_control"), "").unwrap();
+
+        let reason = handed_down(root.path()).expect_err("nothing is handed down");
+        assert!(reason.contains("memory"), "{reason}");
+        assert!(reason.contains("pids"), "{reason}");
+    }
+
+    #[test]
+    fn a_root_that_hands_down_what_the_profile_needs_reads_as_present() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("cgroup.controllers"),
+            "cpuset memory pids\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("cgroup.subtree_control"), "memory pids\n").unwrap();
+
+        handed_down(root.path()).expect("both are handed down");
+    }
+
+    /// Half is not enough, and the message names which half.
+    ///
+    /// Without this, a check that looked at the first controller and stopped
+    /// would pass both tests above.
+    #[test]
+    fn a_root_that_hands_down_half_of_it_says_which_half() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("cgroup.controllers"),
+            "cpuset memory pids\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("cgroup.subtree_control"), "memory\n").unwrap();
+
+        let reason = handed_down(root.path()).expect_err("pids is missing");
+        assert!(reason.contains("pids"), "{reason}");
+        assert!(
+            !reason.contains("memory"),
+            "memory is handed down: {reason}"
+        );
     }
 
     /// And it is a profile that actually isolates.

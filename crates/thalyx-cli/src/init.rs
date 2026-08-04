@@ -134,6 +134,47 @@ fn mount_all() -> Boot {
     boot
 }
 
+/// Hand the resource controllers down from the cgroup root.
+///
+/// A cgroup's `cgroup.controllers` is whatever its parent put in
+/// `cgroup.subtree_control`, and the kernel starts with the root handing down
+/// nothing. On any other Linux systemd does this before anything else runs, so
+/// the `thalyx` cgroup inherits `memory` and `pids` without anyone here having
+/// asked. **There is no systemd in this image**, so nobody asked, and a module
+/// could not be given the limits its profile declares:
+///
+/// ```text
+/// `/sys/fs/cgroup/thalyx` cannot hand down the controller(s) ["memory", "pids"]
+/// It has: []
+/// ```
+///
+/// The refusal was right — the limits would not have applied and the module
+/// would have looked bounded without being bounded. What was missing is this.
+///
+/// The root cgroup is the one cgroup exempt from the no-internal-process rule,
+/// which is why this can be written while PID 1 itself lives there.
+///
+/// The list is taken from the profile every module runs under rather than
+/// written out here. A second list of controllers, kept beside the first, is a
+/// list that ends up disagreeing — and the disagreement would be a machine that
+/// boots reporting everything fine and refuses the first module it is given.
+fn delegate_controllers() -> Result<String, String> {
+    let profile = thalyx_sandbox::profile::module_standard();
+    let needed = profile.limits.controllers();
+    if needed.is_empty() {
+        return Ok("none needed by the module profile".to_string());
+    }
+
+    let root = thalyx_sandbox::cgroup::mount_point().map_err(|error| error.to_string())?;
+    thalyx_sandbox::limits::delegate(&root, &needed).map_err(|error| error.to_string())?;
+
+    Ok(format!(
+        "{} handed down at {}",
+        needed.join(", "),
+        root.display()
+    ))
+}
+
 /// The BPF object, built into this binary by `build.rs`.
 ///
 /// `None` when `make -C lsm` had not been run when this was compiled. That is a
@@ -199,6 +240,18 @@ pub fn run() -> Fallible {
     }
     for (target, error) in &boot.failed {
         println!("  no  {target}: {error}");
+    }
+
+    // Straight after the mounts: the cgroup root has to be handing down what a
+    // module needs before anything tries to run one, and the first thing that
+    // tries could be the first thing a person types.
+    match delegate_controllers() {
+        Ok(detail) => println!("  ok  controllers  {detail}"),
+        // Not fatal. The machine comes up and says what it cannot do, which is
+        // worth more from a screen you can read than from a kernel panic you
+        // cannot — and every reading the session takes will agree with this
+        // line rather than contradict it.
+        Err(reason) => println!("  no  controllers  {reason}"),
     }
 
     // After the mounts because it reads /proc/cmdline, and before the session

@@ -363,12 +363,42 @@ tags: [continuidad, punto-actual, sesiones]
 > estaba impresa cuatro renglones debajo. Ese texto se quitó. Ambas reglas
 > quedaron en [[Estrategia-de-Pruebas]].
 >
+> ## Y nadie le había entregado los controladores — 2026-08-04
+>
+> Arreglado el perfil, la misma línea falló un paso más adelante:
+>
+> ```
+> `/sys/fs/cgroup/thalyx` cannot hand down the controller(s) ["memory", "pids"]
+> It has: []
+> ```
+>
+> La negativa era correcta —sin esos controladores los límites no se aplican y
+> el módulo se ve acotado sin estarlo— y lo que faltaba era que **alguien los
+> delegara**. En cualquier otro Linux lo hace systemd antes de que corra nada.
+> **En la imagen no hay systemd.** No hay nada más que Thalyx.
+>
+> Que es el decreto fundacional dicho de otro modo: todo lo que otra cosa hacía
+> por nosotros es ahora trabajo de Thalyx, lo hayamos notado o no. Y no se
+> encuentra leyendo el código —el código no menciona systemd en ninguna parte—
+> sino corriendo en la única máquina donde systemd no está.
+>
+> PID 1 ahora los delega al montar, con la lista tomada del perfil bajo el que
+> corren los módulos. Y **la sesión lo reporta**: `cgroup2` decía `mounted at
+> /sys/fs/cgroup` en una máquina donde ningún módulo podía recibir un límite —
+> pantalla de arranque limpia, primer `correr` roto. Eso es el fallo sin
+> síntoma, en el único lugar construido para no tener ninguno.
+>
 > ## Lo que sigue sin verse
 >
-> **La etapa 16 entera en verde.** Con esto arreglado, `correr` debería confinar
-> adentro de la máquina y el módulo debería reportar que le negaron
-> `/etc/shadow` — lo que cierra los seis pasos dentro de la máquina, de arranque
-> frío a arranque frío. Nadie lo ha visto.
+> **El `pivot_root` del sandbox, adentro de la imagen.** Con los controladores
+> puestos, `correr` llega por primera vez a armar la raíz del módulo. Ese paso
+> está probado en la Fedora de Cesar —etapa 6, seis líneas de aislamiento— y
+> **nunca ha corrido sobre un initramfs**, que es lo que la imagen tiene por
+> raíz. Puede salir bien y puede no salir; si no sale, el mensaje nombra el
+> montaje exacto que falló.
+>
+> Lo que hay del otro lado, si sale: los seis pasos completos dentro de la
+> máquina, de arranque frío a arranque frío.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -673,10 +703,16 @@ mapa de política, así que solo la imagen llegaba a mirarlo— y lo dejó pasar
 la etapa 15 maneja el prompt de verdad y **no tecleaba `correr`**: el único
 verbo sin ejercitar era el único roto.
 
-Los dos son la misma forma vista desde dos lados: **una comprobación que
-depende de una condición solo se hace en las máquinas que la cumplen.** Tres
-reglas nuevas en [[Estrategia-de-Pruebas]], incluida la del mensaje de falla que
-nombraba una causa que nadie midió y mandaba a buscar al lado equivocado.
+**El tercero:** la raíz de cgroups no entregaba `memory` ni `pids`, porque en
+todas las demás máquinas eso lo hace systemd antes de que corra nada, y en la
+imagen no hay systemd. PID 1 lo hace ahora, y la sesión reporta un cgroup2 que
+está montado y no delega nada como lo que es: ausente.
+
+Los tres son la misma forma vista desde tres lados: **una comprobación que
+depende de una condición solo se hace en las máquinas que la cumplen**, y la
+imagen es la única máquina que no cumple ninguna. Cuatro reglas nuevas en
+[[Estrategia-de-Pruebas]], incluida la del mensaje de falla que nombraba una
+causa que nadie midió y mandaba a buscar al lado equivocado.
 
 ### 2026-08-04 — los seis pasos existen
 El objetivo pasó a ser cerrar la Fase 1, y quedaban dos pasos del criterio de

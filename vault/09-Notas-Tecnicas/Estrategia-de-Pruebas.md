@@ -770,6 +770,53 @@ renglones más abajo, en el propio log.
 nombra ninguna: dice dónde no hay que buscar.** Un `failed` dice qué no pasó e
 imprime lo que la máquina dijo. Por qué es de quien lea.
 
+## Regla derivada: lo que el anfitrión hacía gratis no está en el diseño hasta que alguien lo escribe
+
+Arreglado el nombre del perfil, la misma línea falló otra vez, un paso más
+adelante:
+
+```
+`/sys/fs/cgroup/thalyx` cannot hand down the controller(s) ["memory", "pids"]
+It has: []
+```
+
+La negativa era **correcta**: sin esos controladores los límites no se
+aplicarían y el módulo se vería acotado sin estarlo. Lo que faltaba era que
+alguien los delegara. El `cgroup.controllers` de un cgroup es lo que su padre
+puso en `cgroup.subtree_control`, y el kernel arranca con la raíz sin delegar
+nada.
+
+En cualquier otro Linux **systemd lo hace antes de que corra nada**, así que el
+cgroup `thalyx` los heredaba sin que nadie de este proyecto lo hubiera pedido.
+Hasta el arnés de pruebas lo sabía —`confined_run.rs` escribe `+memory +pids` en
+su arena y lo explica en un comentario— y aun así nadie lo escribió en el
+sistema, porque en las máquinas donde se probaba ya estaba hecho.
+
+**En la imagen no hay systemd.** No hay nada más que Thalyx. Y eso es
+exactamente el decreto fundacional: si Linux es un componente que Thalyx
+gestiona, entonces todo lo que otra cosa hacía por nosotros es ahora trabajo de
+Thalyx, lo hayamos notado o no.
+
+La regla: **cada vez que algo funciona en la máquina de desarrollo y no se sabe
+quién lo hizo, hay una dependencia sin escribir.** No se descubre leyendo el
+código —el código no menciona a systemd en ninguna parte— sino corriendo en la
+única máquina donde no está: la imagen. Es la regla 1 en su forma más literal.
+
+Cerrarla tiene dos mitades, y la segunda importa igual:
+
+1. PID 1 delega los controladores al montar, tomando la lista del perfil bajo el
+   que corren los módulos y no de una copia al lado.
+2. **La sesión lo reporta.** `cgroup2` decía `mounted at /sys/fs/cgroup` en una
+   máquina donde ningún módulo podía recibir un límite. La pantalla de arranque
+   salía limpia y el primer `correr` no — el fallo sin síntoma, en el único
+   lugar construido para no tener ninguno. Ahora un cgroup2 montado que no
+   delega nada se lee como ausente, y dice qué le falta.
+
+Los tests distinguen los dos archivos que se parecen: `cgroup.controllers` es lo
+que un cgroup *podría* delegar y `cgroup.subtree_control` es lo que delega. Leer
+el primero por el segundo describe exactamente la máquina rota como sana, y se
+comprobó cambiándolo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -1848,6 +1848,22 @@ else
             grep "thalyx-lsm" "$BOOT_LOG_1" | sed 's/^/     /'
         fi
 
+        # The cgroup root handing controllers down. Nothing else on the machine
+        # does it: on every other Linux systemd has done it before anything
+        # runs, which is why this was invisible until the image tried to
+        # confine something and could not be given a limit.
+        #
+        # Checked separately from the run below, because the two fail apart and
+        # reading one for the other is how the last two rounds of this went: a
+        # `correr` that fails says the confinement did not happen, and this says
+        # whether the machine could ever have made one.
+        if grep -q "ok  controllers" "$BOOT_LOG_1"; then
+            proven "the machine handed the resource controllers down itself, with no systemd to do it"
+        else
+            failed "the cgroup root hands down nothing, so no module can be given a limit"
+            grep "controllers" "$BOOT_LOG_1" | sed 's/^/     /'
+        fi
+
         if grep -q "I have nothing recorded" "$BOOT_LOG_1"; then
             proven "a machine that has done nothing says it remembers nothing"
         else
