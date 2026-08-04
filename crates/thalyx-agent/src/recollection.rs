@@ -23,6 +23,19 @@
 //! That second one is `vault/03-Primitivas/Memoria-Persistente.md` applied to
 //! the agent's own output: the agent does not get to be believed about the
 //! world just because it was the one who acted on it.
+//!
+//! ## Why undoing writes only the first kind
+//!
+//! A rollback records that it was asked for and records nothing about the
+//! world, which looks like an omission and is the opposite. The install's own
+//! record witnesses the module's `current` link; taking the module away is
+//! precisely what makes that link stop resolving, so the removal already shows
+//! up — as the install becoming unconfirmable, said in those words.
+//!
+//! Writing "took back X" as well would mean asserting an outcome on the
+//! strength of having performed it, next to a record of the same event that is
+//! checked against the disk every time it is read. When the two disagreed, the
+//! unchecked one would be the one still claiming to be true.
 
 use crate::transcript::Segment;
 use std::path::{Path, PathBuf};
@@ -142,6 +155,32 @@ pub fn context(memory_path: &Path, task: &str) -> Result<Context, RecollectionEr
     Ok(context)
 }
 
+/// Record that the human asked for something, under `task`.
+///
+/// Witnesses nothing, and that is not a shortcoming. No file changing on disk
+/// can make "the human said this" stop being true, so a witness could only
+/// manufacture a way for a true statement to start reading as doubtful.
+///
+/// Called *after* the operation succeeds, never before — same reason as
+/// [`record_install`]. An utterance recorded ahead of the act would survive a
+/// refusal at the trusted path and read afterwards as though the person had got
+/// what they asked for.
+pub fn record_utterance(
+    memory_path: &Path,
+    task: &str,
+    utterance: &str,
+) -> Result<(), RecollectionError> {
+    let embedder = LexicalEmbedder;
+    let memory = open(memory_path)?;
+    memory.remember_fact(
+        task,
+        &format!("the human asked: {utterance}"),
+        &Witness::nothing(),
+        &embedder,
+    )?;
+    Ok(())
+}
+
 /// Record an install under `task`.
 ///
 /// Called *after* the install succeeds, never before. A memory written first
@@ -155,22 +194,10 @@ pub fn record_install(
     version: &str,
     installed_at: &Path,
 ) -> Result<(), RecollectionError> {
-    if let Some(parent) = memory_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| RecollectionError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
+    record_utterance(memory_path, task, utterance)?;
 
     let embedder = LexicalEmbedder;
-    let memory = Memory::open(memory_path, &embedder)?;
-
-    memory.remember_fact(
-        task,
-        &format!("the human asked: {utterance}"),
-        &Witness::nothing(),
-        &embedder,
-    )?;
+    let memory = open(memory_path)?;
     memory.remember_fact(
         task,
         &format!("installed {module_id} {version}"),
@@ -179,4 +206,14 @@ pub fn record_install(
     )?;
 
     Ok(())
+}
+
+fn open(memory_path: &Path) -> Result<Memory, RecollectionError> {
+    if let Some(parent) = memory_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| RecollectionError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(Memory::open(memory_path, &LexicalEmbedder)?)
 }

@@ -26,6 +26,7 @@
 
 use std::io::Write;
 use std::path::Path;
+use thalyx_agent::recollection::RecollectionError;
 use thalyx_core::Store;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -459,7 +460,7 @@ fn list_available(store: &Store) {
 /// decrees that the request is generated and rendered by the core, and this is
 /// the machine's end of it. It is step 3 of the exit criterion, and it is the
 /// same code path the host CLI uses, not a copy of it.
-fn install_module(store: &Store, name: &str) {
+fn install_module(store: &Store, name: &str, utterance: &str) {
     println!();
     let candidate = match thalyx_core::repo::resolve(&store.repo_root(), name, None) {
         Ok(candidate) => candidate,
@@ -501,11 +502,36 @@ fn install_module(store: &Store, name: &str) {
                 outcome.files.len(),
                 outcome.granted
             );
+
+            // After the commit, never before. A memory written first would
+            // describe an installation that a refusal at the trusted path then
+            // stopped, and the person who said no would find the machine
+            // remembering that they had said yes.
+            //
+            // The `current` link and not the version directory: it is the one
+            // point that decides whether the module is installed at all, so
+            // `revertir` makes this record stop being assertable — which is
+            // how undoing shows up in what the machine remembers.
+            let module_id = outcome.module_id.clone();
+            let version = outcome.version.clone();
+            let installed_at = store.current_link(&module_id);
+            remembering(store, "The install", |memory| {
+                thalyx_agent::recollection::record_install(
+                    memory,
+                    SESSION_TASK,
+                    utterance,
+                    &module_id,
+                    &version,
+                    &installed_at,
+                )
+            });
+
             println!();
             println!(
                 "  `correr {}` runs it. `revertir` undoes this.",
                 outcome.module_id
             );
+            println!("  `recuerdos` says what I will still know after a restart.");
         }
         Err(error) => {
             println!();
@@ -533,7 +559,7 @@ fn show_permissions(store: &Store) {
 /// back what Thalyx itself put on disk and touches nothing the human made,
 /// which is why it does not ask first. The destructive one is `restore`, it has
 /// its own name, and it is not a verb here.
-fn revert(store: &Store) {
+fn revert(store: &Store, utterance: &str) {
     println!();
     let plan = match thalyx_core::rollback::plan(store, None) {
         Ok(plan) => plan,
@@ -560,6 +586,14 @@ fn revert(store: &Store) {
 
     match thalyx_core::rollback::apply(store, &plan, &crate::new_request_id()) {
         Ok(()) => {
+            // Only what was asked, and nothing about the world. The install's
+            // own record witnesses the `current` link this just removed, so the
+            // undo already shows up there — as that record becoming
+            // unconfirmable, in those words. See `recollection.rs`.
+            remembering(store, "The rollback", |memory| {
+                thalyx_agent::recollection::record_utterance(memory, SESSION_TASK, utterance)
+            });
+
             println!();
             println!("  undone.");
         }
@@ -571,8 +605,61 @@ fn revert(store: &Store) {
     println!();
 }
 
+/// What everything done through the session is remembered under.
+///
+/// Step 6 of `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` is
+/// restarting the machine and finding that the agent still knows what was being
+/// done. On the host CLI the task is named by `--task`; inside the machine
+/// there is nobody to name one, and inventing a scheme — a task per boot, a
+/// task per module — would put a decision in code that the vault has not made,
+/// and a task per boot would lose the record at exactly the reboot the step is
+/// about.
+///
+/// So there is one, it is named for what it is, and it deliberately outlives
+/// the session that wrote it. That is the whole demonstration: the word is
+/// `session` and the memory is not one.
+const SESSION_TASK: &str = "session";
+
 /// The word that makes running without enforcement a thing somebody typed.
 const UNCONFINED_WORD: &str = "sin-confinar";
+
+/// What the machine still knows, re-checked against the disk right now.
+///
+/// The same function `thalyx agent recall` runs, indented to match the session.
+/// `Coherencia-Doble-Ruta.md` is why it is not written twice: the two routes
+/// have to agree about a memory, and the way they stop agreeing is one of them
+/// being edited.
+fn show_memory(store: &Store) {
+    println!();
+    if let Err(error) = crate::agent::recall(store, SESSION_TASK, "  ") {
+        // Rule 10. An unreadable memory and an empty one are different facts
+        // about the machine, and `recall` already says the second in its own
+        // words — so this branch can only be the first, and says so.
+        println!("  I could not read what I remember: {error}");
+        println!("  That is not the same as remembering nothing.");
+    }
+    println!();
+}
+
+/// Write down what was just done, and never let that failure look like the
+/// operation's.
+///
+/// The install has already happened when this runs. If the memory cannot be
+/// written, the module is still installed and the person has to be told which
+/// of the two is true — a message that read as though the install had failed
+/// would send them to undo something that worked.
+fn remembering(
+    store: &Store,
+    what: &str,
+    write: impl FnOnce(&Path) -> Result<(), RecollectionError>,
+) {
+    if let Err(error) = write(&crate::agent::memory_path(store)) {
+        println!();
+        println!("  {what} happened, and I could not write it down: {error}");
+        println!("  The machine is as this said it is. What will be missing after");
+        println!("  a restart is my record of it, not the thing itself.");
+    }
+}
 
 /// Run an installed module from the session.
 ///
@@ -705,13 +792,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
-            println!("  `permisos` shows what is granted, `estado` re-reads the");
+            println!("  `permisos` shows what is granted, `recuerdos` says what I");
+            println!("  will still know after a restart, `estado` re-reads the");
             println!("  machine, `nucleo` shows what the kernel has been saying,");
             println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
-            println!("  `permisos`, `revertir`, `estado`, `nucleo`. `salir` to leave.");
+            println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`.");
+            println!("  `salir` to leave.");
         }
     }
     // Said wherever it is true, and nowhere it is not. Both standings hit the
@@ -773,11 +862,14 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 show_permissions(store);
             }
             "revertir" | "rollback" => {
-                revert(store);
+                revert(store, line);
+            }
+            "recuerdos" | "recordar" | "memory" | "recall" => {
+                show_memory(store);
             }
             _ if line.starts_with("instalar ") || line.starts_with("install ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_module(store, rest);
+                install_module(store, rest, line);
             }
             "instalar" | "install" => {
                 println!();

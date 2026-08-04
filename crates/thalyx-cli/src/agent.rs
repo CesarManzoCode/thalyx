@@ -98,7 +98,7 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             },
         ),
 
-        AgentCommand::Recall { task } => recall(store, &task),
+        AgentCommand::Recall { task } => recall(store, &task, ""),
 
         AgentCommand::Do {
             utterance,
@@ -132,7 +132,7 @@ fn policy(may_act: bool) -> ForeignText {
     }
 }
 
-fn memory_path(store: &Store) -> PathBuf {
+pub(crate) fn memory_path(store: &Store) -> PathBuf {
     store.root().join("state").join("memory.db")
 }
 
@@ -159,18 +159,25 @@ fn transcript(context: Context, utterance: &str, foreign: &[String]) -> Transcri
 /// `thalyx memory recall` shows the same records as a database would. This says
 /// what they mean for the task: what is still true, and what it has stopped
 /// being able to stand behind. A memory nobody consults is a log.
-fn recall(store: &Store, task: &str) -> Fallible {
+///
+/// `indent` exists because the session inside the machine prints the same thing
+/// two spaces in. It is a parameter rather than a second copy of these
+/// paragraphs: step 6 of the exit criterion is checked by reading this text
+/// after a reboot, and two versions of it would eventually say different things
+/// about the same memory, on the two routes `Principio-Doble-Ruta.md` requires
+/// to agree.
+pub(crate) fn recall(store: &Store, task: &str, indent: &str) -> Fallible {
     let context = thalyx_agent::recollection::context(&memory_path(store), task)?;
 
     if context.is_empty() {
-        println!("I have nothing recorded under `{task}`.");
+        println!("{indent}I have nothing recorded under `{task}`.");
         return Ok(());
     }
 
     if !context.said.is_empty() {
-        println!("About `{task}`, you told me:");
+        println!("{indent}About `{task}`, you told me:");
         for text in &context.said {
-            println!("  · {text}");
+            println!("{indent}  · {text}");
         }
     }
 
@@ -178,22 +185,31 @@ fn recall(store: &Store, task: &str) -> Fallible {
         if !context.said.is_empty() {
             println!();
         }
-        println!("And this still checks out:");
+        println!("{indent}And this still checks out:");
         for text in &context.holds {
-            println!("  ✓ {text}");
+            println!("{indent}  ✓ {text}");
         }
     }
 
     if !context.unconfirmable.is_empty() {
         println!();
-        println!("And this I remember but can no longer confirm:");
+        println!("{indent}And this I remember but can no longer confirm:");
         for text in &context.unconfirmable {
-            println!("  ? {text}");
+            println!("{indent}  ? {text}");
         }
         println!();
-        println!("Not wrong — unconfirmable. Something it described changed without");
-        println!("going through Thalyx, so I will not act on it. Name it yourself and");
-        println!("I will, which is the point of you never needing me.");
+        // It used to say the thing had changed "without going through Thalyx",
+        // which was true while the only route to this state was somebody
+        // editing a file behind us. `revertir` at the session prompt reaches it
+        // too, and that is Thalyx doing exactly what it was asked — so the
+        // sentence became a confident account of a cause this code cannot see.
+        // A memory that names the wrong reason is worse than one that names
+        // none: it sends a person looking for an intruder they will not find.
+        println!("{indent}Not wrong — unconfirmable. What it described is no longer");
+        println!("{indent}what it was, so I will not act on it. Undoing the install");
+        println!("{indent}does this, and so does a file changing behind my back; I");
+        println!("{indent}cannot tell which from here. Name it yourself and I will");
+        println!("{indent}act, which is the point of you never needing me.");
     }
 
     Ok(())

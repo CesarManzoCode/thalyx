@@ -74,11 +74,155 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm
+        store store-stage greeter lsm doctor
 
-all: kernel binary image
+all: doctor kernel binary image
 	@echo
 	@echo "  make run"
+
+# ────────────────────────────────────────────────────────── the prerequisites
+#
+# Everything this needs, checked before anything is downloaded or compiled.
+#
+# `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` ends Phase 1 when a
+# person outside the project boots this following only the README, with no help.
+# Step 1 is booting the image. The thing that stops that person is never a hard
+# problem: it is a missing package, discovered one at a time, each one after
+# whatever ran before it succeeded. Downloading a kernel, extracting it,
+# configuring it and compiling it is tens of minutes, and finding out at the end
+# that `bc` is not installed costs all of them — twice, because the next missing
+# tool is found the same way.
+#
+# So the failures are collected rather than hit, and reported together with the
+# one line that fixes all of them. On a machine that has everything it says so
+# and gets out of the way.
+#
+# ## Why the tool and not the package
+#
+# `dpkg -l` would name what is installed on a Debian derivative, and would be
+# wrong twice: it is the wrong question — the property is whether the tool runs,
+# not whether a package manager believes it is present — and it is one distro's
+# question, on a project that refuses to belong to a distro. `command -v` and a
+# compile probe ask the machine.
+#
+# The apt line is printed because Linux Mint is what the first outside person
+# has, and a person who is told "you are missing libelf" and not which package
+# carries it has been told nothing they can act on. It is help, not the check.
+#
+# ## What it deliberately does not check
+#
+# Whether the network reaches kernel.org, and whether rustup can fetch the musl
+# target. Both need the network to find out, both fail with their own clear
+# message, and a check that tried would be slow every time to save nothing.
+#
+# The package list is passed to `echo` unquoted so the shell splits it into
+# words. It used to end in `| xargs`, which does the same and quietly needs
+# /bin/echo to exist — an odd thing for the target whose whole job is finding
+# out what does not exist to depend on without saying so.
+
+# $(1) command  $(2) the apt package that carries it  $(3) what stops without it
+define need
+	@command -v $(1) > /dev/null 2>&1 || { \
+	    echo "    $(1) — $(3)" >> $(BUILD)/doctor.missing; \
+	    echo "$(2)" >> $(BUILD)/doctor.packages; \
+	}
+endef
+
+doctor: | $(BUILD)
+	@rm -f $(BUILD)/doctor.missing $(BUILD)/doctor.packages $(BUILD)/doctor.unchecked
+	@touch $(BUILD)/doctor.missing $(BUILD)/doctor.packages $(BUILD)/doctor.unchecked
+	$(call need,curl,curl,fetching the kernel source)
+	$(call need,tar,tar,unpacking it)
+	$(call need,xz,xz-utils,unpacking it — the tarball is .tar.xz)
+	$(call need,gcc,build-essential,compiling the kernel)
+	$(call need,ld,build-essential,linking it)
+	$(call need,readelf,build-essential,checking that thalyx needs no libc)
+	$(call need,bc,bc,the kernel's version arithmetic)
+	$(call need,flex,flex,the kernel's configuration parser)
+	$(call need,bison,bison,the same parser)
+	$(call need,file,file,describing the binary that goes in the image)
+	$(call need,clang,clang,the BPF programs — gcc cannot target BPF)
+	$(call need,qemu-system-x86_64,qemu-system-x86,booting the machine)
+	@# Not `command -v`, and the difference is not pedantry. mkfs.btrfs lives
+	@# in /usr/sbin, which Debian and its derivatives stopped putting on an
+	@# ordinary user's PATH — so `command -v` reports it missing on a machine
+	@# that has it, and the person is sent to install what they already have.
+	@# What has to be true is that *root* can run it, because `make store` is
+	@# the target that uses it and that target runs under sudo.
+	@command -v mkfs.btrfs > /dev/null 2>&1 \
+	    || [ -x /usr/sbin/mkfs.btrfs ] || [ -x /sbin/mkfs.btrfs ] || { \
+	    echo "    mkfs.btrfs — the store disk; Thalyx requires Btrfs" \
+	        >> $(BUILD)/doctor.missing; \
+	    echo "btrfs-progs" >> $(BUILD)/doctor.packages; \
+	}
+	@# pahole gets its own paragraph because its absence is the nastiest
+	@# failure in this whole build. CONFIG_DEBUG_INFO_BTF depends on pahole
+	@# being present, and Kconfig drops an option whose dependencies are not
+	@# met *without saying so*. The kernel would build, boot, and mount
+	@# everything, and the only symptom would be thalyx-lsm failing to attach
+	@# several steps later — with the blame landing on the loader, which had
+	@# nothing to do with it. config-check catches it now, but it catches it
+	@# after the download and the configure. This catches it before.
+	$(call need,pahole,dwarves,BTF — without it thalyx-lsm can never attach)
+	@# Headers are not commands, so they are checked by compiling something
+	@# that needs them. libelf is objtool's, and objtool is built because
+	@# x86_64 unwinds with ORC.
+	@if command -v gcc > /dev/null 2>&1; then \
+	    echo '#include <libelf.h>' | gcc -E -xc - > /dev/null 2>&1 || { \
+	        echo "    libelf.h — objtool, which every x86_64 kernel builds" \
+	            >> $(BUILD)/doctor.missing; \
+	        echo "libelf-dev" >> $(BUILD)/doctor.packages; \
+	    }; \
+	    echo '#include <openssl/bio.h>' | gcc -E -xc - > /dev/null 2>&1 || { \
+	        echo "    openssl/bio.h — the kernel's own build tooling" \
+	            >> $(BUILD)/doctor.missing; \
+	        echo "libssl-dev" >> $(BUILD)/doctor.packages; \
+	    }; \
+	else \
+	    echo "  gcc is not here, so the kernel's headers could not be checked" \
+	        >> $(BUILD)/doctor.unchecked; \
+	    echo "  at all. There may be more to install after this round." \
+	        >> $(BUILD)/doctor.unchecked; \
+	fi
+	@# Rust is last and separate: it does not come from apt, and telling
+	@# somebody to `apt install cargo` gets them a version that is older than
+	@# this workspace needs and a rustup that is not there to add the musl
+	@# target with.
+	@command -v cargo > /dev/null 2>&1 && command -v rustup > /dev/null 2>&1 || \
+	    echo "rust" >> $(BUILD)/doctor.packages
+	@if [ -s $(BUILD)/doctor.packages ]; then \
+	    echo; \
+	    echo "  Not here yet:"; \
+	    echo; \
+	    cat $(BUILD)/doctor.missing; \
+	    if grep -qx rust $(BUILD)/doctor.packages; then \
+	        echo "    cargo, rustup — building thalyx itself"; \
+	    fi; \
+	    echo; \
+	    apt=$$(grep -vx rust $(BUILD)/doctor.packages | sort -u); \
+	    if [ -n "$$apt" ]; then \
+	        echo "  On Linux Mint, Ubuntu or Debian, all of them at once:"; \
+	        echo; \
+	        echo "      sudo apt install" $$apt; \
+	        echo; \
+	    fi; \
+	    if grep -qx rust $(BUILD)/doctor.packages; then \
+	        echo "  Rust does not come from apt. The version apt has is older"; \
+	        echo "  than this needs, and brings no rustup to add the musl"; \
+	        echo "  target with:"; \
+	        echo; \
+	        echo "      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"; \
+	        echo; \
+	    fi; \
+	    if [ -s $(BUILD)/doctor.unchecked ]; then \
+	        cat $(BUILD)/doctor.unchecked; \
+	        echo; \
+	    fi; \
+	    echo "  Then run this again. Nothing was downloaded or built."; \
+	    echo; \
+	    exit 1; \
+	fi
+	@echo "  prerequisites: everything the build and the boot need is here"
 
 $(BUILD):
 	mkdir -p $(BUILD)

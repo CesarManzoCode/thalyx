@@ -282,6 +282,44 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_downloaded_or_compiled_before_the_prerequisites_are_checked() {
+        // Step 1 of the exit criterion is a person outside the project booting
+        // this with no help. What stops that person is never a hard problem: it
+        // is a missing package, found one at a time, each one only after
+        // everything before it succeeded — so a missing `bc` costs the whole
+        // kernel download and build, and the next missing tool costs it again.
+        //
+        // `doctor` collects them instead. It only helps if it runs *first*: as
+        // the last prerequisite of `all` it would report a missing compiler
+        // after make had already tried to use it. Order in a prerequisite list
+        // is the kind of thing a later edit reshuffles without a thought, and
+        // nothing else in this repository would notice.
+        let text = image_makefile();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("all:"))
+            .expect("the image Makefile has an `all` target");
+        let prerequisites: Vec<&str> = line.trim_start_matches("all:").split_whitespace().collect();
+        assert_eq!(
+            prerequisites.first(),
+            Some(&"doctor"),
+            "`all` builds before it checks: {line}"
+        );
+
+        // And that the silent one is among the checks. pahole's absence does
+        // not fail the build: Kconfig drops CONFIG_DEBUG_INFO_BTF without a
+        // word, the kernel builds and boots, and the only symptom appears
+        // several steps later as thalyx-lsm failing to attach — with the blame
+        // landing on the loader, which had nothing to do with it.
+        assert!(
+            recipe_of(&text, "doctor:")
+                .iter()
+                .any(|l| l.contains("pahole")),
+            "the doctor does not check for pahole, and its absence is silent"
+        );
+    }
+
+    #[test]
     fn the_disk_carries_the_module_to_install_and_not_the_module_installed() {
         // `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` step 2 is a
         // person installing a signed module from a local repository, and step 3
@@ -458,6 +496,31 @@ mod tests {
         assert_ne!(
             modules.target, "/opt/thalyx/modules",
             "staging and destination would be in different subvolumes"
+        );
+    }
+
+    #[test]
+    fn what_the_machine_remembers_lands_on_the_disk_and_not_on_the_tmpfs() {
+        // Step 6 of the exit criterion is restarting the machine and finding
+        // that it still knows what was being done. The root filesystem is a
+        // tmpfs that keeps nothing, so where `memory.db` sits is the entire
+        // difference between that step passing and it being unperformable —
+        // and the two are indistinguishable right up until the power goes off,
+        // which is the one moment the step is about.
+        //
+        // `crates/thalyx-cli/src/agent.rs` puts it at <store root>/state, so
+        // what has to hold is that the store root is a mount from the disk.
+        // Asserting it here, against the mount table itself, is the closest a
+        // machine with no reboot can get to asserting the reboot.
+        let memory = Path::new("/opt/thalyx").join("state").join("memory.db");
+        let carrier = SUBVOLUMES
+            .iter()
+            .filter(|s| memory.starts_with(s.target))
+            .max_by_key(|s| s.target.len())
+            .expect("the memory has to be under something that comes off the disk");
+        assert_eq!(
+            carrier.name, "system",
+            "what the machine remembers would not survive a boot"
         );
     }
 

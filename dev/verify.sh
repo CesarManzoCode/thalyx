@@ -1504,6 +1504,19 @@ else
         failed "\`disponibles\` did not show the bundle; see $WORK/session-available.log"
     fi
 
+    # --- the baseline for step 6 -------------------------------------------
+    #
+    # Before anything has happened, the machine has to say it remembers
+    # nothing. Without this line, a `recuerdos` that printed a fixed paragraph
+    # would satisfy every check below it, and step 6 would be theatre in the
+    # one place the criterion looks.
+    at_the_prompt recuerdos salir > "$WORK/session-memory-empty.log"
+    if grep -q "I have nothing recorded" "$WORK/session-memory-empty.log"; then
+        proven "a machine that has done nothing says it remembers nothing"
+    else
+        failed "\`recuerdos\` claimed a memory on an untouched machine; see $WORK/session-memory-empty.log"
+    fi
+
     # --- the control: refusing must not install ----------------------------
     #
     # Without this, a session that installed no matter what the human answered
@@ -1514,6 +1527,17 @@ else
         proven "answering no left the machine with nothing installed"
     else
         failed "a refused install did not leave the machine empty; see $WORK/session-refused.log"
+    fi
+
+    # And it remembered nothing either. The record is written after the commit
+    # and never before, so a person who said no does not come back to a machine
+    # that remembers them saying yes. A memory written from the request rather
+    # than from the act would pass everything else in this stage.
+    at_the_prompt recuerdos salir > "$WORK/session-memory-refused.log"
+    if grep -q "I have nothing recorded" "$WORK/session-memory-refused.log"; then
+        proven "a refused install left nothing in the machine's memory either"
+    else
+        failed "the machine remembered an install that never happened; see $WORK/session-memory-refused.log"
     fi
 
     # --- the trusted path, and the install ---------------------------------
@@ -1547,6 +1571,39 @@ else
         failed "the session reported an install that is not on disk"
     fi
 
+    # --- step 6: the task outlives the process that did it ------------------
+    #
+    # Every `at_the_prompt` is a separate process with nothing carried over, so
+    # this is a session that did not install anything reading back what another
+    # one did. That is the mechanism a reboot exercises; what a reboot adds is
+    # the kernel going away, and what makes *that* survivable is the file being
+    # on the store disk rather than in the tmpfs root — checked as a property of
+    # the mount layout in `store_disk.rs`, since a reboot is not available here.
+    #
+    # Two claims, deliberately separate: that the human's own words came back,
+    # and that the installation is being re-checked rather than replayed.
+    at_the_prompt recuerdos salir > "$WORK/session-memory.log"
+    if grep -q "instalar dev.thalyx.greeter" "$WORK/session-memory.log"; then
+        proven "a new session recalls what was asked of the one before it"
+    else
+        failed "the machine forgot the request across processes; see $WORK/session-memory.log"
+    fi
+    if grep -q "still checks out" "$WORK/session-memory.log" \
+       && grep -q "installed dev.thalyx.greeter 1.0.0" "$WORK/session-memory.log"; then
+        proven "and says the install still checks out, having gone and looked"
+    else
+        failed "the install was not recalled as holding; see $WORK/session-memory.log"
+    fi
+
+    # And it is on the store, not beside it. A memory in the tmpfs root reads
+    # identically to this one right up until the machine is turned off, which is
+    # the one moment step 6 is about.
+    if [ -s "$SESSION_STORE/state/memory.db" ]; then
+        proven "what the machine remembers is on the store, where a restart cannot reach it"
+    else
+        failed "nothing was written under $SESSION_STORE/state; the memory would not survive a boot"
+    fi
+
     # --- reverting ----------------------------------------------------------
     at_the_prompt revertir modulos salir > "$WORK/session-revert.log"
     if grep -q "undone" "$WORK/session-revert.log" \
@@ -1563,6 +1620,34 @@ else
         proven "reverting left the repository alone, so it can be installed again"
     else
         failed "reverting deleted the bundle it came from"
+    fi
+
+    # --- and the memory noticed the machine changed under it ----------------
+    #
+    # This is the check that separates a memory from a log. The install was
+    # recorded against the module's `current` link; reverting removed it, so the
+    # record has to come back as something the machine can no longer stand
+    # behind — by itself, with nobody telling it the module was gone.
+    #
+    # A recall that still reported the install as holding would be replaying
+    # what it was told instead of re-reading the disk, and every line above
+    # would have passed just the same.
+    at_the_prompt recuerdos salir > "$WORK/session-memory-after.log"
+    if grep -q "can no longer confirm" "$WORK/session-memory-after.log" \
+       && grep -q "installed dev.thalyx.greeter 1.0.0" "$WORK/session-memory-after.log"; then
+        proven "after the rollback the machine stops standing behind the install, on its own"
+    else
+        failed "the memory still asserts an install that was undone; see $WORK/session-memory-after.log"
+    fi
+
+    # And the request itself is untouched by that. Nothing on disk can make it
+    # false that the person asked, so nothing on disk is allowed to cast doubt
+    # on it — a design that let the two decay together would lose the only
+    # record of what was being attempted.
+    if grep -q "you told me" "$WORK/session-memory-after.log"; then
+        proven "and still knows what was asked, which no file can falsify"
+    else
+        failed "the request went stale along with the install; see $WORK/session-memory-after.log"
     fi
 fi
 

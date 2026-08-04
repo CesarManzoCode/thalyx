@@ -44,6 +44,75 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 > Comprobado manejando el prompt de verdad —etapa 15 de `verify.sh`, con un pty,
 > porque el confirmador se niega sin terminal: el silencio no es consentimiento—
 > y con el control que hace falta, que responder que no **no** instale.
+>
+> **Los seis pasos se pueden hacer desde el 2026-08-04.** Faltaban dos, y los dos
+> eran del mismo tipo: existían las piezas y no había cómo alcanzarlas.
+>
+> **El paso 6** era el único que no tenía nada detrás. La sesión no escribía
+> nada en la memoria persistente al instalar, así que reiniciar no perdía el
+> contexto: no había contexto que perder. Ahora `instalar` y `revertir` escriben
+> por el mismo `recollection.rs` que usa `thalyx agent do --task`, y `recuerdos`
+> lo lee. Qué significa aquí *conservar el contexto* está resuelto abajo.
+>
+> **El paso 1** tenía máquina y no tenía camino. Ver "Lo que detiene a esa
+> persona no es un problema difícil".
+
+## Qué cuenta como el paso 6
+
+Decidido por Cesar el 2026-08-04, porque la bóveda decía dos cosas que no son
+la misma y el criterio manda que ninguna otra lo sustituya.
+
+El paso 6 dice *"el agente conserva el contexto de la tarea"*. Aparte,
+[[Punto-Actual]] decía que *"para cerrar la fase falta el modelo del agente"*.
+Lo segundo no está en el criterio, y el criterio es el criterio.
+
+**El paso 6 se cumple cuando la máquina, después de un reinicio, dice qué se le
+pidió y vuelve a comprobar lo que hizo.** El agente determinista es el que hay;
+la sesión dice *"I have no model loaded"* cuando no entiende algo, así que la
+máquina no aparenta un modelo que no tiene, y esa honestidad es lo que hace
+aceptable la lectura corta.
+
+**El modelo real no se cancela ni se adelanta**: [[Gamas-de-Modelo]] sigue
+decretado y sigue siendo un decreto abierto. Deja de bloquear la fase.
+
+### Y por qué eso no es un atajo
+
+Porque lo que el paso 6 puede demostrar sin modelo es justo lo que lo hace
+difícil: **una memoria que se vuelve a comprobar en vez de repetirse.**
+
+Después de instalar, la máquina dice que la instalación *sigue en pie*. Después
+de `revertir`, dice que la recuerda y **ya no la puede confirmar** — sola, sin
+que nadie le avise de que el módulo se fue, porque el hecho quedó atestiguado
+contra el enlace `current` que el rollback quitó. Y lo que se le pidió sigue
+intacto, porque ningún archivo puede volver falso que alguien lo haya dicho.
+
+Un modelo encima de eso cambia qué frases entiende. No cambia nada de esto.
+
+## Lo que detiene a esa persona no es un problema difícil
+
+Escrito el 2026-08-04, al hacer el paso 1 de verdad.
+
+El decreto pide que arranque **con un solo comando** y sin ayuda. La máquina
+existía desde el 2026-08-03; el camino hasta ella no. Y lo que rompe ese camino
+nunca es Thalyx: es un paquete que falta, encontrado **de uno en uno**, y cada
+uno *después* de que lo anterior salió bien. Un `bc` ausente cuesta la descarga
+y la compilación enteras del kernel, y la siguiente herramienta que falte las
+vuelve a costar.
+
+`make -C image doctor` las junta todas y las contesta con una línea de `apt`.
+No descarga ni compila nada, y `all` depende de él **primero** — hay una prueba
+que lee el `Makefile` para eso, porque el orden de una lista de prerequisitos es
+exactamente la clase de cosa que una edición posterior reacomoda sin pensarlo.
+
+El peor de todos era **`pahole`**. Sin él, Kconfig descarta `DEBUG_INFO_BTF`
+*sin decir nada*, el kernel compila y arranca, y el único síntoma aparece varios
+pasos después como `thalyx-lsm` incapaz de engancharse — con la culpa cayendo
+sobre el cargador, que no tuvo nada que ver. Es la misma forma que el hueco de
+`bpftool`, y por eso tiene su propio párrafo en el `Makefile`.
+
+Y el `doctor` se comprueba a sí mismo en un sitio: si `gcc` no está, las
+cabeceras del kernel no se pueden probar, y **lo dice** en vez de callarlo. Es
+la regla 3 de [[Estrategia-de-Pruebas]] aplicada al comprobador.
 
 ## Por qué este criterio y no uno técnico
 

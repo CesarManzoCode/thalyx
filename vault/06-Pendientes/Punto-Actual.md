@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-03
+fecha-actualizacion: 2026-08-04
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -145,6 +145,60 @@ tags: [continuidad, punto-actual, sesiones]
 > [[Cargador-BPF-Propio]] y la regla nueva en [[Estrategia-de-Pruebas]] — porque
 > esto abrió una forma de mentir sin síntoma, y hay una prueba que la muerde.
 >
+> ## Y los seis pasos existen — 2026-08-04
+>
+> **Se puede hacer el criterio de salida entero.** Faltaban dos pasos y los dos
+> eran lo mismo: las piezas estaban escritas y no había cómo alcanzarlas.
+>
+> **El paso 6 no tenía nada detrás.** La sesión no escribía nada en la memoria
+> persistente al instalar, así que reiniciar no perdía el contexto — no había
+> contexto. Ahora `instalar` y `revertir` escriben por el mismo
+> `recollection.rs` que usa `thalyx agent do --task`, y `recuerdos` lo lee. Todo
+> vive en `<store>/state/`, que es el subvolumen `system`, que viene del disco:
+> hay una prueba que lo afirma contra la tabla de montajes, porque una memoria
+> en el tmpfs se ve idéntica hasta el momento de apagar, que es el único que le
+> importa al paso 6.
+>
+> Lo que sale después de instalar, reiniciar y `revertir`:
+>
+> ```
+>   About `session`, you told me:
+>     · the human asked: instalar dev.thalyx.greeter
+>     · the human asked: revertir
+>
+>   And this I remember but can no longer confirm:
+>     ? installed dev.thalyx.greeter 1.0.0
+> ```
+>
+> **Eso es lo que distingue una memoria de una bitácora**, y es lo que hace que
+> el paso 6 valga sin modelo: nadie le avisó que el módulo se fue. El hecho
+> quedó atestiguado contra el enlace `current`, `revertir` lo quitó, y la
+> máquina fue a ver. Lo que se le pidió sigue intacto porque ningún archivo
+> puede volver falso que alguien lo haya dicho.
+>
+> Cesar decidió el 2026-08-04 que **eso es el paso 6** y que el modelo real deja
+> de bloquear la fase. Sigue decretado en [[Gamas-de-Modelo]]. El razonamiento
+> está en [[Criterio-de-Salida-Fase-1]].
+>
+> **El paso 1 tenía máquina y no tenía camino.** `make -C image doctor` junta
+> todas las herramientas que faltan y las contesta con una línea de `apt`, sin
+> descargar ni compilar nada, y `all` depende de él primero. Lo que detiene a la
+> persona ajena nunca es Thalyx: es un paquete, encontrado de uno en uno, cada
+> uno después de que lo anterior salió bien. El peor era `pahole` — sin él
+> Kconfig descarta `DEBUG_INFO_BTF` en silencio y la culpa cae sobre el
+> cargador. El README tiene la sección **Boot it**, que son los seis pasos y
+> nada más.
+>
+> **Un defecto encontrado al hacerlo**, y dio regla nueva: la frase que explica
+> un hecho no confirmable decía que algo había cambiado *"without going through
+> Thalyx"*, y con `revertir` esa causa dejó de ser cierta. Ninguna prueba se
+> rompió. Ver la regla del mensaje que nombra la causa en
+> [[Estrategia-de-Pruebas]].
+>
+> **Nada de esto se ha corrido en hardware.** Es lo siguiente: `sudo
+> ./dev/verify.sh`, donde la etapa 15 creció seis comprobaciones, y después
+> `make -C image run`.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
@@ -176,12 +230,15 @@ entonces: **520 pruebas**, el agente mínimo que lleva un enunciado hasta un
 módulo instalado sin modelo alguno, `thalyx` como PID 1, la imagen que Thalyx
 construye para sí mismo, y el disco donde guarda lo que le instalan.
 
-**Los huecos de arquitectura de la Fase 1 están escritos.** El último era el
-enforcement dentro de la imagen, y el cargador propio existe desde el
-2026-08-03 — sin ejercer. Cuando la etapa 14 salga en verde, `correr <id>` a
-secas debería funcionar dentro de la máquina y `sin-confinar` deja de hacer
-falta. Para cerrar la fase falta **el modelo del agente**, que es lo único
-grande que queda.
+**Los huecos de arquitectura de la Fase 1 están cerrados.** El último era el
+enforcement dentro de la imagen; el cargador propio salió verde en hardware el
+2026-08-03.
+
+**Y desde el 2026-08-04 los seis pasos del criterio de salida se pueden hacer.**
+Lo que falta para cerrar la fase **no es código**: es que los haga una persona
+ajena, siguiendo solo el README, sin ayuda. El modelo del agente sigue
+decretado en [[Gamas-de-Modelo]] y ya no bloquea la fase — por decisión de
+Cesar del 2026-08-04, razonada en [[Criterio-de-Salida-Fase-1]].
 
 ## Lo que falta comprobar
 
@@ -191,7 +248,9 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 |---|---|
 | El mecanismo del store | **Probado**, etapa 13, en verde el 2026-08-03. |
 | El store arrancando en QEMU | **Probado**, arrancó con el disco montado y el módulo instalado. |
-| **El cargador de BPF propio** | **Escrito y sin ejercer.** Etapa 14. Es lo siguiente que hay que correr. |
+| El cargador de BPF propio | **Probado**, etapa 14, en verde entera el 2026-08-03. |
+| **El paso 6 y el `doctor`** | **Escritos y sin correr en hardware.** Etapa 15, seis comprobaciones nuevas. Es lo siguiente que hay que correr. |
+| **La imagen arrancando con enforcement** | Nunca visto. `make -C image run`. |
 | `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. |
 
 ## Los cuatro fallos del camino, y por qué tres son el mismo
@@ -230,10 +289,10 @@ Hay pruebas para los cuatro, y tres de ellas leen el `Makefile`.
 ## Última corrida verificada
 
 **2026-08-03, Fedora 43, kernel 7.0.11, Btrfs, `bpf` en el orden de LSM,
-`main @ f149ddf`.**
+`main @ f1a6dd0`.**
 
 ```
-proven 67 · not proven 2 · failed 0
+proven 72 · not proven 2 · failed 0
 ```
 
 Las dos `not proven` son cosas que **todavía no existen**, no cosas que no se
@@ -241,9 +300,13 @@ pudieron comprobar: el modelo del agente (`llama.cpp` no está y la ruta real no
 está escrita) y arrancar la imagen desde este script, que se hace a mano con
 `make -C image run`.
 
-Lo que esta corrida cerró y las anteriores no: **el store**. La etapa 13
-formateó un disco Btrfs de verdad, le hizo los tres subvolúmenes, instaló el
-módulo adentro, y lo desmontó y volvió a montar para comprobar que seguía ahí.
+Lo que esta corrida cerró y las anteriores no: **el cargador de BPF propio**.
+La etapa 14 cargó los dos programas sin `bpftool`, los enganchó, dejó los tres
+mapas donde `permd` los busca, **denegó una conexión adentro del cgroup y la
+dejó pasar afuera**, y se soltó sin dejar un enlace vivo.
+
+**Todo lo posterior a `f1a6dd0` está sin correr en hardware**: los verbos de la
+sesión, `vmlinux.h` escrito a mano, el paso 6 y el `doctor`.
 También ejerció el `EXDEV` en el que descansa el layout, con línea base y
 control — porque una afirmación que sostiene un diseño hay que ejercerla, no
 citarla.
@@ -281,9 +344,17 @@ Detalle por crate en [[Estado-de-Implementacion]].
 
 ## Lo que sigue, en orden
 
+### 0. Que una persona ajena haga los seis pasos
+
+**Es lo único que cierra la Fase 1**, y desde el 2026-08-04 no falta código para
+que ocurra. Falta correrlo en hardware primero — `sudo ./dev/verify.sh` y `make
+-C image run` — y después entregarlo. Cesar decidió el 2026-08-03 que eso pasa
+**cuando los seis pasos sean reales**, y ya lo son.
+
 ### 1. El agente — su mitad determinista ya está construida
 
-Va primero, y el motivo es de descubrimiento, no de avance. El ISO desbloquea
+Ya no bloquea la fase; ver el paso 6 en [[Criterio-de-Salida-Fase-1]]. Va
+primero de lo que queda, y el motivo es de descubrimiento, no de avance. El ISO desbloquea
 cinco de los seis pasos del [[Criterio-de-Salida-Fase-1|criterio de salida]]
 contra uno del agente, pero el ISO **integra piezas ya probadas: no puede
 enseñar nada que no se sepa ya**. El agente sí puede invalidar el diseño del
@@ -419,6 +490,44 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-04 — los seis pasos existen
+El objetivo pasó a ser cerrar la Fase 1, y quedaban dos pasos del criterio de
+salida sin nada detrás. Los dos tenían la misma forma: **la pieza estaba escrita
+y no había cómo alcanzarla.**
+
+**El 6.** La memoria persistente es la tercera primitiva y está probada en
+hardware desde el 2026-08-02, y la sesión no escribía en ella. Ahora `instalar`
+y `revertir` escriben por el mismo `recollection.rs` del agente —no una copia— y
+`recuerdos` lo lee. Lo que lo vuelve una prueba y no una demostración: después
+de `revertir`, la instalación sale como *no confirmable* **sola**, porque quedó
+atestiguada contra el enlace `current` que el rollback quitó.
+
+Antes hubo que decidir qué cuenta como el paso 6, porque la bóveda decía dos
+cosas distintas. Lo decidió Cesar: la memoria sobreviviendo al reinicio; el
+modelo real deja de bloquear la fase sin cancelarse.
+
+**El 1.** `make -C image doctor`. Lo que detiene a la persona ajena nunca es
+Thalyx: es un paquete que falta, encontrado de uno en uno y cada uno después de
+que lo anterior salió bien. Ahora salen todos juntos, con la línea de `apt` que
+los instala, antes de descargar o compilar nada. El peor era `pahole`, cuya
+ausencia hace que Kconfig descarte `DEBUG_INFO_BTF` **en silencio** y la culpa
+caiga sobre el cargador de BPF varios pasos después.
+
+Y el `doctor` se comprueba a sí mismo: sin `gcc` no puede probar las cabeceras,
+y lo dice en vez de callarlo. Regla 3 aplicada al comprobador.
+
+**Un defecto propio, y dio regla nueva.** El párrafo que explica un hecho no
+confirmable decía que algo había cambiado *"without going through Thalyx"*.
+Cierto mientras la única ruta fuera una edición por fuera; con `revertir` pasó a
+ser una explicación segura de una causa que ese código no puede ver. Ninguna
+prueba se rompió. Ver [[Estrategia-de-Pruebas]].
+
+También se corrigió el README, que seguía diciendo *"Phase 1 — Thalyx core on an
+Alpine base"* — un decreto derogado el 2026-08-03 que sobrevivió en una de las
+cuatro puertas de entrada. Es la regla de que una afirmación de ausencia caduca
+sola, en su versión más incómoda: caducan también las de presencia cuando nadie
+las vuelve a leer.
 
 ### 2026-08-03 (12) — dos fallos en hardware, y ninguno era de Thalyx en el sentido esperado
 La corrida en la máquina de Cesar dio `proven 59 · failed 2`. Los dos se

@@ -569,6 +569,36 @@ Tres cosas, en este orden:
 Esto se escribió antes de que costara nada, que es la única vez que se puede
 escribir una regla de esta clase.
 
+## Regla derivada: un mensaje que nombra la causa envejece cuando aparece la segunda ruta
+
+**Un mensaje puede decir en qué estado está el sistema. No puede decir cómo
+llegó ahí, salvo que quien lo imprime lo haya visto.**
+
+Encontrado el 2026-08-04. Cuando la memoria persistente no puede confirmar un
+hecho, la sesión imprimía:
+
+> *Something it described changed **without going through Thalyx**.*
+
+Era cierto mientras la única forma de llegar a ese estado fuera que alguien
+editara un archivo por fuera. Al darle a la sesión el verbo `revertir`, apareció
+una segunda ruta —Thalyx haciendo exactamente lo que le pidieron— y la frase
+pasó a ser **una explicación segura de una causa que ese código no puede ver**.
+No se rompió ninguna prueba. Lo que se rompió es que manda a la persona a buscar
+un intruso que no existe.
+
+La forma general: el mensaje se escribe cuando hay una sola manera de llegar al
+estado, y describir *el camino* se siente igual de seguro que describir *el
+estado*. La segunda ruta llega meses después, en otro archivo, y nadie vuelve a
+leer el texto.
+
+Se distingue así: **si el mensaje se borrara, ¿el código podría volver a
+deducirlo?** El estado sí — está ahí, se acaba de leer. La causa no.
+
+Un mensaje que nombra la causa equivocada es peor que uno que no nombra
+ninguna, y es la regla 10 otra vez: decir qué pasó, no por qué se supone que
+pasó. La versión que quedó nombra las dos rutas y dice que desde ahí no puede
+distinguirlas.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -16,7 +16,7 @@ sovereign.
 
 > **Status: Phase 1, core infrastructure built.** Three of the four base
 > primitives — the fourth, the predictive scheduler, is Phase 2 — and the
-> canonical flow are built and **verified on real hardware**: 590 tests and 72
+> canonical flow are built and **verified on real hardware**: 595 tests and 72
 > checks on one machine with a BPF LSM, cgroup v2 and Btrfs, with nothing left
 > unproven *there*. Modules install atomically, run confined, and can be rolled
 > back; the kernel LSM actually denies; subvolumes can be snapshotted and
@@ -28,14 +28,92 @@ sovereign.
 > a session with no shell behind it that can install it, show what it asks for
 > on the trusted path, run it, and undo the whole thing. It also carries its own
 > BPF loader — no bpftool, no second file — and that loader attached enforcement
-> on real hardware, and the enforcement it attached denied a connection.
-> Missing: the conversational agent, and any use by a person outside the
-> project, which is what actually ends Phase 1.
+> on real hardware, and the enforcement it attached denied a connection. What it
+> did through that session it writes down on its own disk, so a restart finds it
+> still knowing what was asked and re-checking what it did rather than repeating
+> it. **Every one of the six steps that end Phase 1 can now be performed** — see
+> **Boot it** below. Missing: a person outside the project performing them,
+> which is what actually ends it, and the conversational agent, which the
+> criterion does not ask for and the machine does not pretend to have.
 >
 > Nothing here is claimed without a check that could have failed. Anything a
 > machine cannot verify is reported as `NOT PROVEN`, never as a pass.
 
-## Try it
+## Boot it
+
+This is Thalyx as Thalyx: a kernel and one program, booting in QEMU, with no
+distribution underneath and no shell behind it. It is written for a machine
+running Linux Mint, Ubuntu or Debian, and it has been done on Fedora too.
+
+**Start here.** It says everything that is missing, all of it at once, and
+prints the one command that installs the lot:
+
+```sh
+make -C image doctor
+```
+
+It downloads nothing and builds nothing. Missing packages are the only thing
+that stops people at this step, and finding them one at a time means finding
+each one *after* the last thing succeeded — so an absent `bc` costs the whole
+kernel build, and the tool after it costs another.
+
+Then, in order:
+
+```sh
+make -C image              # kernel, program, image. The kernel is the long part
+make -C image store-stage  # what goes on the machine's disk
+sudo make -C image store   # format it. The one command that needs root
+make -C image run          # boot
+```
+
+`sudo` appears exactly once, and only to format a disk image with Btrfs and
+copy files into it. Nothing else in this asks for a password, and `make run`
+must not — a boot that needed root would put QEMU and everything inside it
+under root for no reason.
+
+### What to do at the prompt
+
+The machine comes up, says what it does and does not have, and waits. There is
+no login, because there is nobody else to be. There is no shell behind it: what
+is not a word the session knows does not exist.
+
+```
+  > disponibles                     what the local repository holds
+  > instalar dev.thalyx.greeter     answer the permission prompt yourself
+  > permisos                        what is granted, and to whom
+  > correr dev.thalyx.greeter       the module speaks to Thalyx through its API
+  > revertir                        take the install back
+  > recuerdos                       what the machine will still know afterwards
+  > apagar
+```
+
+Then boot it again with `make -C image run` and type `recuerdos`. It will tell
+you what you asked it to do, and that the install it made no longer checks out
+— which is the difference between a memory and a log: it went and looked.
+
+Those seven lines are the whole of
+`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`, which is the only
+thing that ends Phase 1. Not a list of components: a person outside the project
+doing exactly this, from this file, with nobody helping.
+
+### If something fails
+
+The machine is built to say which of "it is not there" and "I could not look"
+happened, so read what it printed before assuming the first. `make -C image
+count` says how many programs are inside the image, and the answer has to be
+one.
+
+## Try it as a program instead
+
+Everything below runs Thalyx on top of a Linux you already have. That is a test
+bench and not a way to use Thalyx —
+`vault/05-Decisiones-y-Debates/Decision-Capa-vs-SO-Nuevo.md` calls it scaffold
+rather than destination — and the program itself will tell you so: started from
+a shell, the session says *this is not the machine*, because it reads its own
+parent to find out rather than being told.
+
+It is here because it is how the system gets verified — see **Verifying it on a
+real machine** below.
 
 ```sh
 cargo build
@@ -193,9 +271,10 @@ commit messages, CLI output — is in English.
 
 ## Roadmap
 
-- **Phase 1** — Thalyx core on an Alpine base: core, LSM, permission broker,
+- **Phase 1** — The machine and what runs on it: core, LSM, permission broker,
   semantic index, module manager, sandbox, local agent, CLI, Btrfs snapshots.
-  Ends when an outsider can install, revert and reboot unaided.
+  Ends when an outsider can boot it, install, revert and reboot unaided —
+  see **Boot it** above, which is that list of steps and nothing else.
 - **Phase 2** — Empirical validation. Benchmarks decide whether primitives move
   into the kernel.
 - **Phase 3** — Kernel migration, if the numbers justify it.

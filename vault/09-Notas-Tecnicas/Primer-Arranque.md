@@ -39,7 +39,33 @@ Arrancar por primera vez la máquina que decreta [[Construccion-del-ISO]]: **el
 kernel de Linux y un programa**. Sin distribución, sin shell, sin gestor de
 paquetes. Es el paso 1 del [[Criterio-de-Salida-Fase-1]].
 
-## Paso 0 — que nada se haya roto
+## Paso 0 — las herramientas, todas de una vez
+
+```sh
+make -C image doctor
+```
+
+No descarga ni compila nada. Nombra **todo** lo que falta y da la línea que lo
+instala. `make -C image` depende de él y corre primero, así que se puede saltar
+a propósito; está aquí porque contestar esta pregunta al principio es la
+diferencia entre una tarde y tres.
+
+Los nombres de paquete que imprime son de Debian y derivados, porque eso es lo
+que tiene la persona ajena del [[Criterio-de-Salida-Fase-1]]. **En Fedora la
+comprobación vale igual y los nombres no**: `dwarves`, `elfutils-libelf-devel`,
+`openssl-devel`, `qemu-system-x86`, `btrfs-progs`.
+
+El que más importa es **`pahole`**, del paquete `dwarves`. Sin él, Kconfig
+descarta `CONFIG_DEBUG_INFO_BTF` sin decir nada, el kernel compila y arranca
+perfecto, y el único síntoma sale mucho después: `thalyx-lsm` no se engancha, y
+la culpa parece del cargador.
+
+| Si falla | Qué significa |
+|---|---|
+| Nombra algo que sí tienes | Casi seguro está en `/usr/sbin` y tu `PATH` no lo trae. `mkfs.btrfs` ya está contemplado; si es otro, dímelo, porque es un fallo del comprobador y no tuyo. |
+| Dice que no pudo probar las cabeceras | No hay `gcc`. Instala lo que pide, vuelve a correrlo, y va a haber más. Lo avisa a propósito. |
+
+## Paso 0b — que nada se haya roto
 
 ```sh
 cd ~/thalyx
@@ -51,10 +77,14 @@ sudo ./dev/verify.sh
 **Debe imprimir**, al final:
 
 ```
-proven      67
 not proven  2
 failed      0
 ```
+
+`proven` va a salir más alto que la última corrida registrada —72, en
+`main @ f1a6dd0`— porque desde entonces existen la etapa 15 y sus
+comprobaciones del paso 6. Lo que no cambia es que `failed` sea 0 y que las
+`not proven` sean **estas dos** y no otras.
 
 Las **dos** `not proven` esperadas son:
 
@@ -71,7 +101,7 @@ contenedor sin Btrfs en el kernel se salta diciéndolo, y eso también está bie
 | `failed` > 0 | Regresión real. La etapa lo dice; el log queda en el directorio temporal que imprime. Esto se arregla antes de seguir. |
 | `not proven` > 2 | Algo que antes se comprobaba dejó de poder comprobarse. Mira cuáles se nombran al final: casi siempre es una herramienta que falta (`bpftool`, `clang`, `btrfs`). |
 | Falla algo de la etapa 13 | El store. Pégame la etapa completa: cada línea dice cuál de los cuatro pasos —formatear, montar, instalar, sobrevivir al remontaje— fue el que se cayó, y son problemas distintos. |
-| `520 tests` sale distinto | Si es menos, algo dejó de compilarse. Si es más, alguien agregó pruebas y está bien. |
+| El número de tests sale distinto | Si es menos, algo dejó de compilarse. Si es más, alguien agregó pruebas y está bien. Al 2026-08-04 son 595. |
 
 ## Paso 1 — el target de musl
 
@@ -280,12 +310,23 @@ contrario, y esa diferencia es cómo se comprueba que la frase no está cableada
 
 ## Paso 6 — que haga algo
 
-Con el store montado, la sesión tiene un módulo instalado:
+Con el store montado, la máquina tiene un módulo **en su repositorio y sin
+instalar**. Está así a propósito: una máquina que arranca con él puesto vuelve
+irrealizable el paso 2 del [[Criterio-de-Salida-Fase-1]], y el paso 3 —el camino
+confiable— no se alcanza nunca.
 
 ```
-  > modulos
+  > disponibles
   dev.thalyx.greeter 1.0.0
 
+  > instalar dev.thalyx.greeter
+```
+
+Ahí sale el recuadro del [[Camino-Confiable]] con el permiso que pide, y hay que
+contestarlo. Responder que no **no instala nada**, y eso también conviene
+probarlo una vez.
+
+```
   > correr dev.thalyx.greeter
 ```
 
@@ -341,10 +382,55 @@ Para ver qué dijo el kernel: `nucleo`. Para apagar: `apagar`.
 
 | Si falla | Qué significa y qué hacer |
 |---|---|
-| `modulos` dice que no hay nada | El store no se montó, o se montó vacío. Las primeras líneas del arranque dicen cuál de las dos. |
+| `disponibles` dice que el repositorio está vacío | El store no se montó, o se montó vacío. Las primeras líneas del arranque dicen cuál de las dos. |
+| `modulos` dice que no hay nada, después de instalar | El commit no se publicó. Pégame la salida entera de `instalar`. |
 | `AND GOT IT` | El módulo leyó `/etc/shadow`. Eso es un fallo de Thalyx y manda sobre todo lo demás. |
 | `I was refused /opt/thalyx/data/greeter/notes.txt` | El módulo pidió lo que sí tenía concedido y se lo negaron. Eso es un fallo del núcleo de permisos, no del store: el archivo está en el disco y el manifiesto lo nombra. |
 | `nothing to read, and nothing granted` | El módulo preguntó qué podía leer y no le dieron nada. El permiso no sobrevivió a la instalación. |
+
+## Paso 7 — los seis pasos completos, que es lo que cierra la fase
+
+Lo de arriba son los pasos 1, 2, 3 y parte del 5. Faltan estos, y se hacen en el
+mismo prompt:
+
+```
+  > permisos
+  > revertir
+  > recuerdos
+  > apagar
+```
+
+Y después, otra vez `make -C image run`, y en la máquina recién arrancada:
+
+```
+  > recuerdos
+```
+
+**Debe decir** qué se le pidió, y que la instalación que hizo ya no la puede
+confirmar:
+
+```
+  About `session`, you told me:
+    · the human asked: instalar dev.thalyx.greeter
+    · the human asked: revertir
+
+  And this I remember but can no longer confirm:
+    ? installed dev.thalyx.greeter 1.0.0
+```
+
+**Eso es el paso 6 del [[Criterio-de-Salida-Fase-1]], y es la parte que no se
+puede fingir.** Nadie le avisó que el módulo se fue: el hecho quedó atestiguado
+contra el enlace `current`, `revertir` lo quitó, y la máquina fue a ver antes de
+contestar. Una bitácora habría repetido lo que le dijeron.
+
+Lo que se le pidió sigue ahí porque ningún archivo puede volver falso que
+alguien lo haya dicho — por eso se guardan como dos clases distintas de hecho.
+
+| Si falla | Qué significa y qué hacer |
+|---|---|
+| `I have nothing recorded under session` después de reiniciar | La memoria no llegó al disco. Casi seguro el store no se montó en el arranque anterior: `state/` vive en el subvolumen `system`, y sin él la memoria se escribió en el tmpfs y se fue con el apagado. Las primeras líneas del arranque lo dicen. |
+| Dice que la instalación **sí** sigue en pie, después de revertir | Eso es un fallo y manda sobre lo demás: la memoria estaría repitiendo en vez de comprobar. Pégame las dos salidas de `recuerdos`, la de antes y la de después. |
+| `I could not read what I remember` | Es distinto de no recordar nada, y por eso lo dice aparte. El archivo está y no se pudo abrir. Pégamelo. |
 
 ## Lo que va a estar mal, y ya se sabe
 
