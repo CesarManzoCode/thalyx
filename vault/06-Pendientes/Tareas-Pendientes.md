@@ -16,6 +16,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 ## Pendientes de implementación
 
 - [ ] **Que `verify.sh` exija también `THALYX_REQUIRE_BTRFS_TESTS`.** Activa las otras tres cuando la máquina las soporta, pero no esta: comprueba los snapshots por su cuenta y deja que las pruebas de Btrfs del arnés de Rust se salten calladas. Ver [[Estado-de-Implementacion]].
+- [ ] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas son directorios**. Lo cubre ahora una prueba unitaria de `create_target_like` y la etapa 16 en hardware; falta un caso en `isolation.rs` que arme la raíz remapeada de verdad sobre un archivo. Ver [[Estrategia-de-Pruebas]].
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para saber *qué* cambió, no solo que algo cambió. El atajo ya no lo necesita — lo resolvió la atribución por ancestros — así que esto solo hace falta para reindexar de forma incremental en vez de reconstruir. Ver [[FS-en-Grafo]].
 
 

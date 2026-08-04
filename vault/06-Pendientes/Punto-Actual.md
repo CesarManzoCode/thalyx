@@ -388,17 +388,34 @@ tags: [continuidad, punto-actual, sesiones]
 > pantalla de arranque limpia, primer `correr` roto. Eso es el fallo sin
 > síntoma, en el único lugar construido para no tener ninguno.
 >
+> ## El módulo corrió confinado, y se cayó montando su archivo — 2026-08-04
+>
+> **El `pivot_root` funcionó sobre el initramfs.** Era la duda que quedaba, y
+> salió bien: el módulo obtuvo su cgroup, su raíz propia, su usuario propio,
+> seccomp con 128 llamadas y sus límites de memoria y procesos, adentro de la
+> máquina. Lo que falló es el último syscall de un montaje:
+>
+> ```
+> could not attach the remapped mount at
+> /run/thalyx/sandbox/opt/thalyx/data/greeter/notes.txt: Invalid argument
+> ```
+>
+> El kernel exige que el punto de montaje de un archivo sea un archivo
+> (`do_move_mount`: `d_is_dir(new) != d_is_dir(old)` → `EINVAL`). `bind` lo
+> sabía; `bind_remapped` llamaba a `create_dir` sin mirar. Dos funciones que
+> obedecen la misma regla del kernel, escritas por separado.
+>
+> Sobrevivió porque **todos los permisos de todas las pruebas son directorios**.
+> El único permiso sobre un archivo suelto es el del `greeter`, y el único lugar
+> donde el `greeter` corre con usuario propio es la imagen. Un caso de prueba
+> que nunca varía no es un caso de prueba. Ver [[Estrategia-de-Pruebas]].
+>
 > ## Lo que sigue sin verse
 >
-> **El `pivot_root` del sandbox, adentro de la imagen.** Con los controladores
-> puestos, `correr` llega por primera vez a armar la raíz del módulo. Ese paso
-> está probado en la Fedora de Cesar —etapa 6, seis líneas de aislamiento— y
-> **nunca ha corrido sobre un initramfs**, que es lo que la imagen tiene por
-> raíz. Puede salir bien y puede no salir; si no sale, el mensaje nombra el
-> montaje exacto que falló.
->
-> Lo que hay del otro lado, si sale: los seis pasos completos dentro de la
-> máquina, de arranque frío a arranque frío.
+> **Que el módulo hable.** Con el montaje arreglado, lo que falta es que el
+> `greeter` lea su archivo, pida `/etc/shadow`, sea negado, y lo diga por su
+> canal — que es la línea que la etapa 16 busca. Todo lo que hay debajo de eso
+> ya se vio funcionando adentro de la máquina en la corrida anterior.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -708,9 +725,14 @@ todas las demás máquinas eso lo hace systemd antes de que corra nada, y en la
 imagen no hay systemd. PID 1 lo hace ahora, y la sesión reporta un cgroup2 que
 está montado y no delega nada como lo que es: ausente.
 
-Los tres son la misma forma vista desde tres lados: **una comprobación que
+**El cuarto:** el punto de montaje de un permiso sobre un archivo se creaba
+como directorio en la ruta remapeada, y el kernel exige que sean del mismo tipo.
+Todos los permisos de todas las pruebas son directorios; el único permiso sobre
+un archivo suelto es el del `greeter`.
+
+Los cuatro son la misma forma vista desde cuatro lados: **una comprobación que
 depende de una condición solo se hace en las máquinas que la cumplen**, y la
-imagen es la única máquina que no cumple ninguna. Cuatro reglas nuevas en
+imagen es la única máquina que no cumple ninguna. Cinco reglas nuevas en
 [[Estrategia-de-Pruebas]], incluida la del mensaje de falla que nombraba una
 causa que nadie midió y mandaba a buscar al lado equivocado.
 

@@ -343,7 +343,10 @@ fn bind_remapped(
 ) -> Result<()> {
     let uid = uid.expect("only called when the module has a user of its own");
 
-    create_dir(target)?;
+    // The same rule as a plain bind, and it used to be a bare `create_dir`.
+    // See `create_target_like`: a directory here over a file source is an
+    // `EINVAL` from `move_mount` with nothing in it to say what was wrong.
+    create_target_like(source, target)?;
 
     let helper = std::env::current_exe().map_err(|source_error| SandboxError::Exec {
         program: PathBuf::from("<current executable>"),
@@ -391,17 +394,7 @@ fn granted_path(permission: &Permission) -> Option<PathBuf> {
 /// nothing reports a problem. It is the classic way a container ends up with a
 /// writable `/usr` that everyone believes is read-only.
 fn bind(source: &Path, target: &Path, writable: bool) -> Result<()> {
-    let metadata =
-        std::fs::metadata(source).map_err(|source_error| SandboxError::io(source, source_error))?;
-
-    if metadata.is_dir() {
-        create_dir(target)?;
-    } else {
-        if let Some(parent) = target.parent() {
-            create_dir(parent)?;
-        }
-        std::fs::File::create(target).map_err(|e| SandboxError::io(target, e))?;
-    }
+    create_target_like(source, target)?;
 
     mount_at(
         Some(source),
@@ -447,6 +440,50 @@ fn mount_at(
 
 fn create_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|source| SandboxError::io(path, source))
+}
+
+/// Make the mount point a bind of `source` can be attached to.
+///
+/// A directory for a directory and an empty file for a file, and the kernel is
+/// strict about it. `fs/namespace.c`, `do_move_mount`:
+///
+/// ```c
+/// if (d_is_dir(new_path->dentry) != d_is_dir(old_path->dentry))
+///     goto out;   /* -EINVAL */
+/// ```
+///
+/// `mount(2)` refuses the same mismatch with `ENOTDIR`, which at least names
+/// the problem. The new mount API says `EINVAL` and nothing else.
+///
+/// This exists as one function because it was two. `bind` handled both kinds
+/// and `bind_remapped` created a directory unconditionally, so a **granted
+/// path that is a single file** — which every test in this repository happened
+/// not to have, and which the greeter has — came apart at the last syscall of
+/// the remapped bind, on the machine's own console:
+///
+/// ```text
+/// could not attach the remapped mount at
+/// /run/thalyx/sandbox/opt/thalyx/data/greeter/notes.txt: Invalid argument
+/// ```
+///
+/// Two pieces of code that must agree about the same kernel rule, kept apart,
+/// stopped agreeing. Now there is one.
+fn create_target_like(source: &Path, target: &Path) -> Result<()> {
+    let metadata =
+        std::fs::metadata(source).map_err(|source_error| SandboxError::io(source, source_error))?;
+
+    if metadata.is_dir() {
+        return create_dir(target);
+    }
+
+    if let Some(parent) = target.parent() {
+        create_dir(parent)?;
+    }
+    // Truncating an existing one is fine and never loses anything: this is a
+    // mount point inside the tmpfs the root is assembled on, and whatever is
+    // in it is about to be covered by the bind.
+    std::fs::File::create(target).map_err(|source| SandboxError::io(target, source))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -569,5 +606,62 @@ mod tests {
         let encoded = serde_json::to_string(&root).unwrap();
         let decoded: RootFs = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, root);
+    }
+
+    /// A mount point for a file is a file, and the kernel will not take a
+    /// directory instead.
+    ///
+    /// `do_move_mount` refuses the mismatch with a bare `EINVAL`, so this is
+    /// the difference between a granted file working and a message that names
+    /// a syscall and nothing about the cause. The remapped bind got it wrong
+    /// for as long as the remapped bind existed, and nothing noticed because
+    /// every granted path anyone had tested was a directory.
+    #[test]
+    fn a_mount_point_for_a_file_is_a_file_and_one_for_a_directory_is_a_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+
+        let file_source = scratch.path().join("notes.txt");
+        std::fs::write(&file_source, "granted\n").unwrap();
+        let file_target = scratch.path().join("assembly/data/notes.txt");
+        create_target_like(&file_source, &file_target).unwrap();
+        assert!(
+            file_target.is_file(),
+            "a file source got a directory mount point, which move_mount refuses"
+        );
+
+        let dir_source = scratch.path().join("docs");
+        std::fs::create_dir(&dir_source).unwrap();
+        let dir_target = scratch.path().join("assembly/docs");
+        create_target_like(&dir_source, &dir_target).unwrap();
+        assert!(dir_target.is_dir(), "a directory source got a file");
+    }
+
+    /// The parents are made, so a grant several directories deep works.
+    ///
+    /// `/opt/thalyx/data/greeter/notes.txt` is four levels below the assembly
+    /// root and none of them exist in it.
+    #[test]
+    fn the_directories_above_a_granted_file_are_made_on_the_way_to_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("notes.txt");
+        std::fs::write(&source, "granted\n").unwrap();
+
+        let target = scratch
+            .path()
+            .join("assembly/opt/thalyx/data/greeter/notes.txt");
+        create_target_like(&source, &target).unwrap();
+        assert!(target.is_file());
+    }
+
+    /// A source that is not there is an error, not an empty mount point.
+    ///
+    /// Without this the bind would be attempted against nothing and fail one
+    /// syscall later, naming the mount instead of the missing path.
+    #[test]
+    fn a_source_that_is_not_there_is_refused_before_anything_is_created() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("assembly/absent");
+        assert!(create_target_like(&scratch.path().join("absent"), &target).is_err());
+        assert!(!target.exists());
     }
 }

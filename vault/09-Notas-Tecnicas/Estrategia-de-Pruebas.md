@@ -817,6 +817,56 @@ que un cgroup *podría* delegar y `cgroup.subtree_control` es lo que delega. Lee
 el primero por el segundo describe exactamente la máquina rota como sana, y se
 comprobó cambiándolo.
 
+## Regla derivada: dos códigos que obedecen la misma regla del kernel dejan de obedecerla
+
+Con los controladores entregados, el módulo **corrió confinado** adentro de la
+imagen —cgroup propio, raíz propia, usuario propio, seccomp, límites— y se cayó
+en el último syscall de un montaje:
+
+```
+could not attach the remapped mount at
+/run/thalyx/sandbox/opt/thalyx/data/greeter/notes.txt: Invalid argument
+```
+
+`fs/namespace.c`, `do_move_mount`, verbatim del 6.12:
+
+```c
+if (d_is_dir(new_path->dentry) != d_is_dir(old_path->dentry))
+    goto out;   /* -EINVAL */
+```
+
+**El punto de montaje de un archivo tiene que ser un archivo.** `bind` lo sabía
+—miraba `metadata.is_dir()` y creaba una cosa o la otra— y `bind_remapped`
+llamaba a `create_dir` sin mirar. Dos funciones que obedecen la misma regla del
+kernel, escritas por separado, y una de las dos dejó de obedecerla.
+
+Sobrevivió porque **todos los permisos de todas las pruebas de este repositorio
+son directorios**. El único permiso sobre un archivo suelto que existe es el del
+`greeter`, y el único lugar donde el `greeter` corre con usuario propio es la
+imagen.
+
+Dos reglas, y la segunda es la que vale más:
+
+1. **Cuando dos lugares tienen que obedecer la misma regla externa, son uno.**
+   Ahora hay una `create_target_like` y las dos rutas la llaman. La regla del
+   kernel está citada en su documentación, con archivo y función, no de
+   memoria.
+2. **Un caso de prueba que nunca varía no es un caso de prueba, es una
+   constante.** «Un permiso sobre una ruta» se probó decenas de veces y siempre
+   sobre un directorio. La dimensión que importaba —archivo o directorio— nunca
+   se movió, así que nada dependía de ella y nada la comprobó.
+
+El `EINVAL` del API nuevo de montajes no dice nada; `mount(2)` para el mismo
+error dice `ENOTDIR`, que al menos nombra el problema. Por eso la comprobación
+está ahora en una prueba que corre siempre, y no en leer un errno.
+
+### Y el extracto de la falla cortaba antes de la línea que importa
+
+La etapa 16 imprimía `grep -A6` del `correr`, y el reporte del run —incluida la
+línea del código de salida— es más largo que eso. Un sandbox que no se pudo
+armar y un módulo que corrió y no dijo nada se veían igual en la única salida
+que alguien lee. Ahora imprime el reporte entero.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

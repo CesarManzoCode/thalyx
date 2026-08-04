@@ -1909,7 +1909,11 @@ else
             # it, was a profile name no profile has. A failure message that
             # names a cause it did not measure is worse than one that names
             # none: it tells you where not to look.
-            grep -A6 "correr" "$BOOT_LOG_1" | tail -20 | sed 's/^/     /'
+            # Wide enough to reach the exit status. At -A6 the excerpt stopped
+            # before the line that says whether the module ran at all, so a
+            # sandbox that failed to assemble and a module that ran and said
+            # nothing looked the same in the only output anyone reads.
+            grep -A25 "> correr" "$BOOT_LOG_1" | sed 's/^/     /'
         fi
 
         if grep -q "undone" "$BOOT_LOG_1"; then
