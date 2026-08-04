@@ -262,6 +262,38 @@ tags: [continuidad, punto-actual, sesiones]
 > [[Estrategia-de-Pruebas]] dice por qué ninguna comprobación de construcción va
 > a encontrar la cuarta.
 >
+> ## Y ahora `verify.sh` arranca la máquina — 2026-08-04
+>
+> Decidido por Cesar después del tercer arranque a mano. **La etapa 16 arranca
+> la imagen en QEMU y teclea los seis pasos**: espera a que la máquina diga que
+> es la máquina, y escribe `recuerdos`, `disponibles`, `instalar`, la
+> confirmación, `permisos`, `correr`, `revertir`, `apagar`. Después arranca otra
+> vez y pregunta `recuerdos`.
+>
+> **Dos arranques, porque eso es lo que dice el paso 6.** Un proceso nuevo no es
+> un reinicio; lo único que cruza entre los dos es el disco.
+>
+> Y la consola serie **es** un terminal: lo que ve el invitado es `/dev/console`
+> sobre `ttyS0`, sea lo que sea el stdin de QEMU. Así que el camino confiable se
+> ejerce como lo encuentra una persona, sin `script` de por medio.
+>
+> El disco se copia primero. Arrancar lo modifica, y una etapa que cambiara el
+> disco que alguien construyó haría que la segunda corrida empezara desde otro
+> lado que la primera.
+>
+> `make -C image boot` es lo que corre, y **no construye nada**. `run` depende
+> del kernel y de la imagen, y la regla del binario depende de `toolchain`, que
+> es `.PHONY` — así que pedir `run` puede arrancar un `cargo build`, y bajo
+> `sudo` eso corre como root y deja archivos de root en `target/`. Es el mismo
+> fallo por el que `store` se partió en dos, y la misma regla: **la frontera de
+> privilegio es la frontera de target.**
+>
+> **El arnés se ejerció contra una máquina falsa** —una que se queda callada
+> hasta estar lista, para que teclear temprano se note, y una que se muere de
+> inmediato, que tiene que volver como «nunca llegó al prompt» y no como un
+> cuelgue—. La etapa en sí **nunca ha corrido contra una imagen de verdad**: el
+> contenedor no tiene QEMU ni kernel que arrancar.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y

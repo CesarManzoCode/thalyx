@@ -89,10 +89,10 @@ comprobaciones del paso 6. Lo que no cambia es que `failed` sea 0 y que las
 Las **dos** `not proven` esperadas son:
 
 1. El modelo del agente — `llama.cpp` no está instalado y la ruta real no existe.
-2. La imagen — **este script no la arranca**, que no es lo mismo que no haber
-   arrancado nunca. Arrancó el 2026-08-03 y varias veces desde entonces; se hace
-   a mano con `make -C image run`, y por eso cada opción del kernel que faltaba
-   se encontró de a una.
+
+Y una sola, desde el 2026-08-04: **la etapa 16 arranca la imagen**. Si no hay
+kernel, imagen o disco construidos lo dice y no la cuenta como probada, con su
+propia variable (`THALYX_REQUIRE_IMAGE_TESTS=1`) para exigirla.
 
 La etapa 13 es la que prueba el store: formatea un disco Btrfs de verdad, le
 hace los tres subvolúmenes, instala el módulo adentro y lo vuelve a montar para
@@ -406,6 +406,12 @@ Para ver qué dijo el kernel: `nucleo`. Para apagar: `apagar`.
 | `nothing to read, and nothing granted` | El módulo preguntó qué podía leer y no le dieron nada. El permiso no sobrevivió a la instalación. |
 
 ## Paso 7 — los seis pasos completos, que es lo que cierra la fase
+
+> **Desde el 2026-08-04 esto lo hace `verify.sh` solo.** La etapa 16 arranca la
+> imagen, espera a que la máquina diga que es la máquina, y teclea los seis
+> pasos — dos arranques, porque un proceso nuevo no es un reinicio. Lo de abajo
+> sigue siendo lo que haces **tú** cuando quieres verlo, y lo que hace la
+> persona ajena, que es lo único que cierra la fase.
 
 Lo de arriba son los pasos 1, 2, 3 y parte del 5. Faltan estos, y se hacen en el
 mismo prompt:

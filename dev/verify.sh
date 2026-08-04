@@ -1055,22 +1055,10 @@ else
     failed "the image is not reproducible"
 fi
 
-# What none of that touches.
-#
-# The kernel builds and the image boots — that was done on 2026-08-03 and is
-# recorded in Primer-Arranque.md. What this script still cannot say is whether
-# it boots *now*, from this checkout, because booting it needs qemu and several
-# minutes. The gap is narrower than it was and it is still a gap.
-if command -v qemu-system-x86_64 > /dev/null; then
-    IMAGE_GAP="qemu is here, but this script does not boot the image; run 'make -C image run'"
-else
-    IMAGE_GAP="qemu is not installed here, so this checkout's image has not been booted"
-fi
-if [ "${THALYX_REQUIRE_IMAGE_TESTS:-0}" = 1 ]; then
-    failed "$IMAGE_GAP"
-else
-    unproven "$IMAGE_GAP"
-fi
+# Whether it boots is stage 16, which boots it. This stage is about what is
+# *inside* the archive, and the two were one line until 2026-08-04 — a gap that
+# stayed open long enough for three kernel options to be found by hand, one
+# rebuild at a time.
 
 # --------------------------------------------- 12. a module talks to Thalyx
 
@@ -1652,6 +1640,245 @@ else
         proven "and still knows what was asked, which no file can falsify"
     else
         failed "the request went stale along with the install; see $WORK/session-memory-after.log"
+    fi
+fi
+
+# ------------------------------------- 16. the machine itself, booted and driven
+
+step "16. the six steps, in the machine, from a cold boot"
+
+# Everything above runs Thalyx as a program on this Linux. This runs Thalyx as
+# the machine: the kernel it built, one program inside it, no shell behind the
+# prompt, and the six steps of the exit criterion typed at that prompt by this
+# script.
+#
+# ## Why it is here and not left to a person
+#
+# Three kernel options have been found by booting and by nothing else —
+# BPF_LSM with BTF, SECURITY_NETWORK, and FUNCTION_TRACER. Each cost a kernel
+# rebuild and a boot somebody had to sit through, and each was invisible to
+# every build-time check, because `allnoconfig` turns off whatever nobody names
+# and the list of what BPF LSM needs is held by a running kernel and nothing
+# else. There is no fourth check to write. There is only booting it.
+#
+# ## Why the serial console is enough of a terminal
+#
+# The confirmer refuses when stdin is not a tty, and this pipes into QEMU. It
+# works anyway, and the reason matters: what the *guest* sees is /dev/console
+# backed by ttyS0, which is a terminal no matter what QEMU's own stdin is. So
+# no `script` here, and the trusted path is exercised exactly as a person would
+# meet it.
+#
+# ## Two boots, because that is the claim
+#
+# Step 6 is restarting the machine and finding it still knows the task. A
+# second process is not a restart. So the first boot installs and reverts and
+# powers off, the second one asks — and the same store disk is the only thing
+# that crosses between them.
+#
+# The store is copied first. Booting mutates it, and a stage that changed the
+# disk a person built would make the second run of this script start from
+# somewhere the first one did not.
+#
+# ## What has been exercised here, and what has not
+#
+# `boot_and_type` was driven against a fake machine on 2026-08-04 — one that
+# stays quiet until it is ready, so a harness that typed too early would lose
+# the input, and one that dies at once, which has to come back as "never
+# reached the prompt" rather than as a hang. Both behaved. That is the harness,
+# not the stage: this stage has never run against a real image, because the
+# container it was written in has no qemu and no kernel to boot.
+
+BOOT_LOG_1="$WORK/boot-1.log"
+BOOT_LOG_2="$WORK/boot-2.log"
+BOOT_STORE="$WORK/boot-store.img"
+
+# Boot the machine, wait for it to say it is the machine, and type.
+#
+# Returns 1 if it never got that far, which is a different fact from the
+# machine answering wrongly and is reported as one.
+boot_and_type() {
+    local log="$1"; shift
+    local fifo="$WORK/console.in"
+
+    rm -f "$fifo"
+    mkfifo "$fifo" || return 1
+    : > "$log"
+
+    ( cd "$ROOT" && timeout 300 make -C image boot STORE="$BOOT_STORE" ) \
+        < "$fifo" > "$log" 2>&1 &
+    local machine=$!
+
+    # Held open, so the console does not see EOF while the kernel is still
+    # coming up — which would end the session before it started.
+    exec 9> "$fifo"
+
+    local waited=0
+    until grep -q "There is no shell behind this" "$log" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -gt 90 ] || ! kill -0 "$machine" 2>/dev/null; then
+            exec 9>&-
+            wait "$machine" 2>/dev/null
+            return 1
+        fi
+    done
+
+    # One line at a time. The prompt reads with read_line and buffers fine, but
+    # a second between them keeps this readable in the log when it goes wrong,
+    # and going wrong is what a log is for.
+    local line
+    for line in "$@"; do
+        printf '%s\n' "$line" >&9
+        sleep 1
+    done
+
+    # `apagar` is always the last line, so this is the machine turning itself
+    # off rather than the timeout killing it. If it is still running after the
+    # grace period, that is a failure to power off and the wait says so.
+    local ending=0
+    while kill -0 "$machine" 2>/dev/null && [ "$ending" -lt 30 ]; do
+        sleep 1
+        ending=$((ending + 1))
+    done
+    exec 9>&-
+    wait "$machine" 2>/dev/null
+    rm -f "$fifo"
+    return 0
+}
+
+# A skip here can be demanded to be a failure, like every other skip in this
+# script, and by its own variable. `Estrategia-de-Pruebas.md`: one variable per
+# requirement, because one variable for several means the only way to demand
+# what a machine has is to demand what it has not.
+no_machine() {
+    if [ "${THALYX_REQUIRE_IMAGE_TESTS:-0}" = 1 ]; then
+        failed "$*"
+    else
+        unproven "$*"
+    fi
+}
+
+IMAGE_BUILD="$ROOT/image/build"
+if ! command -v qemu-system-x86_64 > /dev/null 2>&1; then
+    no_machine "qemu-system-x86_64 is absent, so the machine cannot be booted here"
+elif [ ! -f "$IMAGE_BUILD/bzImage" ] || [ ! -f "$IMAGE_BUILD/initramfs.cpio" ]; then
+    no_machine "no kernel or image built yet, so there is nothing to boot; run 'make -C image'"
+elif [ ! -f "$IMAGE_BUILD/store.img" ]; then
+    no_machine "no store disk built yet; run 'make -C image store-stage' and 'sudo make -C image store'"
+else
+    # --sparse=always because the disk is eight gigabytes of mostly nothing and
+    # copying it densely would write all eight.
+    cp --sparse=always "$IMAGE_BUILD/store.img" "$BOOT_STORE"
+
+    # `recuerdos` first, before anything has happened. Without that line, a
+    # session that printed a fixed paragraph would satisfy every check on the
+    # second boot, and step 6 would be theatre in the one place it is looked at.
+    if boot_and_type "$BOOT_LOG_1" \
+        recuerdos \
+        disponibles \
+        "instalar dev.thalyx.greeter" \
+        y \
+        permisos \
+        "correr dev.thalyx.greeter" \
+        revertir \
+        apagar
+    then
+        if grep -q "This is the machine" "$BOOT_LOG_1"; then
+            proven "the machine booted, and says it is the machine because its parent is pid 1"
+        else
+            failed "the machine booted and did not claim to be one; see $BOOT_LOG_1"
+        fi
+
+        # The one that has never been seen. Everything about enforcement so far
+        # has been proven on this Linux, never inside the image.
+        if grep -q "ok  thalyx-lsm" "$BOOT_LOG_1"; then
+            proven "the image attached its own enforcement at boot, with no bpftool and no shell"
+        else
+            failed "enforcement did not attach inside the image; see $BOOT_LOG_1"
+            grep "thalyx-lsm" "$BOOT_LOG_1" | sed 's/^/     /'
+        fi
+
+        if grep -q "I have nothing recorded" "$BOOT_LOG_1"; then
+            proven "a machine that has done nothing says it remembers nothing"
+        else
+            failed "the machine claimed a memory before anything happened; see $BOOT_LOG_1"
+        fi
+
+        if grep -q "dev.thalyx.greeter 1.0.0" "$BOOT_LOG_1"; then
+            proven "the repository on its own disk holds a signed module, listed with no shell to look with"
+        else
+            failed "'disponibles' showed nothing; see $BOOT_LOG_1"
+        fi
+
+        # Three things, because any one alone is weak: the box that says the
+        # request is Thalyx's rather than a module's, the permission inside it,
+        # and the question. `grep read` would match half the log.
+        if grep -q "Thalyx — capability authorisation" "$BOOT_LOG_1" \
+           && grep -q "read access to" "$BOOT_LOG_1" \
+           && grep -q "Confirm?" "$BOOT_LOG_1"; then
+            proven "the trusted path presented the capability on the machine's own console"
+        else
+            failed "the trusted path was not reached inside the machine; see $BOOT_LOG_1"
+        fi
+
+        if grep -q "dev.thalyx.greeter 1.0.0 installed" "$BOOT_LOG_1"; then
+            proven "a signed module installed onto the machine's own Btrfs store, typed at its prompt"
+        else
+            failed "the module did not install inside the machine; see $BOOT_LOG_1"
+        fi
+
+        # Confined, and `sin-confinar` was never typed. Until enforcement
+        # attached inside the image, the core refused this outright — so this
+        # line is the one that says the machine can run a module the way the
+        # design says it runs one.
+        if grep -q "I asked for /etc/shadow and was refused" "$BOOT_LOG_1"; then
+            proven "the module ran confined inside the machine and was denied what nobody granted it"
+        else
+            failed "the module did not run confined inside the machine; see $BOOT_LOG_1"
+            grep -A6 "correr" "$BOOT_LOG_1" | tail -20 | sed 's/^/     /'
+        fi
+
+        if grep -q "undone" "$BOOT_LOG_1"; then
+            proven "the same prompt took the module back off the machine"
+        else
+            failed "'revertir' did not undo the install inside the machine; see $BOOT_LOG_1"
+        fi
+
+        # It powered itself off. `boot_and_type` waits rather than killing, so
+        # a machine still running here is one that did not act on `apagar`.
+        if grep -qE "Power(ing)? off|reboot: Power down" "$BOOT_LOG_1"; then
+            proven "the machine turned itself off when told to"
+        else
+            unproven "the machine ended without a power-down line in the log; it may have been the timeout"
+        fi
+
+        # --- the restart, which is the whole of step 6 ---------------------
+        if boot_and_type "$BOOT_LOG_2" recuerdos apagar; then
+            if grep -q "instalar dev.thalyx.greeter" "$BOOT_LOG_2"; then
+                proven "a restarted machine still knows what it was asked to do"
+            else
+                failed "the task did not survive the reboot; see $BOOT_LOG_2"
+            fi
+
+            # And it is re-checked, not replayed. The install was recorded
+            # against the module's `current` link; `revertir` removed it in the
+            # previous boot, so the record has to come back as something the
+            # machine will not stand behind — with nobody having told it.
+            if grep -q "can no longer confirm" "$BOOT_LOG_2"; then
+                proven "and went and looked: the install it made no longer checks out, unprompted"
+            else
+                failed "the machine still asserts an install that was undone; see $BOOT_LOG_2"
+            fi
+        else
+            failed "the machine did not come back up for the second boot; see $BOOT_LOG_2"
+            tail -25 "$BOOT_LOG_2" | sed 's/^/     /'
+        fi
+    else
+        # Never reached the prompt. Not the same as answering wrongly, and the
+        # log is the only thing that says which.
+        failed "the machine did not reach its prompt within 90s; see $BOOT_LOG_1"
+        tail -30 "$BOOT_LOG_1" | sed 's/^/     /'
     fi
 fi
 

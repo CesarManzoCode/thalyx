@@ -27,7 +27,13 @@
 # container has GCC 13, so the C23 problem this version bump exists to fix
 # cannot reproduce there either way.
 #
-# QEMU has still never run. `make run` has no evidence behind it at all.
+# QEMU has run, several times, from 2026-08-03. Each of those boots found a
+# kernel option that no check here could see — BPF_LSM with BTF, then
+# SECURITY_NETWORK, then FUNCTION_TRACER — which is why `hook-check` exists and
+# why `dev/verify.sh` now boots the image itself instead of leaving it to
+# somebody with the patience to rebuild a kernel three times.
+#
+# `boot` is what that stage runs, and it builds nothing: see the note above it.
 #
 # Stated here rather than in a footnote because the project's own rules say not
 # to stack unverified work and stay quiet about it.
@@ -74,7 +80,7 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor hook-check
+        store store-stage greeter lsm doctor hook-check boot
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -678,6 +684,34 @@ store:
 # for the property instead of the property.
 
 run: $(BZIMAGE) $(INITRAMFS)
+	@$(MAKE) --no-print-directory boot
+
+# The same boot, building nothing at all.
+#
+# `run` depends on the kernel and the image, and the binary's own rule depends
+# on `toolchain`, which is .PHONY — so make always considers `thalyx` out of
+# date and asking for `run` can start a cargo build. Under sudo, which is how
+# `dev/verify.sh` boots the machine, that build runs as root: every
+# dependency's build script executes with privilege and leaves root-owned files
+# in target/ that the next ordinary `cargo build` cannot replace.
+#
+# That is the same failure `store` was split in two to avoid, and the same
+# rule: the privilege boundary is the target boundary. This target boots what
+# is already there and refuses to make anything.
+#
+# It is also what keeps one QEMU command line in the repository. A second copy
+# in verify.sh would drift, and the drift would be the automated boot testing
+# something other than the boot a person gets.
+boot:
+	@test -f $(BZIMAGE) && test -f $(INITRAMFS) || { \
+	    echo "  nothing to boot: the kernel or the image is not built."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    echo; \
+	    echo "  This target builds neither, on purpose — it is the one"; \
+	    echo "  dev/verify.sh runs, and that runs as root."; \
+	    exit 1; \
+	}
 	@if [ -z "$(STORELESS)" ] && [ ! -f $(STORE) ]; then \
 	    echo "  no store disk at $(STORE), so nothing would survive this boot."; \
 	    echo; \
