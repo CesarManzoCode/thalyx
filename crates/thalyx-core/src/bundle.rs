@@ -163,11 +163,29 @@ impl Bundle {
                 });
             }
 
-            match name.as_str() {
-                MANIFEST_MEMBER => manifest_src = Some(buffer),
-                SIGNATURE_MEMBER => signature_src = Some(buffer),
-                ARTIFACT_MEMBER => artifact = Some(buffer),
+            // A second copy of a member is refused, never preferred.
+            //
+            // `tar` permits repeated names and every reader picks a different
+            // one: this loop took the last, `tar -x` writes the last to disk,
+            // and a reader that stopped at the first would take the first. So
+            // a bundle carrying two `manifest.toml` members is one that
+            // *means different things to different tools* — the signature
+            // Thalyx checks would cover one of them while a person inspecting
+            // the file by hand reads the other.
+            //
+            // Nothing legitimate produces one, so there is no cost to refusing
+            // and no way to be wrong about which copy was meant.
+            let already = match name.as_str() {
+                MANIFEST_MEMBER => manifest_src.replace(buffer),
+                SIGNATURE_MEMBER => signature_src.replace(buffer),
+                ARTIFACT_MEMBER => artifact.replace(buffer),
                 _ => unreachable!("every other name was skipped above"),
+            };
+            if already.is_some() {
+                return Err(CoreError::MalformedBundle(format!(
+                    "`{name}` appears more than once; a bundle that means different \
+                     things to different readers is refused rather than resolved"
+                )));
             }
         }
 
@@ -402,6 +420,39 @@ mod tests {
     }
 
     /// Write a `.thmod` by hand, so a member can be any size and any name.
+    #[test]
+    fn a_bundle_carrying_two_manifests_is_refused_rather_than_resolved() {
+        // `tar` allows repeated names and no two tools agree on which one
+        // wins: this reader took the last, `tar -x` writes the last to disk, a
+        // reader that stopped early would take the first. So a bundle like
+        // this means one thing to Thalyx's signature check and another to
+        // whoever inspects the file by hand — which is the whole substance of
+        // the attack, and the reason resolving it either way is wrong.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("two-manifests.thmod");
+
+        thmod_with(
+            &path,
+            &[
+                (MANIFEST_MEMBER, b"format_version = 1"),
+                (SIGNATURE_MEMBER, b"ed25519:00"),
+                (ARTIFACT_MEMBER, b"not really a tarball"),
+                (MANIFEST_MEMBER, b"format_version = 1 # the other one"),
+            ],
+        );
+
+        match Bundle::read(&path) {
+            Err(CoreError::MalformedBundle(message)) => {
+                assert!(
+                    message.contains(MANIFEST_MEMBER),
+                    "the refusal should name the duplicated member: {message}"
+                );
+            }
+            Err(other) => panic!("expected a refusal for the duplicate, got {other:?}"),
+            Ok(_) => panic!("a bundle with two manifests was accepted"),
+        }
+    }
+
     fn thmod_with(path: &Path, members: &[(&str, &[u8])]) {
         let mut builder = tar::Builder::new(std::fs::File::create(path).unwrap());
         for (name, contents) in members {

@@ -442,11 +442,16 @@ fn install_contract(bundle: &std::path::Path) -> Contract {
 }
 
 /// Ties an operation to its journal entry and its pending permission grants.
+///
+/// A uuid rather than the clock. This used to be `SystemTime` nanoseconds,
+/// which is unique enough right up to the moment two things happen at once —
+/// and two things happening at once is precisely the case the request id is
+/// there to tell apart. Two operations sharing an id would make
+/// `unresolved_intents` settle one request with the other's outcome, and would
+/// leave the journal unable to say which grant belonged to which install.
+///
+/// The clock made it worse than a coincidence, too: it is not monotonic, so a
+/// clock stepped backwards produces collisions on purpose.
 fn new_request_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    format!("req-{nanos:x}")
+    format!("req-{}", uuid::Uuid::new_v4())
 }

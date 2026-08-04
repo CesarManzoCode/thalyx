@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -181,20 +181,54 @@ impl Journal {
             }
         };
 
+        // Read whole, so the *last* line can be told apart from the rest.
+        //
+        // That distinction is the whole of this function's caution. An entry
+        // is one `write` plus one `fsync`, so a power loss can leave the file
+        // ending mid-line — and only ever the last line, because nothing is
+        // ever written before an earlier line is durable. A partial final line
+        // is therefore the ordinary residue of a crash, not corruption.
+        //
+        // Refusing the whole journal for it was the bug: reconciliation reads
+        // this to settle what an interrupted run left hanging, so the one
+        // situation the journal exists for was the one that made it
+        // unreadable. A corrupt line *anywhere else* is still a hard error,
+        // because nothing legitimate produces one.
+        let mut contents = String::new();
+        {
+            use std::io::Read;
+            BufReader::new(file)
+                .read_to_string(&mut contents)
+                .map_err(|source| JournalError::Io {
+                    path: self.path.clone(),
+                    source,
+                })?;
+        }
+
+        let complete = contents.ends_with('\n');
+        let raw: Vec<&str> = contents.lines().collect();
+        let last = raw.len();
+
         let mut entries = Vec::new();
-        for (index, line) in BufReader::new(file).lines().enumerate() {
-            let line = line.map_err(|source| JournalError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
+        for (index, line) in raw.iter().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let entry = serde_json::from_str(&line).map_err(|source| JournalError::Corrupt {
-                line: index + 1,
-                source,
-            })?;
-            entries.push(entry);
+            match serde_json::from_str(line) {
+                Ok(entry) => entries.push(entry),
+                // The final line of a file that does not end in a newline:
+                // a write that never finished. Dropped, and the entry it was
+                // going to be is simply one that never happened — which is
+                // exactly what a caller must conclude, since it was never
+                // durable.
+                Err(_) if index + 1 == last && !complete => break,
+                Err(source) => {
+                    return Err(JournalError::Corrupt {
+                        line: index + 1,
+                        source,
+                    });
+                }
+            }
         }
         Ok(entries)
     }
@@ -223,6 +257,87 @@ mod tests {
             snapshot: None,
             notes: vec![],
         }
+    }
+
+    #[test]
+    fn a_final_line_cut_off_by_a_crash_does_not_make_the_journal_unreadable() {
+        // The situation the journal exists for was the one that broke it.
+        //
+        // An entry is one write and one fsync, so a power loss can leave the
+        // file ending mid-line — and reconciliation reads this file to settle
+        // what the interrupted run left hanging. Refusing the whole journal
+        // for a torn last line meant a crash produced a machine that could no
+        // longer work out what the crash had done.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = Journal::open(&path).unwrap();
+
+        journal
+            .append(&entry("install_module", Outcome::Success))
+            .unwrap();
+        journal
+            .append(&entry("run_module", Outcome::Success))
+            .unwrap();
+
+        // Half of a third entry, with no closing newline: what a crash leaves.
+        let mut torn = std::fs::read_to_string(&path).unwrap();
+        torn.push_str(r#"{"timestamp":"2026-08-04T00:00:00Z","operation":"inst"#);
+        std::fs::write(&path, torn).unwrap();
+
+        let entries = journal
+            .entries()
+            .expect("a torn last line is not corruption");
+        assert_eq!(entries.len(), 2, "the two durable entries have to survive");
+        assert_eq!(entries[0].operation, "install_module");
+        assert_eq!(entries[1].operation, "run_module");
+    }
+
+    #[test]
+    fn a_corrupt_line_in_the_middle_is_still_a_hard_error() {
+        // The control. Tolerating the last line is a statement about crashes,
+        // not a general willingness to skip what cannot be parsed — and a
+        // journal that silently dropped entries from its middle would be
+        // worse than one that refused, because nobody would know.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = Journal::open(&path).unwrap();
+
+        journal
+            .append(&entry("install_module", Outcome::Success))
+            .unwrap();
+        let good = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{good}not json at all\n{good}")).unwrap();
+
+        assert!(
+            matches!(
+                journal.entries(),
+                Err(JournalError::Corrupt { line: 2, .. })
+            ),
+            "a bad line that is not the last one has to be refused"
+        );
+    }
+
+    #[test]
+    fn a_torn_last_line_still_leaves_its_intent_unresolved() {
+        // The point of tolerating it. An entry that never became durable is an
+        // entry that never happened, so an intent it was going to settle stays
+        // unsettled — and reconciliation gets to do its job instead of hitting
+        // a parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = Journal::open(&path).unwrap();
+
+        journal
+            .append(&entry("install_module", Outcome::Intended))
+            .unwrap();
+
+        let mut torn = std::fs::read_to_string(&path).unwrap();
+        torn.push_str(r#"{"timestamp":"2026-08-04T00:00:00Z","opera"#);
+        std::fs::write(&path, torn).unwrap();
+
+        let unresolved = journal.unresolved_intents().expect("readable");
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].request_id, "req-1");
     }
 
     #[test]

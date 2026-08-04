@@ -913,6 +913,7 @@ dependencies = [
  "thalyx-syscall",
  "thalyx-watch",
  "toml",
+ "uuid",
 ]
 
 [[package]]
