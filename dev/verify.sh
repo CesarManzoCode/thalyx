@@ -1484,7 +1484,11 @@ SESSION_STORE="$WORK/session-store"
 mkdir -p "$SESSION_STORE/repo"
 
 if ! command -v script > /dev/null 2>&1; then
-    unproven "util-linux's \`script\` is absent, so the session prompt cannot be driven with a terminal"
+    # Named per distribution, because this one skip takes the whole of step 6
+    # with it and "install util-linux" is wrong advice on the machine most
+    # likely to hit it: Fedora already has util-linux and ships `script` in a
+    # subpackage of its own.
+    unproven "\`script\` is absent, so the session prompt cannot be driven with a terminal (Fedora: util-linux-script; Debian and derivatives: bsdutils)"
 elif [ ! -f "$WORK/greeter.thmod" ]; then
     failed "no signed bundle to put in the repository; stage 12 should have packed one"
 else

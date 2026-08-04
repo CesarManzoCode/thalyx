@@ -23,3 +23,8 @@ lsm/*.o
 
 # Build directory for dev/verify.sh, which runs as root.
 dev/.verify-target/
+
+# What `make -C image` builds: the kernel source tree, the bzImage, the
+# initramfs, the store disk, and the doctor's scratch files. All of it is
+# reproducible from this repository and none of it belongs in it.
+image/build/

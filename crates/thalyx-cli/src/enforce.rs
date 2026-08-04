@@ -35,6 +35,24 @@ pub enum EnforceCommand {
         #[arg(long)]
         any: bool,
     },
+    /// Print the kernel symbols enforcement attaches to, one per line
+    ///
+    /// For checking a kernel *before* booting it. A `bpf_lsm_<hook>` symbol
+    /// only exists if the option that compiles that hook was on, and the
+    /// failure is silent in both directions: Kconfig does not complain about a
+    /// hook nobody asked for, and the program that needs it only finds out
+    /// when it tries to attach — which is at boot, on a machine with no shell.
+    ///
+    /// That is how `CONFIG_SECURITY_NETWORK` was missing from `thalyx.config`
+    /// until the image booted and said so. `config-check` could not have caught
+    /// it: it compares what was asked for against what came out, and nothing
+    /// had asked.
+    ///
+    /// The names come from the embedded object, never from a list beside it.
+    /// Two lists that have to agree, kept in two places, end up disagreeing,
+    /// and here the disagreement would be a kernel built without the hook the
+    /// programs actually use.
+    Hooks,
     /// Push a module's granted permissions into the kernel
     Apply {
         module_id: String,
@@ -66,12 +84,20 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
         return attached_quietly(any);
     }
 
+    // Same reason, and one more: this is asked while *building* a kernel, on a
+    // machine that may have no store and need not have one.
+    if let EnforceCommand::Hooks = command {
+        return hooks();
+    }
+
     let store = Store::open(store_root)?;
     let kernel = BpftoolStore::default_map();
 
     match command {
         EnforceCommand::Status => status(&store, &kernel),
-        EnforceCommand::Attached { .. } => unreachable!("returned above"),
+        EnforceCommand::Attached { .. } | EnforceCommand::Hooks => {
+            unreachable!("returned above")
+        }
 
         EnforceCommand::Attach => attach(),
         EnforceCommand::Detach => detach(),
@@ -159,6 +185,23 @@ fn attached_quietly(any: bool) -> Fallible {
         Ok(state) => Err(state.describe().into()),
         Err(error) => Err(error.into()),
     }
+}
+
+/// What the embedded object needs a kernel to expose.
+fn hooks() -> Fallible {
+    // An error and not an empty list. A binary built without the kernel side
+    // would otherwise print nothing, and a caller checking every printed symbol
+    // would find every one of them — vacuously — and pass a kernel that can
+    // enforce nothing.
+    let Some(object) = crate::init::embedded::OBJECT else {
+        return Err("this binary carries no BPF object, so it attaches to nothing".into());
+    };
+
+    let elf = thalyx_bpf::Elf::parse(object)?;
+    for program in thalyx_bpf::program::programs(&elf)? {
+        println!("{}", program.attach_to);
+    }
+    Ok(())
 }
 
 fn status(store: &Store, kernel: &BpftoolStore) -> Fallible {

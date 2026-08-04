@@ -199,6 +199,35 @@ tags: [continuidad, punto-actual, sesiones]
 > ./dev/verify.sh`, donde la etapa 15 creció seis comprobaciones, y después
 > `make -C image run`.
 >
+> ## La imagen arrancó con el cargador propio, y le falta un hook — 2026-08-04
+>
+> `make -C image run` en la Fedora de Cesar. **El cargador funcionó**: llegó
+> hasta preguntarle al kernel por sus hooks y dijo exactamente cuál falta.
+>
+> ```
+> no  thalyx-lsm  this kernel does not expose `bpf_lsm_socket_connect`
+> ```
+>
+> `thalyx.config` tenía `CONFIG_SECURITY` y no `CONFIG_SECURITY_NETWORK`. Todos
+> los hooks de socket de `lsm_hook_defs.h` están adentro de ese `#ifdef`, así que
+> el símbolo **nunca se compiló**. Arreglado: la línea está en `thalyx.config`
+> con su párrafo.
+>
+> Y `config-check` pasó en verde, correctamente — compara lo pedido contra lo
+> obtenido, y nadie había pedido esa opción. **Un punto ciego con forma propia**,
+> ver la regla nueva en [[Estrategia-de-Pruebas]]. Ahora existe `hook-check`: le
+> pregunta al objeto BPF a qué símbolos se engancha (`thalyx enforce hooks`) y
+> los busca en el `System.map` del kernel recién compilado, antes de arrancar
+> nada. Probado con sus tres respuestas — falta uno, están los dos, y no hay
+> kernel construido.
+>
+> **El resto del arranque salió bien**, y es la primera vez: de tres `no` a dos,
+> con el store de Btrfs montado y `filesystem btrfs`.
+>
+> **Y la etapa 15 se saltó entera**: Fedora no trae `script` — está en
+> `util-linux-script`. Los siete controles del paso 6 no corrieron, así que ese
+> trabajo sigue sin ejercer en hardware.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
@@ -249,8 +278,9 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 | El mecanismo del store | **Probado**, etapa 13, en verde el 2026-08-03. |
 | El store arrancando en QEMU | **Probado**, arrancó con el disco montado y el módulo instalado. |
 | El cargador de BPF propio | **Probado**, etapa 14, en verde entera el 2026-08-03. |
-| **El paso 6 y el `doctor`** | **Escritos y sin correr en hardware.** Etapa 15, seis comprobaciones nuevas. Es lo siguiente que hay que correr. |
-| **La imagen arrancando con enforcement** | Nunca visto. `make -C image run`. |
+| **El paso 6** | **Escrito y sin ejercer.** La etapa 15 se saltó entera el 2026-08-04: Fedora no trae `script`, está en `util-linux-script`. Es lo siguiente que hay que correr. |
+| El `doctor` | Escrito. Sin correr en la máquina de Cesar. |
+| **La imagen con enforcement puesto** | **Casi.** Arrancó el 2026-08-04 y le faltaba `CONFIG_SECURITY_NETWORK`; ya está en `thalyx.config` y `hook-check` lo atrapa antes de arrancar. Falta recompilar el kernel y volver a verlo. |
 | `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. |
 
 ## Los cuatro fallos del camino, y por qué tres son el mismo

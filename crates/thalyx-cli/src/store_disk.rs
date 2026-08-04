@@ -320,6 +320,42 @@ mod tests {
     }
 
     #[test]
+    fn the_kernel_is_checked_for_the_hooks_the_object_attaches_to() {
+        // On 2026-08-04 the image booted, mounted everything, and then said it
+        // could not attach because the kernel had no `bpf_lsm_socket_connect`.
+        // `config-check` could not have caught it: it compares what
+        // thalyx.config asked for against what came out, and nothing had asked
+        // for CONFIG_SECURITY_NETWORK. Only the built kernel knows.
+        let text = image_makefile();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("all:"))
+            .expect("the image Makefile has an `all` target");
+        assert!(
+            line.split_whitespace().any(|word| word == "hook-check"),
+            "a full build no longer asks the kernel for its hooks: {line}"
+        );
+
+        // And the names are asked of the binary, never typed here. The rule is
+        // the one `attached.rs` already keeps: two lists that have to agree,
+        // kept in two places, disagree eventually — and this disagreement is a
+        // kernel built without the hook the programs actually use, which is
+        // exactly the failure this target exists to catch.
+        let recipe = recipe_of(&text, "hook-check:");
+        assert!(
+            recipe.iter().any(|l| l.contains("enforce hooks")),
+            "hook-check no longer asks the object what it attaches to"
+        );
+        for line in &recipe {
+            assert!(
+                !line.contains("bpf_lsm_"),
+                "a hook name is written into the Makefile instead of read \
+                 from the object: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn the_disk_carries_the_module_to_install_and_not_the_module_installed() {
         // `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` step 2 is a
         // person installing a signed module from a local repository, and step 3

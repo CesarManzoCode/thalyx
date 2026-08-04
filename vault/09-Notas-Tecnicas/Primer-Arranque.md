@@ -166,6 +166,19 @@ Tarda. Descarga ~150 MB y compila con todos los núcleos.
 Esa línea existe porque `olddefconfig` descarta en silencio las opciones cuyas
 dependencias no se cumplen, y nueve se estaban perdiendo así.
 
+**Y al final de `make -C image` sale esta otra**, que es una pregunta distinta:
+
+```
+  hooks: this kernel exposes every symbol enforcement attaches to
+```
+
+`config-check` compara lo que se pidió contra lo que salió. **No puede ver algo
+que nadie pidió**, y el 2026-08-04 eso fue `CONFIG_SECURITY_NETWORK`: el kernel
+compiló y arrancó perfecto, y la primera señal fue una máquina sin shell
+diciendo que no encontraba `bpf_lsm_socket_connect`. `hook-check` le pregunta al
+objeto BPF a qué símbolos se engancha y los busca en el `System.map` recién
+compilado. Ver la regla en [[Estrategia-de-Pruebas]].
+
 | Si falla | Qué significa y qué hacer |
 |---|---|
 | `These were asked for and are not in the kernel's .config` | La comprobación hizo su trabajo. Cada opción que nombre le falta una dependencia, o ya no existe con ese nombre en esta versión. Pégame la lista completa: agregar la dependencia es el arreglo correcto, no quitar la opción. |
@@ -302,7 +315,7 @@ contrario, y esa diferencia es cómo se comprueba que la frase no está cableada
 | Arranca pero algún `no  mounted` | **No es fatal, es el diseño.** Falta esa opción en `thalyx.config`. Pégame cuáles. |
 | `no  thalyx-lsm  no BPF object was built into me` | La imagen se construyó sin el lado del kernel. `make -C image lsm` y reconstruye el binario. |
 | `no  thalyx-lsm  reading this kernel's BTF` | Falta `CONFIG_DEBUG_INFO_BTF`. El arreglo es reconstruir el kernel, no tocar el cargador. |
-| `no  thalyx-lsm  this kernel does not expose bpf_lsm_...` | El kernel no trae ese hook. `make -C lsm hooks` los enumera. |
+| `no  thalyx-lsm  this kernel does not expose bpf_lsm_...` | El kernel de la imagen no trae ese hook, y el arreglo es una opción en `thalyx.config`, no tocar el cargador. Pasó el 2026-08-04 con `socket_connect`: faltaba `CONFIG_SECURITY_NETWORK`. **Desde entonces `make -C image` lo atrapa antes de arrancar** — ver el paso 3. Si lo ves ahora, es un hook nuevo que nadie contempló; pégamelo. |
 | `no  thalyx-lsm` seguido de líneas del verificador | El kernel rechazó el programa y dice cuál instrucción. **Pégamelo entero**: esas líneas son lo único que sirve. |
 | `no  store ... neither is any other disk` | No llegó ningún disco. O el paso 4b no se hizo, o QEMU no lo adjuntó. Desde el 2026-08-03 `make run` **se niega a arrancar** sin store, así que esto solo sale con `STORELESS=1`. |
 | `no  store ... The disks that are: X` | Sí hay discos y ninguno se llama como dice `thalyx.store=`. Cambia `STOREDEV` en `image/Makefile` por el que aparezca. |

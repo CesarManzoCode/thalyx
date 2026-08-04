@@ -74,9 +74,9 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor
+        store store-stage greeter lsm doctor hook-check
 
-all: doctor kernel binary image
+all: doctor kernel binary image hook-check
 	@echo
 	@echo "  make run"
 
@@ -286,6 +286,70 @@ config-check:
 	echo "  config: every option in thalyx.config survived olddefconfig"
 
 kernel: $(BZIMAGE)
+
+# Does this kernel have the hooks the programs attach to?
+#
+# `config-check` above compares what thalyx.config asked for against what came
+# out. It cannot see something nobody asked for, and on 2026-08-04 that was
+# CONFIG_SECURITY_NETWORK: the kernel built clean, booted clean, mounted
+# everything, and then said
+#
+#     no  thalyx-lsm  this kernel does not expose `bpf_lsm_socket_connect`
+#
+# `bpf_lsm_<hook>` symbols are generated from include/linux/lsm_hook_defs.h, and
+# every socket hook there sits inside `#ifdef CONFIG_SECURITY_NETWORK`. Nothing
+# was rejected; the symbol was simply never compiled, and the first thing that
+# noticed was a machine with no shell.
+#
+# So the question is asked here, of the kernel that was just built, and the
+# symbols come from **the object that will attach to them** rather than from a
+# list kept alongside. A list beside the code disagrees with the code
+# eventually, and the disagreement here is a kernel built without the hook the
+# programs actually use.
+#
+# System.map and not `nm vmlinux`: it is what the build already writes, and it
+# does not need binutils to have been built against this kernel's format.
+#
+# Needs the binary, so it is not part of `kernel` — it is a separate target,
+# and `all` runs it once both exist.
+hook-check:
+	@test -r $(KSOURCE)/System.map || { \
+	    echo "  no System.map at $(KSOURCE) — the kernel was never built."; \
+	    echo "  That is a different failure from a hook being absent, and"; \
+	    echo "  saying so is the point."; \
+	    exit 1; \
+	}
+	@test -x $(THALYX) || { \
+	    echo "  $(THALYX) is not built, so nothing can say which hooks the"; \
+	    echo "  enforcement object attaches to:"; \
+	    echo; \
+	    echo "      make -C image binary"; \
+	    exit 1; \
+	}
+	@wanted=$$($(THALYX) enforce hooks) || { \
+	    echo "  the binary could not say what it attaches to:"; \
+	    $(THALYX) enforce hooks; \
+	    exit 1; \
+	}; \
+	missing=$$(for hook in $$wanted; do \
+	        grep -qw "$$hook" $(KSOURCE)/System.map || echo "    $$hook"; \
+	    done); \
+	if [ -n "$$missing" ]; then \
+	    echo; \
+	    echo "  This kernel does not expose the hooks enforcement needs:"; \
+	    echo "$$missing"; \
+	    echo; \
+	    echo "  The symbol was not rejected — it was never compiled, because"; \
+	    echo "  the option that compiles that hook is off. Socket hooks need"; \
+	    echo "  CONFIG_SECURITY_NETWORK; file hooks need CONFIG_SECURITY."; \
+	    echo "  Add the line to thalyx.config and rebuild the kernel."; \
+	    echo; \
+	    echo "  Booting anyway gives a machine that mounts everything and"; \
+	    echo "  enforces nothing, and says so only after it has booted."; \
+	    echo; \
+	    exit 1; \
+	fi; \
+	echo "  hooks: this kernel exposes every symbol enforcement attaches to"
 
 # ───────────────────────────────────────────────────────────────── the program
 

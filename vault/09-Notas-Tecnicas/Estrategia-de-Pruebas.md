@@ -599,6 +599,45 @@ ninguna, y es la regla 10 otra vez: decir qué pasó, no por qué se supone que
 pasó. La versión que quedó nombra las dos rutas y dice que desde ahí no puede
 distinguirlas.
 
+## Regla derivada: comprobar que llegó lo que se pidió no comprueba que se pidió lo que hacía falta
+
+**Una comprobación que compara lo solicitado contra lo obtenido no puede ver lo
+que nadie solicitó. Hay que preguntarle al artefacto qué necesita.**
+
+Encontrado el 2026-08-04, en el primer arranque de la imagen con el cargador
+propio. La máquina montó todo y dijo:
+
+```
+no  thalyx-lsm  this kernel does not expose `bpf_lsm_socket_connect`
+```
+
+`thalyx.config` tenía `CONFIG_SECURITY` y no tenía `CONFIG_SECURITY_NETWORK`.
+Los símbolos `bpf_lsm_<hook>` se generan desde `include/linux/lsm_hook_defs.h`,
+y todos los hooks de socket están adentro de un `#ifdef CONFIG_SECURITY_NETWORK`.
+El símbolo no fue rechazado: **nunca se compiló.**
+
+Y `config-check` —la comprobación escrita el 2026-08-03 justo para las opciones
+que Kconfig descarta en silencio— pasó en verde, correctamente. Compara cada
+línea de `thalyx.config` contra el `.config` resultante. **Ninguna línea pedía
+`SECURITY_NETWORK`, así que no había nada que comparar.** La comprobación
+anterior, "pedirle algo a una herramienta no es haberlo obtenido", cubre un
+hueco distinto y no toca este.
+
+Es un punto ciego con forma propia: cada comprobación de esta clase se escribe
+mirando la lista que ya existe, y el fallo vive **fuera** de la lista. Nada
+dentro del sistema de comprobación puede señalarlo, porque el sistema entero
+está definido por esa lista.
+
+La salida es preguntarle a **otra cosa** qué hace falta. Aquí: el objeto BPF
+sabe a qué símbolos se engancha —`thalyx enforce hooks` los imprime, sacados de
+las secciones `SEC("lsm/...")`— y `hook-check` los busca en el `System.map` del
+kernel recién compilado. La lista dejó de estar escrita en ningún lado; se
+deriva del artefacto que la va a usar, que es la misma regla que ya rige
+[[Cargador-BPF-Propio|`enforce attached`]].
+
+Y el coste de no tenerla: el único que notó la ausencia fue **una máquina sin
+shell**, después de compilar un kernel, construir una imagen y arrancar.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
