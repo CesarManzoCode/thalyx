@@ -867,6 +867,51 @@ línea del código de salida— es más largo que eso. Un sandbox que no se pudo
 armar y un módulo que corrió y no dijo nada se veían igual en la única salida
 que alguien lee. Ahora imprime el reporte entero.
 
+## Regla derivada: lo que el anfitrión hacía gratis, otra vez, y ahora era el arranque entero
+
+Cuarta ronda de lo mismo, y la más profunda. `pivot_root` devolvió `EINVAL`
+adentro de la imagen, después de que el módulo ya tenía cgroup, política,
+usuario, namespaces, seccomp y límites — todo correcto.
+
+`fs/namespace.c`, `do_pivot_root`:
+
+```c
+if (!mnt_has_parent(root_mnt))
+    goto out4; /* not attached */   -- EINVAL
+```
+
+**La raíz de un namespace de montajes no tiene padre.** En cualquier otro Linux
+eso es invisible, porque la raíz del proceso *no* es la raíz del namespace: el
+kernel arma un `rootfs` interno y todo sistema real monta algo encima, así que
+la raíz del proceso es un hijo y tiene padre. Eso lo hace `switch_root`, en el
+initramfs, antes de que arranque nada.
+
+**La imagen es un initramfs y nada más.** Su raíz de proceso *es* la raíz del
+namespace, y sigue siéndolo después de `unshare(CLONE_NEWNS)` porque la copia
+también es raíz de un namespace. Nadie había hecho el `switch_root` porque en
+todas las demás máquinas ya estaba hecho — igual que con systemd y los
+controladores, dos rondas antes.
+
+Se arregla con lo mismo que hace `switch_root`, pero con un bind en vez de un
+tmpfs: montar `/` sobre `/newroot`, `chdir` ahí, mover ese montaje a `/`, y
+`chroot(".")`. El bind comparte los mismos inodos y las mismas páginas —copiar
+los seis megabytes de `/init` a un tmpfs no cambiaría nada y costaría RAM— y
+`__do_loopback` le quita `MNT_LOCKED` al clon, que es lo que hace legal el
+movimiento después.
+
+**Se comprobó corriéndolo**, con los mismos envoltorios de `thalyx-syscall`,
+dentro de un namespace de montajes desechable: `switch: ok`, la raíz pasa a
+tener padre, y `pivot_root` después funciona.
+
+### Y la máquina ahora lo dice de sí misma
+
+El arranque imprime dos hechos distintos: que el cambio de raíz corrió, y que
+la raíz resultante **es una de la que se puede sacar un módulo**, leído del
+kernel y no inferido del primero. La sesión toma la misma lectura. Es la misma
+corrección que le hicimos al cgroup2 dos rondas antes, y por la misma razón: la
+pantalla de arranque no puede salir limpia en una máquina donde ningún módulo
+puede correr.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

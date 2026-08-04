@@ -66,6 +66,56 @@ pub const DEVICE_NODES: [&str; 5] = [
     "/dev/urandom",
 ];
 
+/// Whether `pivot_root` can replace this process's root at all.
+///
+/// `None` when the question could not be answered — which is not the same as
+/// `Some(false)` and must never be reported as one.
+///
+/// ## The check, and why it is not obvious
+///
+/// `fs/namespace.c`, `do_pivot_root`, 6.12:
+///
+/// ```c
+/// if (!mnt_has_parent(root_mnt))
+///     goto out4; /* not attached */   -- EINVAL
+/// ```
+///
+/// The root of a mount namespace has no parent. Normally that is invisible,
+/// because the process's root is *not* the namespace's root: the kernel's
+/// `init_mount_tree` makes an internal `rootfs` and every real system mounts
+/// something on top of it, so the process root is a child and has a parent.
+///
+/// An image booted from an initramfs and nothing else is the exception. Its
+/// process root **is** the namespace root, and it stays that way through
+/// `unshare(CLONE_NEWNS)` — the copy is a namespace root too. So the module's
+/// `pivot_root` returned `EINVAL` with nothing else to say, after the
+/// confinement around it had already been established correctly.
+///
+/// `mountinfo` prints `mnt_parent->mnt_id`, so an unattached mount prints its
+/// own id twice. That is the whole reading.
+pub fn root_mount_has_a_parent(mountinfo: &str) -> Option<bool> {
+    // The last one wins. Several mounts can sit at `/`, stacked, and the one
+    // the process is actually rooted at is the topmost — which is the last
+    // `mountinfo` lists.
+    let mut answer = None;
+    for line in mountinfo.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(id), Some(parent), _major_minor, _root, Some(point)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        if point == "/" {
+            answer = Some(id != parent);
+        }
+    }
+    answer
+}
+
 /// One thing bound into the module's root.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bind {
@@ -663,5 +713,54 @@ mod tests {
         let target = scratch.path().join("assembly/absent");
         assert!(create_target_like(&scratch.path().join("absent"), &target).is_err());
         assert!(!target.exists());
+    }
+
+    /// The sample is a real one, captured verbatim from a running machine.
+    ///
+    /// Rule 6: a hand-written fixture proves the parser matches my model of
+    /// the format. `mountinfo` has a variable-length optional-fields section
+    /// before the `-` separator, which is exactly the kind of thing an
+    /// invented sample gets tidy and the kernel does not.
+    const CAPTURED: &str = include_str!("../tests/captured/mountinfo-normal-root.txt");
+
+    #[test]
+    fn a_root_mounted_on_something_can_be_pivoted_away_from() {
+        assert_eq!(root_mount_has_a_parent(CAPTURED), Some(true));
+    }
+
+    /// The image's case: the process root is the namespace root, so mountinfo
+    /// prints the same id twice and `pivot_root` will refuse with EINVAL.
+    ///
+    /// Derived from the captured line by setting the parent id to the mount
+    /// id, which is precisely what the kernel prints for an unattached mount
+    /// (`fs/proc_namespace.c`: `r->mnt_id, r->mnt_parent->mnt_id`).
+    #[test]
+    fn a_root_that_is_its_own_namespace_root_cannot_be_pivoted_away_from() {
+        let unattached = "39 39 254:0 / / rw,relatime - ext4 /dev/vda rw\n";
+        assert_eq!(root_mount_has_a_parent(unattached), Some(false));
+    }
+
+    /// No line for `/` is unreadable, not "no parent".
+    ///
+    /// Rule 10. Reporting an unanswerable question as a negative answer would
+    /// send somebody to fix a root that is fine.
+    #[test]
+    fn a_mountinfo_with_no_root_line_answers_nothing_rather_than_no() {
+        assert_eq!(root_mount_has_a_parent(""), None);
+        assert_eq!(
+            root_mount_has_a_parent("39 2 254:0 / /proc rw - proc proc rw\n"),
+            None
+        );
+    }
+
+    /// Stacked roots: the topmost is the one the process is rooted at.
+    ///
+    /// This is what the boot looks like immediately after PID 1 moves off the
+    /// initramfs — the unattached rootfs is still there, underneath.
+    #[test]
+    fn the_last_root_line_is_the_one_the_process_is_actually_on() {
+        let stacked = "1 1 0:1 / / rw - rootfs rootfs rw\n\
+                       2 1 0:1 / / rw - rootfs rootfs rw\n";
+        assert_eq!(root_mount_has_a_parent(stacked), Some(true));
     }
 }

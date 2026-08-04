@@ -28,7 +28,7 @@ pub use libc::{
     CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
 pub use libc::{
-    MS_BIND, MS_NODEV, MS_NOEXEC, MS_NOSUID, MS_PRIVATE, MS_RDONLY, MS_REC, MS_REMOUNT,
+    MS_BIND, MS_MOVE, MS_NODEV, MS_NOEXEC, MS_NOSUID, MS_PRIVATE, MS_RDONLY, MS_REC, MS_REMOUNT,
 };
 
 /// Unmount lazily: detach now, let the kernel clean up when the last user goes.
@@ -227,6 +227,21 @@ pub fn chdir(path: &Path) -> io::Result<()> {
     // SAFETY: the pointer comes from a `CString` that outlives the call.
     #[allow(unsafe_code)]
     let result = unsafe { libc::chdir(path.as_ptr()) };
+    check(result)
+}
+
+/// Make `path` the process's root directory.
+///
+/// Not a containment boundary and never used as one here — a process with the
+/// privilege to call this can walk back out of it. It exists for the one job
+/// `pivot_root` cannot do: adopting a root that has just been moved into place
+/// underneath the process, which is what PID 1 does to get off the initramfs.
+/// See `thalyx-cli`'s `init::leave_the_initramfs`.
+pub fn chroot(path: &Path) -> io::Result<()> {
+    let path = path_to_c(path)?;
+    // SAFETY: the pointer comes from a `CString` that outlives the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::chroot(path.as_ptr()) };
     check(result)
 }
 

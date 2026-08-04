@@ -203,6 +203,27 @@ fn cgroup2() -> Outcome {
     }
 }
 
+/// Whether a module can be given a root filesystem of its own.
+///
+/// Here for the same reason the cgroup reading grew a second half: a machine
+/// that cannot pivot a module into its own root cannot run a module at all,
+/// and until this line existed the screen said nothing about it. The boot said
+/// `ok` to seven mounts and the first `correr` said `Invalid argument`.
+fn sandbox_root() -> Outcome {
+    let mountinfo = match std::fs::read_to_string("/proc/self/mountinfo") {
+        Ok(text) => text,
+        Err(error) => return Outcome::Unreadable(format!("/proc/self/mountinfo: {error}")),
+    };
+
+    match thalyx_sandbox::rootfs::root_mount_has_a_parent(&mountinfo) {
+        Some(true) => Outcome::Found("a module can be pivoted into a root of its own".to_string()),
+        Some(false) => Outcome::Absent(
+            "the root has no parent mount, so pivot_root refuses every module".to_string(),
+        ),
+        None => Outcome::Unreadable("no mount for / is listed, so this cannot be told".to_string()),
+    }
+}
+
 /// Whether the cgroup root hands down what a module's profile needs.
 ///
 /// Read rather than assumed, and read from the profile rather than from a list
@@ -294,6 +315,10 @@ fn gather(store: &Store) -> Vec<Reading> {
         Reading {
             subject: "cgroup v2",
             outcome: cgroup2(),
+        },
+        Reading {
+            subject: "sandbox root",
+            outcome: sandbox_root(),
         },
         Reading {
             subject: "lsm order",

@@ -1848,6 +1848,20 @@ else
             grep "thalyx-lsm" "$BOOT_LOG_1" | sed 's/^/     /'
         fi
 
+        # The root a module gets pivoted out of. Read from the kernel by the
+        # boot itself, not inferred from having done the switch: those are two
+        # facts and only the second one decides whether a module runs.
+        #
+        # Separate from the run below for the same reason as the controllers —
+        # they fail apart, and three rounds of this have gone wrong by reading
+        # one for the other.
+        if grep -q "ok  sandbox root" "$BOOT_LOG_1"; then
+            proven "the machine's own root can have a module pivoted out of it, off the initramfs"
+        else
+            failed "the root has no parent mount, so pivot_root refuses every module"
+            grep -E "root " "$BOOT_LOG_1" | sed 's/^/     /'
+        fi
+
         # The cgroup root handing controllers down. Nothing else on the machine
         # does it: on every other Linux systemd has done it before anything
         # runs, which is why this was invisible until the image tried to

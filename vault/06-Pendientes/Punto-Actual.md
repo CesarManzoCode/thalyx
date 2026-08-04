@@ -410,12 +410,39 @@ tags: [continuidad, punto-actual, sesiones]
 > donde el `greeter` corre con usuario propio es la imagen. Un caso de prueba
 > que nunca varía no es un caso de prueba. Ver [[Estrategia-de-Pruebas]].
 >
+> ## Y nadie había hecho el `switch_root` — 2026-08-04
+>
+> El montaje del archivo funcionó y `pivot_root` devolvió `EINVAL`, con el
+> módulo ya en su cgroup, con su política, su usuario, sus namespaces, seccomp
+> y sus límites. Todo bien menos el último paso.
+>
+> `do_pivot_root`: `if (!mnt_has_parent(root_mnt)) goto out4;`. **La raíz de un
+> namespace de montajes no tiene padre.** En cualquier otro Linux eso no se ve,
+> porque la raíz del proceso no es la raíz del namespace — el kernel arma un
+> `rootfs` interno y el initramfs monta el sistema real encima con
+> `switch_root` antes de que arranque nada.
+>
+> **La imagen es un initramfs y nada más.** Su raíz de proceso *es* la raíz del
+> namespace, y lo sigue siendo después de `unshare`. Nadie había hecho el
+> `switch_root` porque en todas las demás máquinas ya estaba hecho — que es
+> exactamente lo que pasó con systemd y los controladores dos rondas antes.
+>
+> PID 1 lo hace ahora, con un bind en lugar de un tmpfs: comparte los mismos
+> inodos y las mismas páginas, así que no cuesta memoria. **Se comprobó
+> corriéndolo** con los mismos envoltorios de `thalyx-syscall` dentro de un
+> namespace desechable: el cambio sale bien, la raíz pasa a tener padre, y
+> `pivot_root` después funciona.
+>
+> Y la máquina lo dice de sí misma: el arranque imprime que el cambio corrió y,
+> por separado, que la raíz resultante sirve —leído del kernel, no inferido— y
+> la sesión toma la misma lectura.
+>
 > ## Lo que sigue sin verse
 >
-> **Que el módulo hable.** Con el montaje arreglado, lo que falta es que el
-> `greeter` lea su archivo, pida `/etc/shadow`, sea negado, y lo diga por su
-> canal — que es la línea que la etapa 16 busca. Todo lo que hay debajo de eso
-> ya se vio funcionando adentro de la máquina en la corrida anterior.
+> **Que el módulo hable.** Lo que falta es que el `greeter` lea su archivo, pida
+> `/etc/shadow`, sea negado, y lo diga por su canal — que es la línea que la
+> etapa 16 busca. Todo lo que hay debajo ya se vio funcionando adentro de la
+> máquina.
 >
 > El procedimiento sigue en [[Primer-Arranque]]. Si Cesar pega la salida de un
 > comando, casi siempre es de ahí.
@@ -730,9 +757,14 @@ como directorio en la ruta remapeada, y el kernel exige que sean del mismo tipo.
 Todos los permisos de todas las pruebas son directorios; el único permiso sobre
 un archivo suelto es el del `greeter`.
 
-Los cuatro son la misma forma vista desde cuatro lados: **una comprobación que
+**El quinto:** nadie había hecho el `switch_root`. La raíz de la imagen es la
+raíz de su namespace de montajes, y esa no tiene padre, así que `pivot_root`
+niega todo módulo. En cualquier otro Linux el initramfs ya se bajó de sí mismo
+antes de que arranque nada.
+
+Los cinco son la misma forma vista desde cinco lados: **una comprobación que
 depende de una condición solo se hace en las máquinas que la cumplen**, y la
-imagen es la única máquina que no cumple ninguna. Cinco reglas nuevas en
+imagen es la única máquina que no cumple ninguna. Seis reglas nuevas en
 [[Estrategia-de-Pruebas]], incluida la del mensaje de falla que nombraba una
 causa que nadie midió y mandaba a buscar al lado equivocado.
 

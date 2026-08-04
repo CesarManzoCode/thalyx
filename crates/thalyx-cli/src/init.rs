@@ -134,6 +134,105 @@ fn mount_all() -> Boot {
     boot
 }
 
+/// Where the root is re-attached from. An ordinary directory in the initramfs,
+/// empty for the whole of one second and then never looked at again.
+const NEW_ROOT: &str = "/newroot";
+
+/// Get off the initramfs, so a module can be pivoted into a root of its own.
+///
+/// ## What this is fixing
+///
+/// The kernel hands PID 1 a root that is the root of its mount namespace, and
+/// **the root of a mount namespace has no parent**. `do_pivot_root` refuses
+/// that outright:
+///
+/// ```c
+/// if (!mnt_has_parent(root_mnt))
+///     goto out4; /* not attached */   -- EINVAL
+/// ```
+///
+/// It survives `unshare(CLONE_NEWNS)`, because the copy is a namespace root
+/// too. So a module got its cgroup, its policy, its user, its namespaces and
+/// its limits — all correctly — and then `pivot_root` said `Invalid argument`
+/// and nothing else.
+///
+/// Every other Linux is off the initramfs before anything runs: `switch_root`
+/// moves the real filesystem onto `/` and `chroot`s into it, which leaves the
+/// process root a *child* of the kernel's internal `rootfs`. Nobody writes
+/// this down because on those systems it has already happened.
+///
+/// ## Why a bind and not a tmpfs
+///
+/// `switch_root` moves a different filesystem in, because there is one to move.
+/// Here there is nothing but the initramfs, and copying it into a tmpfs would
+/// duplicate the six megabytes of `/init` in RAM to change nothing.
+///
+/// A bind of `/` gives the same topology for free: the same inodes, the same
+/// pages, one more entry in the mount table, and a process root that has a
+/// parent. `__do_loopback` clears `MNT_LOCKED` on a bind, which is what makes
+/// the move afterwards legal — the initramfs itself carries that flag and
+/// could not be moved.
+///
+/// ## Why it is first
+///
+/// The bind is not recursive, so it must happen while nothing else is mounted.
+/// A recursive one would work too and would duplicate every mount underneath
+/// it; doing it first costs nothing and leaves one honest mount table.
+///
+/// The sequence is `switch_root`'s, and the order is not decoration: the
+/// process changes directory into the new root **before** it is moved, so that
+/// `chroot(".")` afterwards names a root that is already resolved. Moving
+/// first and then naming the path would name the old one.
+fn leave_the_initramfs() -> Result<String, String> {
+    let new_root = Path::new(NEW_ROOT);
+    let root = Path::new("/");
+
+    std::fs::create_dir_all(new_root).map_err(|error| format!("{NEW_ROOT}: {error}"))?;
+
+    thalyx_syscall::mount(Some(root), new_root, None, thalyx_syscall::MS_BIND, None)
+        .map_err(|error| format!("could not bind / at {NEW_ROOT}: {error}"))?;
+
+    thalyx_syscall::chdir(new_root)
+        .map_err(|error| format!("could not enter {NEW_ROOT}: {error}"))?;
+
+    thalyx_syscall::mount(Some(new_root), root, None, thalyx_syscall::MS_MOVE, None)
+        .map_err(|error| format!("could not move {NEW_ROOT} onto /: {error}"))?;
+
+    thalyx_syscall::chroot(Path::new("."))
+        .map_err(|error| format!("could not adopt the moved root: {error}"))?;
+
+    thalyx_syscall::chdir(root)
+        .map_err(|error| format!("could not return to / after the switch: {error}"))?;
+
+    Ok("moved off the initramfs, so a module can be pivoted into a root".to_string())
+}
+
+/// Whether a module can be pivoted into a root of its own, read from the
+/// kernel rather than assumed from having done the switch above.
+///
+/// The switch reporting success is not the same fact as the root being
+/// pivotable, and this is the one that matters. A boot that says `ok` to the
+/// first and nothing about the second would look exactly like the boots that
+/// installed a module and then could not run it.
+fn root_is_pivotable() -> Result<String, String> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|error| format!("/proc/self/mountinfo could not be read: {error}"))?;
+
+    match thalyx_sandbox::rootfs::root_mount_has_a_parent(&mountinfo) {
+        Some(true) => {
+            Ok("the root is attached, so a module can be given one of its own".to_string())
+        }
+        Some(false) => Err(
+            "the root is a namespace root with no parent, so pivot_root will refuse \
+             every module with EINVAL"
+                .to_string(),
+        ),
+        // Rule 10, and it costs nothing to keep: no line for `/` is a failure
+        // to read, not a root without a parent.
+        None => Err("no mount for / in /proc/self/mountinfo, so this cannot be told".to_string()),
+    }
+}
+
 /// Hand the resource controllers down from the cgroup root.
 ///
 /// A cgroup's `cgroup.controllers` is whatever its parent put in
@@ -234,12 +333,27 @@ pub fn run() -> Fallible {
     println!("  Thalyx");
     println!();
 
+    // Before the mounts, because the bind is not recursive and anything
+    // already mounted would be left behind under the old root.
+    match leave_the_initramfs() {
+        Ok(detail) => println!("  ok  root         {detail}"),
+        Err(reason) => println!("  no  root         {reason}"),
+    }
+
     let boot = mount_all();
     for target in &boot.mounted {
         println!("  ok  mounted {target}");
     }
     for (target, error) in &boot.failed {
         println!("  no  {target}: {error}");
+    }
+
+    // Asked of the kernel, now that /proc is there. Two separate facts: the
+    // switch above ran, and the root it produced is one a module can be
+    // pivoted out of. Only the second one decides whether a module runs.
+    match root_is_pivotable() {
+        Ok(detail) => println!("  ok  sandbox root {detail}"),
+        Err(reason) => println!("  no  sandbox root {reason}"),
     }
 
     // Straight after the mounts: the cgroup root has to be handing down what a
