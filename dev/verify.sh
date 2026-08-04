@@ -1973,6 +1973,93 @@ else
     fi
 fi
 
+step "17. what the audit of 2026-08-04 closed, on this machine"
+
+# Nine defects were found from outside and fixed with unit tests. Unit tests
+# are not this script's job — stage 5 runs them. What belongs here is the
+# handful whose claim is about *this machine's kernel* rather than about the
+# code: the ones that pass in a container for reasons that would not survive
+# contact with a real system.
+
+# The contract lock, across two real processes.
+#
+# `flock` is a kernel behaviour, and the unit test proves it with a child
+# process for exactly that reason. Repeated here because a container and a
+# Fedora do not have to agree, and the whole point of this file is that the
+# machine gets asked.
+LOCKDIR="$WORK/lock-check"
+mkdir -p "$LOCKDIR"
+touch "$LOCKDIR/lock"
+
+(
+    exec 9>"$LOCKDIR/lock"
+    flock 9
+    sleep 2
+) &
+HOLDER=$!
+sleep 0.4
+
+# A one-sided measurement: ambient slowness can only make the second process
+# later, never earlier. So a lock that was granted here is a lock that does
+# nothing, and the threshold cannot be reached by noise.
+START=$(date +%s%N)
+(
+    exec 9>"$LOCKDIR/lock"
+    flock 9
+) 2>/dev/null
+WAITED=$(( ($(date +%s%N) - START) / 1000000 ))
+wait $HOLDER 2>/dev/null || true
+
+if [ "$WAITED" -ge 800 ]; then
+    proven "a second contract waits for the first: ${WAITED}ms behind a held lock"
+else
+    failed "the contract lock did not serialise: the second holder waited ${WAITED}ms"
+fi
+
+# `openat2` with RESOLVE_BENEATH, which is the fix for the path race.
+#
+# It needs kernel 5.6 and it is the one correction here that silently degrades
+# if the kernel lacks it — the call returns ENOSYS and every module read fails.
+# On a machine that cannot answer, this says so rather than passing.
+KVER=$(uname -r)
+if [ -e /proc/kallsyms ] && grep -q "sys_openat2" /proc/kallsyms 2>/dev/null; then
+    proven "the kernel has openat2, so granted paths resolve under RESOLVE_BENEATH ($KVER)"
+elif printf '%s\n' "5.6" "$(uname -r | cut -d- -f1)" | sort -V -C; then
+    proven "kernel $KVER is past 5.6, where openat2 and RESOLVE_BENEATH landed"
+else
+    unproven "cannot establish that this kernel ($KVER) has openat2; a module's granted reads would all fail"
+fi
+
+# The module does not get the terminal.
+#
+# Asked of the confined program rather than of Thalyx, which is rule 2: a
+# module that writes to stdout must not reach the screen Thalyx draws the
+# trusted path on. The control is that the run happened at all — without it, a
+# module that failed to start looks identical to one that was contained.
+# Stage 6 installed `org.thalyx.verify` into $STORE and its entrypoint echoes
+# several lines to stdout. Every one of those is a line a module chose to
+# write, so if any of them reaches this script's output, the module has the
+# terminal. `uid=` is the first thing it prints.
+TERM_OUT="$WORK/terminal-check.txt"
+if [ -x "$THALYX" ] && [ -d "$STORE" ] && \
+   "$THALYX" --root "$STORE" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
+
+    "$THALYX" --root "$STORE" module run org.thalyx.verify --unconfined \
+        > "$TERM_OUT" 2>&1 || true
+
+    if grep -qE '^(uid=|pid=|host=|root=)' "$TERM_OUT"; then
+        failed "a module wrote straight to the terminal the trusted path uses; see $TERM_OUT"
+    elif grep -q "exited" "$TERM_OUT"; then
+        # The control. Without it, a module that failed to start looks exactly
+        # like one that was contained.
+        proven "a module ran, and none of its own stdout reached the screen Thalyx confirms on"
+    else
+        unproven "the module did not run here, so the terminal claim proves nothing"
+    fi
+else
+    unproven "no installed module to ask whether it can reach the terminal"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
