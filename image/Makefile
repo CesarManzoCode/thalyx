@@ -350,6 +350,39 @@ hook-check:
 	    exit 1; \
 	fi; \
 	echo "  hooks: this kernel exposes every symbol enforcement attaches to"
+	@# A hook existing and a program being able to attach to it are two
+	@# claims, and the second one cost its own boot — 2026-08-04, the day
+	@# after the first. With the symbols present, attaching returned EBUSY.
+	@#
+	@# BPF attaches to an LSM hook with a trampoline. `register_fentry` calls
+	@# `register_ftrace_direct` when the function is ftrace-managed, and falls
+	@# back to poking the text when it is not — where it expects the five-byte
+	@# NOP that CONFIG_FUNCTION_TRACER puts at the top of every function, and
+	@# returns EBUSY when the bytes are anything else. Which reads as somebody
+	@# else holding the hook. Nobody was.
+	@#
+	@# So the artifact is asked, not the request: `register_ftrace_direct` is
+	@# compiled only under CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS, so its
+	@# presence in the map *is* the property. thalyx.config asks for that
+	@# option too and config-check verifies it, but only for as long as
+	@# somebody keeps the line — and a check defined by a list cannot see what
+	@# is missing from the list. That is the rule this file learned twice.
+	@grep -qw register_ftrace_direct $(KSOURCE)/System.map || { \
+	    echo; \
+	    echo "  This kernel exposes the hooks and cannot have anything"; \
+	    echo "  attached to them: it has no BPF trampoline support."; \
+	    echo; \
+	    echo "  register_ftrace_direct is not in the kernel, which means"; \
+	    echo "  CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS is off. It is three"; \
+	    echo "  dependencies below CONFIG_FUNCTION_TRACER; that is the line"; \
+	    echo "  thalyx.config needs."; \
+	    echo; \
+	    echo "  Booting anyway gives 'Resource busy' when it attaches, which"; \
+	    echo "  reads as something else holding the hook. Nothing is."; \
+	    echo; \
+	    exit 1; \
+	}
+	@echo "  hooks: and it can have a trampoline attached to them"
 
 # ───────────────────────────────────────────────────────────────── the program
 

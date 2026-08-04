@@ -67,7 +67,10 @@ pub enum LoadError {
         rejection: thalyx_syscall::VerifierRejection,
     },
 
-    #[error("attaching `{name}`: {source}\n      the program loaded and is in nobody's path")]
+    #[error(
+        "attaching `{name}`: {source}\n      the program loaded and is in nobody's path{}",
+        attach_hint(source)
+    )]
     Attach {
         name: String,
         #[source]
@@ -90,6 +93,32 @@ pub enum LoadError {
 }
 
 type Result<T> = std::result::Result<T, LoadError>;
+
+/// What EBUSY means when a trampoline is being installed on an LSM hook.
+///
+/// It cost a boot on 2026-08-04, and the errno is why: "Resource busy" reads as
+/// something else already holding the hook, and nothing was. BPF attaches to an
+/// LSM hook with a trampoline; when the function is not ftrace-managed the
+/// kernel patches the text itself and expects the five-byte NOP that
+/// `CONFIG_FUNCTION_TRACER` puts at the top of every function. The bytes were
+/// something else, so `memcmp` failed, and that path returns `-EBUSY`.
+///
+/// Both causes are named because this genuinely cannot tell them apart from
+/// here — `register_ftrace_direct` returns the same errno for a hook that
+/// already carries a direct call. Naming one would be an explanation of a cause
+/// nothing observed, which is the mistake `Estrategia-de-Pruebas.md` records
+/// under messages that name a cause.
+fn attach_hint(error: &std::io::Error) -> &'static str {
+    // 16 on every architecture Linux supports; not a constant worth importing.
+    const EBUSY: i32 = 16;
+    if error.raw_os_error() != Some(EBUSY) {
+        return "";
+    }
+    "\n      Busy here has two causes and this cannot tell them apart: the \
+     kernel\n      has no trampoline support — CONFIG_FUNCTION_TRACER, and \
+     the\n      CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS three dependencies \
+     under it —\n      or something already holds a direct call on that hook."
+}
 
 /// Where the kernel publishes its own type information.
 pub const KERNEL_BTF: &str = "/sys/kernel/btf/vmlinux";
@@ -320,5 +349,37 @@ mod tests {
             panic!("this machine publishes no BTF and kernel_btf() succeeded");
         };
         assert!(error.to_string().contains(KERNEL_BTF), "{error}");
+    }
+
+    #[test]
+    fn a_busy_attach_says_what_busy_means_here_and_that_it_cannot_choose() {
+        // "Resource busy" reads as somebody else holding the hook, and on
+        // 2026-08-04 nobody was: the kernel had no trampoline support. The
+        // machine that hit it has no shell to investigate with, so the errno
+        // has to arrive with what it can mean.
+        let error = LoadError::Attach {
+            name: "thalyx_socket_connect".to_string(),
+            source: std::io::Error::from_raw_os_error(16),
+        };
+        let text = error.to_string();
+        assert!(text.contains("CONFIG_FUNCTION_TRACER"), "{text}");
+        assert!(
+            text.contains("already holds a direct call"),
+            "only one of the two causes is named: {text}"
+        );
+    }
+
+    #[test]
+    fn another_errno_gets_no_paragraph_about_trampolines() {
+        // The control. Without it the paragraph could be unconditional, and
+        // every attach failure would send the reader to the kernel
+        // configuration — including the ones that have nothing to do with it.
+        let error = LoadError::Attach {
+            name: "thalyx_file_open".to_string(),
+            source: std::io::Error::from_raw_os_error(1),
+        };
+        let text = error.to_string();
+        assert!(!text.contains("CONFIG_FUNCTION_TRACER"), "{text}");
+        assert!(text.contains("in nobody's path"), "{text}");
     }
 }

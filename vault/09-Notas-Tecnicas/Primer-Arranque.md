@@ -89,7 +89,10 @@ comprobaciones del paso 6. Lo que no cambia es que `failed` sea 0 y que las
 Las **dos** `not proven` esperadas son:
 
 1. El modelo del agente — `llama.cpp` no está instalado y la ruta real no existe.
-2. La imagen — nunca ha arrancado.
+2. La imagen — **este script no la arranca**, que no es lo mismo que no haber
+   arrancado nunca. Arrancó el 2026-08-03 y varias veces desde entonces; se hace
+   a mano con `make -C image run`, y por eso cada opción del kernel que faltaba
+   se encontró de a una.
 
 La etapa 13 es la que prueba el store: formatea un disco Btrfs de verdad, le
 hace los tres subvolúmenes, instala el módulo adentro y lo vuelve a montar para
@@ -316,6 +319,7 @@ contrario, y esa diferencia es cómo se comprueba que la frase no está cableada
 | `no  thalyx-lsm  no BPF object was built into me` | La imagen se construyó sin el lado del kernel. `make -C image lsm` y reconstruye el binario. |
 | `no  thalyx-lsm  reading this kernel's BTF` | Falta `CONFIG_DEBUG_INFO_BTF`. El arreglo es reconstruir el kernel, no tocar el cargador. |
 | `no  thalyx-lsm  this kernel does not expose bpf_lsm_...` | El kernel de la imagen no trae ese hook, y el arreglo es una opción en `thalyx.config`, no tocar el cargador. Pasó el 2026-08-04 con `socket_connect`: faltaba `CONFIG_SECURITY_NETWORK`. **Desde entonces `make -C image` lo atrapa antes de arrancar** — ver el paso 3. Si lo ves ahora, es un hook nuevo que nadie contempló; pégamelo. |
+| `no  thalyx-lsm  attaching ...: Resource busy` | El hook existe y no se le puede enganchar nada: falta soporte de trampolines (`CONFIG_FUNCTION_TRACER`). Pasó el 2026-08-04. **Desde entonces `make -C image` lo atrapa** buscando `register_ftrace_direct` en el `System.map`. El propio mensaje nombra las dos causas posibles. |
 | `no  thalyx-lsm` seguido de líneas del verificador | El kernel rechazó el programa y dice cuál instrucción. **Pégamelo entero**: esas líneas son lo único que sirve. |
 | `no  store ... neither is any other disk` | No llegó ningún disco. O el paso 4b no se hizo, o QEMU no lo adjuntó. Desde el 2026-08-03 `make run` **se niega a arrancar** sin store, así que esto solo sale con `STORELESS=1`. |
 | `no  store ... The disks that are: X` | Sí hay discos y ninguno se llama como dice `thalyx.store=`. Cambia `STOREDEV` en `image/Makefile` por el que aparezca. |

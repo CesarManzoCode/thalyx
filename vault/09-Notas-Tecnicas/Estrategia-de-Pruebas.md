@@ -638,6 +638,58 @@ deriva del artefacto que la va a usar, que es la misma regla que ya rige
 Y el coste de no tenerla: el único que notó la ausencia fue **una máquina sin
 shell**, después de compilar un kernel, construir una imagen y arrancar.
 
+## Regla derivada: que el símbolo exista no es que se le pueda enganchar algo
+
+**Comprobar que una capacidad está presente y comprobar que se puede usar son
+dos comprobaciones. La segunda es la que importa y casi nunca se escribe.**
+
+El 2026-08-04, un arranque después del anterior. `hook-check` confirmó que el
+kernel exponía `bpf_lsm_socket_connect`. La máquina arrancó y dijo:
+
+```
+no  thalyx-lsm  attaching `thalyx_socket_connect`: Resource busy (os error 16)
+```
+
+BPF se engancha a un hook LSM con un *trampolín*. `register_fentry` le pregunta
+a `ftrace_location()` si la función está gestionada por ftrace; sin ftrace
+dinámico no lo está, así que el kernel parcha el texto él mismo — y
+`__bpf_arch_text_poke` espera encontrar el NOP de cinco bytes que
+`CONFIG_FUNCTION_TRACER` pone al principio de cada función. No estaba, el
+`memcmp` falló, y ese camino devuelve `-EBUSY`.
+
+**Y `EBUSY` describe otra cosa.** «Recurso ocupado» se lee como que algo más
+tiene el hook tomado, y no había nada. El errno era correcto y la única lectura
+natural de él era falsa.
+
+Dos cosas salieron de ahí:
+
+1. **La comprobación pregunta por el artefacto, no por la opción.**
+   `register_ftrace_direct` solo se compila bajo
+   `CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`, así que su presencia en el
+   `System.map` **es** la propiedad. `thalyx.config` también pide la opción y
+   `config-check` la verifica, pero eso solo funciona mientras alguien conserve
+   la línea — y una comprobación definida por una lista no puede ver lo que
+   falta de la lista, que es la regla de arriba.
+
+2. **Un errno que se lee mal viaja con lo que puede significar.** El mensaje
+   nombra **las dos** causas de `EBUSY` en ese camino —sin soporte de
+   trampolines, o algo que ya tiene una llamada directa en ese hook— y dice que
+   desde ahí no las puede distinguir. Nombrar una sola habría sido inventar la
+   causa, que es la regla anterior a esta.
+
+### El patrón, que ya son tres
+
+`allnoconfig` apaga todo lo que nadie nombre, y lo que BPF LSM necesita está
+repartido en cuatro menús sin un símbolo que lo anuncie. Tres opciones se han
+encontrado **arrancando**: `BPF_LSM`/`DEBUG_INFO_BTF` (2026-08-03),
+`SECURITY_NETWORK` y ahora `FUNCTION_TRACER`. Cada una costó recompilar un
+kernel y arrancar.
+
+Ninguna comprobación de construcción encuentra la cuarta, porque la lista de lo
+que hace falta la tiene el kernel corriendo y nadie más. **Lo único que cerraría
+la clase entera es arrancar la imagen dentro de `verify.sh`** en vez de a mano,
+que es una de las dos `NOT PROVEN` que la corrida arrastra desde que existe.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

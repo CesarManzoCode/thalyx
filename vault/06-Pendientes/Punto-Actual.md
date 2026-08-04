@@ -228,6 +228,40 @@ tags: [continuidad, punto-actual, sesiones]
 > `util-linux-script`. Los siete controles del paso 6 no corrieron, así que ese
 > trabajo sigue sin ejercer en hardware.
 >
+> ## Y el hook existía y no se le podía enganchar nada — 2026-08-04
+>
+> Con `CONFIG_SECURITY_NETWORK` puesto, el símbolo apareció y el arranque falló
+> un paso más adelante:
+>
+> ```
+> no  thalyx-lsm  attaching `thalyx_socket_connect`: Resource busy (os error 16)
+> ```
+>
+> Faltaba `CONFIG_FUNCTION_TRACER`. BPF se engancha a un hook LSM con un
+> trampolín, y sin ftrace dinámico el kernel parcha el texto él mismo esperando
+> el NOP de cinco bytes que esa opción pone al principio de cada función. No
+> estaba, el `memcmp` falló, y ese camino devuelve `EBUSY` — que se lee como que
+> algo más tiene el hook tomado, y no había nada.
+>
+> `CONFIG_FTRACE=y` ya estaba y es solo el menú: no emite ningún NOP.
+>
+> Dos arreglos, y el segundo importa más:
+>
+> 1. Las cuatro líneas en `thalyx.config`, con `DYNAMIC_FTRACE_WITH_DIRECT_CALLS`
+>    pedida explícitamente aunque sea derivada, para que `config-check` reporte
+>    si no se materializa.
+> 2. **`hook-check` pregunta por el artefacto**: `register_ftrace_direct` solo se
+>    compila bajo esa opción, así que su presencia en el `System.map` *es* la
+>    propiedad. Probado con sus dos respuestas.
+>
+> Y el mensaje del cargador ahora dice **las dos** causas de `EBUSY` en ese
+> camino y que no las puede distinguir. Con su control: otro errno no lleva el
+> párrafo.
+>
+> **Ya son tres opciones del kernel encontradas arrancando**, y la regla nueva en
+> [[Estrategia-de-Pruebas]] dice por qué ninguna comprobación de construcción va
+> a encontrar la cuarta.
+>
 > ## Lo que sigue sin verse
 >
 > **La imagen arrancando con enforcement puesto.** PID 1 llama a `attach_lsm` y
