@@ -1008,6 +1008,49 @@ nadie sabe qué. El código que las colapsa elige la insegura.
 El control importa tanto como el caso: negarse a leer **ambas** dejaría una
 máquina nueva incapaz de instalar nada. Hay una prueba para cada una.
 
+## Regla derivada: una comprobación que solo corre a mano, en una máquina, deja de correr
+
+Encontrada el 2026-08-04, y es la forma más cara de la regla 5 hasta ahora.
+
+La etapa 15 de `verify.sh` es la que maneja el prompt de la sesión: instalar,
+confirmar por el camino confiable, revertir, y volver a una máquina que todavía
+sabe qué se le pidió. **Cuatro de los seis pasos que cierran la Fase 1.**
+
+Necesitaba `script(1)` para darle una terminal al confirmador —que se niega sin
+una, correctamente, porque el silencio no es consentimiento—. Fedora trae
+`script` en `util-linux-script`, un subpaquete que no se instala solo. Así que
+en la única máquina que puede verificar Thalyx, la etapa se saltó entera.
+
+**El salto funcionó exactamente como está diseñado**: imprimió `NOT PROVEN` y
+dijo por qué. Eso es la maquinaria haciendo su trabajo, y no alcanzó. La regla:
+
+**Una comprobación que solo puede correr en una máquina, a mano, es una
+comprobación que va a dejar de correr — y el `NOT PROVEN` no lo impide, porque
+nadie lee un informe que ya conoce.**
+
+De ahí dos consecuencias, y las dos se aplicaron:
+
+1. **La dependencia externa se elimina en vez de documentarse.** Thalyx hace su
+   propia pty, como hace su propio initramfs y su propio cargador de BPF. Un
+   sistema que embarca un solo programa puede producir ochenta líneas de
+   `posix_openpt` antes que heredar una cuarta cosa que nadie eligió.
+2. **Lo que no necesita hardware se muda a la suite.** De esos cuatro pasos,
+   ninguno necesita BPF, Btrfs ni un cgroup delegado: necesitaban una terminal.
+   Ahora corren en cada cambio. En `verify.sh` queda lo que sí necesita una
+   máquina — arrancar la imagen, que el kernel deniegue, un reinicio de verdad —
+   donde una máquina que no puede contestar lo dice.
+
+El criterio que cierra la fase no puede depender de que una persona se acuerde
+de correr un comando.
+
+### Y el corolario sobre el arnés que reemplaza a otro
+
+La pty nueva decide ahora si cuatro pasos del criterio pasan. Una versión que
+fallara en silencio haría que todo lo de abajo se leyera como un sistema que no
+confirma, en vez de como un instrumento roto. Así que la etapa **comprueba el
+arnés antes de confiar en él**, con su control: adentro tiene que haber terminal
+y afuera no. Sin el control, una respuesta fija pasaría igual.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

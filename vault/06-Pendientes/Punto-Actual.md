@@ -14,6 +14,59 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Y el criterio de salida dejó de depender de que alguien corra un comando — 2026-08-04
+>
+> **Léelo después del bloque de la auditoría, que sigue siendo lo primero.**
+>
+> Al ir a comprobar el paso 6 apareció por qué estaba "escrito y sin ejercer":
+> la etapa 15 de `verify.sh` —la que maneja el prompt e implica los pasos 2, 3,
+> 4 y 6— necesitaba `script(1)`, que Fedora trae en `util-linux-script`. En la
+> única máquina que puede verificar Thalyx, la etapa se saltaba entera.
+>
+> El salto hizo lo que debía: dijo `NOT PROVEN`. Y no alcanzó, porque nadie
+> actúa sobre un informe que ya conoce. Ver la regla nueva en
+> [[Estrategia-de-Pruebas]].
+>
+> Dos cosas, y las dos ya están:
+>
+> 1. **Thalyx hace su propia terminal.** `thalyx dev pty` —`posix_openpt`,
+>    `setsid`, `TIOCSCTTY`— en `thalyx-syscall`, donde vive el `unsafe`. La
+>    misma decisión que el initramfs y el cargador de BPF: antes ochenta líneas
+>    propias que una cuarta cosa que nadie eligió. `verify.sh` ya no necesita
+>    nada que la máquina que corre Thalyx no tenga.
+> 2. **Los cuatro pasos que no necesitan hardware son ahora pruebas.** Corren en
+>    cada cambio, contra el disco y desde fuera de la sesión que dice haber
+>    hecho las cosas. En `verify.sh` queda lo que sí necesita máquina: arrancar
+>    la imagen, que el kernel deniegue, un reinicio de verdad.
+>
+> **Y manejar el prompt de verdad encontró un defecto que la auditoría había
+> creado**: el saneador truncaba también las líneas de permiso, y un permiso no
+> es una etiqueta. Con un `$HOME` largo, `/home/user/projects/secrets` y
+> `/home/user/projects/public` se dibujaban igual, y el humano confirmaba una
+> frase cierta de los dos. Ahora los permisos se envuelven en varias líneas —
+> solo la primera lleva viñeta, para que una línea envuelta no parezca una
+> concesión más— y si hay que acotar se elide el **medio**, no el final: la raíz
+> y la hoja son las dos partes que dicen qué se está concediendo.
+>
+> Regla 1 otra vez: salió de correr el sistema, y hubo que escribir la terminal
+> para poder correrlo.
+>
+> **El `doctor` también aprendió el ancla del kernel.** Al hacerlo fallar sin
+> digest, el commit anterior había creado justo el fallo que el `doctor` existe
+> para evitar: decir "está todo" y que la pared llegue después de la descarga.
+> Ahora se reporta en la misma vuelta que lo demás.
+>
+> ### Lo que decidí no hacer, y por qué
+>
+> **Cargar `thalyx_watch` con el cargador propio.** Es el último punto de "lo
+> que falta comprobar" y no lo toqué: aquí no se puede compilar el objeto
+> —faltan las cabeceras de `libbpf`— así que sería una segunda cosa sin ejercer
+> apilada sobre las que ya esperan hardware, que es exactamente lo que
+> `CLAUDE.md` prohíbe. El cargador ya recorre varios programas y varios mapas, y
+> el único tipo que el watcher usa y el LSM no es `PERCPU_ARRAY`, que es un mapa
+> con clave como cualquier otro. Es probable que funcione y **probable no es
+> comprobado**.
+>
 > ## Lo último: una auditoría externa encontró nueve defectos reales — 2026-08-04
 >
 > **Es lo primero que hay que leer y lo único pendiente de comprobar.**
@@ -47,7 +100,7 @@ tags: [continuidad, punto-actual, sesiones]
 > leerse entero si su última línea estaba cortada — justo lo que deja un corte.
 >
 > **Todo está corregido, con pruebas que se comprobó que fallan sin el arreglo.**
-> 641 tests pasan, `clippy` limpio, `cargo fmt` aplicado.
+> 657 tests pasan, `clippy` limpio, `cargo fmt` aplicado.
 >
 > ### Lo que falta, y es de Cesar
 >
@@ -527,6 +580,11 @@ construye para sí mismo, y el disco donde guarda lo que le instalan.
 **Los huecos de arquitectura de la Fase 1 están cerrados.** El último era el
 enforcement dentro de la imagen; el cargador propio salió verde en hardware el
 2026-08-03.
+
+> Matiz del 2026-08-04, al final del día: seguía siendo cierto que no falta
+> código **del sistema**, y era falso que no faltara código para *comprobarlo*.
+> Cuatro de los seis pasos no se estaban verificando en ningún lado, porque la
+> única etapa que los cubría se saltaba sola. Ya son pruebas.
 
 **Y desde el 2026-08-04 los seis pasos del criterio de salida se pueden hacer.**
 Lo que falta para cerrar la fase **no es código**: es que los haga una persona
