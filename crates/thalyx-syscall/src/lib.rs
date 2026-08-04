@@ -392,6 +392,122 @@ fn check(result: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Take an exclusive lock on an open file, waiting for whoever holds it.
+///
+/// `flock(2)` rather than `fcntl` locking, and the difference matters: an
+/// `fcntl` lock is dropped when *any* descriptor on the file is closed in the
+/// process, which makes it fragile in a program that opens the store from
+/// several places. A `flock` lock belongs to the open file description and is
+/// released when that description goes — which for Thalyx means when the
+/// process holding it exits, including when it is killed.
+///
+/// That last property is what makes it safe to hold across a commit. A crash
+/// mid-operation releases the lock without anything having to notice, so the
+/// next run reconciles rather than waiting forever on a dead holder.
+pub fn lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `flock` takes a descriptor and a flag word, and touches no
+    // memory. The descriptor is borrowed, so it is open for the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) };
+    check(result)
+}
+
+/// Take an exclusive lock only if nobody holds it. `Ok(false)` means somebody does.
+///
+/// Exists for the diagnostic that answers "is another Thalyx running?" without
+/// blocking behind it.
+pub fn try_lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: as [`lock_exclusive`]; `LOCK_NB` only changes whether the call
+    // waits.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EWOULDBLOCK) => Ok(false),
+        _ => Err(error),
+    }
+}
+
+/// `struct open_how`, the third argument of `openat2(2)`.
+///
+/// Passed by pointer with its size, so the kernel reads exactly the structure
+/// this build compiled. A field added to a later kernel's version is not our
+/// problem: it reads `size` bytes and rejects anything it does not recognise.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OpenHow {
+    pub flags: u64,
+    pub mode: u64,
+    pub resolve: u64,
+}
+
+/// Refuse to resolve outside the directory the descriptor names.
+///
+/// Absolute paths, `..` past the root, and symlinks pointing out are all
+/// rejected by the kernel *during* resolution — which is the property no
+/// userspace check can have, because a userspace check and the open that
+/// follows it are two separate moments.
+pub const RESOLVE_BENEATH: u64 = 0x08;
+
+/// Refuse to traverse `/proc/self/fd`-style links, which are not really links.
+pub const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+
+/// Refuse to cross a mount point during resolution.
+pub const RESOLVE_NO_XDEV: u64 = 0x01;
+
+/// Open a path relative to a directory, with the kernel enforcing containment.
+///
+/// This exists because [`std::fs::canonicalize`] followed by `File::open` is
+/// two operations with a gap between them, and anything that can write inside
+/// the directory can swap a name for a symlink in that gap. The check and the
+/// open have to be the same syscall or they are not a check at all.
+pub fn open_beneath(
+    dirfd: std::os::fd::BorrowedFd<'_>,
+    relative: &Path,
+    flags: i32,
+    mode: u32,
+    resolve: u64,
+) -> io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let relative = path_to_c(relative)?;
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: mode as u64,
+        resolve,
+    };
+
+    // SAFETY: both pointers outlive the call, and `open_how`'s size is passed
+    // explicitly so the kernel reads exactly the structure handed to it. There
+    // is no libc wrapper for this syscall.
+    #[allow(unsafe_code)]
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dirfd.as_raw_fd(),
+            relative.as_ptr(),
+            &how as *const OpenHow,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: the kernel returned a fresh descriptor that nothing else owns.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) })
+}
+
 /// Swap two paths, atomically.
 ///
 /// `renameat2` with `RENAME_EXCHANGE`. Both paths must exist; afterwards each

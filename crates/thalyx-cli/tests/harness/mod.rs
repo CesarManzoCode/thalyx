@@ -118,6 +118,20 @@ impl Fixture {
 
     /// Pack a signed bundle at the given version.
     pub fn build_bundle(&self, version: &str) -> PathBuf {
+        self.build_bundle_with_permissions(version, None)
+    }
+
+    /// Pack a signed bundle whose permissions differ from the fixture's usual
+    /// two.
+    ///
+    /// Exists for the upgrade tests. A v2 that asks for exactly what v1 asked
+    /// for cannot show whether the two versions' grants were told apart, so
+    /// the permission block has to be able to change with the version.
+    pub fn build_bundle_with_permissions(
+        &self,
+        version: &str,
+        permissions: Option<&str>,
+    ) -> PathBuf {
         let manifest_path = self.base().join(format!("manifest-{version}.toml"));
         std::fs::write(
             &manifest_path,
@@ -139,7 +153,14 @@ size = 0
 [requires]
 thalyx = ">=0.1.0"
 
-[[permissions]]
+{permissions}
+
+[entrypoints]
+run = "bin/demo"
+"#,
+                id = Self::MODULE_ID,
+                permissions = permissions.map(str::to_string).unwrap_or_else(|| format!(
+                    r#"[[permissions]]
 resource = "net"
 action   = "outbound"
 type     = "persistent"
@@ -147,13 +168,9 @@ type     = "persistent"
 [[permissions]]
 resource = "{granted}"
 action   = "read"
-type     = "persistent"
-
-[entrypoints]
-run = "bin/demo"
-"#,
-                id = Self::MODULE_ID,
-                granted = self.granted_path().display(),
+type     = "persistent""#,
+                    granted = self.granted_path().display(),
+                )),
             ),
         )
         .unwrap();

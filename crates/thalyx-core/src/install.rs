@@ -86,6 +86,21 @@ pub fn install(
     request: InstallRequest<'_>,
     confirmer: &mut dyn Confirmer,
 ) -> Result<InstallOutcome> {
+    // The global lock, before anything is read.
+    //
+    // `vault/04-Flujo-Canonico/Concurrencia.md` decrees one contract at a
+    // time, and an install writes four separate files — the permission
+    // registry, the keystore, the uid registry and the `current` symlink. Each
+    // one publishes atomically; the set of them does not, so two installs
+    // interleaving could hand the same uid to two modules or leave one
+    // install's grants sitting under the other's commit.
+    //
+    // Held until this function returns, which includes the terminal journal
+    // entry: a reader that saw the commit but not the entry would see an
+    // operation with no outcome, which is the state reconciliation exists to
+    // resolve and not one to manufacture on a working system.
+    let _lock = store.lock()?;
+
     let journal = Journal::open(store.journal_path())?;
 
     match install_inner(store, &request, confirmer) {
@@ -231,9 +246,14 @@ fn install_inner(
 
     // Step 7 — permissions become pending, not effective. Dropping this value
     // on any error path is what makes a failed install leave no live grant.
+    //
+    // The version travels with them, and that is what makes an *upgrade* safe
+    // rather than only a first install. See `effective_permissions`.
     let pending = PendingGrants::new(
         &manifest.id,
+        &manifest.version,
         request.request_id(),
+        &crate::session::Session::current(store),
         manifest.permissions.clone(),
     );
 
@@ -269,17 +289,27 @@ fn install_inner(
     // Step 12, written *before* the commit on purpose.
     //
     // The `current` symlink is the single atomic point that decides both
-    // "installed" and "authorised": a grant is in force only while the module
-    // it belongs to is current (see `effective_permissions`). Recording the
-    // grants first means that the instant the symlink swings, the module and
-    // its permissions are consistent — and if the process dies before the
-    // swap, the record is inert because no module points at it.
+    // "installed" and "authorised": a grant is in force only while the version
+    // it was confirmed for is the one `current` names (see
+    // `effective_permissions`). Recording the grants first means that the
+    // instant the symlink swings, the module and its permissions are
+    // consistent — and if the process dies before the swap, the record is
+    // inert because no *version* points at it.
+    //
+    // That last word was the whole bug. This comment used to say "no module
+    // points at it", and the code matched: the registry was keyed by module id
+    // and the check was `is_installed`. True for a first install, where no
+    // version of the id exists yet. False for an upgrade, where version 1 is
+    // current the entire time version 2's grants are being written — so a
+    // process killed here left version 1 running under permissions the human
+    // confirmed for version 2. Naming the version in the grant is what makes
+    // the sentence above true in both cases.
     //
     // Writing them afterwards would leave a window where the module is
     // installed and holds nothing, and would need a second atomic step to
     // close. This way there is only ever one.
     let mut registry = Registry::load(store.permissions_path())?;
-    registry.make_effective(&pending)?;
+    registry.make_effective(&pending, replaced.as_deref())?;
 
     // The user this module will run as, assigned once and for all.
     //
@@ -415,6 +445,12 @@ pub fn installed_manifest(store: &Store, module_id: &str) -> Result<Manifest> {
 
 /// Remove a module and revoke everything it held.
 pub fn remove(store: &Store, module_id: &str, request_id: &str) -> Result<String> {
+    // Same lock as `install`, and for a sharper reason: removal unpublishes,
+    // revokes and retires a uid, and an install of the same id racing between
+    // those three would be revoked halfway through by an operation that had
+    // already decided what it was undoing.
+    let _lock = store.lock()?;
+
     let journal = Journal::open(store.journal_path())?;
 
     match commit::unpublish(store, module_id) {

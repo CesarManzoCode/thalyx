@@ -14,6 +14,7 @@
 //!   modules/<id>/current                 symlink -> <version>
 //!   state/keys.json                      pinned publisher keys
 //!   state/permissions.json               granted permissions
+//!   state/lock                            the global contract lock
 //!   journal.jsonl
 //! ```
 //!
@@ -24,6 +25,37 @@ use std::path::{Path, PathBuf};
 
 pub struct Store {
     root: PathBuf,
+}
+
+/// The global lock decreed by `vault/04-Flujo-Canonico/Concurrencia.md`.
+///
+/// Held for the whole of a contract, released when it is dropped — or when the
+/// process holding it dies, which is the property that matters most. A crash
+/// mid-install must not leave the machine unable to install anything again.
+///
+/// ## What this closes
+///
+/// The decree said `thalyx-core` is the only writer and serialises contracts.
+/// Nothing implemented it, and the individual atomic steps did not add up to
+/// one: the permission registry, the keystore, the uid registry and the
+/// `current` symlink are four separate files, and two processes interleaving
+/// between them could each write a state the other never saw. Two installs
+/// racing could hand the same uid to different modules, or leave one module's
+/// grants recorded under the other's commit.
+///
+/// A single `rename` is atomic. A transaction across four files is not, and no
+/// arrangement of renames makes it so.
+///
+/// ## What it does not promise
+///
+/// Arrival order. `flock` wakes one waiter, not the one that waited longest,
+/// so the decree's "queued in order of arrival" is serialisation without a
+/// guaranteed order. Phase 1 has one user and one agent, so no two contracts
+/// contend in a way anybody could observe the order of — and a fair queue
+/// would need a broker process, which is a larger thing than the problem.
+#[must_use = "the lock is released the moment it is dropped"]
+pub struct ContractLock {
+    _file: std::fs::File,
 }
 
 impl Store {
@@ -87,6 +119,64 @@ impl Store {
     /// Which user each module runs as.
     pub fn uids_path(&self) -> PathBuf {
         self.state_root().join("uids.json")
+    }
+
+    /// The current session id, for `session` permissions. See [`crate::session`].
+    pub fn session_path(&self) -> PathBuf {
+        self.state_root().join("session")
+    }
+
+    /// The file the global contract lock is taken on.
+    ///
+    /// Its contents are never read. What matters is the open file description,
+    /// which is what `flock` attaches to.
+    pub fn lock_path(&self) -> PathBuf {
+        self.state_root().join("lock")
+    }
+
+    /// Take the global lock, waiting for whoever holds it.
+    ///
+    /// Every operation that writes more than one thing takes this: install,
+    /// remove, rollback and restore. Reads do not, because each of them reads
+    /// one file and a torn read of one file is not a state the lock could
+    /// prevent — the writers all publish by `rename`.
+    pub fn lock(&self) -> Result<ContractLock> {
+        use std::os::fd::AsFd;
+
+        let path = self.lock_path();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| CoreError::io(&path, e))?;
+
+        thalyx_syscall::lock_exclusive(file.as_fd()).map_err(|e| CoreError::io(&path, e))?;
+
+        Ok(ContractLock { _file: file })
+    }
+
+    /// Whether another process is inside a contract right now.
+    ///
+    /// For diagnosis only. The answer is stale the instant it is returned, so
+    /// nothing may act on it — [`Store::lock`] is the only thing that decides.
+    pub fn contract_in_progress(&self) -> Result<bool> {
+        use std::os::fd::AsFd;
+
+        let path = self.lock_path();
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) => return Err(CoreError::io(&path, e)),
+        };
+
+        let acquired = thalyx_syscall::try_lock_exclusive(file.as_fd())
+            .map_err(|e| CoreError::io(&path, e))?;
+        Ok(!acquired)
     }
 
     pub fn module_root(&self, id: &str) -> PathBuf {
@@ -246,5 +336,98 @@ impl Store {
         }
         out.sort();
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lock_is_released_when_it_goes_out_of_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        {
+            let _held = store.lock().unwrap();
+            assert!(
+                store.contract_in_progress().unwrap(),
+                "a lock that is held has to be visible as held"
+            );
+        }
+
+        assert!(
+            !store.contract_in_progress().unwrap(),
+            "the lock outlived the scope that took it"
+        );
+    }
+
+    #[test]
+    fn a_second_process_waits_for_the_first_to_finish_its_contract() {
+        // The claim the decree makes and nothing used to implement: one
+        // contract at a time. Across *processes*, because that is where the
+        // race actually is — two `thalyx` invocations, not two threads.
+        //
+        // The child is a real process rather than a thread on purpose: a
+        // thread would share the open file description and `flock` would let it
+        // straight through, which is the mistake that would make this test pass
+        // while the property it is named for was absent.
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let witness = dir.path().join("witness");
+
+        let held = store.lock().unwrap();
+
+        // A second process that takes the lock and only then writes. If the
+        // lock does nothing, it writes immediately.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("store::tests::the_child_half_of_the_waiting_test")
+            .arg("--nocapture")
+            .arg("--ignored")
+            .env("THALYX_TEST_STORE", dir.path())
+            .env("THALYX_TEST_WITNESS", &witness)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the child half");
+
+        // Long enough that a child which ignored the lock would have finished.
+        // The measurement is one-sided on purpose: ambient slowness can only
+        // make the child *later*, never earlier, so a witness that is absent
+        // here is absent because the lock held.
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        assert!(
+            !witness.exists(),
+            "the second process wrote while the first held the lock"
+        );
+
+        drop(held);
+
+        let status = child.wait().expect("waiting for the child");
+        let mut output = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            let _ = out.read_to_string(&mut output);
+        }
+        assert!(status.success(), "the child half failed: {output}");
+        assert!(
+            witness.exists(),
+            "the second process never got the lock after it was released"
+        );
+    }
+
+    /// The other half of the test above. Ignored so it only runs when named.
+    #[test]
+    #[ignore]
+    fn the_child_half_of_the_waiting_test() {
+        let Ok(root) = std::env::var("THALYX_TEST_STORE") else {
+            return;
+        };
+        let witness = std::env::var("THALYX_TEST_WITNESS").expect("a witness path");
+
+        let store = Store::open(&root).unwrap();
+        let _lock = store.lock().expect("the lock, once the parent lets go");
+        std::fs::write(&witness, b"the lock was granted").expect("writing the witness");
     }
 }
