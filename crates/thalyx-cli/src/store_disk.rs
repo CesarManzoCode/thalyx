@@ -282,6 +282,59 @@ mod tests {
     }
 
     #[test]
+    fn the_kernel_tarball_is_never_built_without_a_digest_to_check_it_against() {
+        // Thalyx compiles its own kernel, so the tarball is not a dependency —
+        // it becomes the most privileged half of the machine. It used to be
+        // fetched over HTTPS and built, and TLS answers a different question:
+        // who served the bytes, not what the bytes were.
+        //
+        // Read from the Makefile rather than exercised, because exercising it
+        // means downloading a kernel. What has to stay true is that the recipe
+        // refuses rather than proceeds, and "refuses" is one deleted line away
+        // from "warns".
+        let text = image_makefile();
+
+        assert!(
+            text.contains("KSHA256"),
+            "the kernel tarball has no pinned digest at all"
+        );
+
+        let recipe = recipe_of(&text, "$(KTARBALL):").join("\n");
+        assert!(
+            recipe.contains("sha256sum") && recipe.contains("exit 1"),
+            "the tarball recipe does not refuse a digest mismatch:\n{recipe}"
+        );
+        assert!(
+            recipe.contains(".part"),
+            "the tarball is downloaded straight to its final name, so a partial \
+             download would be treated as finished by every later run"
+        );
+    }
+
+    #[test]
+    fn an_unpinned_kernel_is_reported_by_doctor_and_not_at_the_download() {
+        // `doctor` promises to say everything that is missing *at once*. A
+        // prerequisite it does not know about recreates precisely the failure
+        // it exists to prevent: a person told "everything is here", who then
+        // loses the fetch and the configure before hitting a wall.
+        //
+        // And it must not end up in the apt line. Telling somebody to
+        // `apt install kernel-pin` is worse than saying nothing.
+        let text = image_makefile();
+        let recipe = recipe_of(&text, "doctor:").join("\n");
+
+        assert!(
+            recipe.contains("KSHA256"),
+            "doctor does not check the kernel digest, so it will be found later \
+             and alone:\n{recipe}"
+        );
+        assert!(
+            recipe.contains("grep -vx kernel-pin"),
+            "the kernel pin would be printed as something to apt install"
+        );
+    }
+
+    #[test]
     fn nothing_is_downloaded_or_compiled_before_the_prerequisites_are_checked() {
         // Step 1 of the exit criterion is a person outside the project booting
         // this with no help. What stops that person is never a hard problem: it

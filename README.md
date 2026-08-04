@@ -66,6 +66,13 @@ that stops people at this step, and finding them one at a time means finding
 each one *after* the last thing succeeded — so an absent `bc` costs the whole
 kernel build, and the tool after it costs another.
 
+One of the things it asks for is not a package. Thalyx compiles its own kernel,
+so the tarball it downloads is not a dependency — it becomes the most
+privileged half of the machine, and HTTPS says who served the bytes rather than
+what they were. `make -C image pin-kernel` prints the four commands that
+establish the digest against kernel.org's signed list, and where to put the
+answer. It is done once.
+
 Then, in order:
 
 ```sh

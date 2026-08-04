@@ -219,6 +219,21 @@ doctor: | $(BUILD)
 	@# target with.
 	@command -v cargo > /dev/null 2>&1 && command -v rustup > /dev/null 2>&1 || \
 	    echo "rust" >> $(BUILD)/doctor.packages
+	@# The kernel digest, reported in the same round as everything else.
+	@#
+	@# It belongs here and not at the download for the reason this whole
+	@# target exists: a person told "everything is here", who then loses the
+	@# fetch and the configure before hitting a wall nobody warned them
+	@# about, has been failed in exactly the way `doctor` was written to
+	@# prevent. It is not an apt package, so it goes in its own marker and is
+	@# explained separately — but it is found in the same run.
+	@if [ "$(KSHA256)" = "UNPINNED" ]; then \
+	    echo "    the kernel tarball's digest — nothing has verified what this" \
+	        >> $(BUILD)/doctor.missing; \
+	    echo "      build compiles into the most privileged half of the machine" \
+	        >> $(BUILD)/doctor.missing; \
+	    echo "kernel-pin" >> $(BUILD)/doctor.packages; \
+	fi
 	@if [ -s $(BUILD)/doctor.packages ]; then \
 	    echo; \
 	    echo "  Not here yet:"; \
@@ -228,11 +243,21 @@ doctor: | $(BUILD)
 	        echo "    cargo, rustup — building thalyx itself"; \
 	    fi; \
 	    echo; \
-	    apt=$$(grep -vx rust $(BUILD)/doctor.packages | sort -u); \
+	    apt=$$(grep -vx rust $(BUILD)/doctor.packages | grep -vx kernel-pin | sort -u); \
 	    if [ -n "$$apt" ]; then \
 	        echo "  On Linux Mint, Ubuntu or Debian, all of them at once:"; \
 	        echo; \
 	        echo "      sudo apt install" $$apt; \
+	        echo; \
+	    fi; \
+	    if grep -qx kernel-pin $(BUILD)/doctor.packages; then \
+	        echo "  The kernel digest is not a package. Thalyx compiles its own"; \
+	        echo "  kernel, so the tarball is not a dependency — it becomes the"; \
+	        echo "  machine. TLS says who served the bytes, not what they were:"; \
+	        echo; \
+	        echo "      make -C image pin-kernel"; \
+	        echo; \
+	        echo "  prints the four commands and where to put the answer."; \
 	        echo; \
 	    fi; \
 	    if grep -qx rust $(BUILD)/doctor.packages; then \
