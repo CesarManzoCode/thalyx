@@ -287,6 +287,38 @@ initramfs predeterminado del kernel, encima del cual se desempaqueta un
 `-initrd` externo. Tercera vez que quitar una capa de abajo destapa un trabajo
 que el diseño nunca hizo.
 
+### Cómo encuentra su store una máquina instalada — decidido el 2026-08-06
+
+**Por la etiqueta del sistema de archivos.** Decidido por Cesar.
+
+El problema aparece en cuanto la máquina arranca sin la ISO: la línea de
+comandos va **compilada dentro del kernel**, así que no puede decir
+`thalyx.store=/dev/nvme0n1p2` — es una sola línea y el disco se llama distinto
+en cada máquina. Es exactamente lo que la máquina reportó al arrancar el
+2026-08-06, y lo reportó bien.
+
+`mkfs.btrfs -L thalyx-store` ya escribe una etiqueta. Thalyx lee el superbloque
+de Btrfs de cada dispositivo de bloques y busca **ese nombre exacto**.
+
+**Esto no contradice el decreto de `store_disk.rs`**, y la distinción es la que
+sostiene todo: lo prohibido es *«pruebo `/dev/vda`, luego `/dev/sda`, y monto el
+primero que conteste»*, porque esa heurística acierta con el disco equivocado
+exactamente una vez y ese fallo es Thalyx escribiendo su store encima del
+filesystem de otro. Buscar una etiqueta es **pedir un nombre que Thalyx mismo
+escribió**, no aceptar al primero que responda.
+
+Y conserva la propiedad que importa, con dos negativas explícitas:
+
+- **Ninguna etiqueta encontrada** → no hay store, se dice, no se fabrica nada.
+- **Dos con la misma etiqueta** → se niega en vez de elegir. Elegir sería
+  adivinar con una capa de pintura encima.
+
+Queda pendiente cómo se distingue **«es el primer arranque»** de **«no encontré
+el tuyo»**, que es lo que el decreto de PID 1 protege. La respuesta probable es
+que **PID 1 sigue sin fabricar nada**: quien crea el store es el instalador,
+que es un acto humano explícito. Así el decreto se conserva entero en vez de
+pedirle una excepción.
+
 ### Lo construido el 2026-08-06
 
 **El paso 1: arrancar sin gestor de arranque.** Va primero porque **si falla,
