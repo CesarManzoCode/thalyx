@@ -14,6 +14,83 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Todo lo que existe está verificado, y la persona ajena se cancela — 2026-08-06
+>
+> **Es lo primero que hay que leer.**
+>
+> ```
+> proven 104 · not proven 1 · failed 0
+> ```
+>
+> Fedora 43, kernel 7.1.5, `main @ 9e1c5f8`. Las diecisiete etapas, incluidas
+> **las tres que nunca habían corrido enteras**: el arranque frío tecleando los
+> seis pasos, el reinicio de verdad, y lo que la auditoría cerró. La única `not
+> proven` es `llama.cpp`, que **no es una comprobación que no se pudo hacer sino
+> una cosa que no existe todavía**.
+>
+> Y se corrió otra vez con `THALYX_REQUIRE_IMAGE_TESTS=1`, que convierte en
+> fallo cualquier salto de la etapa 16. Mismo resultado: la etapa corrió de
+> verdad, no se saltó en silencio. Esa segunda corrida es la que vuelve creíble
+> la primera.
+>
+> **Es la primera vez que no hay nada roto y nada pendiente de ejercer.**
+>
+> ### El ancla del kernel ya está en el repositorio
+>
+> Cesar la estableció contra la lista firmada de kernel.org y la puso con `nano`
+> en su máquina, donde no la ve nadie más. Ahora está en `image/Makefile`:
+>
+> ```
+> KSHA256 := 0d21cd11933f49f7151b7c9dbb8cc3fddc8c8abe506434b850feecf41fc28a76
+> ```
+>
+> Con **quién la firmó y su huella al lado**, porque un digest a secas dice qué
+> se aceptó y no qué lo estableció, y el siguiente que lo herede no tiene cómo
+> volver a comprobarlo. `make -C image doctor` ya pasa.
+>
+> ### Y el procedimiento que la establece estaba equivocado
+>
+> Lo encontró él corriéndolo, que es la regla 1 otra vez. `pin-kernel` decía:
+>
+> ```
+> gpg --locate-keys torvalds@kernel.org gregkh@kernel.org
+> ```
+>
+> Son quienes firman una versión del kernel. **No son quienes firman ese
+> archivo**: `sha256sums.asc` lleva la llave automática de sumas de kernel.org,
+> así que `gpg --verify` contestó `No hay clave pública` — tres renglones debajo
+> de una frase que decía que cualquier cosa que no sea *Good signature* es
+> motivo para parar. **El procedimiento imprimía la falla que él mismo define
+> como fatal.** Cesar tuvo que encontrar `autosigner@kernel.org` por su cuenta.
+>
+> Se escribió en este contenedor, cuya red no alcanza kernel.org, así que no
+> había cómo correrlo aquí y salió sin correr. Regla nueva en
+> [[Estrategia-de-Pruebas]]: **un procedimiento impreso para una persona es
+> código sin correr.** Arreglado, con la huella impresa para comparar, el aviso
+> de gpg explicado como esperado, y una prueba que exige las dos copias.
+>
+> ### La persona ajena se cancela — decisión de Cesar
+>
+> Los seis pasos ya no los va a ejecutar alguien de fuera, por ahora. Su
+> razonamiento, entero, está en [[Criterio-de-Salida-Fase-1]]: Thalyx todavía
+> son comandos de terminal, el producto terminado será una ISO booteable, y se
+> prueba cuando haya algo que probar. Ni siquiera se pudo convencer a la persona
+> de hacerlo.
+>
+> **Lo que no cambia**: los seis pasos siguen siendo lo que el sistema tiene que
+> hacer, y se siguen comprobando solos en cada cambio y en cada corrida de
+> hardware. Lo que se cancela es quién los teclea.
+>
+> **Lo que sí cambia, y hay que decidir**: era lo único que cerraba la Fase 1, y
+> era la única condición que el proyecto no podía declararse a sí mismo. Sin
+> ella, **la Fase 1 no tiene criterio de salida** hasta que Cesar elija con qué
+> se sustituye. Está anotado así a propósito, en vez de dejar que la nota
+> aparente tener uno.
+>
+> Y que nadie aceptara hacerlo **es un dato y no un contratiempo**: la primera
+> medición de [[Por-Que-Elegirian-Este-SO]] no fue una opinión sobre el sistema,
+> fue que media hora de terminal ya cuesta más de lo que hoy ofrece.
+
 > ## Los arreglos de la auditoría rompieron dos cosas, y las dos ya están — 2026-08-05
 >
 > **Es lo primero que hay que leer.** Cesar corrió `sudo ./dev/verify.sh` con los
@@ -670,11 +747,14 @@ enforcement dentro de la imagen; el cargador propio salió verde en hardware el
 > Cuatro de los seis pasos no se estaban verificando en ningún lado, porque la
 > única etapa que los cubría se saltaba sola. Ya son pruebas.
 
-**Y desde el 2026-08-04 los seis pasos del criterio de salida se pueden hacer.**
-Lo que falta para cerrar la fase **no es código**: es que los haga una persona
-ajena, siguiendo solo el README, sin ayuda. El modelo del agente sigue
-decretado en [[Gamas-de-Modelo]] y ya no bloquea la fase — por decisión de
-Cesar del 2026-08-04, razonada en [[Criterio-de-Salida-Fase-1]].
+**Y desde el 2026-08-06 los seis pasos están hechos por la máquina, desde un
+arranque frío, con un reinicio de verdad en medio.** No queda código sin
+ejercer: `proven 104 · not proven 1 · failed 0`.
+
+**Lo que falta para cerrar la fase ya no es código y tampoco es la persona
+ajena**, que Cesar canceló ese mismo día. Es **elegir con qué se sustituye** —
+ver el punto 0 de "Lo que sigue". El modelo del agente sigue decretado en
+[[Gamas-de-Modelo]] y no bloquea la fase, por decisión de Cesar del 2026-08-04.
 
 ## Lo que falta comprobar
 
@@ -685,10 +765,11 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 | El mecanismo del store | **Probado**, etapa 13, en verde el 2026-08-03. |
 | El store arrancando en QEMU | **Probado**, arrancó con el disco montado y el módulo instalado. |
 | El cargador de BPF propio | **Probado**, etapa 14, en verde entera el 2026-08-03. |
-| **El paso 6** | **Escrito y sin ejercer.** La etapa 15 se saltó entera el 2026-08-04: Fedora no trae `script`, está en `util-linux-script`. Es lo siguiente que hay que correr. |
-| El `doctor` | Escrito. Sin correr en la máquina de Cesar. |
-| **La imagen con enforcement puesto** | **Casi.** Arrancó el 2026-08-04 y le faltaba `CONFIG_SECURITY_NETWORK`; ya está en `thalyx.config` y `hook-check` lo atrapa antes de arrancar. Falta recompilar el kernel y volver a verlo. |
-| `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. |
+| El paso 6 | **Probado el 2026-08-06**, etapa 16, desde un arranque frío y con un reinicio de verdad. Thalyx hace su propia terminal, así que ya no depende de `script`. |
+| El `doctor` | **Corrido el 2026-08-06** en la máquina de Cesar: encontró el ancla del kernel ausente y nada más. |
+| La imagen con enforcement puesto | **Probado el 2026-08-06**: `ok thalyx-lsm` dentro de la máquina, con el kernel recompilado. |
+| Los arreglos de la auditoría por la ruta confinada | **Probados el 2026-08-06**, etapas 6, 12, 13 y 17 enteras. |
+| `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. **Es lo único de la lista que sigue abierto.** |
 
 ## Los cuatro fallos del camino, y por qué tres son el mismo
 
@@ -725,42 +806,47 @@ Hay pruebas para los cuatro, y tres de ellas leen el `Makefile`.
 
 ## Última corrida verificada
 
-**2026-08-05, Fedora 43, kernel 7.1.5, Btrfs, `bpf` en el orden de LSM,
-`main @ f781ced`.**
+**2026-08-06, Fedora 43, kernel 7.1.5, Btrfs, `bpf` en el orden de LSM,
+`main @ 9e1c5f8`.**
 
 ```
-proven 99 · not proven 2 · failed 10
+proven 104 · not proven 1 · failed 0
 ```
 
-Los diez fallos eran de Thalyx y ya están arreglados —ver el bloque de arriba—
-pero **la corrida que lo demuestre todavía no existe**. Lo que esa corrida sí
-cerró, y ninguna anterior había cerrado: las etapas 15, 16 y 17 enteras, el
-arranque de la imagen con los seis pasos desde frío, el `switch_root`, la
-delegación de controladores, el `openat2` y el lock de contratos.
+**Nada falló y nada quedó sin ejercer.** Corrida dos veces: la segunda con
+`THALYX_REQUIRE_IMAGE_TESTS=1`, que convierte en fallo cualquier salto de la
+etapa 16, con idéntico resultado — así que la etapa del arranque corrió de
+verdad en vez de saltarse en silencio, que es la única forma en que un `104`
+podría estar mintiendo.
+
+La única `not proven` es `llama.cpp`, y es de la clase que **no existe**, no de
+la que no se pudo comprobar.
+
+Lo que esta corrida cerró y ninguna anterior había cerrado:
+
+- Los diez fallos del 2026-08-05, todos, por la **ruta confinada** — que era lo
+  que este contenedor no puede ejercer.
+- El **paso 6** de punta a punta: un arranque frío, los seis verbos tecleados,
+  el apagado, un reinicio de verdad, y la máquina diciendo sola que la
+  instalación que hizo ya no le cuadra.
+- El `doctor` corrido por primera vez en la máquina de Cesar, y el ancla del
+  kernel establecida contra la lista firmada de kernel.org.
+- Las 666 pruebas con los cuatro `THALYX_REQUIRE_*` que esa máquina puede
+  exigir, ninguna saltada.
 
 ### La anterior, para comparar
 
-**2026-08-03, kernel 7.0.11, `main @ f1a6dd0`.**
+**2026-08-05, `main @ f781ced`**: `proven 99 · not proven 2 · failed 10`. Los
+diez fallos eran de Thalyx y eran dos defectos del mismo commit — ver el bloque
+de la auditoría más arriba. Esa corrida fue la que los encontró.
 
-```
-proven 72 · not proven 2 · failed 0
-```
-
-Las dos `not proven` son cosas que **todavía no existen**, no cosas que no se
-pudieron comprobar: el modelo del agente (`llama.cpp` no está y la ruta real no
-está escrita) y arrancar la imagen desde este script, que se hace a mano con
-`make -C image run`.
-
-Lo que esta corrida cerró y las anteriores no: **el cargador de BPF propio**.
-La etapa 14 cargó los dos programas sin `bpftool`, los enganchó, dejó los tres
-mapas donde `permd` los busca, **denegó una conexión adentro del cgroup y la
-dejó pasar afuera**, y se soltó sin dejar un enlace vivo.
-
-**Todo lo posterior a `f1a6dd0` está sin correr en hardware**: los verbos de la
-sesión, `vmlinux.h` escrito a mano, el paso 6 y el `doctor`.
-También ejerció el `EXDEV` en el que descansa el layout, con línea base y
-control — porque una afirmación que sostiene un diseño hay que ejercerla, no
-citarla.
+**2026-08-03, kernel 7.0.11, `main @ f1a6dd0`**: `proven 72 · not proven 2 ·
+failed 0`. Cerró el cargador de BPF propio: cargó los dos programas sin
+`bpftool`, los enganchó, dejó los tres mapas donde `permd` los busca, **denegó
+una conexión adentro del cgroup y la dejó pasar afuera**, y se soltó sin dejar
+un enlace vivo. También ejerció el `EXDEV` en el que descansa el layout, con
+línea base y control — porque una afirmación que sostiene un diseño hay que
+ejercerla, no citarla.
 
 Reproducirla:
 
@@ -795,12 +881,23 @@ Detalle por crate en [[Estado-de-Implementacion]].
 
 ## Lo que sigue, en orden
 
-### 0. Que una persona ajena haga los seis pasos
+### 0. Decidir con qué se cierra la Fase 1
 
-**Es lo único que cierra la Fase 1**, y desde el 2026-08-04 no falta código para
-que ocurra. Falta correrlo en hardware primero — `sudo ./dev/verify.sh` y `make
--C image run` — y después entregarlo. Cesar decidió el 2026-08-03 que eso pasa
-**cuando los seis pasos sean reales**, y ya lo son.
+**Es lo único que bloquea el orden de todo lo demás, y es de Cesar.**
+
+Lo que cerraba la fase era que una persona ajena hiciera los seis pasos, y él lo
+canceló el 2026-08-06. La decisión está registrada entera en
+[[Criterio-de-Salida-Fase-1]] y no se revisa aquí. Lo que queda abierto es su
+consecuencia: esa persona era **la única condición que el proyecto no podía
+declararse a sí mismo**, y sin ella la Fase 1 vuelve a *"un prototipo funcional
+que demuestre el flujo completo"*, que se cumple siempre y nunca.
+
+Su propio argumento apunta al sustituto —*"cuando nuestro producto esté
+terminado será una ISO booteable, no comandos"*— y eso sí es verificable sin
+que nadie de fuera opine: o arranca en hardware real desde un USB, o no.
+
+**Hasta que lo elija, nada más de esta lista tiene un orden defendible**, porque
+el orden sale del criterio.
 
 ### 1. El agente — su mitad determinista ya está construida
 
@@ -846,9 +943,10 @@ marcado de origen, el camino confiable, la memoria persistente, y el principio
 de doble ruta implementado (todo lo que el agente podrá hacer, un humano ya
 puede hacerlo por la CLI).
 
-### 2. La imagen ya arranca; le faltaban tres cosas y queda una
+### 2. La imagen: las tres cosas que le faltaban están hechas
 
-El arranque está hecho y verificado. Lo que la máquina dijo de sí misma:
+**Cerrado el 2026-08-06.** El primer arranque se describió con tres `no` y los
+tres están resueltos y comprobados dentro de la máquina:
 
 ```
   ok  kernel       6.12.101
@@ -861,13 +959,12 @@ El arranque está hecho y verificado. Lo que la máquina dijo de sí misma:
   3 are not here. I will not pretend otherwise later.
 ```
 
-Las tres, en el orden en que se resuelven:
+Las tres, en el orden en que se resolvieron:
 
-1. **Cargar `thalyx-lsm` desde dentro de Thalyx.** Sin bpftool y sin shell, hoy
-   no se carga. Sin esto no hay enforcement en la imagen. **Y el stub actual
-   busca `/lib/thalyx/thalyx_lsm.bpf.o`, que es un segundo archivo y por lo
-   tanto está prohibido por [[Filosofia-Fundacional]]** — el objeto BPF tiene
-   que ir *dentro* del binario, no junto a él. Ver el decreto abierto abajo.
+1. ~~**Cargar `thalyx-lsm` desde dentro de Thalyx.**~~ **Hecho, y probado dentro
+   de la imagen el 2026-08-06**: `ok thalyx-lsm` al arrancar, sin `bpftool` y
+   sin shell. El objeto BPF va **dentro** del binario, no junto a él, que es lo
+   que [[Filosofia-Fundacional]] obliga. Ver [[Cargador-BPF-Propio]].
 2. ~~**El store.**~~ **Hecho el 2026-08-03.** El disco se hace al construir con
    `sudo make -C image store` —Btrfs, tres subvolúmenes, el `greeter` instalado
    adentro— porque `mkfs.btrfs` no puede estar en la imagen, que es la misma
@@ -941,6 +1038,26 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-06 — la primera corrida sin nada roto, y el criterio se queda sin persona
+`proven 104 · not proven 1 · failed 0`, dos veces, la segunda exigiendo que la
+etapa del arranque no se saltara. Todo lo que existe está comprobado en la única
+máquina que puede comprobarlo. La única `not proven` es algo que no existe.
+
+**Y el único defecto del día lo encontró un humano leyendo instrucciones.**
+`pin-kernel` mandaba a verificar `sha256sums.asc` con las llaves de los
+mantenedores del kernel, que no firman ese archivo, así que gpg contestó `No hay
+clave pública` justo debajo de la frase que define esa salida como motivo de
+parar. Escrito en un contenedor sin ruta a kernel.org y publicado sin correr:
+**texto impreso para una persona es código con salida**, y va la regla nueva en
+[[Estrategia-de-Pruebas]].
+
+El ancla quedó en el repositorio con la llave y la huella que la establecieron,
+porque un digest solo dice qué se aceptó, no qué lo validó.
+
+**Y Cesar canceló la persona ajena.** Los seis pasos siguen; quien los teclea,
+no. Eso deja a la Fase 1 sin criterio de salida hasta que él elija el
+sustituto, y está escrito así en vez de dejar que la nota aparente tener uno.
 
 ### 2026-08-05 — los arreglos de la auditoría rompieron el instrumento
 `verify.sh` con la auditoría puesta: `failed 10`, todos de Thalyx. Dos defectos,

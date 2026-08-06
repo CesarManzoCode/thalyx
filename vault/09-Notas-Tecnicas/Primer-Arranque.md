@@ -64,6 +64,7 @@ la culpa parece del cargador.
 |---|---|
 | Nombra algo que sí tienes | Casi seguro está en `/usr/sbin` y tu `PATH` no lo trae. `mkfs.btrfs` ya está contemplado; si es otro, dímelo, porque es un fallo del comprobador y no tuyo. |
 | Dice que no pudo probar las cabeceras | No hay `gcc`. Instala lo que pide, vuelve a correrlo, y va a haber más. Lo avisa a propósito. |
+| Dice que falta el digest del kernel | **Ya no debería pasar**: el ancla está en `image/Makefile` desde el 2026-08-06. Si sale, alguien cambió `KVERSION` sin volver a anclar, y `make -C image pin-kernel` dice cómo. |
 
 ## Paso 0b — que nada se haya roto
 
@@ -407,11 +408,14 @@ Para ver qué dijo el kernel: `nucleo`. Para apagar: `apagar`.
 
 ## Paso 7 — los seis pasos completos, que es lo que cierra la fase
 
-> **Desde el 2026-08-04 esto lo hace `verify.sh` solo.** La etapa 16 arranca la
-> imagen, espera a que la máquina diga que es la máquina, y teclea los seis
-> pasos — dos arranques, porque un proceso nuevo no es un reinicio. Lo de abajo
-> sigue siendo lo que haces **tú** cuando quieres verlo, y lo que hace la
-> persona ajena, que es lo único que cierra la fase.
+> **Desde el 2026-08-04 esto lo hace `verify.sh` solo, y el 2026-08-06 salió
+> entero en verde.** La etapa 16 arranca la imagen, espera a que la máquina diga
+> que es la máquina, y teclea los seis pasos — dos arranques, porque un proceso
+> nuevo no es un reinicio. Lo de abajo sigue siendo lo que haces **tú** cuando
+> quieres verlo con tus ojos.
+>
+> Ya no lo hace una persona ajena: Cesar suspendió ese requisito el 2026-08-06.
+> Ver [[Criterio-de-Salida-Fase-1]].
 
 Lo de arriba son los pasos 1, 2, 3 y parte del 5. Faltan estos, y se hacen en el
 mismo prompt:
@@ -457,25 +461,24 @@ alguien lo haya dicho — por eso se guardan como dos clases distintas de hecho.
 
 ## Lo que va a estar mal, y ya se sabe
 
-**`thalyx-lsm` puede que sí cargue ahora, y nunca se ha probado.** El cargador
-propio se escribió el 2026-08-03: el objeto va dentro del binario y Thalyx hace
-las llamadas al kernel. Ver [[Cargador-BPF-Propio]]. **Corre la etapa 14 de
-`verify.sh` antes que esto** — prueba lo mismo sin QEMU, y si falla ahí el
-problema es el cargador y no el arranque.
+**Al 2026-08-06 esta sección está vacía**, y merece decirse así en vez de
+borrarla: los tres huecos que listaba —el LSM sin cargar, el store sin ejercer
+dentro de QEMU, y el módulo negándose a correr confinado— se cerraron y se
+comprobaron **dentro de la máquina**, no fuera de ella.
 
-**Por eso `correr` se niega.** El núcleo no arranca un módulo confinado cuando
-nada puede hacer cumplir sus permisos, y en esta máquina nada puede todavía. La
-salida es `correr <id> sin-confinar`, que existe para que ese estado sea una
-decisión escrita y no una degradación silenciosa.
+- **`thalyx-lsm` carga.** El cargador propio mete el objeto BPF dentro del
+  binario y hace las llamadas al kernel él mismo. Probado en la etapa 14 sin
+  QEMU y en la 16 dentro de la imagen: `ok thalyx-lsm` al arrancar, sin
+  `bpftool` y sin shell. Ver [[Cargador-BPF-Propio]].
+- **`correr` ya no se niega**, porque ahora sí hay algo que aplique los
+  permisos. `correr <id> sin-confinar` sigue existiendo, y sigue siendo una
+  decisión escrita en vez de una degradación silenciosa.
+- **El disco arranca dentro de QEMU** con sus tres subvolúmenes, y el módulo se
+  instala encima por el camino confiable.
 
-**El store sí existe ya, y el módulo también.** Los dos huecos que esta nota
-listaba aquí —"no hay store" y "no hay módulo"— se cerraron el 2026-08-03. Lo
-que no se ha ejercido nunca es el disco arrancando dentro de QEMU: la etapa 13
-de `verify.sh` prueba el mecanismo fuera de la máquina virtual, y el paso 4b
-nunca ha corrido.
-
-Ninguno de esos huecos impide que la máquina arranque, se describa a sí misma y
-corra un módulo, que es lo que este arranque tiene que demostrar.
+Lo único que la corrida del 2026-08-06 no pudo establecer es que el agente
+tenga un modelo, que es una cosa que **no existe** en vez de una que no se pudo
+comprobar.
 
 ## Lo que salió la primera vez, verbatim
 

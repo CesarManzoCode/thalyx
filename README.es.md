@@ -129,11 +129,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 Después abre una terminal nueva, o haz `source "$HOME/.cargo/env"`.
 
-### Paso 0b — ancla el kernel que vas a compilar
+### Paso 0b — el kernel que vas a compilar ya está anclado
 
-`doctor` también te va a decir que el tarball del kernel no tiene un digest
-verificado, y se va a negar a seguir. Esto no es burocracia, y vale la pena
-entenderlo porque es justamente la diferencia entre Thalyx y una distribución.
+No hay nada que hacer aquí. Está escrito porque vale la pena entenderlo, y
+porque es justamente la diferencia entre Thalyx y una distribución.
 
 **Thalyx compila su propio kernel.** Ese archivo no es una dependencia contra la
 que se enlaza — *se convierte en la mitad más privilegiada de la máquina que
@@ -141,24 +140,26 @@ estás a punto de correr*. HTTPS te dice quién sirvió los bytes. No te dice
 cuáles eran, y un CDN que sirviera otra cosa produciría un kernel que nadie
 revisó, en una máquina que arrancaría sin decir nada al respecto.
 
+Por eso `image/Makefile` lleva el digest del tarball exacto que esta imagen
+construye, y la compilación rechaza cualquier otro. Se estableció el 2026-08-06
+contra la lista **firmada** de digests de kernel.org, y la llave que la firmó
+está anotada junto al digest — un hash a secas te dice qué se aceptó, no qué lo
+estableció.
+
+Si algún `make` dice que el digest no coincide, detente: el archivo que bajaste
+no es el que kernel.org firmó.
+
+**Para volver a establecerlo tú mismo**, o después de cambiar `KVERSION`:
+
 ```sh
 make -C image pin-kernel
 ```
 
-imprime cuatro comandos. Bajan la lista de digests de kernel.org, traen las
-llaves de quienes la firman, **verifican esa firma**, y sacan la línea de la
-versión que esta imagen construye. El tercer comando tiene que decir
-`Good signature`. El digest que imprime el cuarto va en `KSHA256`, dentro de
-`image/Makefile`.
-
-Esto se hace una sola vez. Si más adelante un `make` dice que el digest no
-coincide, detente: el archivo que bajaste no es el que kernel.org firmó.
-
-> Si `gpg --locate-keys` no alcanza un servidor de llaves desde tu red, ése es
-> el único paso de aquí que puede fallar por razones ajenas a Thalyx. El digest
-> es una constante pública para una versión dada del kernel; consíguelo de una
-> fuente en la que confíes, entendiendo que a partir de ahí estás confiando en
-> esa fuente.
+Imprime cuatro comandos en vez de correrlos, a propósito: un objetivo que bajara
+el tarball y anotara su propio hash parecería verificación y no lo sería —
+demostraría que el archivo no cambió entre dos lecturas, que es lo que nadie
+temía. Lo que establece algo es la firma, y comprobar una firma significa que
+**tú** decides de quién es la llave. Compara la huella que imprime.
 
 ### Paso 1 — construye y arranca
 
@@ -271,10 +272,13 @@ que nadie le haya avisado de que el módulo se fue. Ésa es la diferencia entre
 una memoria y una bitácora: fue y miró. Un registro que solo repitiera lo que le
 dijeron seguiría afirmando que la instalación sigue en pie.
 
-Esos seis pasos son el criterio de salida completo de la Fase 1
-(`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`). No una lista de
-componentes: una persona ajena al proyecto haciendo exactamente esto, desde este
-archivo, sin que nadie la ayude.
+Esos seis pasos eran el criterio de salida completo de la Fase 1
+(`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`): no una lista de
+componentes, sino una persona ajena al proyecto haciendo exactamente esto, desde
+este archivo, sin que nadie la ayude. Esa última parte quedó suspendida el
+2026-08-06. Los pasos siguen teniendo que funcionar, y se comprueban en cada
+cambio y en cada corrida de hardware; lo que ya no se exige por ahora es que los
+haga alguien de fuera.
 
 ### Si algo falla
 
@@ -301,38 +305,44 @@ Cada afirmación de esta sección o se puede comprobar con un comando de este
 repositorio, o está marcada como todavía no comprobada. Esa distinción es la
 regla de trabajo principal del proyecto.
 
-**Construido y cubierto por pruebas: 657.** Entre pruebas unitarias, inyección
+**Construido y cubierto por pruebas: 667.** Entre pruebas unitarias, inyección
 de fallos que mata el binario real en cada punto del commit atómico, y corridas
 de punta a punta del criterio de salida. `cargo test --workspace` corre todo.
 
-**Verificado en hardware real**: 72 comprobaciones, en una máquina con LSM de
-BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`. El LSM de BPF ha denegado una
-conexión de red real a un proceso que no tenía el permiso, y solo a ese proceso.
+**Verificado en hardware real**: 104 comprobaciones, en una máquina con LSM de
+BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`, el 2026-08-06. No falló nada.
+Una sola quedó sin probar, y es algo que **todavía no existe** en vez de una
+comprobación que no se pudo hacer: el agente no tiene modelo. El LSM de BPF ha
+denegado una conexión de red real a un proceso que no tenía el permiso, y solo a
+ese proceso.
 
-**La imagen arranca.** El 2026-08-03 un kernel construido desde `allnoconfig`
-arrancó en QEMU con un solo programa adentro, montó sus sistemas de archivos, y
-dijo en voz alta lo que tiene y lo que no. Ahora lleva su propio cargador de BPF
-—sin `bpftool`, sin un segundo archivo— y ese cargador enganchó el enforcement
-en hardware real.
+**La imagen arranca, y hace los seis pasos sola.** Un kernel construido desde
+`allnoconfig` arranca en QEMU con un solo programa adentro, engancha su propio
+enforcement sin `bpftool` y sin un segundo archivo, monta su store de Btrfs,
+instala un módulo firmado desde su propio repositorio por el camino confiable,
+lo corre confinado, lo revierte, se apaga sola — y en el siguiente arranque dice
+qué se le pidió y que la instalación que hizo ya no le cuadra. Todo eso es la
+etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
 ### Lo que todavía no es cierto, dicho sin rodeos
 
-- **Nadie ajeno al proyecto ha hecho los seis pasos.** Eso es lo que cierra la
-  Fase 1, y no ha pasado. Si estás leyendo esto y los estás haciendo, tú eres la
-  prueba.
+- **Nadie ajeno al proyecto ha hecho los seis pasos.** Hasta el 2026-08-06 eso
+  era lo que cerraba la Fase 1. Está suspendido: Thalyx hoy son comandos de
+  terminal, el producto terminado es una imagen booteable, y no tiene sentido
+  pedirle a alguien media hora de terminal para probar algo que todavía no es
+  algo que probar. Los pasos siguen corriéndose en cada cambio y en cada corrida
+  de hardware; lo suspendido es **quién los teclea**, y qué cierra ahora la
+  Fase 1 está sin decidir. Si estás leyendo esto y los estás haciendo, cuenta
+  igual.
 - **El agente conversacional no tiene modelo.** La mitad determinista está
   construida y funciona; no hay un modelo de lenguaje detrás. La sesión dice *"I
   have no model loaded"* en vez de aparentar. La elección de modelo está
   decretada (`vault/03-Primitivas/Gamas-de-Modelo.md`) y no implementada.
 - **El planificador predictivo es de Fase 2.** Es diseño, no código.
-- **La última ronda de seguridad no se ha vuelto a verificar en hardware.** Una
-  auditoría externa del 2026-08-04 encontró nueve defectos reales — entre ellos
-  un lock global decretado que ningún código tomaba, una actualización
-  interrumpida que podía dejar a la versión en ejecución con los permisos de la
-  *siguiente*, y un almacén de llaves corrupto que se leía como uno vacío, que
-  confía en todo publicador que le ofrezcan. Todos están corregidos, con pruebas
-  que se comprobó que fallan sin el arreglo. Las 72 comprobaciones de hardware
-  no se han vuelto a correr desde entonces.
+- **`thalyx_watch` nunca se ha cargado sin `bpftool`.** El cargador de BPF que
+  Thalyx lleva adentro está probado sobre el objeto del LSM: lo carga, lo
+  engancha, y ese enforcement deniega. El watcher son diez hooks en lugar de dos
+  y no se ha intentado. Probable no es comprobado.
 
 ### Tres límites del enforcement, dichos en vez de descubiertos
 

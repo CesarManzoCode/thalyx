@@ -24,6 +24,13 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 
 **Ningún otro criterio lo sustituye.** Que todos los componentes estén implementados y con tests en verde no cierra la Fase 1.
 
+> **Suspendido el 2026-08-06 por Cesar**, y sigue escrito porque el decreto que
+> se suspende se lee, no se borra. Los seis pasos siguen siendo lo que el
+> sistema tiene que hacer y se comprueban solos; lo que se cancela es que una
+> persona ajena los ejecute ahora. Ver
+> [[#La persona ajena se cancela por ahora — decidido por Cesar el 2026-08-06]]
+> antes de tratar esta lista como el criterio vigente.
+
 > **El paso 1 ya tiene máquina detrás.** El 2026-08-03 la imagen arrancó en QEMU
 > con un comando. Eso **no cierra el paso**: el decreto exige que lo haga una
 > persona ajena, siguiendo solo el README y sin ayuda. Lo que cambió es que
@@ -56,6 +63,62 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 >
 > **El paso 1** tenía máquina y no tenía camino. Ver "Lo que detiene a esa
 > persona no es un problema difícil".
+
+## La persona ajena se cancela por ahora — decidido por Cesar el 2026-08-06
+
+**Esto cambia el decreto de arriba y lo decidió él**, después de que la
+verificación en su máquina saliera entera en verde y de intentar entregarlo.
+
+Sus palabras, que son el registro:
+
+> La comprobación del usuario ajeno ejecutando los 6 pasos se cancela por
+> completo por ahora, ni siquiera pude convencer al otro usuario de hacerlo.
+> Thalyx está en una fase muy temprana, son solo comandos de terminal, no hay
+> nada que probar. Cuando nuestro producto esté terminado será una ISO
+> booteable, no comandos; se probará cuando haya algo que probar. De momento no
+> hay nada que probar más que comandos que podemos hacer nosotros mismos.
+
+### Qué se cancela y qué no
+
+- **Se cancela**: que una persona ajena ejecute los seis pasos como condición
+  para cerrar la Fase 1, y buscar a esa persona ahora.
+- **No se cancela**: [[#Nadie de fuera toca el sistema antes de esto]]. Sigue
+  entero, y por el mismo motivo — lo que esa persona determina es la escala, no
+  la validez. Cancelar el paso lo *refuerza*: se retrasa el contacto, no se
+  adelanta.
+- **No se cancelan los seis pasos.** Siguen siendo lo que el sistema tiene que
+  poder hacer, y siguen comprobados en cada cambio
+  (`crates/thalyx-cli/tests/exit_criterion.rs`) y en cada corrida de hardware
+  (etapa 16 de `verify.sh`, que los teclea desde un arranque frío). Lo que se
+  cancela es **quién los teclea**, no que se tecleen.
+
+### La objeción, escrita para que no se pierda
+
+Esta nota abre diciendo que la Fase 1 *"solo decía tener un prototipo funcional
+que pueda demostrar el flujo completo, que no es una definición de terminado:
+se puede cumplir siempre y nunca"*. La persona ajena era lo que cerraba ese
+hueco, porque era la única condición que el proyecto no podía declararse a sí
+mismo.
+
+**Quitarla deja el hueco abierto otra vez**, salvo que otra cosa ocupe ese
+lugar. Y el argumento de Cesar señala cuál: *"cuando nuestro producto esté
+terminado será una ISO booteable, no comandos"*. Eso es una condición
+verificable y no la puede declarar nadie por decreto — o hay una ISO que
+arranca en hardware, o no la hay.
+
+Queda como decreto abierto en [[Tareas-Pendientes]] hasta que Cesar elija con
+qué se sustituye. **Mientras no lo elija, la Fase 1 no tiene criterio de
+salida**, y eso está dicho aquí a propósito en vez de dejar que la nota
+aparente tener uno.
+
+### Y lo que la cancelación ya enseñó
+
+Que no se pudo convencer a nadie de hacerlo **es un dato**, no un contratiempo
+del calendario. [[Por-Que-Elegirian-Este-SO]] marca como la pregunta más
+importante sin responder si el problema que Thalyx resuelve le duele a alguien
+más. La primera medición de eso no fue una opinión sobre el sistema: fue que
+pedir media hora de terminal a una persona ya cuesta más de lo que ese sistema
+le ofrece hoy. Es consistente con lo que esta nota decía y llega antes.
 
 ## Cómo se comprueban los seis, desde el 2026-08-04
 

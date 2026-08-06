@@ -1143,6 +1143,56 @@ nunca lo ve, y no había ninguna.
 > parte del arreglo, no una limpieza posterior. El razonamiento estaba escrito y
 > era correcto; lo que faltó fue preguntarse quién más lo cumple.
 
+## Regla derivada: un procedimiento impreso para una persona es código sin correr
+
+Encontrada el 2026-08-06, la primera vez que alguien siguió `make -C image
+pin-kernel` en vez de leerlo.
+
+El objetivo imprime cuatro comandos y **no ejecuta ninguno**, a propósito y con
+su párrafo: automatizar la verificación de una firma la volvería teatro, porque
+lo que establece algo es que un humano decida de quién es la llave. Lo que no
+se pensó es que el texto impreso sigue siendo una salida, y una salida puede
+estar equivocada.
+
+El segundo comando decía `gpg --locate-keys torvalds@kernel.org
+gregkh@kernel.org`. Son quienes firman una versión del kernel, que es lo que
+todo el mundo sabe, y **no son quienes firman ese archivo**: `sha256sums.asc`
+lleva la firma de la llave automática de sumas de kernel.org. La corrida real
+contestó:
+
+```
+gpg: Imposible comprobar la firma: No hay clave pública
+```
+
+Tres renglones debajo de una frase que decía que cualquier cosa que no fuera
+*Good signature* es motivo para detenerse. **El procedimiento imprimía la falla
+que él mismo define como fatal**, y de las dos salidas posibles —seguir con un
+digest sin verificar, o parar— ninguna es la que hacía falta.
+
+Y la forma es conocida: se escribió en este contenedor, cuya política de red no
+alcanza kernel.org, así que no había manera de correrlo aquí. Es la misma raíz
+que [[#Regla derivada un fixture inventado prueba lo que yo entendí, no lo que la herramienta imprime|el fixture inventado]] con otro disfraz — un modelo de cómo se comporta una herramienta ajena, escrito con confianza y sin una sola muestra real.
+
+> Un bloque de texto que le dice a una persona qué teclear es código: tiene una
+> salida, y hasta que alguien la corra no se sabe cuál es. Si no se puede
+> ejercer donde se escribe, se marca como no ejercido y **lo primero que hace
+> quien tenga la máquina es correrlo**, antes de que sea el paso que bloquea
+> todo lo demás.
+
+Lo que quedó, además del arreglo:
+
+- La llave correcta (`autosigner@kernel.org`) **y su huella**, impresas. Sin la
+  huella, `--locate-keys` le pregunta a la red de quién es una dirección y
+  *Good signature* solo demuestra que quien contestó es consistente consigo
+  mismo.
+- El aviso de gpg de que la llave no está certificada se explica como esperado.
+  Sin eso, la persona cuidadosa se detiene en la advertencia correcta.
+- La huella y la llave quedaron también **junto a `KSHA256`**, porque un digest
+  a secas no se puede volver a comprobar: dice qué se aceptó y no qué lo
+  estableció.
+- Una prueba que lee el `Makefile` y exige las dos copias, porque dos copias de
+  una instrucción es exactamente cómo sobrevive la equivocada.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

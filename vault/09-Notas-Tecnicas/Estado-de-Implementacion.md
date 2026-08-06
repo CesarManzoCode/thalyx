@@ -106,7 +106,11 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
 | La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
 | Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
-| Correr la etapa 14 | Que el cargador de BPF deje de ser código sin ejercer |
+
+> Al 2026-08-06 esta tabla tiene **una sola causa**: no hay modelo. Todo lo
+> demás que estaba escrito está ejercido en hardware — el cargador de BPF, la
+> imagen con su enforcement puesto, y los seis pasos desde un arranque frío.
+> `proven 104 · not proven 1 · failed 0`.
 
 ### Las advertencias que quedan
 
@@ -143,22 +147,27 @@ etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
 
 ## Pruebas
 
-657 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+667 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
 Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay seis variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS` `_AGENT_TESTS` y `_IMAGE_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
-`verify.sh` activa las cuatro primeras cuando la máquina las soporta. La quinta
-es distinta por naturaleza: no hay máquina que la satisfaga todavía, porque lo
-que le falta al agente no es hardware sino código.
+`verify.sh` activa las cuatro primeras cuando la máquina las soporta. La de la
+imagen se pide a mano —`THALYX_REQUIRE_IMAGE_TESTS=1`— porque exige un kernel y
+un disco ya construidos; **corrida así el 2026-08-06 con idéntico resultado**,
+que es lo que demuestra que la etapa del arranque no se estaba saltando. La del
+agente es distinta por naturaleza: no hay máquina que la satisfaga todavía,
+porque lo que le falta al agente no es hardware sino código.
 
 ## Lo que la auditoría del 2026-08-04 cambió
 
 Nueve defectos reales encontrados desde fuera, ninguno de los cuales veía
 ninguna de las 612 pruebas de entonces. Corregidos, con pruebas que se comprobó
-que fallan sin el arreglo — pero **nada de esto se ha ejercido en hardware**.
-Ver [[Punto-Actual]] para lo que falta correr.
+que fallan sin el arreglo, y **ejercidos en hardware por la ruta confinada el
+2026-08-06** — que era lo que faltaba, porque este contenedor no puede atachar
+el LSM. Dos de los arreglos rompieron el instrumento que los medía antes de
+llegar ahí; ver [[Punto-Actual]].
 
 | Qué estaba mal | Dónde | Cómo quedó |
 |---|---|---|

@@ -15,16 +15,15 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
-- [ ] **Que `verify.sh` exija también `THALYX_REQUIRE_BTRFS_TESTS`.** Activa las otras tres cuando la máquina las soporta, pero no esta: comprueba los snapshots por su cuenta y deja que las pruebas de Btrfs del arnés de Rust se salten calladas. Ver [[Estado-de-Implementacion]].
 - [ ] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas son directorios**. Lo cubre ahora una prueba unitaria de `create_target_like` y la etapa 16 en hardware; falta un caso en `isolation.rs` que arme la raíz remapeada de verdad sobre un archivo. Ver [[Estrategia-de-Pruebas]].
-- [ ] **Correr `sudo ./dev/verify.sh` después de la auditoría del 2026-08-04.** Nueve defectos corregidos, ninguno ejercido en hardware, y dos tocan el arranque: el módulo ya no hereda `stdin`/`stdout`/`stderr`, y el filtro seccomp deja de ser fijo — se amplía sólo para el módulo con `net/outbound`. Ver [[Punto-Actual]].
-- [ ] **Anclar el digest del tarball del kernel.** `image/Makefile` tiene `KSHA256 := UNPINNED` y falla a propósito. Thalyx compila su propio kernel, así que ese archivo es la mitad más privilegiada de la máquina y se bajaba comprobando sólo TLS — que dice quién sirvió los bytes, no cuáles eran. `make -C image pin-kernel` imprime los cuatro comandos; el tercero tiene que decir *Good signature*.
+- [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [ ] **Consumir el ringbuf `thalyx_mutations`** para saber *qué* cambió, no solo que algo cambió. El atajo ya no lo necesita — lo resolvió la atribución por ancestros — así que esto solo hace falta para reindexar de forma incremental en vez de reconstruir. Ver [[FS-en-Grafo]].
 
 
 ## Pendientes de decreto formal
 
+- [ ] **Con qué se cierra la Fase 1, ahora que la persona ajena se canceló.** Cesar canceló el 2026-08-06 que una persona de fuera ejecute los seis pasos, y esa persona era **la única condición que el proyecto no podía declararse a sí mismo**. Sin sustituto, la Fase 1 vuelve a "un prototipo funcional que demuestre el flujo completo", que es exactamente el hueco que [[Criterio-de-Salida-Fase-1]] se escribió para cerrar. Su propio argumento apunta al reemplazo —una ISO booteable en hardware real— y elegirlo es de él. **Bloquea el orden de todo lo demás**, porque el orden sale del criterio.
 - [ ] **Confirmar las gamas con el banco** — [[Gamas-de-Modelo]] decreta cuatro gamas de una familia como hipótesis de partida. Falta correrlas y sustituir los tamaños estimados por los medidos. Requiere una máquina con `llama.cpp` y acceso a los pesos; el contenedor de desarrollo no tiene ninguna de las dos.
 - [ ] **Métricas de benchmark concretas** para la Fase 2 — qué se mide exactamente para el índice semántico y los permisos JIT, con qué carga y contra qué línea base. El umbral de decisión ya está decretado, lo que falta es el instrumento. Ver [[Decision-Kernel-vs-Userspace]].
 - [ ] **Técnicas de interpretabilidad** aplicables al agente. Ver [[Interpretabilidad-Mecanicista]].
@@ -101,7 +100,7 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 **Ningún decreto de esta bóveda ha sido contrastado con una persona ajena al proyecto.** Todo el razonamiento sobre por qué alguien elegiría Thalyx sigue siendo a priori. Ver [[Por-Que-Elegirian-Este-SO]] y [[Riesgo-de-Ejecucion]].
 
-El [[Criterio-de-Salida-Fase-1|criterio de salida de la Fase 1]] está diseñado para forzar ese contacto: no se cierra la fase sin que alguien de fuera use el sistema.
+El [[Criterio-de-Salida-Fase-1|criterio de salida de la Fase 1]] estaba diseñado para forzar ese contacto, y **el 2026-08-06 Cesar lo suspendió**: Thalyx todavía son comandos de terminal y el producto terminado será una ISO booteable, así que se prueba cuando haya algo que probar. El riesgo se sigue cargando a propósito, ahora por más tiempo y con una medición más: **no se pudo convencer a nadie de dedicarle media hora de terminal**, que es una respuesta parcial a [[Por-Que-Elegirian-Este-SO]] y no un contratiempo de calendario.
 
 ## Relacionado
 - [[00-Indice/Indice-Principal|Índice principal]]

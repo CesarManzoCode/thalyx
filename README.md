@@ -122,11 +122,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 Then open a new terminal, or `source "$HOME/.cargo/env"`.
 
-### Step 0b — pin the kernel you are about to compile
+### Step 0b — the kernel you are about to compile is already pinned
 
-`doctor` will also tell you the kernel tarball has no verified digest, and
-refuse to go on. This is not bureaucracy, and it is worth understanding because
-it is the whole difference between Thalyx and a distribution.
+Nothing to do here. It is written down because it is worth understanding, and
+because it is the whole difference between Thalyx and a distribution.
 
 **Thalyx compiles its own kernel.** That tarball is not a dependency it links
 against — it *becomes the most privileged half of the machine you are about to
@@ -134,22 +133,27 @@ run*. HTTPS tells you who served the bytes. It does not tell you what the bytes
 were, and a CDN that served something else would produce a kernel nobody
 checked, on a machine that would boot and say nothing about it.
 
+So `image/Makefile` carries the digest of the exact tarball this image builds,
+and the build refuses anything else. It was established on 2026-08-06 against
+kernel.org's **signed** list of digests, and the key that signed it is recorded
+next to the digest — a bare hash tells you what was accepted, not what
+established it.
+
+If a `make` ever says the digest does not match, stop. The file you downloaded
+is not the file kernel.org signed.
+
+**To re-establish it yourself**, or after changing `KVERSION`:
+
 ```sh
 make -C image pin-kernel
 ```
 
-prints four commands. They fetch kernel.org's list of digests, fetch the keys of
-the people who sign it, **verify that signature**, and pull out the line for the
-version this image builds. The third command must say `Good signature`. Put the
-digest it prints into `KSHA256` in `image/Makefile`.
-
-This is done once. If a later `make` says the digest does not match, stop: the
-file you downloaded is not the file kernel.org signed.
-
-> If `gpg --locate-keys` cannot reach a keyserver from your network, that is the
-> one step here that can fail for reasons unrelated to Thalyx. The digest is a
-> public constant for a given kernel version; get it from a source you trust,
-> and understand that you are then trusting that source.
+It prints four commands rather than running them, on purpose: a target that
+downloaded the tarball and recorded its own hash would look like verification
+and be none — it would prove the file did not change between two reads of it,
+which nobody was ever worried about. What establishes anything is the signature,
+and checking a signature means *you* deciding whose key to trust. Compare the
+fingerprint it prints.
 
 ### Step 1 — build and boot
 
@@ -261,10 +265,12 @@ longer checks out** — with nobody having told it the module is gone. That is t
 difference between a memory and a log: it went and looked. A record that simply
 replayed what it was told would still be claiming the install stands.
 
-Those six steps are the entire exit criterion for Phase 1
-(`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`). Not a list of
-components: a person outside the project doing exactly this, from this file,
-with nobody helping.
+Those six steps were the entire exit criterion for Phase 1
+(`vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`) — not a list of
+components, but a person outside the project doing exactly this, from this file,
+with nobody helping. That last part was suspended on 2026-08-06. The steps
+still have to work, and they are checked on every change and on every hardware
+run; what is no longer required right now is a stranger performing them.
 
 ### If something fails
 
@@ -290,36 +296,45 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 657 of them**, across unit tests, fault injection
+**Built and covered by tests: 667 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
-**Verified on real hardware**: 72 checks, on one machine with a BPF LSM, cgroup
-v2 and Btrfs — `sudo ./dev/verify.sh`. The BPF LSM has denied a real network
-connection to a process that lacked the permission, and only to that process.
+**Verified on real hardware**: 104 checks, on one machine with a BPF LSM, cgroup
+v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-06. Nothing failed. One thing
+went unproven, and it is a thing that does not exist yet rather than a check
+that could not be made: the agent has no model. The BPF LSM has denied a real
+network connection to a process that lacked the permission, and only to that
+process.
 
-**The image boots.** On 2026-08-03 a kernel built from `allnoconfig` came up in
-QEMU with one program inside it, mounted its filesystems, and said out loud what
-it does and does not have. It now carries its own BPF loader — no `bpftool`, no
-second file — and that loader attached enforcement on real hardware.
+**The image boots, and does the six steps by itself.** A kernel built from
+`allnoconfig` comes up in QEMU with one program inside it, attaches its own
+enforcement with no `bpftool` and no second file, mounts its Btrfs store,
+installs a signed module from its own repository through the trusted path, runs
+it confined, reverts it, powers itself off — and on the next boot says what it
+was asked to do and that the install it made no longer checks out. That whole
+sequence is stage 16 of `verify.sh`, typed into a real machine from a cold
+boot.
 
 ### Not yet true, stated plainly
 
-- **Nobody outside the project has done the six steps.** That is what ends
-  Phase 1, and it has not happened. If you are reading this and doing them, you
-  are the test.
+- **Nobody outside the project has done the six steps.** Until 2026-08-06 that
+  was what ended Phase 1. It is suspended: Thalyx today is terminal commands,
+  the finished product is a bootable image, and there is no sense asking a
+  stranger for half an hour of terminal to test something that is not yet a
+  thing to test. The steps themselves still run on every change and on every
+  hardware run — what is suspended is *who types them*, and what now ends
+  Phase 1 is undecided. If you are reading this and doing them anyway, that
+  still counts.
 - **The conversational agent has no model.** The deterministic half is built and
   works; there is no LLM behind it. The session says *"I have no model loaded"*
   rather than pretending. Model selection is decreed
   (`vault/03-Primitivas/Gamas-de-Modelo.md`) and not implemented.
 - **The predictive scheduler is Phase 2.** It is design, not code.
-- **The last security round has not been re-verified on hardware.** An external
-  audit on 2026-08-04 found nine real defects — among them a decreed global lock
-  that nothing implemented, an interrupted upgrade that could leave the running
-  version holding the *next* version's permissions, and a corrupt keystore that
-  parsed as an empty one, which trusts every publisher it is offered. All are
-  fixed, with tests confirmed to fail without the fix. The 72 hardware checks
-  have not been run since.
+- **`thalyx_watch` has never been loaded without `bpftool`.** The BPF loader
+  Thalyx carries is proven on the LSM object — it loads it, attaches it, and
+  that enforcement denies. The watcher is ten hooks instead of two and has not
+  been tried. Likely is not proven.
 
 ### Three limits of the enforcement, stated rather than discovered
 
