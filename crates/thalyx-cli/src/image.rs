@@ -45,6 +45,10 @@ const TRAILER: &str = "TRAILER!!!";
 
 const MODE_DIR: u32 = 0o040_755;
 const MODE_EXEC: u32 = 0o100_755;
+/// A character device, readable and writable by root and nobody else. There is
+/// no other user in the image, and the console is not something a module should
+/// find by walking the tree.
+const MODE_CHAR: u32 = 0o020_600;
 
 struct Cpio {
     out: Vec<u8>,
@@ -68,7 +72,7 @@ impl Cpio {
         }
     }
 
-    fn header(&mut self, name: &str, mode: u32, size: usize) {
+    fn header(&mut self, name: &str, mode: u32, size: usize, rdev: (u32, u32)) {
         let inode = self.next_inode;
         self.next_inode += 1;
 
@@ -83,8 +87,8 @@ impl Cpio {
             size as u32,
             0, // devmajor
             0, // devminor
-            0, // rdevmajor
-            0, // rdevminor
+            rdev.0,
+            rdev.1,
             (name.len() + 1) as u32,
             0, // check, unused by newc
         ] {
@@ -97,20 +101,78 @@ impl Cpio {
     }
 
     fn directory(&mut self, name: &str) {
-        self.header(name, MODE_DIR, 0);
+        self.header(name, MODE_DIR, 0, (0, 0));
     }
 
     fn executable(&mut self, name: &str, contents: &[u8]) {
-        self.header(name, MODE_EXEC, contents.len());
+        self.header(name, MODE_EXEC, contents.len(), (0, 0));
         self.out.extend_from_slice(contents);
         self.pad();
     }
 
+    /// A character device: a name, a major and a minor, and no contents at all.
+    ///
+    /// It is not a program and must never be counted as one. It holds no code —
+    /// it is a door the kernel already owns, given a name so that something can
+    /// ask for it.
+    fn character_device(&mut self, name: &str, major: u32, minor: u32) {
+        self.header(name, MODE_CHAR, 0, (major, minor));
+    }
+
     fn finish(mut self) -> Vec<u8> {
-        self.header(TRAILER, 0, 0);
+        self.header(TRAILER, 0, 0, (0, 0));
         self.out
     }
 }
+
+/// `/dev/console`, which the kernel opens as the new process's `stdin`,
+/// `stdout` and `stderr` before it runs `/init`.
+///
+/// It is here because of a boot that did not survive its own first instruction,
+/// on 2026-08-06, the first time this image was started by a firmware instead of
+/// by QEMU. The kernel said it, plainly, and then the machine died:
+///
+/// ```text
+/// Warning: unable to open an initial console.
+/// Run /init as init process
+/// traps: init[1] general protection fault ip:7fea0faff143
+/// Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000000b
+/// ```
+///
+/// The faulting instruction was `hlt`, which is privileged, and it sits at the
+/// end of musl's `abort()` — the instruction reached only when raising `SIGABRT`
+/// failed to kill the process. It fails for PID 1: the kernel does not deliver a
+/// default-action fatal signal to init. So `abort()` ran off its own end.
+///
+/// What called it never got as far as Thalyx. Rust's runtime, before `main`,
+/// checks that descriptors 0, 1 and 2 are open and points them at `/dev/null`
+/// when they are not — otherwise the next file opened silently becomes the
+/// program's stdout. With no console *and* no `/dev/null`, that guarantee cannot
+/// be made and the runtime aborts rather than continue. Both were missing, for
+/// the same reason: this archive had an empty `/dev`.
+///
+/// ## Why QEMU never showed this
+///
+/// `make run` hands the archive over with `-initrd`, and an external initrd is
+/// unpacked **on top of** the kernel's own built-in one, which contains
+/// `/dev/console`. Building the archive into the kernel replaces that default
+/// instead of adding to it. The console had been arriving as a gift from
+/// something nobody had looked at.
+///
+/// That is the third time this project has found the host doing something for
+/// free: systemd delegating cgroup controllers, the initramfs performing the
+/// `switch_root`, and now the kernel's default archive supplying the console.
+/// See `Estrategia-de-Pruebas.md`.
+///
+/// ## And why there is no `/dev/null` beside it
+///
+/// It would be one line and it would buy the wrong thing. With a console the
+/// machine speaks; with `/dev/null` standing in for one, the machine runs
+/// perfectly and says nothing, forever, which is worse than dying — this project
+/// has already blinded one instrument that way. A machine that cannot reach its
+/// console should stop.
+const CONSOLE_MAJOR: u32 = 5;
+const CONSOLE_MINOR: u32 = 1;
 
 /// The directories PID 1 mounts onto.
 ///
@@ -156,6 +218,7 @@ pub fn build(binary: &Path, out: &Path) -> Fallible {
     for directory in DIRECTORIES {
         cpio.directory(directory);
     }
+    cpio.character_device("dev/console", CONSOLE_MAJOR, CONSOLE_MINOR);
     cpio.executable("init", &contents);
 
     let archive = cpio.finish();
@@ -164,7 +227,10 @@ pub fn build(binary: &Path, out: &Path) -> Fallible {
     file.sync_all()?;
 
     println!("  {} bytes", archive.len());
-    println!("  /init, plus {} directories", DIRECTORIES.len());
+    println!(
+        "  /init, plus {} directories and /dev/console",
+        DIRECTORIES.len()
+    );
     println!();
     println!("  Nothing else is in it. That is the whole claim, and it is");
     println!("  countable: `thalyx dev image --list {}`", out.display());
@@ -182,15 +248,44 @@ pub fn list(archive: &Path) -> Fallible {
     let bytes = std::fs::read(archive)?;
     let entries = parse(&bytes)?;
 
-    let (directories, programs): (Vec<&Entry>, Vec<&Entry>) =
-        entries.iter().partition(|entry| entry.is_directory());
+    let directories = entries.iter().filter(|entry| entry.is_directory()).count();
+    let devices: Vec<&Entry> = entries.iter().filter(|entry| entry.is_device()).collect();
+    let programs: Vec<&Entry> = entries.iter().filter(|entry| entry.is_program()).collect();
 
-    println!("{} directories", directories.len());
+    println!("{directories} directories");
+    for device in &devices {
+        // The numbers, not just the name. A node pointing at the wrong driver
+        // fails exactly like a missing one, and this is the command somebody
+        // runs when the machine will not talk.
+        println!(
+            "/{}  (character device {}:{}, no contents)",
+            device.name, device.rdev_major, device.rdev_minor
+        );
+    }
     for program in &programs {
         println!("/{}  ({} bytes)", program.name, program.size);
     }
     println!();
     println!("{} program(s) in the image.", programs.len());
+
+    // Anything that is none of the three is named rather than dropped. The
+    // count is what the decree is checked with, and a kind nobody thought of
+    // being quietly left out of it is exactly how a second program would get in
+    // without the number moving.
+    let counted = directories + devices.len() + programs.len();
+    if counted != entries.len() {
+        println!();
+        println!(
+            "and {} entr(ies) of no kind this counts:",
+            entries.len() - counted
+        );
+        for entry in entries
+            .iter()
+            .filter(|e| !e.is_directory() && !e.is_device() && !e.is_program())
+        {
+            println!("/{}  (mode {:o})", entry.name, entry.mode);
+        }
+    }
 
     Ok(())
 }
@@ -201,11 +296,27 @@ struct Entry {
     name: String,
     mode: u32,
     size: usize,
+    /// Which driver a device node points at. Read back out of the archive
+    /// rather than remembered, because a node with the wrong numbers in it
+    /// fails exactly like a node that is not there.
+    rdev_major: u32,
+    rdev_minor: u32,
 }
 
 impl Entry {
     fn is_directory(&self) -> bool {
         self.mode & 0o170_000 == 0o040_000
+    }
+
+    /// A character device. Not a program: it carries no code, and counting it
+    /// as one would break the decree with a door.
+    fn is_device(&self) -> bool {
+        self.mode & 0o170_000 == 0o020_000
+    }
+
+    /// A regular file, which in this image is the one thing that can be run.
+    fn is_program(&self) -> bool {
+        self.mode & 0o170_000 == 0o100_000
     }
 }
 
@@ -225,6 +336,8 @@ fn parse(bytes: &[u8]) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
         }
         let mode = field(bytes, at + 14, 1)?;
         let size = field(bytes, at + 54, 6)? as usize;
+        let rdev_major = field(bytes, at + 78, 9)?;
+        let rdev_minor = field(bytes, at + 86, 10)?;
         let namesize = field(bytes, at + 94, 11)? as usize;
 
         let name_at = at + 110;
@@ -236,7 +349,13 @@ fn parse(bytes: &[u8]) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
         let after_name = (name_at + namesize).div_ceil(4) * 4;
         at = (after_name + size).div_ceil(4) * 4;
 
-        entries.push(Entry { name, mode, size });
+        entries.push(Entry {
+            name,
+            mode,
+            size,
+            rdev_major,
+            rdev_minor,
+        });
     }
 
     Ok(entries)
@@ -265,9 +384,15 @@ mod tests {
         build(&binary, &out).unwrap();
 
         let entries = parse(&std::fs::read(&out).unwrap()).unwrap();
+        // `is_program` and not "everything that is not a directory": since
+        // 2026-08-06 the archive also carries /dev/console, which holds no code
+        // and is not a program. This assertion is the decree's guard, so what
+        // it counts is the decision — a kind that slips out of the count is how
+        // a second program would arrive without the number moving, and that is
+        // covered separately by `a_device_node_is_not_counted_as_a_program`.
         let files: Vec<&str> = entries
             .iter()
-            .filter(|entry| !entry.is_directory())
+            .filter(|entry| entry.is_program())
             .map(|entry| entry.name.as_str())
             .collect();
 
@@ -275,6 +400,78 @@ mod tests {
             files,
             ["init"],
             "the decree is countable, and one program means one file"
+        );
+    }
+
+    #[test]
+    fn the_console_is_in_the_archive_or_the_machine_dies_before_its_first_line() {
+        // 2026-08-06: booted by a firmware for the first time, with the archive
+        // built into the kernel rather than handed over separately, and the
+        // machine did not survive `/init`. The kernel had already said why —
+        // "unable to open an initial console" — and Rust's runtime aborts
+        // before `main` when it can guarantee neither a console nor
+        // /dev/null for descriptors 0, 1 and 2.
+        //
+        // Nothing found it earlier because `-initrd` unpacks over the kernel's
+        // own built-in archive, and that one carries /dev/console. Building
+        // ours in replaces that default instead of adding to it.
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_binary(dir.path());
+        let out = dir.path().join("initramfs.cpio");
+        build(&binary, &out).unwrap();
+
+        let entries = parse(&std::fs::read(&out).unwrap()).unwrap();
+        let console = entries
+            .iter()
+            .find(|entry| entry.name == "dev/console")
+            .expect("the image has no /dev/console, so init starts with no descriptors");
+
+        assert!(
+            console.is_device(),
+            "dev/console is in the archive and is not a device node (mode {:o}), \
+             so opening it gives a file and the machine talks to nothing",
+            console.mode
+        );
+        assert_eq!(
+            (console.rdev_major, console.rdev_minor),
+            (CONSOLE_MAJOR, CONSOLE_MINOR),
+            "the console node points at the wrong driver, which fails exactly \
+             like having no node at all"
+        );
+    }
+
+    #[test]
+    fn a_device_node_is_not_counted_as_a_program() {
+        // The decree is guarded by a number, so what the number counts decides
+        // whether the guard works. A character device holds no code and must
+        // not be a program — and it must not be silently dropped either, since
+        // "not counted" is how a second program would arrive without the count
+        // moving. It is its own kind, printed as its own kind.
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_binary(dir.path());
+        let out = dir.path().join("initramfs.cpio");
+        build(&binary, &out).unwrap();
+
+        let entries = parse(&std::fs::read(&out).unwrap()).unwrap();
+
+        assert_eq!(
+            entries.iter().filter(|e| e.is_program()).count(),
+            1,
+            "the image stopped holding exactly one program"
+        );
+        assert_eq!(
+            entries.iter().filter(|e| e.is_device()).count(),
+            1,
+            "the image carries a device node that is not the console"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e.is_directory() || e.is_device() || e.is_program())
+                .count(),
+            entries.len(),
+            "something in the archive is of a kind the count does not know \
+             about, so it would not appear in `thalyx dev image --list`"
         );
     }
 

@@ -1193,6 +1193,53 @@ Lo que quedó, además del arreglo:
 - Una prueba que lee el `Makefile` y exige las dos copias, porque dos copias de
   una instrucción es exactamente cómo sobrevive la equivocada.
 
+## Regla derivada: lo que el anfitrión hacía gratis, tercera vez, y ahora era la consola
+
+Encontrada el 2026-08-06, en el primer arranque hecho por un firmware en vez de
+por QEMU. La máquina no sobrevivió a su primera instrucción:
+
+```
+Warning: unable to open an initial console.
+Run /init as init process
+traps: init[1] general protection fault ip:7fea0faff143
+Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000000b
+```
+
+La instrucción que falló es `hlt` —privilegiada, así que en espacio de usuario
+es una falta de protección general— y está al final de `abort()` de musl: la que
+sólo se alcanza cuando mandarse `SIGABRT` **no** mató al proceso. Y no lo mata,
+porque **el kernel no le entrega a PID 1 una señal fatal por acción
+predeterminada**. `abort()` se salió por su propio final.
+
+Lo que llamó a `abort()` no fue código de Thalyx: no llegó a correr. El runtime
+de Rust, **antes de `main`**, comprueba que los descriptores 0, 1 y 2 estén
+abiertos y los apunta a `/dev/null` cuando no lo están — si no, el siguiente
+archivo que abras se vuelve tu salida estándar en silencio. Sin consola **y** sin
+`/dev/null`, esa garantía no se puede dar y el runtime aborta. Faltaban los dos,
+por la misma causa: el archivo tenía un `/dev` vacío.
+
+**Y por qué ningún arranque anterior lo vio**: `-initrd` entrega el cpio aparte,
+y un initrd externo se desempaqueta **encima** del initramfs propio del kernel,
+que trae `/dev/console`. Meter el nuestro adentro del kernel *reemplaza* ese
+predeterminado en lugar de sumarse a él. La consola llegaba de regalo desde algo
+que nadie había mirado.
+
+> Es la tercera vez, con la misma forma exacta: **systemd** delegaba los
+> controladores de cgroup, **el initramfs** hacía el `switch_root`, y ahora **el
+> archivo predeterminado del kernel** ponía la consola. Cada vez, quitar la capa
+> de abajo dejó al descubierto un trabajo que el diseño nunca hizo porque nunca
+> tuvo que hacerlo. **Cuando se sustituye algo que venía de fuera, lo que hay que
+> buscar no es lo que ese algo hacía mal: es lo que hacía y nadie escribió.**
+
+Y un corolario sobre el conteo. `/dev/console` es una entrada más en el archivo,
+y `is_directory()` la habría clasificado como programa: `make -C image count`
+habría dicho **2** y el decreto se habría roto solo, con un nodo de dispositivo.
+La respuesta no es excluirla del conteo —lo no contado es justo por donde
+entraría un segundo programa sin que el número se moviera— sino **contarla como
+su propia clase**, imprimirla con sus números, y afirmar que las tres clases
+suman el total. Una entrada de una clase que nadie previó se nombra en vez de
+desaparecer.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -81,6 +81,48 @@ tags: [continuidad, punto-actual, sesiones]
 > hacer, y se siguen comprobando solos en cada cambio y en cada corrida de
 > hardware. Lo que se cancela es quién los teclea.
 >
+> ### El firmware arrancó Thalyx sin gestor de arranque — 2026-08-06
+>
+> **El paso 1 del criterio nuevo funcionó.** OVMF encontró
+> `EFI/BOOT/BOOTX64.EFI`, lo arrancó, el kernel desempaquetó el initramfs que
+> lleva adentro y ejecutó `/init`. **No hay gestor de arranque y no hace falta
+> ninguno**: el medio lleva un archivo y ese archivo es el kernel con Thalyx
+> dentro.
+>
+> Y murió en su primera instrucción, por algo que no era ninguna de las dos
+> cosas que se estaban probando:
+>
+> ```
+> Warning: unable to open an initial console.
+> Run /init as init process
+> traps: init[1] general protection fault ip:7fea0faff143
+> Kernel panic - not syncing: Attempted to kill init!
+> ```
+>
+> La instrucción que falló es `hlt`, que está al final de `abort()` de musl — la
+> que sólo se alcanza cuando `SIGABRT` **no** mató al proceso, y no lo mata
+> porque el kernel no le entrega señales fatales por defecto a PID 1. Y quien
+> llamó a `abort()` no fue código de Thalyx: fue el runtime de Rust **antes de
+> `main`**, que se niega a seguir si no puede garantizar descriptores 0, 1 y 2.
+> El archivo tenía un `/dev` vacío.
+>
+> **Ningún arranque anterior podía verlo**: `-initrd` se desempaqueta *encima*
+> del initramfs propio del kernel, que trae `/dev/console`. Meter el nuestro
+> adentro lo *reemplaza*. La consola venía de regalo de algo que nadie miró — y
+> es la **tercera vez** con esa forma exacta, después de systemd con los
+> controladores y del `switch_root`. Regla nueva en [[Estrategia-de-Pruebas]].
+>
+> Arreglado: el archivo lleva `/dev/console` (carácter 5:1). **Sin `/dev/null`
+> al lado, a propósito** — una máquina que no alcanza su consola debe detenerse,
+> no correr perfecta hablándole a la nada, que es peor y que este proyecto ya
+> cometió una vez.
+>
+> Y el conteo tuvo que aprender una clase nueva: un nodo de dispositivo no es un
+> programa, pero `is_directory()` lo habría contado como uno y `count` habría
+> dicho **2**. Ahora hay tres clases, se imprimen los números del nodo, y una
+> prueba exige que las tres sumen el total — porque lo que no se cuenta es justo
+> por donde entraría un segundo programa sin que el número se moviera.
+>
 > ### Lo que hay que correr ahora, y es tuyo
 >
 > ```
@@ -95,20 +137,18 @@ tags: [continuidad, punto-actual, sesiones]
 > Necesita OVMF: `sudo dnf install edk2-ovmf`. Si falta, `run-uefi` se niega y lo
 > dice como lo que es —no se probó nada— en vez de reportar que Thalyx falló.
 >
-> Qué esperar, en orden:
+> Qué esperar ahora que la consola está puesta:
 >
-> 1. **`make -C image` falla en `config-check` o `initramfs-check`.** Alguna de
->    las opciones nuevas no sobrevivió a `olddefconfig`. Es el fallo bueno:
->    nombra la línea exacta y no llega a arrancar nada.
-> 2. **El firmware no encuentra nada** y se queda en una shell UEFI o reinicia.
->    Entonces `EFI_STUB` no tomó, y eso es lo que hay que saber antes que nada.
-> 3. **Arranca y no se ve nada.** La consola es `console=ttyS0` y con `-nographic`
->    QEMU la trae al terminal, así que debería verse. Si arranca en hierro real
->    y no se ve nada, es que una PC no tiene puerto serie — ése es el paso 2.
-> 4. **Arranca y dice que no le nombraron store.** Eso es **correcto** y es el
+> 1. **Arranca y habla.** El párrafo de Thalyx, los montajes, y el estado de la
+>    máquina. Eso cierra el paso 1 entero.
+> 2. **Arranca y dice que no le nombraron store.** Eso es **correcto** y es el
 >    paso 3: `thalyx.store=` nombra un dispositivo, la línea compilada es una
 >    sola, y el disco es `vda` en QEMU y `nvme0n1` en una PC. Sale honesto en vez
 >    de adivinar, que es lo que `store_disk.rs` ya decreta.
+> 3. **Vuelve a morir igual.** Entonces la consola no era la causa —o no la
+>    única— y hay que mirar de nuevo. La lectura de arriba es firme en lo que el
+>    kernel dijo de sí mismo y en lo que hacía falta; **que ésa fuera la única
+>    causa se comprueba arrancando**, no razonando.
 >
 > Y **no toqué `make run`**: sigue pasando `-kernel` e `-initrd`, porque es la
 > red de regresión de la etapa 16 y cambiarla ahora dejaría la red y lo que se
