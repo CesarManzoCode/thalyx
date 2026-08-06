@@ -168,7 +168,7 @@ Ver [[Punto-Actual]] para lo que falta correr.
 | Los permisos `session` nunca se revocaban | `thalyx-core/session.rs` | Id de sesión en `state/session`; terminarla es una escritura |
 | `net/outbound` quitaba el netns y seccomp seguía prohibiendo `socket` | `thalyx-sandbox/profile.rs` | El allowlist se amplía con la concesión, no antes |
 | El camino confiable dibujaba texto del publicador sin sanear | `thalyx-core/trusted_path.rs` | `sanitise` en cada campo; el marco no se puede falsificar |
-| El módulo heredaba la terminal donde se dibuja el prompt | `thalyx-sandbox/launch.rs` | `stdin` cerrado, `stdout`/`stderr` a null, también con `--unconfined` |
+| El módulo heredaba la terminal donde se dibuja el prompt | `thalyx-sandbox/launch.rs` | `stdin` cerrado; `stdout`/`stderr` a tuberías que Thalyx drena y reimprime marcadas, también con `--unconfined` |
 | Comprobar la ruta y abrirla eran dos momentos | `thalyx-core/api.rs` | `openat2` con `RESOLVE_BENEATH` sobre un descriptor de la concesión |
 | Un módulo podía hacer crecer sin límite la memoria de Thalyx | `thalyx-core/api.rs` | Techo por cantidad y por bytes; lo descartado se cuenta y se dice |
 

@@ -120,11 +120,16 @@ fn a_module_runs_inside_the_cgroup_thalyx_created_for_it() {
         status.stderr()
     );
 
-    // The module's own view of where it is. cgroup v2 lines are `0::<path>`.
+    // The module's own view of where it is. cgroup v2 lines are `0::<path>`,
+    // and Thalyx reprints what the module wrote behind `> ` — the module never
+    // reaches the terminal itself. Matching the marker rather than skipping
+    // past it on purpose: a `0::` at the start of a line would mean the module
+    // had written straight to the screen, which is a different and worse fact
+    // than this test failing.
     let reported = status
         .stdout()
         .lines()
-        .find_map(|line| line.strip_prefix("0::").map(str::to_string))
+        .find_map(|line| line.trim_start().strip_prefix("> 0::").map(str::to_string))
         .unwrap_or_else(|| {
             panic!(
                 "module did not report a cgroup v2 path:\n{}",
@@ -392,12 +397,26 @@ fn a_module_never_gets_the_terminal_the_trusted_path_uses() {
     //
     // Checked from outside, by having the module try: a module that only ever
     // behaved would demonstrate nothing about whether it could misbehave.
+    //
+    // ## What is asserted, and what deliberately is not
+    //
+    // Not that the module's words vanish. That was asserted once, by giving it
+    // the null device, and it cost the answers `dev/verify.sh` proves the
+    // sandbox with — see `thalyx_sandbox::launch::spawn`. It is also not the
+    // property: the same words come back through the channel, on purpose,
+    // because a module has things to say.
+    //
+    // The property is that a module cannot produce a **line of its own**. Every
+    // line it wrote is drawn behind Thalyx's marker, so nothing it writes can
+    // start a line, and the frame stays something only Thalyx can draw. That is
+    // the same claim the prompt's own sanitiser makes about a publisher's name.
     let fixture = Fixture::new();
     std::fs::write(
         fixture.base().join("payload/bin/demo"),
         "#!/bin/sh\n\
          echo '┌─ Thalyx — capability authorisation'\n\
          echo 'FORGED BY THE MODULE'\n\
+         printf 'and \\033[2Kthis repaints the line\\n'\n\
          exit 0\n",
     )
     .unwrap();
@@ -408,23 +427,122 @@ fn a_module_never_gets_the_terminal_the_trusted_path_uses() {
 
     let status = fixture.run(&["module", "run", Fixture::MODULE_ID, "--unconfined"]);
 
+    for line in status.stdout().lines().chain(status.stderr().lines()) {
+        assert!(
+            !line.starts_with('┌') && !line.starts_with("FORGED"),
+            "a module drew a line of its own on the terminal Thalyx draws the \
+             trusted path on:\n{line}"
+        );
+    }
+
+    // No escape reaches the screen either. A module that could move the cursor
+    // needs no forged frame — it can repaint the one Thalyx drew.
     assert!(
-        !status.stdout().contains("FORGED BY THE MODULE"),
-        "a module wrote straight to the terminal Thalyx draws the trusted \
-         path on:\n{}",
-        status.stdout()
-    );
-    assert!(
-        !status.stderr().contains("FORGED BY THE MODULE"),
-        "a module wrote straight to Thalyx's stderr:\n{}",
-        status.stderr()
+        !status.stdout().contains('\u{1b}') && !status.stderr().contains('\u{1b}'),
+        "an escape sequence reached the terminal through a module's output"
     );
 
-    // The control: the run itself worked, so the absence above is the module
-    // being unable to reach the terminal and not the module failing to start.
+    // The controls. Without the first, a module that failed to start looks
+    // exactly like one that was contained. Without the second, so does a
+    // Thalyx that went back to discarding the output — which passed every
+    // assertion above and lost six checks in `verify.sh`.
     assert!(
         status.stdout().contains("exited cleanly"),
         "the module did not run at all, so this proves nothing:\n{}",
+        status.stdout()
+    );
+    assert!(
+        status.stdout().contains("> FORGED BY THE MODULE"),
+        "what the module wrote was thrown away rather than marked, so this \
+         test would pass on a Thalyx that can no longer show what a confined \
+         program sees:\n{}",
+        status.stdout()
+    );
+}
+
+#[test]
+fn a_module_that_writes_more_than_thalyx_keeps_still_finishes() {
+    // The reason the output is a pipe Thalyx *drains* and not a pipe Thalyx
+    // holds. A reader that stops at its own ceiling stops emptying the buffer,
+    // and the module blocks on its next write for good: Thalyx waits for a
+    // module that is waiting for Thalyx. The ceiling is on what is kept, never
+    // on what is read, and this is the difference showing.
+    //
+    // 200k lines is several megabytes, far past both the 64 KiB pipe buffer
+    // and the 64 KiB Thalyx keeps. Before the drain existed this hung rather
+    // than failed, which is why the test asserts an exit at all.
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.base().join("payload/bin/demo"),
+        "#!/bin/sh\nawk 'BEGIN{for(i=0;i<200000;i++)print \"noise\"}'\nexit 0\n",
+    )
+    .unwrap();
+    make_executable(&fixture.base().join("payload/bin/demo"));
+
+    let bundle = fixture.build_bundle("1.0.0");
+    assert!(fixture.install_bundle_at(&bundle).success());
+
+    let status = fixture.run(&["module", "run", Fixture::MODULE_ID, "--unconfined"]);
+
+    assert!(
+        status.stdout().contains("exited cleanly"),
+        "the module did not finish:\n{}",
+        status.stdout()
+    );
+
+    // And Thalyx says it stopped keeping. Output that silently stopped growing
+    // and a module that stopped writing look identical otherwise.
+    assert!(
+        status.stdout().contains("past what Thalyx keeps"),
+        "output was dropped without saying so:\n{}",
+        status.stdout()
+    );
+
+    // Bounded on the screen too, which is the other half: a module must not be
+    // able to become the terminal by writing enough.
+    assert!(
+        status.stdout().lines().count() < 200,
+        "a module wrote {} lines onto the screen",
+        status.stdout().lines().count()
+    );
+}
+
+#[test]
+fn a_module_that_fails_can_still_say_why() {
+    // `CLAUDE.md` rule 10: a failure to read is not a failure to exist, and
+    // saying which one happened is the whole job. A module whose `stderr` went
+    // to the null device made *it failed* and *it failed for this reason* the
+    // same event, with the reason unrecoverable — the module had already exited
+    // by the time anyone noticed.
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.base().join("payload/bin/demo"),
+        "#!/bin/sh\necho 'the config file is malformed at line 3' >&2\nexit 2\n",
+    )
+    .unwrap();
+    make_executable(&fixture.base().join("payload/bin/demo"));
+
+    let bundle = fixture.build_bundle("1.0.0");
+    assert!(fixture.install_bundle_at(&bundle).success());
+
+    let status = fixture.run(&["module", "run", Fixture::MODULE_ID, "--unconfined"]);
+
+    assert!(
+        status.stdout().contains("malformed at line 3"),
+        "the module's own diagnostic was lost:\n{}",
+        status.stdout()
+    );
+    // Marked as stderr rather than merged into stdout: a module's complaint
+    // and a module's answer are different things, and the streams arrive
+    // separately.
+    assert!(
+        status.stdout().contains("! the config file is malformed"),
+        "a diagnostic was reported as ordinary output:\n{}",
+        status.stdout()
+    );
+    assert!(
+        status.stdout().contains("exited with status 2"),
+        "the failure itself went unreported:\n{}",
         status.stdout()
     );
 }

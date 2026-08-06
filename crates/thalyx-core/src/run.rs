@@ -82,6 +82,19 @@ pub struct RunOutcome {
     pub exit_code: Option<i32>,
     /// What the module said to the human over its channel, in order.
     pub said: Vec<(thalyx_abi::Level, String)>,
+    /// What the module wrote to its own `stdout` and `stderr`.
+    ///
+    /// Not the channel, and reported as a different thing: the channel is the
+    /// surface Thalyx mediates, and this is a module writing bytes at a
+    /// descriptor. Kept because it is the only way to ask a confined program
+    /// what it can see — which is how the sandbox is shown to work at all —
+    /// and because a module that dies with a message on `stderr` has to be
+    /// able to say why.
+    ///
+    /// The two are held apart rather than interleaved. They arrive on separate
+    /// pipes read by separate threads, so any order across them would be an
+    /// order Thalyx made up.
+    pub wrote: ModuleOutput,
     /// Notices refused because the module was past the ceiling Thalyx holds
     /// for one run. Carried so the caller can say so: a truncated list and a
     /// module that went quiet look identical otherwise.
@@ -97,6 +110,102 @@ pub struct RunOutcome {
 impl RunOutcome {
     pub fn confined(&self) -> bool {
         self.cgroup_id.is_some()
+    }
+}
+
+/// What a module wrote at its own descriptors, bounded.
+#[derive(Debug, Default, Clone)]
+pub struct ModuleOutput {
+    pub stdout: String,
+    pub stderr: String,
+    /// Set when Thalyx stopped keeping what the module wrote before the module
+    /// stopped writing.
+    ///
+    /// Said out loud by the caller, for the same reason `dropped_notices` is:
+    /// output that silently stopped growing and a module that stopped talking
+    /// look identical, and they are different events.
+    pub truncated: bool,
+}
+
+impl ModuleOutput {
+    pub fn is_empty(&self) -> bool {
+        self.stdout.is_empty() && self.stderr.is_empty()
+    }
+}
+
+/// The most Thalyx keeps of what one module wrote at one descriptor.
+///
+/// The bound is on what is *kept*, never on what is read — the drain below
+/// goes on emptying the pipe after the ceiling, discarding as it goes. Those
+/// are different things and confusing them is how a memory limit becomes a
+/// hang: a reader that stops reading at the ceiling blocks the module on its
+/// next write, for good.
+///
+/// This is the same ceiling `api.rs` puts on notices and for the same reason —
+/// the 2026-08-04 audit found a module could grow Thalyx's memory without
+/// limit by talking, and a module can talk at a descriptor too.
+const MAX_KEPT_OUTPUT: usize = 64 * 1024;
+
+/// Empty one of the module's pipes, keeping the first [`MAX_KEPT_OUTPUT`].
+///
+/// In a thread because both pipes and the `wait` have to be happening at once.
+/// A module that fills the pipe buffer while Thalyx waits for it to exit is a
+/// deadlock, and it is the ordinary case rather than a hostile one: the buffer
+/// is 64 KiB on Linux and a module that prints a directory can reach it.
+fn drain<R: std::io::Read + Send + 'static>(
+    stream: Option<R>,
+) -> std::thread::JoinHandle<(String, bool)> {
+    std::thread::spawn(move || {
+        let Some(mut stream) = stream else {
+            return (String::new(), false);
+        };
+
+        let mut kept: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        let mut buffer = [0u8; 8192];
+
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    let room = MAX_KEPT_OUTPUT.saturating_sub(kept.len());
+                    let take = room.min(read);
+                    kept.extend_from_slice(&buffer[..take]);
+                    truncated |= take < read;
+                }
+                // A read that fails is a failure to read, not a module that
+                // said nothing. It ends the drain — the alternative is
+                // spinning on the same error forever — and what was kept up to
+                // here is still what the module wrote.
+                Err(_) => {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+
+        // Lossy on purpose. A module is bytes, not text, and one that writes
+        // something that is not UTF-8 must not be able to make Thalyx fail to
+        // report the rest of what it wrote.
+        (String::from_utf8_lossy(&kept).into_owned(), truncated)
+    })
+}
+
+/// Join both drains into one [`ModuleOutput`].
+///
+/// A panicked drain thread is reported as truncation rather than propagated:
+/// the module has already run, and losing its result because reading its
+/// output went wrong would turn a reporting fault into a failed run.
+fn collect(
+    out: std::thread::JoinHandle<(String, bool)>,
+    err: std::thread::JoinHandle<(String, bool)>,
+) -> ModuleOutput {
+    let (stdout, out_cut) = out.join().unwrap_or_else(|_| (String::new(), true));
+    let (stderr, err_cut) = err.join().unwrap_or_else(|_| (String::new(), true));
+    ModuleOutput {
+        stdout,
+        stderr,
+        truncated: out_cut || err_cut,
     }
 }
 
@@ -308,6 +417,12 @@ fn run_inner(
     // exited.
     drop(module_end);
 
+    // Before the wait, not after. The module holds the writing end of two
+    // pipes; if nobody is emptying them it stops on a full buffer and Thalyx
+    // waits for a module that is waiting for Thalyx.
+    let draining_out = drain(child.stdout.take());
+    let draining_err = drain(child.stderr.take());
+
     // Serve while it runs, in a thread, because both have to be happening at
     // once: a module that asks something before Thalyx starts listening would
     // block, and a Thalyx that waited for the child before listening would
@@ -335,6 +450,7 @@ fn run_inner(
     let channel_error = served.err().map(|error| error.to_string());
     let said = api.said().to_vec();
     let dropped_notices = api.dropped_notices();
+    let wrote = collect(draining_out, draining_err);
 
     // Teardown happens whatever the module did. `release` is a no-op while
     // another instance is still inside, so a second run is not stripped of its
@@ -353,6 +469,7 @@ fn run_inner(
         permissions,
         exit_code: status.code(),
         said,
+        wrote,
         dropped_notices,
         channel_error,
     })
@@ -391,16 +508,20 @@ fn run_unconfined(
         // `--unconfined` means no cgroup and no kernel policy. It has never
         // meant "may forge the trusted path", and a module that could draw
         // Thalyx's confirmation frame on the human's screen would be doing
-        // exactly that. See `thalyx_sandbox::launch::spawn`.
+        // exactly that. See `thalyx_sandbox::launch::spawn`, which explains
+        // why these are pipes Thalyx drains rather than the null device.
         command
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
         thalyx_syscall::spawn_with_channel(&mut command, module_end.as_raw_fd())
             .map_err(|source| CoreError::io(program, source))?
     };
     drop(module_end);
+
+    let draining_out = drain(child.stdout.take());
+    let draining_err = drain(child.stderr.take());
 
     let mut api = crate::api::ModuleApi::for_module(manifest, &permissions);
     let serving = std::thread::spawn(move || {
@@ -429,6 +550,7 @@ fn run_unconfined(
         permissions,
         exit_code: status.code(),
         said: api.said().to_vec(),
+        wrote: collect(draining_out, draining_err),
         dropped_notices: api.dropped_notices(),
         channel_error: served.err().map(|error| error.to_string()),
     })

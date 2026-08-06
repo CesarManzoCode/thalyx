@@ -122,32 +122,46 @@ pub fn sanitise_permission(permission: &Permission) -> Vec<String> {
         return vec!["(blank)".to_string()];
     }
 
-    let characters: Vec<char> = text.chars().collect();
-    let budget = WRAP_AT * MAX_WRAPPED_LINES;
-
-    let shown: String = if characters.len() <= budget {
-        text
-    } else {
-        // Keep the head and the tail. The tail is not decoration: for a path it
-        // is the leaf, which is the whole of what distinguishes two grants that
-        // share a parent.
-        let tail = WRAP_AT.min(characters.len() / 3);
-        let head = budget.saturating_sub(tail + 3);
-        format!(
-            "{}…{}",
-            characters[..head].iter().collect::<String>(),
-            characters[characters.len() - tail..]
-                .iter()
-                .collect::<String>()
-        )
-    };
-
-    shown
+    elide_middle(&text, WRAP_AT * MAX_WRAPPED_LINES)
         .chars()
         .collect::<Vec<char>>()
         .chunks(WRAP_AT)
         .map(|chunk| chunk.iter().collect())
         .collect()
+}
+
+/// Bound a string's length by cutting its **middle** out, never its end.
+///
+/// The shared half of the two callers that carry *content* rather than a
+/// label — a permission, and what a module says. [`sanitise`] cuts the end
+/// off, which is right for a name and wrong for both of these, and the reason
+/// is the same in both cases: the end is where the distinguishing part lives.
+/// For a path it is the leaf, which is all that separates two grants sharing a
+/// parent. For a sentence it is usually the answer — `read 27 byte(s) from
+/// /very/long/path: the vault is the authority` cut at seventy-two characters
+/// says a file was read and drops what was in it.
+///
+/// The head survives too, because for a path the root is the other half of
+/// what is being said. Bounded either way: a module or a publisher must not be
+/// able to push the rest of the screen away with one enormous string.
+fn elide_middle(text: &str, budget: usize) -> String {
+    let characters: Vec<char> = text.chars().collect();
+    if characters.len() <= budget {
+        return text.to_string();
+    }
+
+    // A sixth of the budget, which is one wrapped line at the width the
+    // permission renderer draws — the value this had before it was shared, so
+    // a permission is elided exactly where it was.
+    let tail = (budget / 6).max(1).min(characters.len() / 3);
+    let head = budget.saturating_sub(tail + 3);
+    format!(
+        "{}…{}",
+        characters[..head].iter().collect::<String>(),
+        characters[characters.len() - tail..]
+            .iter()
+            .collect::<String>()
+    )
 }
 
 /// Replace control characters, without touching length.
@@ -242,19 +256,74 @@ impl CapabilityPrompt {
 ///
 /// Bounded, because "several" is not "unlimited": a module cannot scroll the
 /// human's screen with one notice.
+///
+/// ## Why this does not use [`sanitise`] on each line
+///
+/// It did, and that was the same defect [`sanitise_permission`] documents,
+/// found again in the place the first fix did not look. A notice is what the
+/// module is **saying**, not a label for it, and [`sanitise`]'s seventy-two
+/// characters are shorter than an ordinary sentence about a file:
+///
+/// ```text
+/// read 27 byte(s) from /tmp/tmp.BCvj7bvl02/greeter-granted/notes.txt: the…
+/// ```
+///
+/// That is `dev.thalyx.greeter` reporting what it read, with what it read cut
+/// off. The module answered the question and Thalyx dropped the answer — and
+/// because the length that decides is the *path's*, the same module says less
+/// on a machine whose directories are nested deeper. So each line is bounded
+/// by [`elide_middle`] instead, generously and from the middle.
 pub fn sanitise_block(text: &str) -> Vec<String> {
+    /// How many of a notice's own lines are drawn before the rest are counted.
     const MAX_LINES: usize = 8;
 
-    let mut lines: Vec<String> = text.lines().take(MAX_LINES).map(sanitise).collect();
+    bounded_lines(text, MAX_LINES)
+}
 
-    if text.lines().count() > MAX_LINES {
-        lines.push(format!(
-            "… and {} more line(s)",
-            text.lines().count() - MAX_LINES
-        ));
+/// The same, for what a module wrote at its own descriptors.
+///
+/// A separate ceiling rather than a second caller of [`sanitise_block`],
+/// because the two are bounded against different things. A notice is one
+/// deliberate sentence a module chose to send through the API, and eight lines
+/// is generous for that. Output is whatever a program printed — a module
+/// reporting what it can see from inside its sandbox writes a line per
+/// question, and a module that failed writes a diagnostic. Holding that to
+/// eight lines would cut the answer off in the ordinary case, which is the
+/// mistake this whole file has now made twice.
+///
+/// Still bounded: what a module writes must not be able to become the screen.
+pub fn sanitise_output(text: &str) -> Vec<String> {
+    /// Past any diagnostic worth reading, short of a module taking the screen.
+    const MAX_LINES: usize = 64;
+
+    bounded_lines(text, MAX_LINES)
+}
+
+/// Split into safe, individually bounded lines, keeping at most `max_lines`.
+fn bounded_lines(text: &str, max_lines: usize) -> Vec<String> {
+    /// The longest one line may be. Four screen-widths: past any sentence, and
+    /// far short of a module that wants the terminal to itself.
+    const MAX_LINE: usize = WRAP_AT * 4;
+
+    let source: Vec<String> = text.lines().map(sanitise_control).collect();
+
+    let mut lines: Vec<String> = source
+        .iter()
+        .take(max_lines)
+        .map(|line| {
+            if line.is_empty() {
+                "(blank)".to_string()
+            } else {
+                elide_middle(line, MAX_LINE)
+            }
+        })
+        .collect();
+
+    if source.len() > max_lines {
+        lines.push(format!("… and {} more line(s)", source.len() - max_lines));
     }
     if lines.is_empty() {
-        lines.push(sanitise(""));
+        lines.push("(blank)".to_string());
     }
     lines
 }
@@ -651,5 +720,98 @@ type     = "persistent"
             .render()
             .contains("completely safe")
         );
+    }
+
+    #[test]
+    fn what_a_module_read_survives_being_reported_from_a_deep_directory() {
+        // The failure this test exists for, verbatim from a real run: the
+        // greeter read its granted file, said so, and what it read was cut off
+        // because the path in front of it was long.
+        //
+        // The bound that did the cutting is a *label's* bound, and a notice is
+        // not a label. Two machines differing only in how deeply their scratch
+        // directory nests would get different answers to the same question —
+        // one of them the wrong one, with no sign that anything was lost
+        // beyond an ellipsis that could as easily have been the module's.
+        let said = "read 27 byte(s) from \
+                    /tmp/tmp.BCvj7bvl02/greeter-granted/notes.txt: \
+                    the vault is the authority";
+
+        let shown = sanitise_block(said).join("");
+        assert!(
+            shown.contains("the vault is the authority"),
+            "the module answered and Thalyx dropped the answer: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_module_still_cannot_take_the_screen_with_one_notice() {
+        // The control for the test above. Lifting the bound is not the fix —
+        // moving it off the payload is — so a module that says something
+        // enormous must still be held, and must still keep the two ends that
+        // say what it was talking about.
+        let said = format!("read from /opt/thalyx/{}/notes.txt", "x".repeat(10_000));
+
+        let lines = sanitise_block(&said);
+        assert_eq!(lines.len(), 1, "one line in became {} out", lines.len());
+        assert!(
+            lines[0].chars().count() < 300,
+            "a notice took {} characters",
+            lines[0].chars().count()
+        );
+        assert!(lines[0].contains("read from /opt/thalyx/"));
+        assert!(
+            lines[0].contains("notes.txt"),
+            "the end went, which is where a sentence puts its answer"
+        );
+    }
+
+    #[test]
+    fn a_notice_cannot_add_a_line_however_long_it_is() {
+        // The marker in front of each line is what says who is speaking, and
+        // the caller can only put one there per line it is given. A notice
+        // whose own length made Thalyx wrap it would hand the module a line
+        // with no marker on it — the forgery this returns `Vec` to prevent,
+        // arrived at by length instead of by a newline.
+        let said = format!("{}\n{}", "a".repeat(500), "b".repeat(500));
+
+        let lines = sanitise_block(&said);
+        assert_eq!(
+            lines.len(),
+            2,
+            "two lines in became {}, so a line got drawn without a marker",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn a_notice_of_many_lines_says_how_many_it_did_not_draw() {
+        // A list that silently stopped growing looks exactly like a module
+        // that stopped talking.
+        let said = (0..40)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let lines = sanitise_block(&said);
+        assert!(lines.len() <= 9, "a notice took {} lines", lines.len());
+        assert!(
+            lines.last().unwrap().contains("32 more line(s)"),
+            "the count of what was left out is missing: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_newline_in_a_notice_cannot_repaint_the_marker() {
+        // Unchanged by the length fix, and asserted here because it is the
+        // property the length fix had to not cost: control characters are
+        // still replaced, so nothing a module writes can end a line early and
+        // start the next one wherever it likes.
+        let lines = sanitise_block("harmless\u{1b}[2K\rx said:");
+        assert!(
+            !lines.iter().any(|line| line.contains('\u{1b}')),
+            "an escape reached the screen through a module's notice: {lines:?}"
+        );
+        assert_eq!(lines.len(), 1, "a carriage return bought a second line");
     }
 }

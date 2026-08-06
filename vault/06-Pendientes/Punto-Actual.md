@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-04
+fecha-actualizacion: 2026-08-05
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,6 +14,90 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Los arreglos de la auditoría rompieron dos cosas, y las dos ya están — 2026-08-05
+>
+> **Es lo primero que hay que leer.** Cesar corrió `sudo ./dev/verify.sh` con los
+> arreglos de la auditoría puestos y salió `proven 99 · not proven 2 · failed 10`.
+> Los diez fallos eran de Thalyx, no suyos, y los diez son **dos defectos**, los
+> dos del commit `3976974`.
+>
+> ### 1. El módulo perdió su `stdout`, y ese `stdout` era el instrumento
+>
+> El arreglo era correcto —el módulo compartía terminal con el camino confiable,
+> podía leer la `y` del humano y podía dibujar el marco— y la respuesta fue
+> mandarle `stdout` y `stderr` a `/dev/null`.
+>
+> **La etapa 6 le pregunta al programa confinado qué ve**, que es la regla 2:
+> su pid, su uid, su hostname, sus interfaces, su raíz, si alcanza lo concedido.
+> Las seis respuestas viajaban por `stdout`. Con el descarte, las seis
+> reportaron `nothing` — **que es también lo que reporta un sandbox que no aisló
+> nada**. La medida de contención dejó a la contención sin testigo.
+>
+> Y costaba la otra dirección: un módulo que muere con un mensaje en `stderr` no
+> dejaba mensaje. *Falló* y *falló por esto* eran el mismo evento, que es lo que
+> la regla 10 prohíbe.
+>
+> Ahora la salida es una tubería que Thalyx **drena** y reimprime marcada y
+> saneada, igual que el canal. La propiedad que el `/dev/null` compraba se
+> conserva, dicha con precisión: **un módulo no puede empezar una línea.** No que
+> sus palabras desaparezcan —desaparecer era el error— sino que todo lo que
+> escribe llega detrás del marcador de Thalyx:
+>
+> ```
+>   org.thalyx.verify wrote, at descriptors Thalyx does not mediate:
+>   > uid=700000
+>   > pid=1
+>   ! and now a diagnostic
+> ```
+>
+> Decidido por Cesar el 2026-08-05, entre tres opciones. El techo es sobre lo
+> que se **guarda** (64 KiB), nunca sobre lo que se lee: un lector que se
+> detiene en su propio techo bloquea al módulo en la siguiente escritura, y el
+> límite de memoria se vuelve un cuelgue. Hay una prueba con 200 000 líneas.
+>
+> ### 2. Lo que un módulo dice se truncaba a 72 caracteres
+>
+> Es **el mismo defecto que la auditoría ya había arreglado para los permisos**,
+> sin arreglar donde el mismo razonamiento se aplica. `sanitise` corta a 72 y
+> `sanitise_block` lo llamaba línea por línea. El `greeter` dijo:
+>
+> ```
+> read 27 byte(s) from /tmp/tmp.BCvj7bvl02/greeter-granted/notes.txt: the…
+> ```
+>
+> Contestó qué leyó y Thalyx tiró la respuesta. Explica las etapas 12 y 13.
+>
+> Lo peor no es el corte sino **quién decide dónde cae**: lo que gasta el
+> presupuesto es la *ruta*, así que el mismo módulo dice menos en una máquina
+> con directorios más anidados. Ahora se acota por el **medio** y con mucho más
+> aire, como los permisos.
+>
+> ### Y la etapa 17 llevaba un día sin poder probar nada
+>
+> Decía `NOT PROVEN: no installed module`, honestamente y **siempre**: la etapa
+> 6 revierte el módulo como su última comprobación. Un salto que se dispara
+> siempre no es un salto, es una comprobación que nunca se hizo.
+>
+> Le faltaba además el control que importa: afirmaba que el texto del módulo
+> **no aparece**, lo que se satisface borrándolo todo — y de hecho pasó en verde
+> la misma corrida en que la etapa 6 se quedó ciega. Ahora exige las dos cosas:
+> que aparezca, y que no empiece ninguna línea.
+>
+> **666 pruebas pasan, `clippy` limpio, `cargo fmt` aplicado.** Tres reglas
+> nuevas en [[Estrategia-de-Pruebas]].
+>
+> ### Lo que falta, y es de Cesar
+>
+> 1. **Correr `sudo ./dev/verify.sh` otra vez.** De los diez fallos, los cuatro
+>    de las etapas 12 y 13 y los de la 6 en modo `--unconfined` se ejercieron
+>    aquí; **la ruta confinada no**, porque este contenedor no tiene el LSM
+>    atachado y la prueba del cgroup se salta diciéndolo. El cambio del sandbox
+>    —`launch::spawn` con tuberías en vez de `/dev/null`— **solo se ejerce en tu
+>    máquina**.
+> 2. **Anclar el digest del kernel.** `make -C image` sigue fallando a propósito
+>    hasta que lo hagas, y eso es correcto: es la tarea 2 de abajo, no un
+>    defecto. `make -C image pin-kernel` imprime los cuatro comandos.
+>
 > ## Y el criterio de salida dejó de depender de que alguien corra un comando — 2026-08-04
 >
 > **Léelo después del bloque de la auditoría, que sigue siendo lo primero.**
@@ -641,8 +725,22 @@ Hay pruebas para los cuatro, y tres de ellas leen el `Makefile`.
 
 ## Última corrida verificada
 
-**2026-08-03, Fedora 43, kernel 7.0.11, Btrfs, `bpf` en el orden de LSM,
-`main @ f1a6dd0`.**
+**2026-08-05, Fedora 43, kernel 7.1.5, Btrfs, `bpf` en el orden de LSM,
+`main @ f781ced`.**
+
+```
+proven 99 · not proven 2 · failed 10
+```
+
+Los diez fallos eran de Thalyx y ya están arreglados —ver el bloque de arriba—
+pero **la corrida que lo demuestre todavía no existe**. Lo que esa corrida sí
+cerró, y ninguna anterior había cerrado: las etapas 15, 16 y 17 enteras, el
+arranque de la imagen con los seis pasos desde frío, el `switch_root`, la
+delegación de controladores, el `openat2` y el lock de contratos.
+
+### La anterior, para comparar
+
+**2026-08-03, kernel 7.0.11, `main @ f1a6dd0`.**
 
 ```
 proven 72 · not proven 2 · failed 0
@@ -843,6 +941,21 @@ corrida. Para encenderlo a mano:
 `thalyx graph trust ~/thalyx/crates --counter`.
 
 ## Historial de sesiones
+
+### 2026-08-05 — los arreglos de la auditoría rompieron el instrumento
+`verify.sh` con la auditoría puesta: `failed 10`, todos de Thalyx. Dos defectos,
+los dos del mismo commit, y los dos con la misma forma vista de dos lados: **una
+defensa correcta aplicada a algo que no era lo que creía estar protegiendo.**
+
+Quitarle la terminal al módulo era correcto y le quitó también el `stdout` por
+el que contesta qué ve desde adentro del sandbox, que es el único instrumento
+que prueba el aislamiento. Truncar a 72 caracteres es correcto para una
+etiqueta y lo que un módulo dice no es una etiqueta — el mismo razonamiento que
+la auditoría ya había escrito para los permisos, sin aplicar donde valía igual.
+
+Y la prueba que debía atrapar el primero afirmaba una **ausencia**, que se
+satisface borrándolo todo. Pasó en verde la misma corrida en que la etapa 6 se
+quedó ciega.
 
 ### 2026-08-04 (2) — la máquina corrió los seis pasos y falló en el quinto
 La etapa 16 —arrancar la imagen y teclearle los seis pasos— corrió por primera

@@ -79,13 +79,36 @@ precisamente para no necesitar terminal. `dev.thalyx.greeter` lo dice en su
 propia documentación: *sobre el canal y no a una terminal, porque una terminal
 no es algo que tenga*. La tenía.
 
-Desde el 4 de agosto de 2026 no la tiene: `stdin` cerrado, `stdout` y `stderr` a
-`/dev/null`, también con `--unconfined` — que significa "sin cgroup y sin
-política del kernel" y nunca significó "puede falsificar el camino confiable".
+Desde el 4 de agosto de 2026 no la tiene: `stdin` cerrado, y `stdout` y `stderr`
+son tuberías de las que Thalyx tiene el otro extremo, también con `--unconfined`
+— que significa "sin cgroup y sin política del kernel" y nunca significó "puede
+falsificar el camino confiable".
 
 Y lo que el módulo dice por el canal se sanea igual antes de imprimirlo. Pasar
 el texto por Thalyx no logra nada por sí solo si después ese texto puede traer
 un salto de línea y repintar la marca que dice quién habla.
+
+### Qué se le quita exactamente, y qué no
+
+Fueron tuberías a `/dev/null` durante un día, y eso resultó ser más de lo que
+este decreto pide. La etapa 6 de `verify.sh` prueba el sandbox **preguntándole
+al programa confinado qué ve** —regla 2 de [[Estrategia-de-Pruebas]]— y esas
+respuestas viajan por `stdout`. Descartarlas dejó a la contención sin testigo:
+un módulo aislado y uno sin aislar pasaron a contestar lo mismo, que es nada.
+
+La propiedad que este decreto necesita no es que el módulo calle. Es:
+
+> **Un módulo no puede empezar una línea.**
+
+Todo lo que escribe llega detrás del marcador de Thalyx, saneado, acotado y
+etiquetado como lo que es: bytes en un descriptor que Thalyx **no** media, a
+diferencia del canal. Es la misma afirmación que se hace sobre el nombre de un
+publicador — sus palabras se ven, porque son suyas y el humano debe verlas; lo
+que no puede es agregar una *línea*.
+
+Un módulo que dice algo y un módulo al que se le borra lo que dijo son
+sistemas distintos, y solo el segundo hace imposible que un módulo diga por qué
+falló.
 
 ## Revisiones
 
@@ -97,6 +120,19 @@ texto — pasaban por los campos que el texto interpola y por el descriptor dond
 se dibuja.
 **Cómo se encontró:** una auditoría externa señaló los campos del manifiesto;
 la terminal heredada apareció al ir a comprobarlo.
+
+### 2026-08-05 — Quitarle la terminal no es quitarle la voz
+**Antes:** `stdout` y `stderr` del módulo iban a `/dev/null`.
+**Ahora:** van a tuberías que Thalyx drena y reimprime marcadas y saneadas. La
+propiedad es que el módulo no puede empezar una línea, no que no pueda hablar.
+**Motivo:** el descarte cegó a la etapa 6 de `verify.sh`, que prueba el sandbox
+preguntándole al programa confinado qué ve. Seis comprobaciones pasaron a
+reportar `nothing`, que es lo mismo que reportaría un sandbox que no aisló nada.
+Y un módulo que muere con un mensaje en `stderr` dejaba de poder decir por qué,
+contra la regla 10 de `CLAUDE.md`.
+**Cómo se encontró:** corriendo `verify.sh` en la máquina de Cesar. La prueba
+que debía atrapar esto afirmaba una **ausencia** —que el texto del módulo no
+aparece— y eso se satisface borrándolo todo; pasó en verde la misma corrida.
 
 ## Relacionado
 - [[Modelo-de-Amenaza]]

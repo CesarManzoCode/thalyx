@@ -103,6 +103,39 @@ pub fn run(
         }
     }
 
+    // What the module wrote at its own descriptors.
+    //
+    // Reported apart from the channel, and labelled as the different thing it
+    // is: the channel is the surface Thalyx mediates, and this is bytes at a
+    // descriptor. Saying so is the honest half — a module writing `granted=
+    // reachable` has told nobody anything Thalyx checked.
+    //
+    // Every line still goes through `sanitise_block` and still carries a
+    // marker, which is the property that matters and the only one the null
+    // device was buying: a module must not be able to draw a line that looks
+    // like Thalyx drew it. What it may not do is speak *unmarked*; what it may
+    // do is speak.
+    if !outcome.wrote.is_empty() {
+        println!();
+        println!(
+            "  {} wrote, at descriptors Thalyx does not mediate:",
+            thalyx_core::trusted_path::sanitise(&outcome.module_id)
+        );
+        // `>` is stdout and `!` is stderr. Kept apart because they arrived on
+        // separate pipes: any interleaving would be one Thalyx invented.
+        for (marker, text) in [(">", &outcome.wrote.stdout), ("!", &outcome.wrote.stderr)] {
+            if text.is_empty() {
+                continue;
+            }
+            for line in thalyx_core::trusted_path::sanitise_output(text) {
+                println!("  {marker} {line}");
+            }
+        }
+        if outcome.wrote.truncated {
+            println!("  … and more, past what Thalyx keeps of one run's output.");
+        }
+    }
+
     // A module that said more than Thalyx will hold has to be reported as
     // such. A list that silently stopped growing looks exactly like a module
     // that stopped talking, and the two are different events.

@@ -402,8 +402,8 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
 ///
 /// ## Why the module does not get the terminal
 ///
-/// `stdin` is closed and `stdout`/`stderr` go to the null device, and that is
-/// a security property rather than tidiness.
+/// `stdin` is closed and `stdout`/`stderr` are pipes Thalyx holds the other
+/// end of, and that is a security property rather than tidiness.
 ///
 /// The module used to inherit all three from Thalyx, which meant it shared a
 /// terminal with the trusted path. Two things follow from that, and both
@@ -423,17 +423,37 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
 /// channel precisely so it does not need a terminal, and `dev.thalyx.greeter`
 /// says so in its own module docs: *over the channel rather than to a terminal,
 /// because a terminal is not something it has.* It had one.
+///
+/// ## Why a pipe and not the null device
+///
+/// It was the null device, and that threw away the answer to the only question
+/// that establishes any of this. `dev/verify.sh` proves the sandbox by asking
+/// the confined program what it can see — its pid, its uid, its hostname, its
+/// interfaces — because asking Thalyx whether it confined something proves
+/// nothing. Every one of those answers travelled on `stdout`. Discarding it
+/// made six checks report `nothing`, which is also what a sandbox that
+/// isolated nothing would report: the containment measure blinded the
+/// instrument that shows containment works.
+///
+/// It cost the other direction too. A module that dies with a message on
+/// `stderr` left no message, so *it failed* and *it failed for this reason*
+/// became the same event — the distinction `CLAUDE.md` rule 10 is about.
+///
+/// A pipe keeps both without giving anything back. The module still cannot
+/// read what the human types, and what it writes reaches the screen only
+/// through Thalyx, one line at a time behind a marker and with control
+/// characters replaced — the same treatment the channel already gets, for the
+/// same reason. **The caller must drain both pipes while the module runs**: a
+/// pipe whose reader never empties it blocks the module forever on its first
+/// write, which is what the null device was avoiding.
 pub fn spawn(helper: &Path, spec: &LaunchSpec, args: &[OsString]) -> Result<std::process::Child> {
     use std::process::Stdio;
 
     std::process::Command::new(helper)
         .args(argv(ENTER_MARKER, spec, args)?)
-        // Null rather than a pipe nobody reads: a pipe whose reader never
-        // drains it blocks the module forever on its first write, which turns
-        // a containment measure into a hang.
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|source| SandboxError::Exec {
             program: helper.to_path_buf(),

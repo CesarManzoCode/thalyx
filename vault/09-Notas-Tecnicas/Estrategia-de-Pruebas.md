@@ -1051,6 +1051,98 @@ confirma, en vez de como un instrumento roto. Así que la etapa **comprueba el
 arnés antes de confiar en él**, con su control: adentro tiene que haber terminal
 y afuera no. Sin el control, una respuesta fija pasaría igual.
 
+## Regla derivada: una medida de contención puede cegar al instrumento que la prueba
+
+Encontrada el 2026-08-05, corriendo `verify.sh` con los arreglos de la auditoría
+del 2026-08-04 puestos. Diez `FAILED` en una máquina donde el sistema estaba
+bien.
+
+El arreglo era correcto: el módulo heredaba `stdin`, `stdout` y `stderr` de
+Thalyx, así que compartía terminal con el camino confiable —podía leer la `y`
+del humano y podía dibujar el marco— y se le quitaron los tres, a `/dev/null`.
+
+**Y el `stdout` del módulo era el instrumento.** La regla 2 de este documento
+dice que un test de aislamiento le pregunta al programa confinado qué ve; la
+etapa 6 le pregunta seis cosas —su pid, su uid, su hostname, sus interfaces, su
+raíz, si alcanza lo concedido— y las seis respuestas viajaban por ahí. Con el
+descarte, las seis reportaron `nothing`.
+
+**`nothing` es también lo que reporta un sandbox que no aisló nada.** Ese es el
+punto entero:
+
+> Una medida de contención que descarta lo que el programa confinado dice deja
+> a la contención sin testigo. Un módulo perfectamente aislado y uno sin aislar
+> pasan a dar la misma respuesta, y esa respuesta es el silencio.
+
+Y costó la otra dirección también: un módulo que muere con un mensaje en
+`stderr` dejó de tener manera de decir por qué. *Falló* y *falló por esto* se
+volvieron el mismo evento, que es justo lo que la regla 10 de `CLAUDE.md`
+prohíbe.
+
+La salida es una tubería que Thalyx **drena** —el techo es sobre lo que se
+guarda, nunca sobre lo que se lee, o el módulo se bloquea en la siguiente
+escritura y el techo se vuelve un cuelgue— y reimprime marcada y saneada, igual
+que ya hacía con el canal. La propiedad que el `/dev/null` compraba se conserva
+entera y dicha con precisión:
+
+> **Un módulo no puede empezar una línea.** No que sus palabras desaparezcan —
+> desaparecer era el error—, sino que todo lo que escribe llega detrás del
+> marcador de Thalyx. Es la misma afirmación que el saneador del prompt hace
+> sobre el nombre de un publicador.
+
+### Y la prueba que lo dejó pasar afirmaba la ausencia
+
+`a_module_never_gets_the_terminal_the_trusted_path_uses` afirmaba que el texto
+del módulo **no aparece**. Pasaba, y seguiría pasando con la salida en
+`/dev/null` para siempre. La etapa 17 tenía la misma forma.
+
+Una afirmación de ausencia necesita un control que exija la presencia de lo
+que sí debe estar — si no, la forma más fácil de satisfacerla es borrar todo.
+Las dos tienen ahora ese control: el texto del módulo **tiene** que aparecer,
+marcado.
+
+### Y la etapa 17 llevaba un día sin poder probar nada
+
+Decía `NOT PROVEN: no installed module`, honestamente: la etapa 6 revierte el
+módulo como su última comprobación, así que cuando la 17 corría no había nada
+instalado. Nunca. Es la regla de arriba —nadie lee un informe que ya conoce—
+con una vuelta más:
+
+> Un salto que se dispara **siempre** no es un salto, es una comprobación que
+> nunca se hizo. Un `NOT PROVEN` que no depende de la máquina depende de un
+> defecto.
+
+## Regla derivada: la segunda mitad de un arreglo vive donde el razonamiento se aplica, no donde se escribió
+
+Encontrada la misma tarde, y es la otra mitad de los diez `FAILED`.
+
+La auditoría arregló un truncado: `sanitise` corta a 72 caracteres, y aplicado a
+un permiso hacía que `/home/user/projects/secrets` y
+`/home/user/projects/public` se dibujaran igual. El arreglo está razonado con
+todas las letras en `sanitise_permission` — **un permiso es contenido, no una
+etiqueta, y a lo que es contenido se le quita el medio, nunca el final.**
+
+`sanitise_block` —lo que un módulo dice por el canal— quedó llamando a
+`sanitise` línea por línea. Es contenido con la misma exactitud, y 72
+caracteres es más corto que una frase corriente sobre un archivo:
+
+```
+read 27 byte(s) from /tmp/tmp.BCvj7bvl02/greeter-granted/notes.txt: the…
+```
+
+Es el `greeter` contestando qué leyó, con lo que leyó cortado. Las etapas 12 y
+13 fallaron pidiendo justamente esa parte.
+
+Lo peor no es el corte sino **quién decide dónde cae**: la longitud que gasta el
+presupuesto es la de la *ruta*. El mismo módulo diciendo lo mismo dice menos en
+una máquina con directorios más anidados. Una prueba escrita con rutas cortas
+nunca lo ve, y no había ninguna.
+
+> Cuando un arreglo se justifica con un razonamiento, el arreglo va a **todos**
+> los lugares donde ese razonamiento se aplica, en el mismo commit. Buscarlos es
+> parte del arreglo, no una limpieza posterior. El razonamiento estaba escrito y
+> era correcto; lo que faltó fue preguntarse quién más lo cumple.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

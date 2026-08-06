@@ -415,24 +415,32 @@ if [ "$LOADED" = 1 ]; then
 
         # Each of these asks the module what it saw. Asking Thalyx whether it
         # confined the module would prove nothing.
+        #
+        # `  > ` is Thalyx's marker for what a module wrote at a descriptor it
+        # does not mediate. The pattern includes it deliberately, and it is not
+        # noise: an answer arriving *without* the marker would mean the module
+        # had reached this terminal itself, which is worse news than the check
+        # failing. So the same line proves the isolation and proves the module
+        # did not get the screen. Stage 17 asserts the other half — nothing the
+        # module writes ever starts a line.
         check() {
             local what="$1" pattern="$2" field="$3"
             if grep -qE "$pattern" "$WORK/run.log"; then
                 green "     $what"
             else
-                failed "$what — the module reported: $(grep -E "^$field=" "$WORK/run.log" || echo 'nothing')"
+                failed "$what — the module reported: $(grep -E "^  > $field=" "$WORK/run.log" || echo 'nothing')"
             fi
         }
-        check "it is PID 1 of its own namespace"         '^pid=1$'                          pid
-        check "it is not the user Thalyx runs as"        "^uid=${UID_ASSIGNED:-700000}\$"   uid
-        check "its hostname says nothing about the host" '^host=thalyx-module$'             host
-        check "it has no network but loopback"           '^net=lo:$'                        net
-        check "the granted path is readable"             '^granted=reachable$'              granted
+        check "it is PID 1 of its own namespace"         '^  > pid=1$'                          pid
+        check "it is not the user Thalyx runs as"        "^  > uid=${UID_ASSIGNED:-700000}\$"   uid
+        check "its hostname says nothing about the host" '^  > host=thalyx-module$'             host
+        check "it has no network but loopback"           '^  > net=lo:$'                        net
+        check "the granted path is readable"             '^  > granted=reachable$'              granted
 
         if grep -q 'root=.*module' "$WORK/run.log" && ! grep -q 'root=.*home' "$WORK/run.log"; then
             green "     its root holds its own tree and not the host's"
         else
-            failed "the module's root looks like the host's: $(grep '^root=' "$WORK/run.log")"
+            failed "the module's root looks like the host's: $(grep '^  > root=' "$WORK/run.log" || echo 'nothing')"
         fi
     else
         failed "the confined run failed; see $WORK/run.log"
@@ -2061,13 +2069,32 @@ fi
 #
 # Asked of the confined program rather than of Thalyx, which is rule 2: a
 # module that writes to stdout must not reach the screen Thalyx draws the
-# trusted path on. The control is that the run happened at all — without it, a
-# module that failed to start looks identical to one that was contained.
-# Stage 6 installed `org.thalyx.verify` into $STORE and its entrypoint echoes
-# several lines to stdout. Every one of those is a line a module chose to
-# write, so if any of them reaches this script's output, the module has the
-# terminal. `uid=` is the first thing it prints.
+# trusted path on. Stage 6's `org.thalyx.verify` echoes several lines, and
+# every one of them is a line a module chose to write.
+#
+# The claim is **not** that those lines disappear. They must not, or the six
+# checks in stage 6 have nothing to read and the sandbox stops being provable
+# at all — that is exactly what discarding the output cost on 2026-08-05. The
+# claim is that a module cannot produce a line *of its own*: what it writes
+# arrives behind Thalyx's `  > ` marker, so nothing it wrote ever starts a
+# line, and the frame stays something only Thalyx can draw.
+#
+# Two controls, and the second is the one this stage lacked. Without "it ran",
+# a module that failed to start looks contained. Without "and Thalyx showed
+# what it wrote", a Thalyx that went back to the null device passes — silently
+# blinding stage 6 while this stage reports the terminal safe.
 TERM_OUT="$WORK/terminal-check.txt"
+
+# Stage 6 rolls the module back off disk, which is its last check, so nothing
+# is installed by the time this runs. It was reported as an honest skip for
+# exactly as long as nobody read the report: a stage that can never prove
+# anything is not a skip, it is a check that was never made.
+if [ -x "$THALYX" ] && [ -f "$WORK/verify.thmod" ] \
+   && ! "$THALYX" --root "$STORE" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
+    "$THALYX" --root "$STORE" module install "$WORK/verify.thmod" --yes \
+        > "$WORK/terminal-reinstall.log" 2>&1 || true
+fi
+
 if [ -x "$THALYX" ] && [ -d "$STORE" ] && \
    "$THALYX" --root "$STORE" module list 2>/dev/null | grep -q "org.thalyx.verify"; then
 
@@ -2076,12 +2103,15 @@ if [ -x "$THALYX" ] && [ -d "$STORE" ] && \
 
     if grep -qE '^(uid=|pid=|host=|root=)' "$TERM_OUT"; then
         failed "a module wrote straight to the terminal the trusted path uses; see $TERM_OUT"
-    elif grep -q "exited" "$TERM_OUT"; then
-        # The control. Without it, a module that failed to start looks exactly
-        # like one that was contained.
-        proven "a module ran, and none of its own stdout reached the screen Thalyx confirms on"
-    else
+    elif ! grep -q "exited" "$TERM_OUT"; then
         unproven "the module did not run here, so the terminal claim proves nothing"
+    elif ! grep -qE '^  > (uid=|pid=|host=|root=)' "$TERM_OUT"; then
+        failed "the module ran and Thalyx showed nothing it wrote; see $TERM_OUT"
+        echo "     Stage 6 asks the confined program what it can see. Discarding"
+        echo "     its answer makes an isolated module and an unisolated one"
+        echo "     report the same thing: nothing."
+    else
+        proven "a module ran, said what it saw, and could not start a line of its own"
     fi
 else
     unproven "no installed module to ask whether it can reach the terminal"
