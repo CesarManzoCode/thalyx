@@ -326,14 +326,16 @@ etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
 ### Lo que todavía no es cierto, dicho sin rodeos
 
-- **Nadie ajeno al proyecto ha hecho los seis pasos.** Hasta el 2026-08-06 eso
-  era lo que cerraba la Fase 1. Está suspendido: Thalyx hoy son comandos de
-  terminal, el producto terminado es una imagen booteable, y no tiene sentido
-  pedirle a alguien media hora de terminal para probar algo que todavía no es
-  algo que probar. Los pasos siguen corriéndose en cada cambio y en cada corrida
-  de hardware; lo suspendido es **quién los teclea**, y qué cierra ahora la
-  Fase 1 está sin decidir. Si estás leyendo esto y los estás haciendo, cuenta
-  igual.
+- **No hay ISO, y eso es lo que ahora cierra la Fase 1.** El criterio, fijado el
+  2026-08-06: un solo archivo que, puesto en una PC sin sistema operativo, la
+  deje corriendo Thalyx. Hoy **QEMU es el gestor de arranque** — `make run` le
+  entrega el kernel y la imagen directamente con `-kernel` e `-initrd`. Nada de
+  lo que hay aquí sabe arrancar solo, no hay medio de arranque, y la consola es
+  un puerto serie que las PC modernas no tienen.
+- **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el criterio
+  de salida — se suspendió el mismo día, a favor de la ISO. Los pasos siguen
+  teniendo que funcionar y se comprueban en cada cambio; lo suspendido es
+  **quién los teclea**.
 - **El agente conversacional no tiene modelo.** La mitad determinista está
   construida y funciona; no hay un modelo de lenguaje detrás. La sesión dice *"I
   have no model loaded"* en vez de aparentar. La elección de modelo está

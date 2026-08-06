@@ -24,12 +24,11 @@ La Fase 1 se considera terminada cuando **una persona ajena al proyecto**, sigui
 
 **Ningún otro criterio lo sustituye.** Que todos los componentes estén implementados y con tests en verde no cierra la Fase 1.
 
-> **Suspendido el 2026-08-06 por Cesar**, y sigue escrito porque el decreto que
-> se suspende se lee, no se borra. Los seis pasos siguen siendo lo que el
-> sistema tiene que hacer y se comprueban solos; lo que se cancela es que una
-> persona ajena los ejecute ahora. Ver
-> [[#La persona ajena se cancela por ahora — decidido por Cesar el 2026-08-06]]
-> antes de tratar esta lista como el criterio vigente.
+> **Sustituido el 2026-08-06 por Cesar**, y sigue escrito porque el decreto que
+> se sustituye se lee, no se borra. **El criterio vigente es una ISO
+> independiente**, más abajo. Los seis pasos siguen siendo lo que el sistema
+> tiene que hacer y se comprueban solos en cada cambio; lo que se cancela es que
+> una persona ajena los ejecute ahora.
 
 > **El paso 1 ya tiene máquina detrás.** El 2026-08-03 la imagen arrancó en QEMU
 > con un comando. Eso **no cierra el paso**: el decreto exige que lo haga una
@@ -106,12 +105,56 @@ terminado será una ISO booteable, no comandos"*. Eso es una condición
 verificable y no la puede declarar nadie por decreto — o hay una ISO que
 arranca en hardware, o no la hay.
 
-Queda como decreto abierto en [[Tareas-Pendientes]] hasta que Cesar elija con
-qué se sustituye. **Mientras no lo elija, la Fase 1 no tiene criterio de
-salida**, y eso está dicho aquí a propósito en vez de dejar que la nota
-aparente tener uno.
+> **Resuelto el mismo día.** Cesar eligió el sustituto: una ISO independiente.
+> Ver la sección siguiente. El hueco estuvo abierto unas horas y queda escrito
+> porque el razonamiento que lo cerró es el que importa.
 
-### Y lo que la cancelación ya enseñó
+## El criterio nuevo: una ISO independiente — decretado por Cesar el 2026-08-06
+
+**Esto sustituye a la persona ajena, y cierra el hueco que su cancelación había
+abierto.** Sus palabras:
+
+> Cerrar será esto: una ISO totalmente independiente, es decir: que puedas
+> ponerla en una PC sin sistema operativo y que ahora tenga Thalyx como OS.
+> Obviamente lo haremos de alguna forma más fácil, por ejemplo una VM, pero el
+> objetivo es que tengamos la ISO y nada más, y con ella sola podamos tener
+> Thalyx corriendo.
+
+### Por qué esto sí es una definición de terminado
+
+Es la propiedad que esta nota pedía desde el principio y que la lista de
+componentes nunca tuvo: **no la puede declarar nadie.** O existe un archivo que,
+puesto en una máquina sin sistema operativo, la convierte en una máquina Thalyx,
+o no existe. No hay forma de cumplirlo parcialmente ni de argumentar que ya casi.
+
+Y es más exigente que lo que hay hoy, no menos. Hoy **QEMU es el gestor de
+arranque**: `make run` le pasa `-kernel` y `-initrd`, que es el anfitrión
+cargando el kernel en memoria porque nadie más lo haría. Nada de lo construido
+hasta ahora sabe arrancar solo.
+
+### Que se pruebe en una VM no lo debilita, si se dice qué prueba
+
+Cesar acepta ejercerlo en una máquina virtual, y eso está bien **siempre que se
+diga qué queda sin probar**, que es la regla 3:
+
+- Una VM con **firmware UEFI de verdad** prueba lo que más importa: que la ISO
+  arranca **sola**, encontrada por un firmware, sin `-kernel` ni `-initrd`. Eso
+  se puede ejercer en `verify.sh` y es la mitad del criterio.
+- Una VM **no prueba los controladores**. Sus discos son virtio y su teclado es
+  emulado. Que arranque en una PC de verdad es lo único que responde eso.
+
+Así que el criterio se cumple en dos actos, y el segundo necesita hierro. Lo que
+**no** puede pasar es que el primero se reporte como si fuera el segundo.
+
+### Lo que implica construirlo
+
+Está en [[Construccion-del-ISO]], y en resumen: sin gestor de arranque —el kernel
+con `CONFIG_EFI_STUB` **es** una aplicación UEFI, así que el medio lleva un solo
+archivo y sigue siendo el decreto—, un store que hoy nadie crea porque PID 1
+tiene prohibido fabricarlo, controladores reales, y una consola que hoy es un
+puerto serie que las PC modernas no tienen.
+
+## Y lo que la cancelación ya enseñó
 
 Que no se pudo convencer a nadie de hacerlo **es un dato**, no un contratiempo
 del calendario. [[Por-Que-Elegirian-Este-SO]] marca como la pregunta más

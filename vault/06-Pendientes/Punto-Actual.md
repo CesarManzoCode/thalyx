@@ -81,11 +81,47 @@ tags: [continuidad, punto-actual, sesiones]
 > hacer, y se siguen comprobando solos en cada cambio y en cada corrida de
 > hardware. Lo que se cancela es quién los teclea.
 >
-> **Lo que sí cambia, y hay que decidir**: era lo único que cerraba la Fase 1, y
-> era la única condición que el proyecto no podía declararse a sí mismo. Sin
-> ella, **la Fase 1 no tiene criterio de salida** hasta que Cesar elija con qué
-> se sustituye. Está anotado así a propósito, en vez de dejar que la nota
-> aparente tener uno.
+> ### Y el criterio nuevo: una ISO independiente
+>
+> Cesar eligió el sustituto el mismo día:
+>
+> > una ISO totalmente independiente, es decir: que puedas ponerla en una PC sin
+> > sistema operativo y que ahora tenga Thalyx como OS […] el objetivo es que
+> > tengamos la ISO y nada más, y con ella sola podamos tener Thalyx corriendo.
+>
+> **Es la propiedad que la persona ajena aportaba y la lista de componentes
+> nunca tuvo: no la puede declarar nadie.** O existe un archivo que convierte
+> una máquina sin sistema operativo en una máquina Thalyx, o no existe.
+>
+> Y es **más** exigente que lo de hoy, no menos. Hoy **QEMU es el gestor de
+> arranque**: `make run` pasa `-kernel` y `-initrd`. Nada de lo construido sabe
+> arrancar solo.
+>
+> Se puede ejercer en una VM, y eso está bien **si se dice qué prueba**: una VM
+> con firmware UEFI de verdad prueba que la ISO arranca **sola**, que es la
+> mitad que importa. **No prueba los controladores** — sus discos son virtio y
+> su teclado es emulado. Esa mitad necesita hierro.
+>
+> Lo que cuesta, en [[Construccion-del-ISO]]. Los cuatro puntos, por riesgo:
+>
+> 1. **El store, que hoy nadie crea.** PID 1 monta y **tiene prohibido
+>    fabricar**, con buena razón: una máquina que se inventa un store arranca
+>    perfecta el día que el disco no estaba. En una PC vacía no hay store, y
+>    `mkfs.btrfs` no puede ir en la imagen. Es el decreto que hay que revisar, y
+>    **«es la primera vez» y «no encontré el tuyo» tienen que seguir siendo
+>    distinguibles**.
+> 2. **Los controladores.** `allnoconfig` más virtio y un serie. Falta UEFI,
+>    framebuffer, teclado USB y almacenamiento real. Van tres opciones de kernel
+>    encontradas arrancando y hay una regla que dice que ninguna comprobación de
+>    construcción encuentra la siguiente.
+> 3. **La consola es `ttyS0`.** Una PC moderna no tiene puerto serie: arrancaría
+>    bien y no se vería nada.
+> 4. **El gestor de arranque, que es la pregunta de filosofía.** GRUB sería un
+>    segundo programa y [[Filosofia-Fundacional]] no lo permite — la misma forma
+>    que el hueco de `bpftool`. La salida que no pide excepción: un kernel con
+>    `CONFIG_EFI_STUB` **es** una aplicación UEFI, así que el firmware lo carga
+>    directo y el medio lleva **un archivo**. Es `count` extendido al medio de
+>    arranque. **Plan, no propiedad**: no se ha construido.
 >
 > Y que nadie aceptara hacerlo **es un dato y no un contratiempo**: la primera
 > medición de [[Por-Que-Elegirian-Este-SO]] no fue una opinión sobre el sistema,
@@ -881,23 +917,30 @@ Detalle por crate en [[Estado-de-Implementacion]].
 
 ## Lo que sigue, en orden
 
-### 0. Decidir con qué se cierra la Fase 1
+### 0. La ISO independiente — es lo que cierra la Fase 1
 
-**Es lo único que bloquea el orden de todo lo demás, y es de Cesar.**
+**Decretado por Cesar el 2026-08-06.** Una ISO que puesta en una PC sin sistema
+operativo la deje corriendo Thalyx. Se ejercerá primero en una VM con firmware
+UEFI de verdad, y eso prueba que arranca sola; los controladores necesitan
+hierro y eso se dice aparte en vez de confundirse.
 
-Lo que cerraba la fase era que una persona ajena hiciera los seis pasos, y él lo
-canceló el 2026-08-06. La decisión está registrada entera en
-[[Criterio-de-Salida-Fase-1]] y no se revisa aquí. Lo que queda abierto es su
-consecuencia: esa persona era **la única condición que el proyecto no podía
-declararse a sí mismo**, y sin ella la Fase 1 vuelve a *"un prototipo funcional
-que demuestre el flujo completo"*, que se cumple siempre y nunca.
+El diseño y lo que cuesta están en [[Construccion-del-ISO]]. El orden de trabajo,
+por riesgo descendente:
 
-Su propio argumento apunta al sustituto —*"cuando nuestro producto esté
-terminado será una ISO booteable, no comandos"*— y eso sí es verificable sin
-que nadie de fuera opine: o arranca en hardware real desde un USB, o no.
+1. **Arrancar sin gestor de arranque.** `CONFIG_EFI_STUB` + el initramfs dentro
+   del kernel (`CONFIG_INITRAMFS_SOURCE`) + `CONFIG_CMDLINE`. Si funciona, el
+   medio lleva un archivo y el decreto de un solo programa se cumple más fuerte
+   que hoy. Es lo primero porque **si esto no funciona, todo lo demás cambia de
+   forma**: haría falta un gestor de arranque, que es un segundo programa, y eso
+   es una decisión de Cesar y no un detalle de construcción.
+2. **La consola sobre el framebuffer y el teclado USB.** Sin esto la máquina
+   arranca y no se ve nada, que es el fallo que se lee como «no funciona».
+3. **El store en el primer arranque.** Requiere revisar el decreto de que PID 1
+   nunca lo fabrica, sin perder la propiedad que ese decreto protege.
+4. **Almacenamiento real** (NVMe, AHCI) y el arranque en una PC de verdad.
 
-**Hasta que lo elija, nada más de esta lista tiene un orden defendible**, porque
-el orden sale del criterio.
+**Los cuatro necesitan la máquina de Cesar**, y los tres primeros se pueden
+ejercer en QEMU con OVMF antes de tocar hierro.
 
 ### 1. El agente — su mitad determinista ya está construida
 

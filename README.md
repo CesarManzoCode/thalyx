@@ -318,14 +318,16 @@ boot.
 
 ### Not yet true, stated plainly
 
-- **Nobody outside the project has done the six steps.** Until 2026-08-06 that
-  was what ended Phase 1. It is suspended: Thalyx today is terminal commands,
-  the finished product is a bootable image, and there is no sense asking a
-  stranger for half an hour of terminal to test something that is not yet a
-  thing to test. The steps themselves still run on every change and on every
-  hardware run — what is suspended is *who types them*, and what now ends
-  Phase 1 is undecided. If you are reading this and doing them anyway, that
-  still counts.
+- **There is no ISO, and that is what now ends Phase 1.** The criterion, set on
+  2026-08-06: a single file that, put into a PC with no operating system,
+  leaves that machine running Thalyx. Today **QEMU is the bootloader** —
+  `make run` hands the kernel and the image straight to it with `-kernel` and
+  `-initrd`. Nothing here yet knows how to start on its own, there is no boot
+  medium, and the console is a serial port that modern PCs do not have.
+- **Nobody outside the project has done the six steps**, and that is no longer
+  the exit criterion — it was suspended the same day, in favour of the ISO. The
+  steps still have to work and are checked on every change; what is suspended
+  is *who types them*.
 - **The conversational agent has no model.** The deterministic half is built and
   works; there is no LLM behind it. The session says *"I have no model loaded"*
   rather than pretending. Model selection is decreed

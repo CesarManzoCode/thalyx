@@ -156,9 +156,80 @@ se decida en vez de aparecer:
 
 ## Cómo se arranca
 
-QEMU, mientras dure la Fase 1. El paso 1 del [[Criterio-de-Salida-Fase-1]] es
-arrancar la imagen; el soporte de hardware real llega cuando el sistema
-justifique correr fuera de una máquina virtual.
+**Hoy: QEMU, y QEMU es el gestor de arranque.** El `run` del `Makefile` pasa
+`-kernel bzImage -initrd initramfs.cpio -append ...`, que es el firmware
+haciéndole a la máquina el favor de cargar el kernel y su initramfs en memoria.
+No hay medio de arranque, no hay tabla de particiones, no hay nada que un BIOS
+o un UEFI pudiera encontrar por su cuenta.
+
+**Y desde el 2026-08-06 eso ya no alcanza**, porque cerrar la Fase 1 es tener
+una ISO que arranque sola. Ver abajo.
+
+## La ISO independiente — decretado por Cesar el 2026-08-06
+
+**Es el criterio de salida de la Fase 1.** Ver [[Criterio-de-Salida-Fase-1]] para
+el decreto; aquí está lo que implica construirlo.
+
+> Una ISO totalmente independiente: que puedas ponerla en una PC sin sistema
+> operativo y que ahora tenga Thalyx como OS. Obviamente lo haremos de alguna
+> forma más fácil, por ejemplo una VM, pero el objetivo es que tengamos la ISO
+> y nada más, y con ella sola podamos tener Thalyx corriendo.
+
+### El gestor de arranque, que es la pregunta de filosofía
+
+Un medio arrancable necesita que el firmware encuentre algo y lo cargue. La
+respuesta obvia —GRUB, syslinux, systemd-boot— es **un segundo programa**, y
+[[Filosofia-Fundacional]] no lo permite. Sería exactamente la forma del hueco de
+`bpftool`: una herramienta ajena metida en la imagen porque hacía falta.
+
+**La respuesta que no rompe el decreto es que no haya gestor de arranque.** Un
+kernel de Linux compilado con `CONFIG_EFI_STUB` **es** una aplicación UEFI
+válida: el firmware puede cargar el `bzImage` directamente como
+`\EFI\BOOT\BOOTX64.EFI`, sin nada en medio. Con `CONFIG_INITRAMFS_SOURCE` el
+initramfs va **dentro** del kernel, y con `CONFIG_CMDLINE` la línea de comandos
+también.
+
+Si eso funciona, el medio lleva **un archivo**, y ese archivo es el kernel con
+Thalyx adentro. Es `make -C image count` extendido al medio de arranque, y
+resuelve el decreto en la dirección fuerte en vez de pedirle una excepción.
+
+**No se ha construido ni ejercido.** Es un plan, no una propiedad, y esta nota
+lo dice para que nadie lo cite como si estuviera hecho.
+
+### Lo que cuesta de verdad, en orden de riesgo
+
+1. **El store, que hoy nadie crea.** `store_disk.rs` decreta que PID 1 **monta y
+   nunca fabrica**, con una razón buena: una máquina que se inventa un store
+   cuando no encuentra el suyo arranca perfecta el día que el disco no estaba, y
+   el humano se entera al notar que todo lo que instaló desapareció. En una PC
+   sin sistema operativo **no hay store**, y `mkfs.btrfs` no puede ir en la
+   imagen. Alguien tiene que crearlo en el primer arranque, y **«lo creo porque
+   es la primera vez» y «lo creo porque no encontré el tuyo» tienen que seguir
+   siendo distinguibles**, que es lo que el decreto actual protege.
+2. **Los controladores.** `thalyx.config` sale de `allnoconfig` más lo que QEMU
+   necesita: virtio y un puerto serie. Una PC de verdad necesita UEFI, consola
+   sobre el framebuffer, teclado USB (xHCI y HID) y almacenamiento real (NVMe,
+   AHCI). **Cada uno es una opción de Kconfig**, y ya hay tres opciones
+   encontradas arrancando y una regla que dice que ninguna comprobación de
+   construcción encuentra la siguiente. Ésta es la parte que la VM no prueba.
+3. **La consola.** Hoy es `console=ttyS0`. Una PC moderna no tiene puerto serie:
+   arrancaría bien y **no se vería nada**, que es el fallo que se lee como «no
+   funciona» siendo «no puedes mirar».
+4. **BIOS o sólo UEFI.** Arrancar por BIOS heredado exige código de arranque en
+   el MBR, que es un gestor de arranque otra vez. Sólo-UEFI evita el problema
+   entero y deja fuera máquinas de antes de ~2012.
+
+### Qué prueba la VM y qué no
+
+Vale la pena separarlo, porque la forma fácil de probarlo mide menos de lo que
+parece:
+
+- **La VM con firmware UEFI de verdad (OVMF) prueba lo que más importa**: que la
+  ISO arranca **sola**, sin `-kernel` ni `-initrd`, encontrada por un firmware.
+  Eso es la mitad del criterio y se puede ejercer en `verify.sh`.
+- **La VM no prueba los controladores.** Los discos son virtio y el teclado es
+  emulado. Un arranque en hierro real es lo único que responde eso, y es el
+  único punto donde este criterio necesita una máquina física.
 
 ## Revisiones
 
