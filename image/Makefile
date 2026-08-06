@@ -35,6 +35,13 @@
 #
 # `boot` is what that stage runs, and it builds nothing: see the note above it.
 #
+# **`esp` and `run-uefi` have never run, anywhere.** They are the first half of
+# the Phase 1 exit criterion — a medium a firmware can boot with no bootloader —
+# and this container has no QEMU, no UEFI firmware and no kernel to build. The
+# kernel options they need (EFI_STUB, the built-in command line, the image built
+# into the kernel) are equally unexercised. Every previous boot of this image
+# found a kernel option no check here could see; expect this one to find more.
+#
 # Stated here rather than in a footnote because the project's own rules say not
 # to stack unverified work and stay quiet about it.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +125,8 @@ STOREDEV  := /dev/vda
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor hook-check boot pin-kernel
+        store store-stage greeter lsm doctor hook-check boot pin-kernel \
+        esp run-uefi initramfs-check
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -419,14 +427,45 @@ $(KSOURCE): $(KTARBALL)
 # `allnoconfig` starts from nothing and turns on only what thalyx.config names,
 # which is the opposite of taking a distro kernel and switching things off. What
 # is in this kernel is what somebody decided to put there.
-$(BZIMAGE): $(KSOURCE) thalyx.config | $(BUILD)
+$(BZIMAGE): $(KSOURCE) thalyx.config $(INITRAMFS) | $(BUILD)
 	cp thalyx.config $(KSOURCE)/.config-fragment
+	@# The initramfs goes *inside* the kernel, so the boot medium carries one
+	@# file. The path is absolute and belongs to whoever is building, so it
+	@# cannot live in thalyx.config — it is appended here and checked by its
+	@# own rule below, because a line nobody checks is a line olddefconfig can
+	@# drop in silence. That has already happened nine times in this file.
+	echo 'CONFIG_INITRAMFS_SOURCE="$(INITRAMFS)"' >> $(KSOURCE)/.config-fragment
 	$(MAKE) -C $(KSOURCE) allnoconfig
 	cat $(KSOURCE)/.config-fragment >> $(KSOURCE)/.config
 	$(MAKE) -C $(KSOURCE) olddefconfig
 	@$(MAKE) --no-print-directory config-check
+	@$(MAKE) --no-print-directory initramfs-check
 	$(MAKE) -C $(KSOURCE) -j$$(nproc) bzImage
 	cp $(KSOURCE)/arch/x86/boot/bzImage $@
+
+# Did the image actually end up inside the kernel?
+#
+# Its own rule and not a line in thalyx.config, because the value is a path that
+# differs per machine and `config-check` compares lines verbatim. Left
+# unchecked, this is the failure this file has taken nine times: the option is
+# dropped without a word, the kernel builds and boots, and the only symptom is
+# `No working init found` — after the medium has been written and carried to
+# another machine.
+initramfs-check:
+	@grep -qxF 'CONFIG_INITRAMFS_SOURCE="$(INITRAMFS)"' $(KSOURCE)/.config || { \
+	    echo; \
+	    echo "  the image did not make it into the kernel's .config."; \
+	    echo; \
+	    echo "  Booting from a medium would then find a kernel with no root"; \
+	    echo "  filesystem in it and nothing to load one from: 'No working"; \
+	    echo "  init found', with nothing on screen to say why."; \
+	    echo; \
+	    echo "  asked for: CONFIG_INITRAMFS_SOURCE=\"$(INITRAMFS)\""; \
+	    echo "  came out:  $$(grep '^CONFIG_INITRAMFS_SOURCE' $(KSOURCE)/.config || echo '(absent)')"; \
+	    echo; \
+	    exit 1; \
+	}
+	@echo "  image: the root filesystem is inside the kernel, not beside it"
 
 # Asking for an option is not having it.
 #
@@ -903,6 +942,15 @@ boot:
 	    echo "  A sudo make store from before 2026-08-03 left it root's."; \
 	    exit 1; \
 	fi
+	@# Still `-kernel` and `-initrd`, deliberately, now that the image is also
+	@# built into the kernel. This is the target `dev/verify.sh` stage 16 runs,
+	@# and it is the regression net under everything else; switching it to the
+	@# firmware path would mean the net and the thing being tested are the same
+	@# unproven change. The external initrd unpacks over the built-in one with
+	@# identical contents.
+	@#
+	@# It moves to `run-uefi` once that has booted on a real machine, and not
+	@# before.
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
 	    -smp 2 \
@@ -912,6 +960,88 @@ boot:
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
 	    -append "console=ttyS0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+
+# ──────────────────────────────────────────────── booting with no bootloader
+
+# The EFI system partition, which is the whole boot medium.
+#
+# One file, at the one path a UEFI firmware looks for with nothing configured:
+# \EFI\BOOT\BOOTX64.EFI, the removable-media fallback. And that file is the
+# kernel — built with EFI_STUB it is a valid UEFI application, and with the
+# image built into it there is nothing else to load.
+#
+# So the count that guards the decree extends to the medium: one file on it, and
+# it is Thalyx. There is no GRUB here to be a second program.
+ESP := $(BUILD)/esp
+
+$(ESP)/EFI/BOOT/BOOTX64.EFI: $(BZIMAGE)
+	mkdir -p $(dir $@)
+	cp $(BZIMAGE) $@
+
+esp: $(ESP)/EFI/BOOT/BOOTX64.EFI
+	@echo
+	@echo "  boot medium: $(ESP)"
+	@find $(ESP) -type f | sed "s|^$(ESP)|   |"
+	@echo
+	@echo "  $$(find $(ESP) -type f | wc -l) file(s). A UEFI firmware needs no"
+	@echo "  bootloader to start this: the kernel is the application."
+	@echo
+	@echo "  make -C image run-uefi"
+
+# Where the firmware lives, which is the one thing that differs per distribution.
+#
+# Searched rather than assumed: Fedora puts edk2 under /usr/share/edk2/ovmf and
+# Debian under /usr/share/OVMF, and hardcoding either gives the other a failure
+# that reads as "UEFI does not work here".
+OVMF_CODE = $$(for f in \
+	    /usr/share/edk2/ovmf/OVMF_CODE.fd \
+	    /usr/share/OVMF/OVMF_CODE_4M.fd \
+	    /usr/share/OVMF/OVMF_CODE.fd \
+	    /usr/share/qemu/ovmf-x86_64-code.bin; do \
+	    test -r "$$f" && echo "$$f" && break; done)
+OVMF_VARS = $$(for f in \
+	    /usr/share/edk2/ovmf/OVMF_VARS.fd \
+	    /usr/share/OVMF/OVMF_VARS_4M.fd \
+	    /usr/share/OVMF/OVMF_VARS.fd \
+	    /usr/share/qemu/ovmf-x86_64-vars.bin; do \
+	    test -r "$$f" && echo "$$f" && break; done)
+
+# Boot the way a machine with no operating system would.
+#
+# No `-kernel`, no `-initrd`, no `-append`. The firmware is handed a disk and
+# has to find something on it and start it, which is the entire claim this
+# target exists to test — and the reason `run` above is not enough: `-kernel`
+# is QEMU being the bootloader, so it proves nothing about booting.
+#
+# A firmware that finds nothing sits at a UEFI shell or reboots, and either way
+# the machine never speaks. That is the failure to expect if EFI_STUB did not
+# take.
+run-uefi: esp
+	@test -n "$(OVMF_CODE)" || { \
+	    echo; \
+	    echo "  no UEFI firmware for QEMU on this machine, so there is"; \
+	    echo "  nothing to boot the medium *with*. This is not Thalyx"; \
+	    echo "  failing — nothing was tested at all."; \
+	    echo; \
+	    echo "      Fedora:  sudo dnf install edk2-ovmf"; \
+	    echo "      Debian:  sudo apt install ovmf"; \
+	    echo; \
+	    exit 1; \
+	}
+	@# The firmware's variable store is written during boot, so each run gets
+	@# its own copy. Pointing QEMU at the system one would have it writing to
+	@# a file the package manager owns, and the second run would start from
+	@# whatever the first one left.
+	cp $(OVMF_VARS) $(BUILD)/ovmf-vars.fd
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp 2 \
+	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
+	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars.fd \
+	    -drive format=raw,file=fat:rw:$(ESP) \
+	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
+	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
+	    -nographic
 
 clean:
 	rm -rf $(BUILD)

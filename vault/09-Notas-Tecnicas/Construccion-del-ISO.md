@@ -175,6 +175,22 @@ el decreto; aquí está lo que implica construirlo.
 > forma más fácil, por ejemplo una VM, pero el objetivo es que tengamos la ISO
 > y nada más, y con ella sola podamos tener Thalyx corriendo.
 
+### Las tres decisiones de Cesar, el 2026-08-06
+
+Se le preguntaron las tres que cambian lo que se construye, y las tres están
+decididas:
+
+| Pregunta | Decisión |
+|---|---|
+| ¿La ISO se queda puesta o la máquina arranca sin ella? | **Arranca sin ella.** La ISO instala Thalyx en el disco y se quita. La PC *tiene* Thalyx, no lo pide prestado. Implica un instalador. |
+| ¿Qué firmware? | **Sólo UEFI.** Deja fuera las PC anteriores a ~2012 y a cambio **no hay gestor de arranque**, que es lo que salva el decreto. |
+| ¿Quién crea el store? | **Thalyx escribe el Btrfs él mismo.** El mismo patrón que el cpio, el cargador de BPF y la terminal: ochenta líneas propias antes que una cuarta herramienta ajena. |
+
+La segunda y la tercera se refuerzan: sólo-UEFI quita el gestor de arranque, y
+un Btrfs escrito por Thalyx quita `mkfs.btrfs`. **La ISO terminada no contiene
+ningún programa que no sea Thalyx**, que es el decreto fundacional sostenido en
+el sitio donde era más fácil pedirle una excepción.
+
 ### El gestor de arranque, que es la pregunta de filosofía
 
 Un medio arrancable necesita que el firmware encuentre algo y lo cargue. La
@@ -218,6 +234,49 @@ lo dice para que nadie lo cite como si estuviera hecho.
 4. **BIOS o sólo UEFI.** Arrancar por BIOS heredado exige código de arranque en
    el MBR, que es un gestor de arranque otra vez. Sólo-UEFI evita el problema
    entero y deja fuera máquinas de antes de ~2012.
+
+### Lo construido el 2026-08-06, y sin ejercer
+
+**El paso 1: arrancar sin gestor de arranque.** Va primero porque **si falla,
+todo lo demás cambia de forma** — haría falta un gestor, que es un segundo
+programa, y eso es decisión de Cesar y no un detalle de construcción.
+
+- `thalyx.config` pide `EFI`, `EFI_STUB`, `RELOCATABLE` y `ACPI` (de la que
+  depende `EFI` en x86), más una línea de comandos compilada dentro.
+- El initramfs va **adentro** del kernel (`CONFIG_INITRAMFS_SOURCE`), así que el
+  medio lleva un archivo. La ruta es absoluta y no puede vivir en
+  `thalyx.config` —`config-check` compara líneas literales— así que el
+  `Makefile` la inyecta al configurar y la comprueba con `initramfs-check`, que
+  es su propia regla porque **una línea que nadie comprueba es una línea que
+  `olddefconfig` tira en silencio**, y eso ya pasó nueve veces en este archivo.
+- `make -C image esp` arma `EFI/BOOT/BOOTX64.EFI`, que es la ruta de respaldo
+  que un firmware UEFI busca **sin nada configurado** — que es exactamente lo
+  que es una PC sin sistema operativo.
+- `make -C image run-uefi` arranca con OVMF y **sin `-kernel`, `-initrd` ni
+  `-append`**. Hay una prueba que exige esa ausencia, y es la que más vale de
+  las tres: `-kernel` es QEMU haciendo de gestor de arranque, el medio no se lee
+  nunca, y el arranque sale precioso sin demostrar nada. Es además el arreglo
+  que uno intenta cuando el firmware no arranca.
+
+**Un defecto atrapado antes de llegar a la máquina**, y vale registrarlo:
+`CONFIG_CMDLINE_OVERRIDE` es la opción que uno pone aquí —hace que la línea de
+comandos sea la del archivo y nada la cambie— y **habría roto la etapa 16**. El
+`boot` de hoy pasa `-append ... thalyx.store=/dev/vda`, y `OVERRIDE` descarta la
+línea del gestor de arranque entera: la máquina habría arrancado sin store, cada
+comprobación del store habría fallado, y la causa habría estado en una opción de
+kernel a tres archivos de la falla. Sin `OVERRIDE` las dos líneas se concatenan
+y **el mismo kernel arranca por los dos caminos**, que es la propiedad que
+importa: la máquina que se prueba tiene que ser la que se entrega.
+
+Por lo mismo, `boot` **sigue** pasando `-kernel` e `-initrd`: es la red de
+regresión de todo lo demás, y cambiarla ahora dejaría la red y lo que se está
+probando siendo el mismo cambio sin ejercer. Se mueve a `run-uefi` cuando
+`run-uefi` haya arrancado, no antes.
+
+**Nada de esto se ha corrido.** Este contenedor no tiene QEMU, ni firmware UEFI,
+ni con qué compilar un kernel. Cada arranque anterior de esta imagen encontró
+una opción de kernel que ninguna comprobación de aquí podía ver — van tres — y
+lo esperable es que éste encuentre más.
 
 ### Qué prueba la VM y qué no
 

@@ -81,6 +81,39 @@ tags: [continuidad, punto-actual, sesiones]
 > hacer, y se siguen comprobando solos en cada cambio y en cada corrida de
 > hardware. Lo que se cancela es quién los teclea.
 >
+> ### Lo que hay que correr ahora, y es tuyo
+>
+> ```
+> git pull && make -C image && make -C image run-uefi
+> ```
+>
+> **Arranca sin `-kernel`, sin `-initrd` y sin `-append`**: el firmware recibe un
+> disco y tiene que encontrar algo en él y arrancarlo. Es lo primero del criterio
+> nuevo y está construido y **sin ejercer** — aquí no hay QEMU, ni firmware UEFI,
+> ni con qué compilar un kernel.
+>
+> Necesita OVMF: `sudo dnf install edk2-ovmf`. Si falta, `run-uefi` se niega y lo
+> dice como lo que es —no se probó nada— en vez de reportar que Thalyx falló.
+>
+> Qué esperar, en orden:
+>
+> 1. **`make -C image` falla en `config-check` o `initramfs-check`.** Alguna de
+>    las opciones nuevas no sobrevivió a `olddefconfig`. Es el fallo bueno:
+>    nombra la línea exacta y no llega a arrancar nada.
+> 2. **El firmware no encuentra nada** y se queda en una shell UEFI o reinicia.
+>    Entonces `EFI_STUB` no tomó, y eso es lo que hay que saber antes que nada.
+> 3. **Arranca y no se ve nada.** La consola es `console=ttyS0` y con `-nographic`
+>    QEMU la trae al terminal, así que debería verse. Si arranca en hierro real
+>    y no se ve nada, es que una PC no tiene puerto serie — ése es el paso 2.
+> 4. **Arranca y dice que no le nombraron store.** Eso es **correcto** y es el
+>    paso 3: `thalyx.store=` nombra un dispositivo, la línea compilada es una
+>    sola, y el disco es `vda` en QEMU y `nvme0n1` en una PC. Sale honesto en vez
+>    de adivinar, que es lo que `store_disk.rs` ya decreta.
+>
+> Y **no toqué `make run`**: sigue pasando `-kernel` e `-initrd`, porque es la
+> red de regresión de la etapa 16 y cambiarla ahora dejaría la red y lo que se
+> prueba siendo el mismo cambio sin ejercer.
+>
 > ### Y el criterio nuevo: una ISO independiente
 >
 > Cesar eligió el sustituto el mismo día:
@@ -927,20 +960,25 @@ hierro y eso se dice aparte en vez de confundirse.
 El diseño y lo que cuesta están en [[Construccion-del-ISO]]. El orden de trabajo,
 por riesgo descendente:
 
-1. **Arrancar sin gestor de arranque.** `CONFIG_EFI_STUB` + el initramfs dentro
-   del kernel (`CONFIG_INITRAMFS_SOURCE`) + `CONFIG_CMDLINE`. Si funciona, el
-   medio lleva un archivo y el decreto de un solo programa se cumple más fuerte
-   que hoy. Es lo primero porque **si esto no funciona, todo lo demás cambia de
-   forma**: haría falta un gestor de arranque, que es un segundo programa, y eso
-   es una decisión de Cesar y no un detalle de construcción.
+1. ~~**Arrancar sin gestor de arranque.**~~ **Construido el 2026-08-06 y sin
+   ejercer.** `CONFIG_EFI_STUB` + el initramfs dentro del kernel + la línea de
+   comandos compilada, `make -C image esp` y `make -C image run-uefi`. Corre
+   esto antes que nada; ver el bloque de arriba.
 2. **La consola sobre el framebuffer y el teclado USB.** Sin esto la máquina
-   arranca y no se ve nada, que es el fallo que se lee como «no funciona».
-3. **El store en el primer arranque.** Requiere revisar el decreto de que PID 1
-   nunca lo fabrica, sin perder la propiedad que ese decreto protege.
-4. **Almacenamiento real** (NVMe, AHCI) y el arranque en una PC de verdad.
+   arranca en hierro real y no se ve nada, que es el fallo que se lee como «no
+   funciona» siendo «no puedes mirar».
+3. **El store, que Thalyx va a escribir él mismo.** Decidido por Cesar: Thalyx
+   escribe el Btrfs, como escribe su cpio y carga su BPF. Es lo más caro de los
+   cuatro. Requiere además revisar el decreto de que PID 1 nunca lo fabrica —
+   **«es la primera vez» y «no encontré el tuyo» tienen que seguir siendo dos
+   hechos**, que es lo que ese decreto protege.
+4. **El instalador**, más almacenamiento real (NVMe, AHCI) y el arranque en una
+   PC de verdad. Cesar decidió que la máquina arranca **sin** la ISO después, así
+   que hay que escribir Thalyx en el disco de la máquina.
 
-**Los cuatro necesitan la máquina de Cesar**, y los tres primeros se pueden
-ejercer en QEMU con OVMF antes de tocar hierro.
+Los cuatro necesitan tu máquina; los tres primeros se ejercen en QEMU con OVMF
+antes de tocar hierro. **El cuarto es el único que exige una PC física**, y es
+también el único donde una VM no puede sustituirla.
 
 ### 1. El agente — su mitad determinista ya está construida
 

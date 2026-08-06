@@ -405,6 +405,97 @@ mod tests {
     }
 
     #[test]
+    fn the_uefi_boot_is_not_handed_the_kernel_it_is_supposed_to_go_and_find() {
+        // The whole claim of `run-uefi` is that a firmware, given a disk and
+        // nothing else, finds something on it and starts it. `-kernel` is QEMU
+        // being the bootloader — it loads the image into memory itself and the
+        // medium is never read. A `run-uefi` carrying `-kernel` boots
+        // beautifully and establishes nothing at all, and it looks identical to
+        // one that works.
+        //
+        // That is the shape this project keeps meeting: a check that passes
+        // because the thing it was measuring never had to happen. It is worth a
+        // test because the repair somebody reaches for when the firmware does
+        // not boot is precisely to add `-kernel` back.
+        let text = image_makefile();
+        let recipe = recipe_of(&text, "run-uefi:").join("\n");
+
+        for handed in ["-kernel", "-initrd", "-append"] {
+            assert!(
+                !recipe.contains(handed),
+                "`run-uefi` passes {handed}, so QEMU is the bootloader again and \
+                 the medium is never read:\n{recipe}"
+            );
+        }
+        assert!(
+            recipe.contains("pflash") && recipe.contains("OVMF_CODE"),
+            "`run-uefi` boots without UEFI firmware, so there is nothing that \
+             could look for a boot medium:\n{recipe}"
+        );
+    }
+
+    #[test]
+    fn the_boot_medium_carries_one_file_and_the_firmware_can_find_it() {
+        // `Filosofia-Fundacional.md` allows one program, and the decree is
+        // countable rather than quotable. Extending it to the boot medium is
+        // the whole reason there is no bootloader here: GRUB would be a second
+        // program, in the same shape as the `bpftool` hole.
+        //
+        // \EFI\BOOT\BOOTX64.EFI is not a name somebody picked. It is the
+        // removable-media fallback a UEFI firmware looks for when nothing is
+        // configured, which is what a PC with no operating system is.
+        let text = image_makefile();
+
+        assert!(
+            text.contains("$(ESP)/EFI/BOOT/BOOTX64.EFI"),
+            "nothing is placed at the path a firmware with no configuration \
+             looks for, so the medium would boot on the machine that was told \
+             about it and on no other"
+        );
+
+        let recipe = recipe_of(&text, "$(ESP)/EFI/BOOT/BOOTX64.EFI:").join("\n");
+        assert!(
+            recipe.contains("$(BZIMAGE)"),
+            "the file the firmware starts is not the kernel, which means \
+             something else is doing the booting:\n{recipe}"
+        );
+    }
+
+    #[test]
+    fn the_kernel_refuses_to_build_if_the_image_did_not_go_inside_it() {
+        // CONFIG_INITRAMFS_SOURCE cannot live in thalyx.config, because its
+        // value is an absolute path belonging to whoever is building, and
+        // `config-check` compares lines verbatim. So it is appended at
+        // configure time — which puts it in exactly the category this file has
+        // been burned by nine times: an option asked for, dropped without a
+        // word by olddefconfig, and noticed much later.
+        //
+        // Later here means after the medium has been written: the kernel builds,
+        // the firmware starts it, and it says `No working init found` with no
+        // root filesystem and nothing to load one from.
+        let text = image_makefile();
+        let recipe = recipe_of(&text, "$(BZIMAGE):").join("\n");
+
+        assert!(
+            recipe.contains("CONFIG_INITRAMFS_SOURCE"),
+            "the image is not built into the kernel, so the boot medium would \
+             need a second file on it:\n{recipe}"
+        );
+        assert!(
+            recipe.contains("initramfs-check"),
+            "nothing verifies that CONFIG_INITRAMFS_SOURCE survived \
+             olddefconfig:\n{recipe}"
+        );
+
+        let check = recipe_of(&text, "initramfs-check:").join("\n");
+        assert!(
+            check.contains("exit 1"),
+            "initramfs-check warns instead of refusing, and a warning during a \
+             kernel build is a warning nobody reads:\n{check}"
+        );
+    }
+
+    #[test]
     fn the_pinning_procedure_names_the_key_that_actually_signed_the_list() {
         // Printed instructions are code with an output, and this output was
         // wrong for two days: `pin-kernel` said to fetch the release
