@@ -137,6 +137,26 @@ Si dice algo distinto de `1 program(s) in the image`, el decreto está roto y el
 número lo dice antes de que nadie tenga que discutirlo. Lo cuenta **parseando el
 archivo**, no reportando lo que el constructor creía haber metido.
 
+Desde el 2026-08-06 cuenta **tres clases** y no dos, porque el archivo lleva
+`/dev/console`:
+
+```
+13 directories
+/dev/console  (character device 5:1, no contents)
+/init  (26936 bytes)
+
+1 program(s) in the image.
+```
+
+Un nodo de dispositivo no es un programa —no lleva código, es una puerta que el
+kernel ya tiene— y clasificarlo con los programas habría hecho que la cuenta
+dijera **2**: el decreto roto por una puerta. Pero **excluirlo en silencio es la
+respuesta equivocada**, porque lo que no se cuenta es justo por donde entraría
+un segundo programa sin que el número se moviera. Se cuenta como su propia
+clase, se imprime con sus números —un nodo que apunta al driver equivocado falla
+igual que uno ausente— y una prueba exige que las tres clases sumen todas las
+entradas del archivo.
+
 ## Qué queda por decidir, y no se hereda
 
 La versión anterior heredó de Alpine cosas que nadie eligió — el login en tty1
@@ -235,7 +255,39 @@ lo dice para que nadie lo cite como si estuviera hecho.
    el MBR, que es un gestor de arranque otra vez. Sólo-UEFI evita el problema
    entero y deja fuera máquinas de antes de ~2012.
 
-### Lo construido el 2026-08-06, y sin ejercer
+### El paso 1, cerrado el 2026-08-06
+
+**Un firmware UEFI arrancó Thalyx sin gestor de arranque.** OVMF encontró
+`\EFI\BOOT\BOOTX64.EFI`, lo ejecutó, el kernel desempaquetó el initramfs que
+lleva adentro y corrió `/init`. El medio llevaba **un archivo**.
+
+Y no arrancó a medias: hizo todo lo que la máquina sabe hacer.
+
+```
+  ok  root         moved off the initramfs
+  ok  mounted /proc … /sys/fs/cgroup       (los siete)
+  ok  sandbox root the root is attached
+  ok  controllers  memory, pids handed down
+  no  store        no thalyx.store= on the kernel command line
+  ok  thalyx-lsm   2 hook(s) live, 3 map(s) pinned under /sys/fs/bpf/thalyx
+```
+
+**Lo que ninguna corrida anterior había establecido**: que el `switch_root`, la
+delegación de controladores y sobre todo **el enganche del LSM** funcionan
+cuando a la máquina la arranca un firmware y no `-kernel`. Eran tres cosas que
+sólo se habían visto con QEMU haciendo de gestor de arranque.
+
+El `no store` es correcto y previsto — ver abajo. Y **esto fue OVMF dentro de
+QEMU**: discos virtio, teclado emulado, consola serie. El hierro sigue sin
+tocarse, y ahí `console=ttyS0` deja de servir.
+
+Costó un arranque, y lo que lo tumbó está en [[Estrategia-de-Pruebas]]: el
+archivo tenía un `/dev` vacío, porque hasta entonces `/dev/console` lo ponía el
+initramfs predeterminado del kernel, encima del cual se desempaqueta un
+`-initrd` externo. Tercera vez que quitar una capa de abajo destapa un trabajo
+que el diseño nunca hizo.
+
+### Lo construido el 2026-08-06
 
 **El paso 1: arrancar sin gestor de arranque.** Va primero porque **si falla,
 todo lo demás cambia de forma** — haría falta un gestor, que es un segundo
@@ -273,10 +325,9 @@ regresión de todo lo demás, y cambiarla ahora dejaría la red y lo que se est�
 probando siendo el mismo cambio sin ejercer. Se mueve a `run-uefi` cuando
 `run-uefi` haya arrancado, no antes.
 
-**Nada de esto se ha corrido.** Este contenedor no tiene QEMU, ni firmware UEFI,
-ni con qué compilar un kernel. Cada arranque anterior de esta imagen encontró
-una opción de kernel que ninguna comprobación de aquí podía ver — van tres — y
-lo esperable es que éste encuentre más.
+**Corrido el 2026-08-06 y en verde**, al segundo intento. El primero murió
+antes de su primera línea por el `/dev/console` que faltaba; ninguna opción del
+kernel resultó estar mal, que era lo que se esperaba que fallara.
 
 ### Qué prueba la VM y qué no
 

@@ -326,12 +326,14 @@ etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
 ### Lo que todavía no es cierto, dicho sin rodeos
 
-- **No hay ISO, y eso es lo que ahora cierra la Fase 1.** El criterio, fijado el
-  2026-08-06: un solo archivo que, puesto en una PC sin sistema operativo, la
-  deje corriendo Thalyx. Hoy **QEMU es el gestor de arranque** — `make run` le
-  entrega el kernel y la imagen directamente con `-kernel` e `-initrd`. Nada de
-  lo que hay aquí sabe arrancar solo, no hay medio de arranque, y la consola es
-  un puerto serie que las PC modernas no tienen.
+- **No hay instalador, y eso es lo que ahora cierra la Fase 1.** El criterio,
+  fijado el 2026-08-06: un solo archivo que, puesto en una PC sin sistema
+  operativo, la deje corriendo Thalyx. La mitad está hecha — el 2026-08-06 un
+  firmware UEFI arrancó Thalyx desde un medio con **un archivo**, sin gestor de
+  arranque de ninguna clase, y todo lo que la máquina hace funcionó adentro. Lo
+  que falta es lo que la hace quedarse: Thalyx todavía no sabe crear su propio
+  store, ni escribirse en un disco, y su consola es un puerto serie que una PC
+  de verdad no tiene. `make -C image run-uefi` la arranca; no guarda nada.
 - **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el criterio
   de salida — se suspendió el mismo día, a favor de la ISO. Los pasos siguen
   teniendo que funcionar y se comprueban en cada cambio; lo suspendido es

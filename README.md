@@ -318,12 +318,14 @@ boot.
 
 ### Not yet true, stated plainly
 
-- **There is no ISO, and that is what now ends Phase 1.** The criterion, set on
-  2026-08-06: a single file that, put into a PC with no operating system,
-  leaves that machine running Thalyx. Today **QEMU is the bootloader** —
-  `make run` hands the kernel and the image straight to it with `-kernel` and
-  `-initrd`. Nothing here yet knows how to start on its own, there is no boot
-  medium, and the console is a serial port that modern PCs do not have.
+- **There is no installer, and that is what now ends Phase 1.** The criterion,
+  set on 2026-08-06: a single file that, put into a PC with no operating system,
+  leaves that machine running Thalyx. Half of it is done — on 2026-08-06 a UEFI
+  firmware booted Thalyx from a medium carrying **one file**, with no bootloader
+  of any kind, and everything the machine does worked inside it. What is missing
+  is what makes it stay: Thalyx cannot yet create its own store, cannot write
+  itself to a disk, and its console is a serial port that a real PC does not
+  have. `make -C image run-uefi` boots it; it keeps nothing.
 - **Nobody outside the project has done the six steps**, and that is no longer
   the exit criterion — it was suspended the same day, in favour of the ISO. The
   steps still have to work and are checked on every change; what is suspended

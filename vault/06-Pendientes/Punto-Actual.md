@@ -81,6 +81,35 @@ tags: [continuidad, punto-actual, sesiones]
 > hacer, y se siguen comprobando solos en cada cambio y en cada corrida de
 > hardware. Lo que se cancela es quién los teclea.
 >
+> ### Y arrancó entera: el paso 1 del criterio está cerrado — 2026-08-06
+>
+> **Un firmware arrancó Thalyx sin gestor de arranque, y la máquina hizo todo lo
+> que sabe hacer.** Con la consola puesta, el segundo intento salió así:
+>
+> ```
+>   ok  root         moved off the initramfs, so a module can be pivoted into a root
+>   ok  mounted /proc … /sys/fs/cgroup          (los siete)
+>   ok  sandbox root the root is attached
+>   ok  controllers  memory, pids handed down at /sys/fs/cgroup
+>   no  store        no thalyx.store= on the kernel command line
+>   ok  thalyx-lsm   2 hook(s) live, 3 map(s) pinned under /sys/fs/bpf/thalyx
+> ```
+>
+> Lo que eso demuestra, y no lo demostraba ningún arranque anterior: **todo lo
+> que Thalyx hace funciona cuando lo arranca un firmware y no `-kernel` de
+> QEMU.** El `switch_root`, los siete montajes, la delegación de controladores,
+> **el LSM enganchado**, la sesión, y el apagado limpio. No hay GRUB en ninguna
+> parte y no hace falta.
+>
+> El `no store` es **correcto y estaba previsto**: `thalyx.store=` nombra un
+> dispositivo, la línea de comandos va compilada dentro del kernel, y no hay un
+> nombre que sirva en las dos máquinas. La máquina lo dice como lo que es —
+> *«el disco no falta; nadie me dijo cuál es»*— en vez de adivinar. Es el paso 3.
+>
+> **Lo que sigue sin probarse es hierro.** Esto fue OVMF dentro de QEMU: discos
+> virtio, teclado emulado y consola serie. Una PC de verdad no tiene puerto
+> serie, y ahí es donde `console=ttyS0` deja de servir.
+>
 > ### El firmware arrancó Thalyx sin gestor de arranque — 2026-08-06
 >
 > **El paso 1 del criterio nuevo funcionó.** OVMF encontró
@@ -123,36 +152,14 @@ tags: [continuidad, punto-actual, sesiones]
 > prueba exige que las tres sumen el total — porque lo que no se cuenta es justo
 > por donde entraría un segundo programa sin que el número se moviera.
 >
-> ### Lo que hay que correr ahora, y es tuyo
+> `make -C image run-uefi` es lo que lo arranca. Necesita OVMF
+> (`sudo dnf install edk2-ovmf`); si falta, se niega y dice que **no se probó
+> nada** en vez de reportar que Thalyx falló.
 >
-> ```
-> git pull && make -C image && make -C image run-uefi
-> ```
->
-> **Arranca sin `-kernel`, sin `-initrd` y sin `-append`**: el firmware recibe un
-> disco y tiene que encontrar algo en él y arrancarlo. Es lo primero del criterio
-> nuevo y está construido y **sin ejercer** — aquí no hay QEMU, ni firmware UEFI,
-> ni con qué compilar un kernel.
->
-> Necesita OVMF: `sudo dnf install edk2-ovmf`. Si falta, `run-uefi` se niega y lo
-> dice como lo que es —no se probó nada— en vez de reportar que Thalyx falló.
->
-> Qué esperar ahora que la consola está puesta:
->
-> 1. **Arranca y habla.** El párrafo de Thalyx, los montajes, y el estado de la
->    máquina. Eso cierra el paso 1 entero.
-> 2. **Arranca y dice que no le nombraron store.** Eso es **correcto** y es el
->    paso 3: `thalyx.store=` nombra un dispositivo, la línea compilada es una
->    sola, y el disco es `vda` en QEMU y `nvme0n1` en una PC. Sale honesto en vez
->    de adivinar, que es lo que `store_disk.rs` ya decreta.
-> 3. **Vuelve a morir igual.** Entonces la consola no era la causa —o no la
->    única— y hay que mirar de nuevo. La lectura de arriba es firme en lo que el
->    kernel dijo de sí mismo y en lo que hacía falta; **que ésa fuera la única
->    causa se comprueba arrancando**, no razonando.
->
-> Y **no toqué `make run`**: sigue pasando `-kernel` e `-initrd`, porque es la
+> Y **no se tocó `make run`**: sigue pasando `-kernel` e `-initrd`, porque es la
 > red de regresión de la etapa 16 y cambiarla ahora dejaría la red y lo que se
-> prueba siendo el mismo cambio sin ejercer.
+> prueba siendo el mismo cambio sin ejercer. Se mueve cuando la ruta del
+> firmware tenga su propia etapa.
 >
 > ### Y el criterio nuevo: una ISO independiente
 >
@@ -1000,25 +1007,24 @@ hierro y eso se dice aparte en vez de confundirse.
 El diseño y lo que cuesta están en [[Construccion-del-ISO]]. El orden de trabajo,
 por riesgo descendente:
 
-1. ~~**Arrancar sin gestor de arranque.**~~ **Construido el 2026-08-06 y sin
-   ejercer.** `CONFIG_EFI_STUB` + el initramfs dentro del kernel + la línea de
-   comandos compilada, `make -C image esp` y `make -C image run-uefi`. Corre
-   esto antes que nada; ver el bloque de arriba.
-2. **La consola sobre el framebuffer y el teclado USB.** Sin esto la máquina
-   arranca en hierro real y no se ve nada, que es el fallo que se lee como «no
-   funciona» siendo «no puedes mirar».
-3. **El store, que Thalyx va a escribir él mismo.** Decidido por Cesar: Thalyx
-   escribe el Btrfs, como escribe su cpio y carga su BPF. Es lo más caro de los
-   cuatro. Requiere además revisar el decreto de que PID 1 nunca lo fabrica —
-   **«es la primera vez» y «no encontré el tuyo» tienen que seguir siendo dos
-   hechos**, que es lo que ese decreto protege.
-4. **El instalador**, más almacenamiento real (NVMe, AHCI) y el arranque en una
-   PC de verdad. Cesar decidió que la máquina arranca **sin** la ISO después, así
-   que hay que escribir Thalyx en el disco de la máquina.
-
-Los cuatro necesitan tu máquina; los tres primeros se ejercen en QEMU con OVMF
-antes de tocar hierro. **El cuarto es el único que exige una PC física**, y es
-también el único donde una VM no puede sustituirla.
+1. ~~**Arrancar sin gestor de arranque.**~~ **Hecho y probado el 2026-08-06.**
+   Un firmware arrancó Thalyx entera: `switch_root`, los siete montajes, los
+   controladores, **el LSM enganchado** y la sesión. Ver el bloque de arriba.
+2. **El store, que Thalyx va a escribir él mismo.** Es el poste largo de los
+   tres y lo que la máquina pide a gritos ahora mismo — arranca y no puede
+   guardar nada. Decidido por Cesar: Thalyx escribe el Btrfs, como escribe su
+   cpio y carga su BPF. Requiere además revisar el decreto de que PID 1 nunca lo
+   fabrica: **«es la primera vez» y «no encontré el tuyo» tienen que seguir
+   siendo dos hechos**, que es lo que ese decreto protege.
+3. **El instalador**: tabla de particiones GPT, una partición EFI con el kernel,
+   y el store en la otra. Cesar decidió que la máquina arranca **sin** la ISO
+   después, así que hay que escribir Thalyx en el disco de la máquina. Va junto
+   con el 2, porque lo que el instalador escribe es precisamente el store.
+4. **La consola sobre el framebuffer y el teclado USB**, más almacenamiento real
+   (NVMe, AHCI). Sin esto la máquina arranca en hierro y no se ve nada, que es
+   el fallo que se lee como «no funciona» siendo «no puedes mirar». Va al final
+   porque es lo único que **una VM no puede sustituir**, y hasta entonces todo se
+   ejerce con OVMF.
 
 ### 1. El agente — su mitad determinista ya está construida
 
