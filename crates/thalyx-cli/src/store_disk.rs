@@ -405,6 +405,63 @@ mod tests {
     }
 
     #[test]
+    fn the_pinning_procedure_names_the_key_that_actually_signed_the_list() {
+        // Printed instructions are code with an output, and this output was
+        // wrong for two days: `pin-kernel` said to fetch the release
+        // maintainers' keys and verify `sha256sums.asc` with them, and that
+        // file is signed by kernel.org's automated checksum key. gpg answered
+        // `No public key` — three lines under a sentence saying that anything
+        // short of `Good signature` means stop.
+        //
+        // What makes it worth a test rather than a fix is where it was found:
+        // on the machine, by the one person who can run it, in the middle of
+        // the step that everything else waits on. It could not be found here,
+        // because this container's network policy cannot reach kernel.org.
+        //
+        // So the test asserts the one thing that is checkable without the
+        // network — that the procedure names the key a real run came back
+        // with, in both of the two places it is written down. Two copies of an
+        // instruction is how the wrong one survives: the comment beside
+        // KSHA256 is what a person editing the value reads, and the target is
+        // what a person following the `doctor` reads.
+        let text = image_makefile();
+        let printed = recipe_of(&text, "pin-kernel:").join("\n");
+
+        assert!(
+            printed.contains("autosigner@kernel.org"),
+            "`pin-kernel` does not name the key that signs sha256sums.asc, so \
+             following it ends at `No public key`:\n{printed}"
+        );
+        assert!(
+            !printed.contains("torvalds@kernel.org") && !printed.contains("gregkh@kernel.org"),
+            "`pin-kernel` sends the reader after a release maintainer's key for \
+             a file no maintainer signed:\n{printed}"
+        );
+
+        // The fingerprint, in both copies. `--locate-keys` asks the network
+        // which key owns an address; with no fingerprint to compare against,
+        // `Good signature` establishes that whoever answered agrees with
+        // itself, which is not the question the pin exists to answer.
+        let fingerprint = "B886 8C80 BA62 A1FF FAF5  FDA9 632D 3A06 589D A6B1";
+        assert!(
+            printed.contains(fingerprint),
+            "`pin-kernel` asks for a good signature without saying whose, so \
+             any key the lookup returns satisfies it:\n{printed}"
+        );
+
+        let beside_the_digest = text
+            .split("KSHA256")
+            .next()
+            .expect("the Makefile has a KSHA256 line");
+        assert!(
+            beside_the_digest.contains("autosigner@kernel.org")
+                && beside_the_digest.contains(fingerprint),
+            "the comment above KSHA256 does not record what established the \
+             digest, so the number cannot be re-checked by whoever inherits it"
+        );
+    }
+
+    #[test]
     fn an_unpinned_kernel_is_reported_by_doctor_and_not_at_the_download() {
         // `doctor` promises to say everything that is missing *at once*. A
         // prerequisite it does not know about recreates precisely the failure

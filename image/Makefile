@@ -75,12 +75,27 @@ BZIMAGE  := $(BUILD)/bzImage
 # between two reads of it:
 #
 #     curl -O https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
-#     gpg --locate-keys torvalds@kernel.org gregkh@kernel.org
+#     gpg --locate-keys autosigner@kernel.org
 #     gpg --verify sha256sums.asc
 #     grep 'linux-6.12.101.tar.xz$$' sha256sums.asc
 #
 # then put the digest here. `make -C image pin-kernel` prints these steps.
-KSHA256  := UNPINNED
+#
+# Who signed it, recorded because the digest below is worth exactly what the
+# signature on it was worth, and nobody can re-check that from a bare number:
+#
+#     Kernel.org checksum autosigner <autosigner@kernel.org>
+#     B886 8C80 BA62 A1FF FAF5  FDA9 632D 3A06 589D A6B1
+#
+# The fingerprint is here and not just the address because `--locate-keys` asks
+# the network which key belongs to a name: without it, "Good signature" means
+# whoever answered that lookup is happy, which is not the question.
+#
+# Established by Cesar on 2026-08-06, on the machine that verifies Thalyx. The
+# first three commands were written in a container that cannot reach
+# kernel.org, and naming the release maintainers' keys was wrong — see the
+# `pin-kernel` target.
+KSHA256  := 0d21cd11933f49f7151b7c9dbb8cc3fddc8c8abe506434b850feecf41fc28a76
 
 THALYX    := $(ROOT)/target/$(TARGET)/release/thalyx
 INITRAMFS := $(BUILD)/initramfs.cpio
@@ -311,6 +326,19 @@ $(BUILD):
 # file did not change between two reads of it, which nobody was ever worried
 # about. What establishes anything is the signature on kernel.org's list, and
 # checking a signature means a human deciding whose key to trust.
+#
+# The key it names is `autosigner@kernel.org`, and that is the whole story of
+# this target's one defect. It used to name the release maintainers, because
+# they are who signs a kernel release and that is what everyone knows. They do
+# not sign *this file*: `sha256sums.asc` carries the signature of kernel.org's
+# automated checksum key, so the run said `No public key` — after telling the
+# reader that anything but `Good signature` means stop. A procedure that
+# printed the failure it defines as fatal.
+#
+# It was written here, in a container whose network policy cannot reach
+# kernel.org, and it went out unrun. Printed text is code: it has an output and
+# it can be wrong, and this one was wrong in the direction that stops the
+# person the whole `doctor` path exists to keep moving.
 pin-kernel:
 	@echo
 	@echo "  Pinning the kernel tarball for $(KVERSION)."
@@ -319,12 +347,27 @@ pin-kernel:
 	@echo "  the tarball you are about to build. Four commands:"
 	@echo
 	@echo "    curl -O https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
-	@echo "    gpg --locate-keys torvalds@kernel.org gregkh@kernel.org"
+	@echo "    gpg --locate-keys autosigner@kernel.org"
 	@echo "    gpg --verify sha256sums.asc"
 	@echo "    grep 'linux-$(KVERSION).tar.xz$$' sha256sums.asc"
 	@echo
-	@echo "  The third one must say 'Good signature'. If it does not, stop —"
-	@echo "  an unsigned list of digests establishes nothing at all."
+	@echo "  That list is signed by kernel.org's automated checksum key, not"
+	@echo "  by a release maintainer. Ask for any other key and the third"
+	@echo "  command says 'No public key', which is not a bad signature — it"
+	@echo "  is no signature checked at all, and reads almost the same."
+	@echo
+	@echo "  The third one must say 'Good signature', from this key:"
+	@echo
+	@echo "    B886 8C80 BA62 A1FF FAF5  FDA9 632D 3A06 589D A6B1"
+	@echo
+	@echo "  Compare that fingerprint yourself. The second command asks the"
+	@echo "  network which key owns that address, so without comparing it you"
+	@echo "  have proven that whoever answered is consistent with itself."
+	@echo
+	@echo "  gpg will also warn the key is not certified by a trusted"
+	@echo "  signature. That is expected and is not this check failing: it"
+	@echo "  says you never told gpg you trust that key, which is the"
+	@echo "  fingerprint's job, not gpg's."
 	@echo
 	@echo "  Then set KSHA256 in image/Makefile to what the fourth prints."
 	@echo "  Current value: $(KSHA256)"
