@@ -1,11 +1,45 @@
 ---
 tipo: estrategia
-estado: decretado
+estado: cumplido
 fecha-decreto: 2026-08-01
+fecha-cumplimiento: 2026-08-07
 tags: [fases, criterio, validacion, definicion-de-terminado]
 ---
 
 # Criterio de salida de la Fase 1
+
+> ## CUMPLIDO — 2026-08-07
+>
+> Una PC física arrancó Thalyx desde una memoria USB por su propio firmware,
+> **se instaló a sí misma en otro disco** con `instalar-en`, y tras quitar el
+> medio arrancó de ese disco encontrando su store por la etiqueta.
+>
+> ```
+> ok  boot   /dev/sdc1 ▪ the kernel, at the one path a firmware looks for
+> ok  store  /dev/sdc2 ▪ labelled `thalyx-store`
+> That disk is a Thalyx machine now.
+> ```
+>
+> Y después del reinicio, sin medio puesto:
+>
+> ```
+> 2 disk(s):
+>   /dev/sda   447 GiB   3  btrfs `fedora`
+>   /dev/sdb     7 GiB   1  a Thalyx boot partition
+>                        2  a Thalyx store
+> ```
+>
+> **Los dos huecos conocidos**, escritos aquí para que nadie los descubra creyendo
+> que descubrió un fallo:
+>
+> 1. **El disco de destino era removible.** Ningún disco interno ha recibido una
+>    instalación de Thalyx. El camino del instalador es el mismo hasta el último
+>    byte —sysfs, `BLKRRPART`, los mismos escritores—; lo que cambia es el bus.
+> 2. **NVMe sobre silicio real sigue sin ejercerse**, porque la única máquina
+>    disponible no tiene ninguno. No es un driver que falle.
+>
+> El detalle de la corrida está en [[Punto-Actual]]; el procedimiento, en el paso 9
+> de [[Arranque-en-Hierro]].
 
 ## El hueco que resuelve
 

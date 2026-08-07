@@ -14,9 +14,106 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La Fase 1 está cerrada: una PC se instaló Thalyx a sí misma y arrancó sin el medio — 2026-08-07
+>
+> **Es lo primero que hay que leer.** El acto 2b corrió en hierro y salió entero.
+>
+> ### Lo que pasó, con nombres
+>
+> Arrancado desde la memoria de 3 GiB, `discos` contestó **tres discos** —no siete—
+> y nombró cada uno:
+>
+> ```
+> /dev/sda   447 GiB   3  btrfs `fedora`            ← el sistema de Cesar
+> /dev/sdb     3 GiB   1  a Thalyx boot partition   ← el medio
+>                      2  a Thalyx store
+> /dev/sdc     7 GiB   1  FAT `XBOX`                ← el destino
+> ```
+>
+> `instalar-en /dev/sdc` dijo de dónde salía el kernel —`/dev/sdb1`, 10 671 104
+> bytes— **qué había en el destino antes de preguntar** —`1 FAT \`XBOX\``— y pidió
+> teclear la ruta. Después:
+>
+> ```
+> ok  kernel     taken off /dev/sdb1
+> ok  boot       /dev/sdc1 ▪ the kernel, at the one path a firmware looks for
+> ok  store      /dev/sdc2 ▪ labelled `thalyx-store`
+> ok  subvolume  system / modules / user
+>
+> That disk is a Thalyx machine now.
+> ```
+>
+> `apagar`, memoria fuera, encender. Y la máquina arrancó de ese disco:
+>
+> ```
+> 2 disk(s):
+>   /dev/sda   447 GiB   3  btrfs `fedora`
+>   /dev/sdb     7 GiB   1  a Thalyx boot partition
+>                        2  a Thalyx store
+> ```
+>
+> **Un firmware real arrancó un disco físico que Thalyx particionó, formateó y
+> escribió él mismo, sin medio puesto, y la máquina encontró su store por la
+> etiqueta.** Eso es el criterio de salida.
+>
+> ### Los cuatro arreglos del día quedaron confirmados en vivo
+>
+> Ninguno se probó en una VM primero, y los cuatro se comportaron:
+>
+> - **`3 disk(s)` y no siete** — el filtro de particiones. La Fedora dejó de
+>   aparecer partida en pedazos ofrecibles.
+> - **`a Thalyx boot partition`** — la máquina nombra su propio trabajo.
+> - **`it has 2 partition(s) on it now: 1 FAT \`XBOX\``** — el guardián nuevo, dicho
+>   antes de la pregunta y no después.
+> - **`! 9 new kernel problems; \`nucleo\` shows them`** — el aviso del prompt, y en
+>   ninguno de estos arranques el `-110` del USB volvió a pisar una línea.
+>
+> Y un detalle que confirma el escritor de GPT: **el disco instalado no produce el
+> aviso de «alternate GPT header not at the end»** que sí produce el medio. El medio
+> lo tiene porque se hizo con `dd` de una imagen más chica que la memoria; el
+> instalado no, porque Thalyx escribió la tabla contra el tamaño real del
+> dispositivo.
+>
+> ### Los dos huecos, escritos como huecos
+>
+> 1. **Ningún disco interno ha recibido una instalación.** El destino fue removible.
+>    El camino del instalador es idéntico —sysfs, `BLKRRPART`, los mismos
+>    escritores—; lo que cambia es el bus.
+> 2. **NVMe sobre silicio real sigue sin ejercerse**, porque esa máquina no tiene
+>    ninguno. No es un driver que falle: es hardware que no existe ahí.
+>
+> ### Lo que abrió, y es una pregunta de Cesar
+>
+> **La máquina tarda ~40 segundos en llegar al prompt**, más que su Fedora. Los
+> tiempos del kernel dicen dónde no está el problema: `sd ... [sdb]` aparece a los
+> **38 s** y el mensaje de `struct module` a los **34 s**, y esos números son
+> **iguales desde dos memorias distintas**. Un tiempo constante entre medios
+> distintos es lo que hace un **plazo fijo**, no lo que hace una lectura lenta — así
+> que la hipótesis de «la USB es lenta» explica, como mucho, lo que tarda el
+> firmware antes de que el kernel empiece a contar.
+>
+> **Y no había con qué medirlo.** `nucleo` contesta cuatro líneas de problemas o
+> setecientas de todo, y ninguna de las dos dice a dónde se fueron los 34 segundos.
+> Construido **`nucleo lento`**: los silencios más largos entre mensajes
+> consecutivos, con la línea de antes y la de después de cada uno. El kernel ya
+> ponía la marca de tiempo en cada línea; nadie las había restado.
+>
+> **La causa no está determinada y no se va a adivinar.** Un hueco dice a dónde se
+> fue el tiempo, no qué lo tomó.
+>
+> ### Lo que falta, y es un arranque
+>
+> ```
+> git pull && make -C image && sudo make -C image installed INSTALLEDSIZE=2G
+> ```
+>
+> `dd` a la memoria, arrancar, y teclear **`nucleo lento`**.
+>
+> **800 pruebas pasan** (797 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## `discos` corrió en hierro y ofrecía la Fedora de Cesar como destino — 2026-08-07
 >
-> **Es lo primero que hay que leer.** Segundo arranque en la PC real, con el arreglo
+> **El bloque de arriba es más reciente.** Segundo arranque en la PC real, con el arreglo
 > de la consola puesto. El error del USB **no volvió** —`nucleo` lista 10 líneas de
 > problema entre 714 registros y ninguna es del USB— y el prompt no anunció nada,
 > que es lo correcto: no hubo problemas nuevos después de que arrancó la sesión.

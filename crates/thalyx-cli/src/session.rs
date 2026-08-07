@@ -24,6 +24,7 @@
 //! confined, because it cannot know. This never says it is the machine unless
 //! it is.
 
+use std::cmp::Ordering;
 use std::io::Write;
 use std::path::Path;
 use thalyx_agent::recollection::RecollectionError;
@@ -433,6 +434,94 @@ fn show_kernel(everything: bool) {
         );
         println!();
     }
+}
+
+/// A stretch of boot where the kernel said nothing.
+struct Gap {
+    seconds: f64,
+    before: String,
+    after: String,
+    at: f64,
+}
+
+/// The longest silences between consecutive kernel messages, longest first.
+///
+/// Split out from [`show_slowest`] so it can be exercised without a kernel, and
+/// pure so that what it claims — that these are the biggest gaps and that they are
+/// in order — is something a test can hold it to.
+///
+/// **A gap is where the time went, not what took it.** The message *after* a
+/// silence is the one that finished; the one before is where the waiting started.
+/// Both are printed because either alone sends a person to the wrong half.
+fn slowest_gaps(messages: &[thalyx_syscall::KernelMessage], how_many: usize) -> Vec<Gap> {
+    let mut gaps: Vec<Gap> = messages
+        .windows(2)
+        .map(|pair| Gap {
+            seconds: pair[1].seconds - pair[0].seconds,
+            before: pair[0].text.clone(),
+            after: pair[1].text.clone(),
+            at: pair[0].seconds,
+        })
+        .collect();
+    // Descending, and by a total order because f64 has none. A NaN cannot come out
+    // of subtracting two timestamps the kernel printed, and ordering it last rather
+    // than panicking keeps a malformed record from taking the whole verb down.
+    gaps.sort_by(|a, b| b.seconds.partial_cmp(&a.seconds).unwrap_or(Ordering::Equal));
+    gaps.truncate(how_many);
+    gaps
+}
+
+/// Where the boot spent its time.
+///
+/// Exists because `nucleo` could answer two questions and not this one: four lines
+/// of trouble, or seven hundred lines of everything, and a person watching a
+/// machine take forty seconds to reach its prompt can read neither. Cesar asked on
+/// 2026-08-07 whether that was normal — on hardware where the delay was the same
+/// from two different USB sticks, which is what a fixed timeout looks like and not
+/// what slow reading looks like.
+///
+/// The kernel already timestamps every line. Nobody had subtracted them.
+fn show_slowest() {
+    println!();
+    let messages = match thalyx_syscall::kernel_messages() {
+        Ok(messages) => messages,
+        Err(error) => {
+            println!("  I cannot read what the kernel said: {error}");
+            println!("  That is not the same as it having said nothing.");
+            println!();
+            return;
+        }
+    };
+    if messages.len() < 2 {
+        println!("  Fewer than two messages, so there is no gap to measure.");
+        println!();
+        return;
+    }
+
+    let gaps = slowest_gaps(&messages, 8);
+    let total = messages.last().map(|m| m.seconds).unwrap_or_default();
+    let waited: f64 = gaps.iter().map(|gap| gap.seconds).sum();
+
+    println!("  The kernel talked for {total:.1}s. The longest silences in it:");
+    println!();
+    for gap in &gaps {
+        println!("    {:>6.2}s  at {:>8.2}s", gap.seconds, gap.at);
+        println!("            after   {}", gap.before);
+        println!("            then    {}", gap.after);
+        println!();
+    }
+    println!(
+        "  Those {} account for {waited:.1}s of {total:.1}s.",
+        gaps.len()
+    );
+    println!();
+    // Said rather than left to be inferred: a long gap is where the clock went, and
+    // the thing that finished it is usually not the thing that was slow. This verb
+    // narrows down where to look; it does not name a culprit, and pretending it did
+    // would be the machine guessing on somebody's behalf.
+    println!("  A gap says where the time went, not what took it. The line after a");
+    println!("  silence is the one that finished waiting.");
+    println!();
 }
 
 /// What is installed, read from the store rather than from anything remembered.
@@ -972,7 +1061,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
-            println!("  machine, `nucleo` shows what the kernel has been saying,");
+            println!("  machine, `nucleo` shows what the kernel has been saying");
+            println!("  and `nucleo lento` where the boot spent its time,");
             println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
@@ -1080,6 +1170,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "nucleo todo" | "núcleo todo" | "kernel all" => {
                 show_kernel(true);
+            }
+            "nucleo lento" | "núcleo lento" | "kernel slow" => {
+                show_slowest();
             }
             _ if line.starts_with("correr ") || line.starts_with("run ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1458,6 +1551,63 @@ mod tests {
             seconds: sequence as f64,
             text: format!("record {sequence}"),
         }
+    }
+
+    /// One record at a chosen second, so a gap is a thing a test can state.
+    fn at(sequence: u64, seconds: f64, text: &str) -> thalyx_syscall::KernelMessage {
+        thalyx_syscall::KernelMessage {
+            priority: 6,
+            sequence,
+            seconds,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_longest_silence_of_the_boot_comes_first() {
+        // The question this answers is "a machine took forty seconds to reach its
+        // prompt, where did they go". Anything but longest-first buries it.
+        let gaps = slowest_gaps(
+            &[
+                at(1, 0.0, "start"),
+                at(2, 0.5, "quick"),
+                at(3, 30.5, "the slow one finished"),
+                at(4, 31.0, "quick again"),
+            ],
+            8,
+        );
+        assert_eq!(gaps.len(), 3);
+        assert!(
+            (gaps[0].seconds - 30.0).abs() < 0.001,
+            "{}",
+            gaps[0].seconds
+        );
+        assert_eq!(gaps[0].before, "quick");
+        assert_eq!(gaps[0].after, "the slow one finished");
+    }
+
+    #[test]
+    fn both_sides_of_a_silence_are_kept_because_either_alone_misleads() {
+        // The line *after* a gap is the one that finished waiting, and it is the
+        // one a person will blame. The line before is where the waiting started.
+        // Reporting one without the other sends somebody to the wrong half, which
+        // is the whole failure mode of reading a boot log by eye.
+        let gaps = slowest_gaps(&[at(1, 1.0, "asked"), at(2, 21.0, "answered")], 8);
+        assert_eq!(gaps[0].before, "asked");
+        assert_eq!(gaps[0].after, "answered");
+        assert!(
+            (gaps[0].at - 1.0).abs() < 0.001,
+            "the gap starts where it starts"
+        );
+    }
+
+    #[test]
+    fn a_boot_with_nothing_to_report_produces_no_gaps_rather_than_a_panic() {
+        // The control, and the edge that would take down the verb: `windows(2)` on
+        // fewer than two records yields nothing, and a machine whose ring buffer
+        // was wiped must print "no gaps" rather than crash the session.
+        assert!(slowest_gaps(&[], 8).is_empty());
+        assert!(slowest_gaps(&[at(1, 0.0, "only one")], 8).is_empty());
     }
 
     #[test]

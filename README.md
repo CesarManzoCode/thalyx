@@ -325,7 +325,18 @@ boot.
 
 ### Not yet true, stated plainly
 
-- **No real PC has booted this, only a virtual one.** On 2026-08-07 a UEFI
+- **A real PC has booted this, and installed it onto a disk of its own.** On
+  2026-08-07 a physical machine started Thalyx from a USB stick through its own
+  firmware, put its session on a monitor over HDMI through `FB_EFI`, took its
+  keyboard over real xHCI, listed its real disks — including the 447 GiB one with
+  another operating system on it, named by its filesystem label — and then
+  installed itself onto a second disk with `instalar-en`. The medium came out, the
+  machine started again, and it found its own store by label with nothing naming
+  it. **Two things that closes are recorded as still open**: the disk it installed
+  onto was removable, so no internal disk has ever received a Thalyx install, and
+  that machine has no NVMe, so NVMe on real silicon stays unexercised — not
+  because a driver failed, but because there is no hardware to fail on.
+- **Before that, only a virtual one had.** On 2026-08-07 a UEFI
   firmware found `\EFI\BOOT\BOOTX64.EFI` on a disk Thalyx wrote and started it —
   no `-kernel`, no `-append`, no boot loader — and the machine found its own
   store with nothing naming it, put its session on the screen through the
