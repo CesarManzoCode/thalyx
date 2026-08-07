@@ -319,6 +319,72 @@ que **PID 1 sigue sin fabricar nada**: quien crea el store es el instalador,
 que es un acto humano explícito. Así el decreto se conserva entero en vez de
 pedirle una excepción.
 
+### Thalyx escribe el Btrfs él mismo — construido el 2026-08-07
+
+**`crates/thalyx-btrfs`.** Ocho árboles, tres chunks y los superbloques, escritos
+byte por byte, sin `mkfs.btrfs` y sin `libbtrfs`. Es el punto 2 del orden de
+trabajo y era el poste largo: la máquina arrancaba y no podía guardar nada.
+
+Lo que obliga a que exista es [[Filosofia-Fundacional]] y no una preferencia. La
+imagen lleva el kernel de Linux y un programa, así que `mkfs.btrfs` no puede
+estar ahí y no se le puede agregar. Misma forma que `bpftool` para el LSM y
+`cpio` para el initramfs, y la misma respuesta.
+
+**No es una implementación de Btrfs**, y conviene que la nota lo diga antes que
+lo diga alguien creyéndose una cosa distinta. Escribe **un** sistema de archivos,
+vacío, con una geometría fija; y lee un superbloque para contestar *cómo se llama
+este dispositivo*, que es la otra mitad de la decisión de la etiqueta. No sabe
+asignar, no sabe balancear, y **se niega** si un árbol no cabe en una hoja en vez
+de intentar partirlo. En cuanto el store existe, todo lo que le pasa se lo hace
+el Btrfs del kernel.
+
+Dos decisiones de forma que valen registrarse:
+
+- **Metadata y system en DUP**, que es lo que `mkfs.btrfs` elige por omisión en
+  un disco solo. El store es donde vive todo lo que sobrevive a un reinicio, y un
+  sector malo en un bloque de árbol con una sola copia se lleva el sistema de
+  archivos en vez de un archivo. Cuesta diez líneas: escribir el bloque dos veces.
+- **Ninguna chunk cubre un superbloque.** `mkfs.btrfs` produce chunks que sí, y es
+  legal, pero entonces el kernel tiene que excluir los sectores del superbloque de
+  la asignación dentro de ese grupo de bloques — y una exclusión mal hecha es un
+  bloque de árbol escrito encima del superbloque de respaldo. No solaparse es una
+  cosa más chica que hay que acertar. Sale de escribir el layout final directo en
+  vez de imitar la reubicación en dos fases de `mkfs.btrfs`.
+- **El dispositivo mínimo es 128 MiB**, y el límite lo pone el superbloque de
+  respaldo de los 64 MiB, no el espacio. Un disco más chico daría un store con
+  una sola copia de su propio puntero a la raíz, y eso se niega diciéndolo.
+
+**Y lo crea un humano, no PID 1.** `thalyx disk format <dispositivo>` es el verbo,
+y **el decreto se conserva entero**: nada de `thalyx-btrfs` es alcanzable desde
+PID 1. La confirmación pide que se **teclee la ruta del dispositivo**, no una `y`:
+es la cosa más destructiva que Thalyx sabe hacer, el argumento es una palabra,
+`/dev/sda` y `/dev/sdb` se diferencian en una tecla, y una `y` confirma una frase
+que el humano ya dejó de leer. Antes de preguntar dice **qué hay ahí ahora**,
+leyéndolo.
+
+Dos verbos más: `thalyx disk identify` contesta qué es un dispositivo en los tres
+términos que deciden qué hacer —btrfs con su etiqueta, no btrfs, o btrfs con el
+superbloque dañado, que es la regla 10 donde más importa— y `thalyx disk layout`
+imprime la geometría, que es de donde `verify.sh` saca los offsets de su control
+en vez de repetirlos.
+
+**Lo que sigue faltando, dicho como lo que es:** un sistema de archivos recién
+escrito **no tiene subvolúmenes**, y PID 1 monta `subvol=system`. Así que un store
+hecho así todavía no es un store, y el propio comando lo dice al terminar en vez
+de dejar que parezca que sí. Crear los tres —por ioctl, porque tampoco hay binario
+`btrfs` adentro— es lo siguiente, y con eso el instalador queda completo.
+
+Cómo se sabe que algo de esto es correcto está en [[Estrategia-de-Pruebas]], en
+las dos reglas nuevas. En una frase: dos headers de Linux capturados verbatim más
+`btrfs check`, y **el montaje sólo lo puede establecer la máquina de Cesar** —
+etapa 18 de `verify.sh`.
+
+Y `make -C image store` **sigue usando `mkfs.btrfs`**, a propósito. Es la red de
+regresión de las etapas 13 y 16, y cambiarla en el mismo commit que introduce lo
+que hay que probar dejaría la red y lo probado siendo el mismo código sin
+ejercer. Es la misma razón por la que `boot` siguió pasando `-kernel` cuando
+apareció `run-uefi`.
+
 ### Lo construido el 2026-08-06
 
 **El paso 1: arrancar sin gestor de arranque.** Va primero porque **si falla,

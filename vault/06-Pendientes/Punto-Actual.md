@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-05
+fecha-actualizacion: 2026-08-07
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -13,6 +13,120 @@ tags: [continuidad, punto-actual, sesiones]
 > conversación, esa conversación se pierde y el conocimiento con ella.
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
+
+> ## Thalyx escribe su propio Btrfs — 2026-08-07
+>
+> **Es lo primero que hay que leer, y lo único pendiente de comprobar.**
+>
+> `crates/thalyx-btrfs`: ocho árboles, tres chunks y los superbloques, escritos
+> byte por byte. **Sin `mkfs.btrfs` y sin `libbtrfs`.** Es el punto 2 del orden de
+> trabajo del ISO y era el poste largo — la máquina arrancaba y no podía guardar
+> nada.
+>
+> Lo obliga [[Filosofia-Fundacional]] y no una preferencia: la imagen lleva el
+> kernel y un programa, así que `mkfs.btrfs` no puede estar ahí. Misma forma que
+> `bpftool` y que `cpio`, misma respuesta.
+>
+> ```
+> $ thalyx disk format /tmp/store.img --yes
+>   ok  store        /tmp/store.img — 8589934592 bytes, labelled `thalyx-store`
+>       fsid a39c0565af37487b8f8fe806ff352104
+>       2 superblock(s), 131072 bytes of metadata
+> ```
+>
+> ### El decreto de que PID 1 nunca fabrica se conservó entero
+>
+> Estaba anotado como *pendiente de confirmar al construirlo*, y se confirmó:
+> **nada de `thalyx-btrfs` es alcanzable desde PID 1.** Lo invoca un humano con
+> `thalyx disk format`, que es el acto explícito que la tarea preveía. PID 1 sigue
+> montando y sin crear.
+>
+> La confirmación **pide teclear la ruta del dispositivo**, no una `y`. Es lo más
+> destructivo que Thalyx sabe hacer, el argumento es una palabra, `/dev/sda` y
+> `/dev/sdb` se diferencian en una tecla, y una `y` confirma una frase que el
+> humano ya dejó de leer. Antes de preguntar dice qué hay en el disco ahora,
+> leyéndolo.
+>
+> ### Lo que falta, y es de Cesar
+>
+> **Correr `sudo ./dev/verify.sh`.** La etapa 18 es nueva y **el montaje sólo lo
+> puede establecer tu máquina**: este contenedor no tiene Btrfs en el kernel ni
+> módulos que cargar. Aquí la etapa sale así, que es lo correcto:
+>
+> ```
+>   PROVEN      Thalyx wrote a Btrfs filesystem with no mkfs.btrfs and no libbtrfs
+>   PROVEN      it identifies itself by the label an installed machine looks for
+>   PROVEN      a device nobody formatted is reported as no filesystem, not as no label
+>   PROVEN      btrfs check walks it and finds nothing wrong
+>   NOT PROVEN  this kernel has no Btrfs, so nothing could mount what Thalyx wrote
+> ```
+>
+> En tu máquina esas cinco líneas se vuelven ocho, y las cuatro que se agregan son
+> las que importan: que el kernel lo monta, que acepta los tres subvolúmenes, que
+> un archivo escrito en él vuelve, y **que el mismo sistema de archivos dañado se
+> niega** — sin ese último, el montaje no demuestra nada.
+>
+> **Es un cambio solo, a propósito.** No apilé la búsqueda por etiqueta encima.
+>
+> ### Cómo se sabe que el formato es correcto sin poder montarlo
+>
+> Dos instrumentos, y ninguno es leer el formato.
+>
+> Los headers de Linux (`btrfs_tree.h` y `btrfs.h`) están capturados verbatim en
+> `crates/thalyx-btrfs/tests/`, y una prueba los parsea y comprueba **cada tamaño
+> y cada offset** que el escritor usa. Y `btrfs check` recibe lo escrito y recorre
+> los árboles, las referencias inversas y la contabilidad de cada grupo de
+> bloques: `no error found`, también en el disco más chico que se permite y
+> leyendo desde el superbloque de respaldo.
+>
+> **`btrfs check` no es un montaje**, y está dicho así en el código: lee con el
+> código de btrfs-progs, no con el del kernel, y los dos ya se han contradicho.
+>
+> btrfs-progs es dependencia **de desarrollo**, nunca de ejecución — el punto del
+> crate es que la imagen no lo tiene. Así que se salta donde falta, dice `NOT
+> PROVEN`, y hay **una variable por requisito**: `THALYX_REQUIRE_BTRFS_PROGS` para
+> el validador y `THALYX_REQUIRE_BTRFS_TESTS` para el montaje. Las dos se
+> ejercieron en las dos direcciones.
+>
+> ### Tres defectos, y los tres dan regla
+>
+> 1. **Btrfs usa el mismo CRC32C con dos convenciones y no coinciden.** La suma de
+>    un bloque es CRC32C estándar; el hash del nombre de una entrada de directorio
+>    es el primitivo crudo desde `~1` **sin complemento final**. La primera versión
+>    aplicó la estándar a las dos y el hash de `default` salió un número estable,
+>    plausible, y que hace que el kernel resuelva el subvolumen por omisión
+>    encontrando nada. Leer el kernel no lo evita: la diferencia está en el
+>    intermediario. Lo encontró una imagen real de `mkfs.btrfs`.
+> 2. **Un bit de versión omitido no falla al parsearse: se parsea como otro
+>    formato.** Sin `MIXED_BACKREF_REV` en las banderas de cada cabecera, todo
+>    parseaba perfecto y `btrfs check` reportó **once fallas de referencia**, una
+>    por extent. El síntoma estaba lo más lejos posible de la causa, y lo delató
+>    una línea informativa —`backref revision 0`— comparada contra la imagen de
+>    referencia.
+> 3. **El arnés otra vez, y van ocho.** El parser que comprueba los offsets
+>    descartaba en silencio todo campo con comentario al final de su línea, y dijo
+>    que `btrfs_root_item` medía 343 cuando el escritor producía 439. **El escritor
+>    tenía razón.** Ahora hay una prueba que gradúa al parser antes de medir nada
+>    con él, usando los tamaños que los headers afirman en su propio texto.
+>
+> Las dos primeras están escritas como reglas nuevas en [[Estrategia-de-Pruebas]];
+> la tercera se sumó a la cuenta de la regla 5.
+>
+> ### Lo que sigue faltando, dicho como lo que es
+>
+> **Un sistema de archivos recién escrito no tiene subvolúmenes**, y PID 1 monta
+> `subvol=system`. Así que un store hecho con `thalyx disk format` **todavía no es
+> un store**, y el comando lo dice al terminar en vez de dejar que parezca que sí.
+> Crear los tres va por ioctl, porque tampoco hay binario `btrfs` adentro, y con
+> eso el instalador queda completo.
+>
+> Y `make -C image store` **sigue usando `mkfs.btrfs`** a propósito: es la red de
+> regresión de las etapas 13 y 16, y cambiarla en el mismo commit que introduce lo
+> que hay que probar dejaría la red y lo probado siendo el mismo código sin
+> ejercer. Misma razón por la que `boot` siguió pasando `-kernel` cuando apareció
+> `run-uefi`.
+>
+> **710 pruebas pasan, `clippy` limpio, `cargo fmt` aplicado.**
 
 > ## Todo lo que existe está verificado, y la persona ajena se cancela — 2026-08-06
 >
@@ -864,8 +978,15 @@ enforcement dentro de la imagen; el cargador propio salió verde en hardware el
 > única etapa que los cubría se saltaba sola. Ya son pruebas.
 
 **Y desde el 2026-08-06 los seis pasos están hechos por la máquina, desde un
-arranque frío, con un reinicio de verdad en medio.** No queda código sin
-ejercer: `proven 104 · not proven 1 · failed 0`.
+arranque frío, con un reinicio de verdad en medio.** En esa corrida no quedaba
+código sin ejercer: `proven 104 · not proven 1 · failed 0`.
+
+> Desde el 2026-08-07 vuelve a haber una cosa sin ejercer, y es una sola:
+> **Thalyx escribe su propio Btrfs y nadie lo ha montado.** Es la etapa 18, y es
+> el bloque de arriba.
+
+**Y ahora la máquina puede hacer el disco en el que guarda**, que es el punto 2
+del ISO y el poste largo de los tres. Falta que ese disco se vuelva un store.
 
 **Lo que falta para cerrar la fase ya no es código y tampoco es la persona
 ajena**, que Cesar canceló ese mismo día. Es **elegir con qué se sustituye** —
@@ -885,6 +1006,8 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 | El `doctor` | **Corrido el 2026-08-06** en la máquina de Cesar: encontró el ancla del kernel ausente y nada más. |
 | La imagen con enforcement puesto | **Probado el 2026-08-06**: `ok thalyx-lsm` dentro de la máquina, con el kernel recompilado. |
 | Los arreglos de la auditoría por la ruta confinada | **Probados el 2026-08-06**, etapas 6, 12, 13 y 17 enteras. |
+| El Btrfs que Thalyx escribe | **Validado con `btrfs check`** y contra los headers de uapi capturados. El montaje es la etapa 18 y **está sin correr**: sólo tu máquina puede hacerlo. |
+| Los tres subvolúmenes desde dentro | No construido. Van por ioctl, y hasta entonces un store escrito por Thalyx es un filesystem y no un store. |
 | `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. **Es lo único de la lista que sigue abierto.** |
 
 ## Los cuatro fallos del camino, y por qué tres son el mismo
@@ -1010,12 +1133,12 @@ por riesgo descendente:
 1. ~~**Arrancar sin gestor de arranque.**~~ **Hecho y probado el 2026-08-06.**
    Un firmware arrancó Thalyx entera: `switch_root`, los siete montajes, los
    controladores, **el LSM enganchado** y la sesión. Ver el bloque de arriba.
-2. **El store, que Thalyx va a escribir él mismo.** Es el poste largo de los
-   tres y lo que la máquina pide a gritos ahora mismo — arranca y no puede
-   guardar nada. Decidido por Cesar: Thalyx escribe el Btrfs, como escribe su
-   cpio y carga su BPF. Requiere además revisar el decreto de que PID 1 nunca lo
-   fabrica: **«es la primera vez» y «no encontré el tuyo» tienen que seguir
-   siendo dos hechos**, que es lo que ese decreto protege.
+2. ~~**El store, que Thalyx va a escribir él mismo.**~~ **Escrito el 2026-08-07**,
+   validado con `btrfs check` y **pendiente de montarse en tu máquina** — etapa 18.
+   `crates/thalyx-btrfs`, invocado por `thalyx disk format`. El decreto de que PID
+   1 nunca fabrica **se conservó entero**: quien crea el store es un humano y PID
+   1 no alcanza ese código. Falta que el filesystem se vuelva un store, que son
+   los tres subvolúmenes, y van por ioctl.
 3. **El instalador**: tabla de particiones GPT, una partición EFI con el kernel,
    y el store en la otra. Cesar decidió que la máquina arranca **sin** la ISO
    después, así que hay que escribir Thalyx en el disco de la máquina. Va junto

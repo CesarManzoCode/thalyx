@@ -37,6 +37,9 @@
 use std::path::{Path, PathBuf};
 use thalyx_syscall::mount_flags::{HARDENED, NODEV, NOSUID};
 
+/// The alias every command module in this crate uses.
+type Fallible = Result<(), Box<dyn std::error::Error>>;
+
 /// The kernel command-line parameter that names the disk.
 const PARAMETER: &str = "thalyx.store=";
 
@@ -253,6 +256,216 @@ pub fn describe() {
     println!();
     println!("named by `{PARAMETER}<device>` on the kernel command line, and");
     println!("mounted — never created — by PID 1.");
+}
+
+/// Things a human does to the disk itself, none of which PID 1 can reach.
+#[derive(clap::Subcommand)]
+pub enum DiskCommand {
+    /// What PID 1 would mount off a store disk, and where
+    Layout,
+
+    /// Ask a device what filesystem it holds and what it is called
+    Identify {
+        /// The block device or image file to read
+        device: PathBuf,
+    },
+
+    /// Write an empty Thalyx store onto a device, destroying what is there
+    ///
+    /// This is the human act the decree requires. PID 1 mounts a store and is
+    /// forbidden from making one, because a machine that fabricated a store when
+    /// it could not find the old one would boot looking perfect on the day the
+    /// disk was not attached.
+    Format {
+        /// The block device or image file to write
+        device: PathBuf,
+        /// The filesystem label. The default is what an installed machine looks
+        /// for, so changing it produces a store Thalyx will not find by name.
+        #[arg(long, default_value = thalyx_btrfs::LABEL)]
+        label: String,
+        /// Skip the confirmation. For scripts and tests.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// Run one of them.
+pub fn run(command: DiskCommand) -> Fallible {
+    match command {
+        DiskCommand::Layout => {
+            describe();
+            println!();
+            describe_plan();
+            Ok(())
+        }
+        DiskCommand::Identify { device } => {
+            report_identity(&device, &thalyx_btrfs::identify(&device)?);
+            Ok(())
+        }
+        DiskCommand::Format { device, label, yes } => format(&device, &label, yes),
+    }
+}
+
+/// Where a store Thalyx writes puts its chunks, on any device.
+///
+/// Printed because it is the only way to ask. `dev/verify.sh` damages both copies
+/// of the metadata chunk as its control — a mount that succeeds on anything would
+/// make the mount above it establish nothing — and it takes the offsets from here
+/// rather than repeating them. Two copies of a layout in two languages disagree
+/// eventually, and this disagreement would be a control that damages an
+/// unallocated part of the device, finds the filesystem mounts anyway, and reports
+/// that the kernel accepts anything.
+fn describe_plan() {
+    use thalyx_btrfs::layout::{Geometry, Plan};
+
+    let plan = Plan::new(Geometry::default());
+    println!("A store Thalyx writes has this shape on the device:");
+    println!();
+    println!(
+        "  {:<10} {:>12} {:>12}  copies at",
+        "chunk", "logical", "length"
+    );
+    for chunk in &plan.chunks {
+        use thalyx_btrfs::disk::block_group;
+        let kind = if chunk.flags & block_group::DATA != 0 {
+            "data"
+        } else if chunk.flags & block_group::SYSTEM != 0 {
+            "system"
+        } else {
+            "metadata"
+        };
+        let copies: Vec<String> = chunk
+            .stripes
+            .iter()
+            .map(|stripe| stripe.0.to_string())
+            .collect();
+        println!(
+            "  {:<10} {:>12} {:>12}  {}",
+            kind,
+            chunk.logical.0,
+            chunk.length,
+            copies.join(", ")
+        );
+    }
+    println!();
+    println!(
+        "  {} bytes of the device, all of it above the reserved first megabyte",
+        plan.device_used
+    );
+    println!("  and none of it covering a superblock.");
+}
+
+/// Say what a device turned out to be, in the three terms that decide what to do.
+fn report_identity(device: &Path, identity: &thalyx_btrfs::Identity) {
+    let named = device.display();
+    match identity {
+        thalyx_btrfs::Identity::Btrfs { label, fsid } => {
+            let called = if label.is_empty() {
+                "btrfs, with no label".to_string()
+            } else {
+                format!("btrfs, labelled `{label}`")
+            };
+            println!("  {named}  {called}");
+            println!(
+                "  {:<width$}  fsid {}",
+                "",
+                hex(fsid),
+                width = named.to_string().len()
+            );
+            if label == thalyx_btrfs::LABEL {
+                println!("  this is a Thalyx store");
+            }
+        }
+        thalyx_btrfs::Identity::NotBtrfs => {
+            println!("  {named}  not btrfs");
+        }
+        thalyx_btrfs::Identity::Corrupt { expected, found } => {
+            println!("  {named}  btrfs, and its superblock does not check out");
+            println!("      expected {} and found {}", hex(expected), hex(found));
+            println!("      that is different from `not btrfs`: this is a Thalyx-shaped");
+            println!("      filesystem that has been damaged, not somebody else's disk.");
+        }
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Write a store, having said what is about to be destroyed.
+///
+/// The confirmation asks for the device's own path rather than for `y`. This is
+/// the most destructive thing Thalyx can be asked to do and the argument is one
+/// word long: `/dev/sda` and `/dev/sdb` differ by a keystroke, and a `y` confirms
+/// a sentence the human has already stopped reading. Typing the path back is the
+/// one answer that cannot be given by mistake to the wrong disk.
+fn format(device: &Path, label: &str, yes: bool) -> Fallible {
+    use std::io::{IsTerminal, Write};
+
+    println!("About to write a Thalyx store onto {}.", device.display());
+    println!();
+    // What is there now, said before the question rather than after it. A
+    // confirmation that does not say what is being destroyed is a confirmation
+    // about nothing.
+    match thalyx_btrfs::identify(device) {
+        Ok(identity) => report_identity(device, &identity),
+        Err(error) => {
+            println!("  could not read what is there: {error}");
+            println!("  that is not permission to proceed — it is one more thing");
+            println!("  unknown about a device about to be overwritten.");
+        }
+    }
+    println!();
+    println!("  Everything on it will be gone. This cannot be undone.");
+    println!();
+
+    if yes {
+        println!("  confirmed with --yes");
+    } else if !std::io::stdin().is_terminal() {
+        // Silence is not consent, the same rule the capability prompt keeps.
+        eprintln!("  no terminal available to confirm; refusing");
+        return Err("formatting was not confirmed".into());
+    } else {
+        print!("  Type the device's path to confirm: ");
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if answer.trim() != device.display().to_string() {
+            eprintln!("  that is not {}; refusing", device.display());
+            return Err("formatting was not confirmed".into());
+        }
+    }
+
+    let written = thalyx_btrfs::write(
+        device,
+        label,
+        &thalyx_btrfs::Uuids::random(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or(0),
+    )?;
+
+    println!();
+    println!(
+        "  ok  store        {} — {} bytes, labelled `{}`",
+        device.display(),
+        written.total_bytes,
+        written.label
+    );
+    println!("      fsid {}", hex(&written.fsid));
+    println!(
+        "      {} superblock(s), {} bytes of metadata",
+        written.superblocks, written.metadata_bytes
+    );
+    println!();
+    // Said plainly, because the store is not usable yet and a message that
+    // stopped here would read as though it were.
+    println!("  It has no subvolumes yet, so PID 1 cannot mount it: `system`,");
+    println!("  `modules` and `user` are what it looks for. Creating them is the");
+    println!("  next thing to be built, and until then a store made this way is");
+    println!("  a filesystem rather than a store.");
+    Ok(())
 }
 
 #[cfg(test)]

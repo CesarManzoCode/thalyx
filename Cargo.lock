@@ -889,6 +889,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-btrfs"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "thalyx-cli"
 version = "0.1.0"
 dependencies = [
@@ -901,6 +910,7 @@ dependencies = [
  "thalyx-abi",
  "thalyx-agent",
  "thalyx-bpf",
+ "thalyx-btrfs",
  "thalyx-contract",
  "thalyx-core",
  "thalyx-graph",

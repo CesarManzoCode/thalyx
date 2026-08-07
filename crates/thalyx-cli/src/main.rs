@@ -126,6 +126,10 @@ enum Command {
     #[command(subcommand)]
     Store(StoreCommand),
 
+    /// The disk a machine keeps its store on
+    #[command(subcommand)]
+    Disk(store_disk::DiskCommand),
+
     /// Packaging tools for module publishers
     #[command(subcommand)]
     Dev(dev::DevCommand),
@@ -294,6 +298,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             memory::run(&root, command)
         }
         Command::Enforce(command) => enforce::run(&root, command),
+        Command::Disk(command) => store_disk::run(command),
         Command::Store(StoreCommand::Status) => {
             let store = Store::open(&root)?;
             render::store_status(&store)

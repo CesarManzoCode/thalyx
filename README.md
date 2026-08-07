@@ -296,12 +296,15 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 667 of them**, across unit tests, fault injection
+**Built and covered by tests: 710 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
 **Verified on real hardware**: 104 checks, on one machine with a BPF LSM, cgroup
-v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-06. Nothing failed. One thing
+v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-06. Nothing failed. Since then
+one thing has been built and **not yet exercised on hardware**: Thalyx writes its
+own Btrfs with no `mkfs.btrfs`, and nobody has mounted it. `btrfs check` accepts
+it, and `btrfs check` is not a mount. One thing
 went unproven, and it is a thing that does not exist yet rather than a check
 that could not be made: the agent has no model. The BPF LSM has denied a real
 network connection to a process that lacked the permission, and only to that

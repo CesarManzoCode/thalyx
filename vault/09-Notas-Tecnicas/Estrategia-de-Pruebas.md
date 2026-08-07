@@ -131,6 +131,16 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
+Y van ocho, con la del 2026-08-07: el parser que comprueba los offsets de
+`thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con
+un comentario al final de su línea**, porque quitaba el `;` sin quitar el `/* … */`
+que venía después. Reportó `btrfs_root_item` de 343 bytes cuando el escritor
+producía 439. El escritor tenía razón —la imagen real de `mkfs.btrfs` dice 439— y
+sólo se pudo saber porque había una muestra capturada contra la que graduar al
+que preguntaba. Por eso `tests/layout.rs` ahora tiene una prueba que **comprueba
+al parser antes de medir nada con él**, usando los dos tamaños que los headers
+afirman en su propio texto.
+
 Y un corolario que sale de la corrida: **un flag que no hace nada es el mismo fallo que un permiso que no aplica nada.** `--unconfined` solo tenía efecto cuando el kernel no podía aplicar políticas, así que en una máquina donde el enforcement funcionaba el flag se ignoraba en silencio. El sistema hacía algo distinto de lo que se le pidió y no lo decía en ninguna parte.
 
 ## Regla derivada: una medición de un solo lado no necesita una máquina en silencio
@@ -1239,6 +1249,87 @@ entraría un segundo programa sin que el número se moviera— sino **contarla c
 su propia clase**, imprimirla con sus números, y afirmar que las tres clases
 suman el total. Una entrada de una clase que nadie previó se nombra en vez de
 desaparecer.
+
+## Regla derivada: un escritor de un formato ajeno necesita la misma muestra capturada que un lector
+
+**La regla del fixture inventado y la de la constante capturada valen igual —y
+con más urgencia— cuando el código *escribe* el formato en vez de leerlo. Un
+lector que se equivoca da una respuesta mala; un escritor que se equivoca produce
+algo que nadie puede leer.**
+
+Salió escribiendo `thalyx-btrfs`, el `mkfs.btrfs` propio. Lo obligaba
+[[Filosofia-Fundacional]] —la imagen es el kernel y un programa, así que no puede
+llevar `mkfs.btrfs`— y es la misma forma que `bpftool` y que `cpio`.
+
+Btrfs firma cada bloque con CRC32C y usa **el mismo primitivo con dos
+convenciones distintas**:
+
+- La suma de un bloque o del superbloque es CRC32C estándar: complemento al
+  entrar y al salir, porque pasa por el shash del kernel.
+- El hash del nombre de una entrada de directorio es el primitivo **crudo**,
+  arrancando en `~1`, **sin complemento final**.
+
+La primera versión aplicó la convención estándar a las dos. El hash de `default`
+salió 1916812589 en vez de 2378154706: **un número estable, plausible, y que hace
+que el kernel resuelva el subvolumen por omisión encontrando nada**. Leer el
+código del kernel no lo habría evitado — una llamada va a `crypto_shash` y la
+otra a `__crc32c_le`, y la diferencia está en el intermediario, no en la
+llamada.
+
+Lo que lo encontró fue una imagen real. `mkfs.btrfs` escribió una, se le calculó
+el hash a su entrada `default`, y las dos convenciones quedaron establecidas
+midiéndolas. Hay una prueba por cada una y **una tercera que afirma que no
+coinciden**, porque «seguro son la misma función» es exactamente el pensamiento
+que produjo la versión mala.
+
+Los dos instrumentos, ninguno de los cuales es leer el formato:
+
+1. `crates/thalyx-btrfs/tests/uapi_btrfs_tree.h` y `uapi_btrfs.h` son los
+   headers de Linux capturados verbatim, y `tests/layout.rs` los parsea y
+   comprueba **cada tamaño y cada offset** que el escritor usa. Los dos archivos,
+   porque los structs están en uno y las cotas que los dimensionan en el otro.
+2. `tests/against_btrfs_progs.rs` le da lo escrito a `btrfs check`, que recorre
+   los árboles, sigue las referencias inversas y cuadra la contabilidad de cada
+   grupo de bloques. Se salta donde falta btrfs-progs, dice `NOT PROVEN`, y
+   `THALYX_REQUIRE_BTRFS_PROGS=1` convierte el salto en fallo.
+
+Y una frontera dicha en voz alta: **`btrfs check` no es un montaje.** Lee con el
+código de btrfs-progs, no con el del kernel, y los dos ya se han contradicho.
+Que el montaje funcione sólo lo puede establecer la máquina de Cesar, y es la
+etapa 18 de `verify.sh`.
+
+## Regla derivada: un marcador de versión omitido no falla al parsearse, se parsea como otro formato
+
+**El peor error posible en un formato binario no es el que no parsea. Es el bit
+que dice en qué versión está escrito lo demás, porque sin él todo parsea — como
+otra cosa.**
+
+El primer sistema de archivos que escribió Thalyx tenía los ocho árboles en su
+sitio, las tres chunks mapeadas, cada clave donde debía, y `btrfs inspect-internal
+dump-tree` lo imprimió entero y correcto. `btrfs check` reportó **once fallas de
+referencia**, una por cada extent que existe:
+
+```
+ref mismatch on [1048576 16384] extent item 0, found 1
+tree extent[1048576, 16384] parent 1048576 has no backref item in extent tree
+```
+
+La causa era un bit: `BTRFS_MIXED_BACKREF_REV << 56` en el campo `flags` de la
+cabecera de cada bloque. Sin él la revisión es 0, que significa el formato
+**viejo** de referencias inversas, así que los extent items se estaban leyendo
+con un layout distinto del que se escribieron. El otro bit puesto en ese campo
+está en la posición 0, así que un hexdump de la cabecera se ve completamente
+normal.
+
+Lo que lo delató no fue ninguna de las once líneas de error: fue una línea
+informativa de `dump-tree` que decía `backref revision 0` donde la imagen de
+referencia decía `backref revision 1`. **El síntoma estaba lo más lejos posible
+de la causa**, y el diagnóstico salió de comparar contra una muestra real, no de
+leer los errores.
+
+Generaliza: cuando un formato lleva su propia versión, esa versión se comprueba
+aparte y explícitamente. Hay una prueba que sólo afirma ese bit, y dice en su
+comentario qué pasó sin él.
 
 ## Regla de documentación
 

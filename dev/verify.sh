@@ -57,10 +57,12 @@ cleanup() {
     # interrupted run that left it mounted would turn this line into `rm -rf`
     # through a mount point — deleting the contents of a filesystem instead of
     # the file holding it.
-    if [ -n "${SMNT:-}" ] && mountpoint -q "$SMNT" 2>/dev/null; then
-        umount "$SMNT" 2>/dev/null || red "   could not unmount $SMNT; not deleting $WORK"
-        mountpoint -q "$SMNT" 2>/dev/null && return
-    fi
+    for mounted in "${SMNT:-}" "${TMNT:-}"; do
+        [ -n "$mounted" ] || continue
+        mountpoint -q "$mounted" 2>/dev/null || continue
+        umount "$mounted" 2>/dev/null || red "   could not unmount $mounted; not deleting $WORK"
+        mountpoint -q "$mounted" 2>/dev/null && return
+    done
     rm -rf "${WORK:-/nonexistent}"
 }
 trap cleanup EXIT INT TERM
@@ -2116,6 +2118,150 @@ if [ -x "$THALYX" ] && [ -d "$STORE" ] && \
 else
     unproven "no installed module to ask whether it can reach the terminal"
 fi
+
+# --------------------------------------- 18. Thalyx writes the Btrfs itself
+
+step "18. Thalyx writes its own Btrfs, and this kernel mounts it"
+
+# Construccion-del-ISO.md, under ¿Quién crea el store?: an installed machine has
+# to create the disk it keeps everything on, and the image holds the Linux kernel
+# and one program, so `mkfs.btrfs` cannot be on it. The same shape as `bpftool`
+# for the LSM and `cpio` for the initramfs, and the same answer.
+#
+# Two requirements and two conditions, kept apart — the same split stage 13
+# needed and for the same reason. `btrfs check` validates the format and the
+# kernel mounts it, and they are not one fact: the development container has
+# btrfs-progs and a kernel with no Btrfs in it, so a single guard would run the
+# checker, fail the mount, and report Thalyx broken for something the machine
+# cannot do.
+modprobe btrfs > /dev/null 2>&1
+
+TDISK="$WORK/thalyx-written.img"
+TMNT="$WORK/thalyx-written-mnt"
+mkdir -p "$TMNT"
+truncate -s 2G "$TDISK"
+
+# The write itself needs nothing at all, so it is not behind either skip. A
+# failure here is Thalyx, on any machine.
+if "$THALYX" disk format "$TDISK" --yes > "$WORK/disk-format.log" 2>&1; then
+    proven "Thalyx wrote a Btrfs filesystem with no mkfs.btrfs and no libbtrfs"
+else
+    failed "Thalyx could not write a store; see $WORK/disk-format.log"
+    tail -15 "$WORK/disk-format.log" | sed 's/^/     /'
+fi
+
+# Read back through Thalyx's own reader. This is the half of the label decision
+# that PID 1 will depend on: a store is found by asking each device what it is
+# called, so a store whose label cannot be read is a store nothing finds.
+if "$THALYX" disk identify "$TDISK" 2>/dev/null | grep -q "this is a Thalyx store"; then
+    proven "it identifies itself by the label an installed machine looks for"
+else
+    failed "Thalyx wrote a store and cannot recognise it"
+    "$THALYX" disk identify "$TDISK" 2>&1 | sed 's/^/     /'
+fi
+
+# And the baseline that gives the line above its meaning: an untouched device
+# has to come back as *not Btrfs* rather than as a store with no name. Without
+# it, a reader that answered "Thalyx store" for everything would pass.
+truncate -s 2G "$WORK/never-formatted.img"
+if "$THALYX" disk identify "$WORK/never-formatted.img" 2>/dev/null | grep -q "not btrfs"; then
+    proven "a device nobody formatted is reported as no filesystem, not as no label"
+else
+    failed "an unformatted device was not told apart from a store"
+fi
+
+if ! command -v btrfs > /dev/null; then
+    if [ "${THALYX_REQUIRE_BTRFS_PROGS:-0}" = 1 ]; then
+        failed "btrfs-progs is not installed, so nothing validated the format Thalyx wrote"
+    else
+        unproven "btrfs-progs is not installed, so nothing validated the format Thalyx wrote"
+    fi
+else
+    if btrfs check "$TDISK" > "$WORK/disk-check.log" 2>&1 &&
+       grep -q "no error found" "$WORK/disk-check.log"; then
+        proven "btrfs check walks it and finds nothing wrong"
+    else
+        failed "btrfs check refused a filesystem Thalyx wrote; see $WORK/disk-check.log"
+        tail -20 "$WORK/disk-check.log" | sed 's/^/     /'
+    fi
+fi
+
+# The claim only a machine with Btrfs in its kernel can make, and the one this
+# whole crate exists for.
+if ! grep -qw btrfs /proc/filesystems 2>/dev/null; then
+    GAP="this kernel has no Btrfs, so nothing could mount what Thalyx wrote"
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then
+        failed "$GAP"
+    else
+        unproven "$GAP"
+    fi
+elif mount -o loop "$TDISK" "$TMNT" > "$WORK/disk-mount.log" 2>&1; then
+    proven "the kernel mounts a filesystem Thalyx wrote byte by byte"
+
+    # Mountable is not usable. A filesystem the kernel accepts and then refuses
+    # to write to would pass the line above and be no use as a store, and the
+    # three subvolumes are the first thing anything asks of it.
+    MADE=1
+    for subvol in system modules user; do
+        btrfs subvolume create "$TMNT/$subvol" > /dev/null 2>&1 || MADE=0
+    done
+    if [ "$MADE" = 1 ]; then
+        proven "the three decreed subvolumes can be created on it"
+    else
+        failed "the filesystem mounted and would not take its subvolumes"
+    fi
+
+    if echo "written into a filesystem Thalyx made" > "$TMNT/system/proof.txt" 2>/dev/null &&
+       [ "$(cat "$TMNT/system/proof.txt" 2>/dev/null)" = "written into a filesystem Thalyx made" ]; then
+        proven "a file written to it comes back, so the allocator has somewhere to go"
+    else
+        failed "the filesystem mounted and a write to it did not survive being read"
+    fi
+
+    umount "$TMNT" 2>/dev/null || red "   could not unmount $TMNT"
+
+    # The control, per rule 4. Everything above is also satisfied by a kernel
+    # that mounts anything it is handed — and the way to find out is to hand it
+    # something broken. Sixteen bytes in *both* copies of the metadata chunk's
+    # first block, because Btrfs is designed to survive damage to one of a DUP
+    # pair, and expecting a refusal there would be asserting that the redundancy
+    # does not work.
+    # The offsets come from Thalyx, not from this file. Written here they would be
+    # a second copy of the layout, and when the two disagreed the control would
+    # damage an unallocated part of the device, watch it mount, and report that
+    # the kernel accepts anything — a false alarm pointing at the wrong thing.
+    STRIPES="$("$THALYX" disk layout 2>/dev/null |
+               awk '$1 == "metadata" { for (i = 4; i <= NF; i++) { gsub(",", "", $i); print $i } }')"
+    cp --sparse=always "$TDISK" "$WORK/damaged.img"
+    if [ -z "$STRIPES" ]; then
+        failed "could not read the metadata stripes out of \`thalyx disk layout\`,"
+        echo "     so the control below could not be set up and the mount above"
+        echo "     is unaccompanied"
+    else
+        for offset in $STRIPES; do
+            dd if=/dev/zero of="$WORK/damaged.img" bs=1 seek=$((offset + 200)) \
+               count=16 conv=notrunc status=none 2>/dev/null
+        done
+        if mount -o loop "$WORK/damaged.img" "$TMNT" > /dev/null 2>&1; then
+            umount "$TMNT" 2>/dev/null
+            failed "the kernel mounted a filesystem with both copies of its root tree damaged,"
+            echo "     so the mount above establishes nothing about the format being right"
+        else
+            proven "the same filesystem, damaged, is refused — so the mount was a real check"
+        fi
+    fi
+else
+    failed "Thalyx wrote a filesystem and this kernel would not mount it"
+    tail -20 "$WORK/disk-mount.log" | sed 's/^/     /'
+    echo "     This is the one thing only this machine can establish. btrfs check"
+    echo "     passing and the kernel refusing means the two disagree, and the"
+    echo "     kernel is the one that matters."
+fi
+
+# What this stage does *not* establish: that PID 1 can bring the store up. It
+# mounts `subvol=system`, and a freshly written filesystem has no subvolumes at
+# all — creating them is the next thing to be built, and it is done above with
+# btrfs-progs rather than by Thalyx.
 
 # ---------------------------------------------------------------- summary
 
