@@ -14,9 +14,93 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El acto 2 habría fallado, y se supo sin correrlo — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Cesar preguntó si GNOME Boxes servía para el
+> acto 2, porque no tiene una segunda PC. Buscar la respuesta encontró un defecto
+> que habría aparecido con la memoria USB ya puesta en una máquina.
+>
+> ### `CONFIG_USB_STORAGE` no estaba, y su ausencia no rompe el arranque
+>
+> El acto 2 es `dd` a una USB, arrancar, `discos`, `instalar-en /dev/nvme0n1`. Sin
+> ese driver:
+>
+> - La máquina **arranca de la USB perfectamente**, porque la especificación UEFI
+>   obliga al **firmware** a leer el medio con su propio controlador. Monta sus
+>   siete sistemas de archivos, engancha el LSM, saca su prompt en la pantalla.
+> - Y falla **dos comandos después**: `instalar-en` busca el medio del que arrancó
+>   recorriendo `/sys/block` (`partitions.rs:189`), y el kernel enumeró la USB como
+>   dispositivo USB sin darle nunca un dispositivo de bloque.
+> - El mensaje sería *«no encuentro un medio de Thalyx»* en una máquina que está
+>   visiblemente corriendo desde uno. **En ningún punto aparece la palabra USB.**
+>
+> Es la **cuarta vez** que algo de fuera hacía un trabajo que el diseño nunca
+> escribió —systemd con los controladores de cgroup, el initramfs externo con el
+> `switch_root`, el archivo del kernel con `/dev/console`— y la primera en que la
+> capa de abajo **no se quita**: el firmware sigue ahí haciendo su parte, y por eso
+> el arranque no se rompe y el defecto es invisible. Regla nueva en
+> [[Estrategia-de-Pruebas]], con la pregunta que sí lo encuentra: no *«¿qué hardware
+> tiene la PC?»* sino *«¿qué tiene que leer Thalyx además de lo que el firmware ya
+> leyó por él?»*. Un inventario de hardware no la contiene, que es por qué no estaba
+> en las tres filas de la tabla de riesgo.
+>
+> Ya está puesta, con **una quinta prueba** que lee `thalyx.config` y la exige,
+> comprobada en las dos direcciones —comentando la línea, falla—, porque
+> `config-check` atrapa una opción que Kconfig descartó y **no puede atrapar una que
+> nadie pidió**.
+>
+> ### Y Boxes no sirve, pero QEMU sí sirve para más de lo que decía la bóveda
+>
+> Boxes da discos virtio y teclado PS/2 — o sea lo que el acto 1 ya probó — y no
+> tiene interfaz para agregar otros controladores. Pero **QEMU emula xHCI, NVMe,
+> AHCI y un disco USB**, y el driver del kernel que habla con un controlador emulado
+> es el mismo que habla con silicio real. La bóveda decía «una VM no prueba los
+> controladores», que era cierto de la VM que se estaba usando y no de toda VM.
+> Corregido en [[Construccion-del-ISO]] con la tabla de qué responde cada cosa.
+>
+> **`make -C image run-hardware`**, con tres modos:
+>
+> ```
+> make -C image run-hardware              arranca del medio USB; adentro, `discos`
+>                                         y `instalar-en /dev/nvme0n1`
+> make -C image run-hardware NOMEDIUM=1   la misma máquina sin la USB, que ahora
+>                                         tiene que arrancar del NVMe que instaló
+> make -C image run-hardware NOPS2=1      sin controlador PS/2, así que una tecla
+>                                         que llegue sólo pudo venir por USB
+> ```
+>
+> Los dos discos en blanco se hacen una vez y se conservan: un disco que se borra
+> en cada corrida no puede mostrar que la instalación siguió ahí.
+>
+> **No es el acto 2 y no lo cierra**, y el objetivo lo dice línea por línea. Lo que
+> hace es mover el riesgo de cuatro grupos de controladores nunca ejercidos a cuatro
+> ejercidos contra controladores emulados, dejando abierto lo que de verdad pide una
+> PC: silicio real y una memoria física en un puerto físico.
+>
+> ### Lo que falta, y es tuyo
+>
+> ```
+> git pull
+> make -C image                          # aquí se sabe si USB_STORAGE sobrevivió
+> sudo make -C image installed
+> make -C image run-hardware
+> ```
+>
+> Adentro: `discos` tiene que listar `/dev/nvme0n1`, `/dev/sda` y el medio. Después
+> `instalar-en /dev/nvme0n1`, `apagar`, y `make -C image run-hardware NOMEDIUM=1`.
+>
+> **Lo primero que puede fallar sigue siendo la compilación del kernel**, y está
+> bien: `config-check` detiene el build si `olddefconfig` descartó `USB_STORAGE`.
+> Depende de `USB` y `SCSI` y las dos ya estaban, así que no debería — pero si pasa,
+> la lectura es la de `HID_SUPPORT`: buscar el `menuconfig` que la contiene antes
+> que sus dependencias.
+>
+> **789 pruebas pasan** (788 antes de este cambio), `clippy` limpio en 1.97,
+> `cargo fmt` aplicado. El bloque de abajo sigue siendo el estado del acto 1.
+>
 > ## El acto 1 está hecho: una máquina instalada arrancó sola y respondió — 2026-08-07
 >
-> **Es lo primero que hay que leer.** `sudo ./dev/verify.sh` cerró en
+> **El bloque de arriba es más reciente.** `sudo ./dev/verify.sh` cerró en
 > **`proven 135 · not proven 1 · failed 0`** —el único no probado es llama.cpp, que
 > es Fase 2— y `make -C image run-installed` arrancó la máquina instalada.
 >

@@ -11,6 +11,7 @@
 #   make count            list what is really inside the image
 #   sudo make installed   partition a disk image and install Thalyx onto it
 #   make run-installed    boot that disk, with no medium attached
+#   make run-hardware     boot it off USB, with xHCI, NVMe and AHCI attached
 #
 # `store` is the one that needs root, and the only one. It will not build
 # anything: see the note above it.
@@ -41,12 +42,16 @@
 # bootloader in front of it, which is the first half of the Phase 1 exit
 # criterion.
 #
-# **`installed` and `run-installed` have never run, anywhere.** They are the other
-# half — the disk the medium leaves behind, booted with no medium attached — and
-# this container can build neither: it has no QEMU, no UEFI firmware, no kernel to
-# build, and loop devices that support no partitions at all. Stage 20 of
-# `dev/verify.sh` exercises everything up to the boot; the boot itself is
-# `run-installed` and nothing else answers it.
+# `installed` and `run-installed` ran on 2026-08-07, and a firmware started a disk
+# Thalyx had written byte by byte with no medium attached to help it. That is act
+# 1 of the exit criterion and it is closed. Stage 20 of `dev/verify.sh` exercises
+# everything up to the boot; the boot itself is `run-installed`.
+#
+# **`run-hardware` has never run, anywhere**, and this container can neither build
+# nor start it: no QEMU, no UEFI firmware, no kernel to build. It is as close to
+# act 2 as a machine gets — the drivers a PC needs, driven through emulated
+# controllers instead of real ones — and the long note above it is exact about
+# which parts of act 2 that answers and which it leaves open.
 #
 # Stated here rather than in a footnote because the project's own rules say not
 # to stack unverified work and stay quiet about it.
@@ -132,7 +137,7 @@ GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
         store store-stage greeter lsm doctor hook-check boot pin-kernel \
-        esp run-uefi initramfs-check installed run-installed
+        esp run-uefi initramfs-check installed run-installed run-hardware
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -1189,6 +1194,134 @@ run-installed:
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-installed.fd \
 	    -drive format=raw,file=$(INSTALLED) \
+	    $(WATCH)
+
+# ─────────────────────────────────────── act 2, as far as a machine can take it
+#
+# `Criterio-de-Salida-Fase-1.md` splits the criterion into two acts and says the
+# second needs iron: a USB stick, a PC, `discos`, `instalar-en /dev/nvme0n1`.
+# Act 1 is done. What act 2 answers that act 1 did not is three drivers — the USB
+# keyboard, NVMe, and AHCI — and `run-installed` above can reach none of them,
+# because everything it attaches is virtio and its keyboard is PS/2.
+#
+# This target attaches the controllers instead of the hardware. **That is not the
+# same thing and it is not act 2**, and the difference is worth being exact about
+# rather than waving at, because this file's own header says not to stack
+# unverified work and stay quiet about it:
+#
+#   What it does answer, completely. That `CONFIG_BLK_DEV_NVME` produces
+#   `/dev/nvme0n1`, and that its partitions come back named `nvme0n1p1` and not
+#   `nvme0n11`. That was the single largest thing act 2 was carrying:
+#   `partitions.rs` reads those names from sysfs rather than deriving them,
+#   precisely so an installer that works on SATA does not write the store into
+#   nowhere on NVMe, and until now nothing had ever exercised the NVMe side of it.
+#   The driver the emulated controller talks to is the same driver real silicon
+#   talks to.
+#
+#   The same for AHCI producing `/dev/sda` through `BLK_DEV_SD`, and for
+#   `USB_STORAGE` making the boot medium a disk the kernel can read — the option
+#   that was missing until 2026-08-07 and would have failed act 2 on the first
+#   `discos`, on any machine, with the stick already in the PC.
+#
+#   What it half answers. The USB keyboard. `xhci_hcd` and `usbhid` really bind
+#   and really create an input device, and the kernel says so on the serial
+#   console. But QEMU's machine still has an i8042, so a keystroke that arrives
+#   does not prove which of the two carried it. `NOPS2=1` removes the PS/2
+#   controller and makes it prove exactly that — use it, and if this QEMU is too
+#   old to know the option it will say so at once and cost nothing.
+#
+#   What it does not answer at all. Real firmware, real silicon, and a physical
+#   stick in a physical port. A quirk in one vendor's xHCI is not reachable from
+#   here and never will be. Act 2 stays open until a PC has run it.
+#
+# The two blank disks are made once and kept. A disk wiped every run cannot show
+# the thing the second half is about — that the install stayed on it — and the
+# way to start over is to delete them.
+#
+#     make -C image run-hardware              boot the medium; then `discos`
+#                                             and `instalar-en /dev/nvme0n1`
+#     make -C image run-hardware NOMEDIUM=1   the same machine with the stick
+#                                             pulled out, which must now boot
+#                                             from the NVMe it just installed
+#     make -C image run-hardware NOPS2=1      no PS/2 controller, so a keystroke
+#                                             that lands can only be USB
+#
+# HEADLESS=1 works and defeats the point: the keyboard is half of what this is
+# for, and there is nothing to type into with no window.
+HWNVME     := $(BUILD)/hardware-nvme.img
+HWSATA     := $(BUILD)/hardware-sata.img
+HWNVMESIZE := 8G
+HWSATASIZE := 2G
+
+# bootindex, so that the run after an install is not a coin toss. Once the NVMe
+# has been installed onto, two disks carry \EFI\BOOT\BOOTX64.EFI and the firmware
+# picks one; naming the medium first makes "boot the stick" and "boot the machine
+# it built" two different commands instead of two outcomes of one.
+HWMEDIUM = $(if $(NOMEDIUM),,\
+	    -drive if=none,id=medium,format=raw,file=$(INSTALLED) \
+	    -device usb-storage,bus=xhci.0,drive=medium,bootindex=0)
+# A literal comma cannot be written inside $(if ...): make would read it as the
+# separator between the two branches.
+comma     := ,
+HWMACHINE  = q35$(if $(NOPS2),$(comma)i8042=off)
+
+run-hardware:
+	@test -f $(INSTALLED) || { \
+	    echo "  no installed disk at $(INSTALLED), and it is also the medium."; \
+	    echo; \
+	    echo "      sudo make -C image installed"; \
+	    echo; \
+	    exit 1; \
+	}
+	@test -n "$(OVMF_CODE)" || { \
+	    echo; \
+	    echo "  no UEFI firmware for QEMU on this machine, so there is nothing"; \
+	    echo "  to boot with. This is not Thalyx failing — nothing was tested."; \
+	    echo; \
+	    echo "      Fedora:  sudo dnf install edk2-ovmf"; \
+	    echo "      Debian:  sudo apt install ovmf"; \
+	    echo; \
+	    exit 1; \
+	}
+	@# Made once, and only if absent. See the note above: a blank disk every run
+	@# cannot answer whether the install survived being installed.
+	@test -f $(HWNVME) || { \
+	    echo "  making a blank NVMe disk, once: $(HWNVME)"; \
+	    truncate -s $(HWNVMESIZE) $(HWNVME); }
+	@test -f $(HWSATA) || { \
+	    echo "  making a blank SATA disk, once: $(HWSATA)"; \
+	    truncate -s $(HWSATASIZE) $(HWSATA); }
+	@echo
+	@echo "  What to watch for on this terminal, which is where the kernel talks:"
+	@echo
+	@echo "    xhci_hcd ... xHCI Host Controller        the USB controller bound"
+	@echo "    input: QEMU USB Keyboard ...             USB_HID bound, and a key"
+	@echo "                                             now has somewhere to land"
+	@echo "    usb-storage ... USB Mass Storage device  the medium is a disk"
+	@echo "    nvme nvme0: ...                          NVMe bound"
+	@echo
+	@echo "  And in the window, which is where Thalyx talks: 'discos' must list"
+	@echo "  /dev/nvme0n1, /dev/sda and the medium. If the NVMe is missing, the"
+	@echo "  driver is the thing to look at and not the installer."
+	@echo
+	@# Fresh firmware variables every run, on purpose. Carrying them over would
+	@# let a boot entry written by an earlier run decide a later one, and then
+	@# "the machine boots from its own disk" would be a claim about NVRAM.
+	cp $(OVMF_VARS) $(BUILD)/ovmf-vars-hardware.fd
+	qemu-system-x86_64 \
+	    -machine $(HWMACHINE) \
+	    -m $(MEMORY) \
+	    -smp 2 \
+	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
+	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-hardware.fd \
+	    -device qemu-xhci,id=xhci \
+	    -device usb-kbd,bus=xhci.0 \
+	    $(HWMEDIUM) \
+	    -drive if=none,id=nvme0,format=raw,file=$(HWNVME) \
+	    -device nvme,drive=nvme0,serial=thalyx-nvme \
+	    -device ich9-ahci,id=ahci \
+	    -drive if=none,id=sata0,format=raw,file=$(HWSATA) \
+	    -device ide-hd,bus=ahci.0,drive=sata0 \
 	    $(WATCH)
 
 clean:

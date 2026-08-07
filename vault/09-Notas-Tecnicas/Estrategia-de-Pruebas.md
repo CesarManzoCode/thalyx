@@ -1707,6 +1707,55 @@ Tres cosas:
    Las dos salidas son válidas; lo que no es válido es ninguna de las dos, que es lo
    que había.
 
+## Regla derivada: lo que el anfitrión hacía gratis, cuarta vez, y el anfitrión era el firmware
+
+Encontrada el 2026-08-07 **leyendo la configuración** y no arrancando, que es la
+única razón por la que no se encontró con la memoria USB ya puesta en una PC.
+
+Al preparar el acto 2 —`dd` a una USB, arrancar una PC, `discos`,
+`instalar-en /dev/nvme0n1`— resultó que `image/thalyx.config` no pedía
+**`CONFIG_USB_STORAGE`**. Ni `USB_UAS`. O sea: el kernel de Thalyx no tenía cómo
+ver un disco USB.
+
+Lo que hace a este caso de la familia es **por qué no se notaba**. La
+especificación UEFI obliga al **firmware** a leer el medio de arranque, con su
+propio controlador, antes de que exista kernel alguno. Así que la máquina:
+
+- arranca de la USB perfectamente,
+- desempaqueta su initramfs, monta sus siete sistemas de archivos, engancha el
+  LSM y saca su prompt en la pantalla,
+- y **falla dos comandos después**, cuando `instalar-en` busca el medio del que
+  arrancó recorriendo `/sys/block` y no lo encuentra, porque el kernel enumeró la
+  USB como dispositivo USB y nunca le dio un dispositivo de bloque.
+
+El mensaje sería *«no encuentro un medio de Thalyx»*, en una máquina que está
+visiblemente corriendo desde uno. Y en ningún punto aparece la palabra USB.
+
+> Es la cuarta vez, y la lista completa es: **systemd** delegaba los controladores
+> de cgroup, **el initramfs externo** hacía el `switch_root`, **el archivo
+> predeterminado del kernel** ponía `/dev/console`, y ahora **el firmware** lee el
+> disco de arranque. Cada vez, algo de afuera hacía un trabajo que el diseño nunca
+> tuvo que hacer.
+>
+> Lo nuevo aquí es que **la capa de abajo no se quitó**. El firmware sigue ahí y
+> sigue haciendo su trabajo: por eso el arranque no se rompe. La forma es un poco
+> peor que las tres anteriores — **cuando algo de fuera hace un trabajo, hay que
+> preguntar si *nosotros* también vamos a necesitar hacerlo, porque que ellos lo
+> hagan no nos exime y además nos oculta que no sabemos.**
+
+Y la mitad que corresponde al arnés. `config-check` en `image/Makefile` detiene el
+build cuando `olddefconfig` **descarta** una opción pedida, y **no puede ver una
+que nadie pidió** — que es exactamente lo que costó `CONFIG_SECURITY_NETWORK` y un
+arranque entero. Lo que cubre ese hueco son las pruebas que leen `thalyx.config` y
+afirman opción por opción, con su motivo escrito al lado; ya había cuatro y ahora
+son cinco. La nueva se comprobó en las dos direcciones: comentando la línea, falla.
+
+**El corolario para la lista de controladores.** La tabla de riesgo de
+[[Construccion-del-ISO]] tenía tres filas —pantalla, teclado, discos— y las tres
+preguntaban *«¿qué hardware tiene la PC?»*. Ésta no estaba en ninguna, porque la
+pregunta que la encuentra es distinta: *«¿qué tiene que leer Thalyx, además de lo
+que el firmware ya leyó por él?»*. Un inventario de hardware no la contiene.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

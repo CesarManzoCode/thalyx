@@ -581,6 +581,41 @@ mod tests {
     }
 
     #[test]
+    fn the_medium_the_machine_booted_from_is_a_disk_the_kernel_can_read_too() {
+        // The firmware reads the boot medium with its own driver — the UEFI
+        // specification obliges it to — so a kernel with no USB storage driver
+        // still boots off a stick and shows every sign of being fine.
+        //
+        // The step that needs the kernel to read it is `instalar-en`, which finds
+        // the medium by walking /sys/block. Without this the stick is enumerated
+        // as a USB device and never becomes a block device, so `discos` does not
+        // list it and the installer reports that there is no Thalyx medium — on a
+        // machine that is, visibly, running off one.
+        //
+        // Found on 2026-08-07 by reading the config rather than by booting, which
+        // is the only reason it was found before the USB stick was already in a
+        // PC. Same family as the console coming free from the kernel's own
+        // initramfs: a thing that worked because something nobody looked at was
+        // doing it, right up until that something was not there.
+        let config = kernel_config();
+        for (option, why) in [
+            (
+                "CONFIG_USB_STORAGE=y",
+                "the USB stick it booted from, which is the medium `instalar-en` reads the kernel out of",
+            ),
+            (
+                "CONFIG_SCSI=y",
+                "anything usb-storage attaches, since it presents its device through the SCSI layer",
+            ),
+        ] {
+            assert!(
+                config.lines().any(|line| line.trim() == option),
+                "thalyx.config does not ask for {option}, so the machine cannot see {why}"
+            );
+        }
+    }
+
+    #[test]
     fn the_machine_can_be_typed_at_by_a_keyboard_that_is_not_emulated() {
         // QEMU's keyboard arrives over the serial console, so none of this was ever
         // needed and none of it can be exercised by a VM. It is the one part of the

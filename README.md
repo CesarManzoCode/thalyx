@@ -334,16 +334,29 @@ boot.
   the kernel, and the rest as a Btrfs store with its three subvolumes, with no
   `sgdisk`, no `mkfs.vfat` and no `mkfs.btrfs`, because the image holds the Linux
   kernel and one program. **What remains is hardware**: the USB keyboard (xHCI +
-  HID) and NVMe/AHCI disks, which a virtual machine cannot answer — QEMU's
-  keyboard is PS/2 and its disks are virtio. The same file that installs is the
-  medium: `dd` it to a USB stick and a PC started from it installs itself onto
-  its own disk with the session's `discos` and `instalar-en`, reading the kernel
-  off the stick with Thalyx's own FAT reader and mounting nothing.
-- **Four kernel options in this project's history were found by booting and by
-  nothing else**, the last of them on the first build after the drivers went in.
-  `thalyx.config` came from `allnoconfig` plus what QEMU needs and now names the
-  firmware's framebuffer, USB and PS/2 keyboards, and NVMe and AHCI. Expect more
-  of them on the first real machine.
+  HID), NVMe/AHCI disks, and USB storage — none of which `make run-installed`
+  reaches, because everything it attaches is virtio and its keyboard is PS/2. The
+  same file that installs is the medium: `dd` it to a USB stick and a PC started
+  from it installs itself onto its own disk with the session's `discos` and
+  `instalar-en`, reading the kernel off the stick with Thalyx's own FAT reader and
+  mounting nothing.
+- **`make -C image run-hardware` is as close to that as a machine gets, and it has
+  never run.** QEMU emulates xHCI, NVMe, AHCI and a USB disk, and the kernel driver
+  that talks to an emulated controller is the same one that talks to real silicon —
+  so it answers that the options are compiled, that the drivers bind, and that
+  `/dev/nvme0n1` comes back with its partitions named `nvme0n1p1`. It does not
+  answer real firmware, real silicon, or a physical stick in a physical port, and
+  it is not a substitute for either.
+- **Five kernel options in this project's history were found by booting or by
+  reading, and by no build check.** Four were found by booting. The fifth,
+  `CONFIG_USB_STORAGE`, was found on 2026-08-07 by reading the config while
+  preparing the hardware run — the UEFI specification has the *firmware* read the
+  boot medium, so a machine without that driver boots off a USB stick, looks
+  entirely healthy, and only fails two commands later when the installer looks for
+  that stick in `/sys/block`. `config-check` stops the build when Kconfig drops an
+  option that was asked for; it cannot see one nobody asked for, which is what the
+  five tests over `thalyx.config` are for. Expect more of them on the first real
+  machine.
 - **Nobody outside the project has done the six steps**, and that is no longer
   the exit criterion — it was suspended the same day, in favour of the ISO. The
   steps still have to work and are checked on every change; what is suspended

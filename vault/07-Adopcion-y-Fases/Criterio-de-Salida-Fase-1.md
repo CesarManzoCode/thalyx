@@ -199,6 +199,45 @@ y desde la máquina que arranca de esa USB: `discos`, `instalar-en /dev/nvme0n1`
 **Lo que no puede pasar es que el acto 1 se reporte como si fuera el acto 2**, que es
 lo que esta nota ya decía y ahora tiene nombres concretos.
 
+### Y el acto 2 no habría llegado al final — el 2026-08-07, sin haberlo corrido
+
+Cesar no tiene una segunda PC: lo único a mano era GNOME Boxes sobre su Fedora. Al
+buscar si eso servía apareció que **`image/thalyx.config` no pedía
+`CONFIG_USB_STORAGE`**, así que el acto 2, tal como está escrito arriba, habría
+fallado — en su PC y en cualquier otra.
+
+El firmware lee la USB con su propio controlador porque la especificación UEFI lo
+obliga, así que la máquina habría arrancado bien y se habría visto sana. La falla
+llega dos comandos después: `instalar-en` busca el medio del que arrancó
+recorriendo `/sys/block`, y sin ese driver la USB nunca es un dispositivo de
+bloque. El mensaje habría sido *«no encuentro un medio de Thalyx»* en una máquina
+que estaba corriendo desde uno, sin que nada nombrara al USB.
+
+Es una línea, ya está puesta, y hay una prueba que la exige — porque `config-check`
+atrapa una opción que Kconfig descartó y **no puede atrapar una que nadie pidió**.
+La regla está en [[Estrategia-de-Pruebas]] como la cuarta vez que algo de fuera
+hacía un trabajo que el diseño nunca escribió.
+
+### Lo que una VM sí puede responder del acto 2, y lo que no
+
+Boxes tal cual no sirve: da discos virtio y teclado PS/2, o sea lo que el acto 1 ya
+probó, y no tiene interfaz para agregar otros controladores. Pero QEMU —que ya está
+en su máquina, es lo que corrió el acto 1— emula xHCI, NVMe, AHCI y un disco USB, y
+**el driver del kernel que habla con un controlador emulado es el mismo que habla
+con silicio real**.
+
+`make -C image run-hardware` es eso, con `NOMEDIUM=1` para sacar la USB y `NOPS2=1`
+para quitar el controlador PS/2. La tabla de qué responde y qué no está en
+[[Construccion-del-ISO]]; en corto, responde que los drivers compilan, enlazan y
+producen `/dev/nvme0n1` con sus particiones bien nombradas —que era lo más caro que
+cargaba el acto 2— y **no** responde silicio real ni una memoria física en un
+puerto físico.
+
+**Esto no cierra el acto 2 y no cuenta como el acto 2.** Es la misma advertencia de
+arriba aplicada un nivel más adentro: una VM mejor equipada sigue siendo una VM.
+Lo que hace es que, cuando aparezca una PC, lo que quede por descubrir sea el
+hierro y no una opción de kernel que faltaba.
+
 ### Y una cosa que el criterio no pide y conviene no confundir
 
 Una PC recién instalada arranca con un store bueno y **vacío**: no hay nada

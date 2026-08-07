@@ -21,6 +21,9 @@ and the number says so before anyone has to argue about it.
 | `make binary` | **Run.** Statically linked against musl, checked with `readelf` |
 | `make kernel` | **Run.** 6.12.101 builds from `thalyx.config` |
 | `make store`, `make run` | **Run.** The machine boots, mounts its store, and takes instructions |
+| `make esp`, `make run-uefi` | **Run, 2026-08-06.** A UEFI firmware started the medium with no boot loader in front of it |
+| `sudo make installed`, `make run-installed` | **Run, 2026-08-07.** A firmware started a disk Thalyx wrote byte by byte, with no medium attached. That is act 1 of the exit criterion |
+| `make run-hardware` | **Never run, anywhere.** The drivers a PC needs, driven through emulated controllers: xHCI, NVMe, AHCI, and the medium as a USB disk. It is not act 2 and does not close it — see the note above the target, which is exact about which half of act 2 it reaches |
 
 `make kernel` is also where anyone finds out what is wrong with
 `thalyx.config`. `config-check` compares every option asked for against the one

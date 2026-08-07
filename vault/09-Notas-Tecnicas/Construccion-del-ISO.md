@@ -684,8 +684,9 @@ su párrafo cada grupo:
 | La pantalla | `FB`, `FB_EFI`, `FRAMEBUFFER_CONSOLE`, `FONT_8x16`, `VT`, `VT_CONSOLE` | La ISO arranca en una PC y **no se ve nada** |
 | El teclado | `INPUT`, `HID_SUPPORT`, `HID`, `HID_GENERIC`, `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | La máquina llega al prompt y no se le puede contestar |
 | Los discos | `BLK_DEV_NVME`, `SATA_AHCI`, `ATA`, `SCSI`, `BLK_DEV_SD`, `PCI_MSI` | El instalador no ve el disco en el que va a instalar |
+| El medio | `USB_STORAGE` — agregada el 2026-08-07 | La máquina arranca de la USB y **dos comandos después** dice que no encuentra un medio de Thalyx |
 
-Tres cosas de esa tabla que no son obvias:
+Cuatro cosas de esa tabla que no son obvias:
 
 - **`FB_EFI` no es un controlador de video.** Es el framebuffer que el firmware
   **ya configuró** antes de que el kernel arranque, y este driver lo adopta. Por
@@ -698,6 +699,16 @@ Tres cosas de esa tabla que no son obvias:
   archivo lo habría pedido.
 - **`BLK_DEV_SD` es lo que hace que AHCI sirva.** SATA pasa por la capa SCSI; sin
   eso el controlador se encuentra, sus puertos se sondean, y no aparece `/dev/sda`.
+- **`USB_STORAGE` faltaba, y su ausencia no rompe el arranque.** La cuarta fila se
+  agregó el 2026-08-07, al preparar el acto 2, y no estaba en las otras tres porque
+  las tres preguntan *«¿qué hardware tiene la PC?»* y ésta pregunta otra cosa:
+  *«¿qué tiene que leer Thalyx, además de lo que el firmware ya leyó por él?»*. La
+  especificación UEFI obliga al firmware a leer el medio con su propio controlador,
+  así que la máquina arranca de la USB, saca su prompt, y sólo falla cuando
+  `instalar-en` va a buscar ese medio en `/sys/block` y no está — sin que nada
+  nombre al USB. Está escrito como regla en [[Estrategia-de-Pruebas]]: es la cuarta
+  vez que algo de fuera hacía un trabajo que el diseño nunca escribió, y la primera
+  en que la capa de abajo **no se quitó**, que es lo que la volvía invisible.
 - **`HID_SUPPORT` no es un driver, es el menú que contiene a los otros tres.**
   Faltaba, y por eso el primer `make -C image` con el teclado adentro se detuvo
   nombrando `HID`, `HID_GENERIC` y `USB_HID` — las tres bien escritas y ninguna la
@@ -818,6 +829,37 @@ parece:
 - **La VM no prueba los controladores.** Los discos son virtio y el teclado es
   emulado. Un arranque en hierro real es lo único que responde eso, y es el
   único punto donde este criterio necesita una máquina física.
+
+#### Corrección del 2026-08-07: era cierto de la VM que se estaba usando, no de toda VM
+
+Lo de arriba se escribió mirando `make run-installed`, que arranca con discos
+virtio y teclado PS/2 — y de **esa** VM es exactamente cierto. Lo que no se
+preguntó entonces es si la VM tenía que ser así.
+
+QEMU emula un controlador xHCI, un NVMe, un AHCI y un disco USB, y **el driver del
+kernel que habla con un controlador emulado es el mismo que habla con silicio
+real**. Así que la frase «una VM no prueba los controladores» estaba mezclando dos
+cosas distintas y cobrando por las dos:
+
+| | Lo responde `run-hardware` | Sólo lo responde hierro |
+|---|---|---|
+| Que la opción esté compilada y el driver enlace | **Sí** | |
+| Que `/dev/nvme0n1` aparezca y sus particiones se llamen `nvme0n1p1` | **Sí**, y era lo más caro que cargaba el acto 2 | |
+| Que `USB_STORAGE` vuelva disco al medio | **Sí** | |
+| Que `xhci_hcd` y `usbhid` creen un dispositivo de entrada | **Sí** | |
+| Que la tecla haya viajado por USB y no por el i8042 | Sólo con `NOPS2=1`, que quita el controlador PS/2 | |
+| Rarezas de un xHCI concreto, un firmware físico, una memoria física | | **Sí** |
+
+`make -C image run-hardware` es eso, con las tres variantes escritas en el
+`Makefile`. **No es el acto 2 y no lo cierra**, y la nota del objetivo lo dice
+línea por línea para que no se pueda leer al revés — que es la advertencia que
+[[Criterio-de-Salida-Fase-1]] ya traía: *lo que no puede pasar es que el acto 1 se
+reporte como si fuera el acto 2*.
+
+Lo que sí hace es mover el riesgo. De **cuatro grupos de controladores nunca
+ejercidos** a **cuatro ejercidos contra controladores emulados**, quedando abierto
+lo que de verdad necesita una PC. Y encontró su primer defecto antes de correr:
+`USB_STORAGE`, que no estaba.
 
 ## Revisiones
 
