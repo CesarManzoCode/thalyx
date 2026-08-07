@@ -161,9 +161,17 @@ These were all learned by something going wrong. They are recorded in
 - Conventional-commit prefixes (`feat:`, `fix:`, `docs:`), then a body that
   explains **why**, including what went wrong and what it would have cost.
   Look at `git log` — the bodies are the record of the reasoning.
-- Branch names must say what they are. A branch called `claude/...` says
-  nothing about itself and is not acceptable. Work goes on `main` unless he
-  says otherwise.
+- **Never commit directly to `main`.** Every piece of work starts on its own
+  branch, and `main` only ever receives finished work.
+- **Branch names are `type/description`**, with the same types the commits use:
+  `feat/`, `fix/`, `docs/`, `build/`, `test/`. The description says what the
+  branch is *about*, in English, in words — `feat/installer-and-drivers`, not
+  `claude/whatever-7tfum1`. A branch whose name says nothing about itself is not
+  acceptable.
+- **When he needs to run something, the work goes to `main` first.** He
+  verifies on his machine with `git pull`, and `git pull` on `main` is what he
+  runs — so before telling him to pull, merge the branch into `main` and push
+  both. Do not leave him to find the work on a branch he was never told about.
 - **Never open a pull request unless he asks for one.**
 
 ## The verification loop
