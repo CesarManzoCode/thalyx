@@ -14,6 +14,30 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El acto 1 está hecho: una máquina instalada arrancó sola y respondió — 2026-08-07
+>
+> **Es lo primero que hay que leer.** `sudo ./dev/verify.sh` cerró en
+> **`proven 135 · not proven 1 · failed 0`** —el único no probado es llama.cpp, que
+> es Fase 2— y `make -C image run-installed` arrancó la máquina instalada.
+>
+> Un firmware UEFI encontró `\EFI\BOOT\BOOTX64.EFI` en un disco escrito por Thalyx y
+> lo ejecutó: sin `-kernel`, sin `-append`, sin gestor de arranque. La máquina
+> encontró su store sin que nadie se lo nombrara, la sesión salió **por la pantalla**,
+> Cesar escribió `apagar` **dentro de la ventana** y se apagó.
+>
+> Eso último no es un detalle: el teclado entró por PS/2 emulado (`SERIO_I8042` +
+> `KEYBOARD_ATKBD` + `VT`) y la pantalla es `FB_EFI` + `FRAMEBUFFER_CONSOLE` +
+> `FONT_8x16`. Lo confirma algo que no se puede fingir: al intentar Impr Pant
+> aparecieron símbolos raros en la sesión, que es `atkbd` traduciendo scancodes de una
+> tecla que no es una letra.
+>
+> **Falta sólo el acto 2, y es hierro**: `dd` a una USB, arrancar una PC, `discos`,
+> `instalar-en /dev/nvme0n1`, `apagar`, sacar la USB, encender. Es lo único que
+> responde el teclado **USB** (xHCI + HID) y los discos **NVMe/AHCI**. De los tres
+> grupos de controladores nuevos, dos ya están probados en vivo.
+>
+> Ver [[Criterio-de-Salida-Fase-1]], que lleva el detalle de qué afirmó cada cosa.
+>
 > ## La Fase 1 está construida entera, y la primera corrida encontró dos cosas — 2026-08-07
 >
 > **Es lo primero que hay que leer.** Cesar pidió cerrar la fase sin poder verificar

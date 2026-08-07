@@ -325,27 +325,25 @@ boot.
 
 ### Not yet true, stated plainly
 
-- **The installer is written and no firmware has booted what it produces.**
-  That is what now ends Phase 1: a medium that, put into a PC with no operating
-  system, leaves that machine running Thalyx. `thalyx install <disk>` writes a
-  GPT, a 512 MiB FAT32 boot partition holding the kernel at
-  `\EFI\BOOT\BOOTX64.EFI`, and the rest as a Btrfs store with its three
-  subvolumes — with no `sgdisk`, no `mkfs.vfat` and no `mkfs.btrfs`, because the
-  image holds the Linux kernel and one program. Every byte of it is checked
-  against kernel headers captured verbatim, and stage 20 of `verify.sh` has the
-  kernel read the table, mount the boot partition and compare the file back.
-  **What nothing has done is boot the result**: `make -C image run-installed`
-  hands a UEFI firmware the installed disk and nothing else, and it has never
-  been run. The same file is also the medium — `dd` it to a USB stick and a PC
-  started from it can install itself onto its own disk with the session's
-  `discos` and `instalar-en`, reading the kernel off the stick with Thalyx's own
-  FAT reader and mounting nothing.
-- **The drivers a real PC needs are asked for and have never been compiled.**
-  `thalyx.config` came from `allnoconfig` plus what QEMU needs, and now names the
-  firmware's framebuffer and a console on it, USB and PS/2 keyboards, and NVMe
-  and AHCI. Three kernel options in this project's history were found by booting
-  and by nothing else; expect more here. It is the one part of the exit criterion
-  a virtual machine cannot answer.
+- **No real PC has booted this, only a virtual one.** On 2026-08-07 a UEFI
+  firmware found `\EFI\BOOT\BOOTX64.EFI` on a disk Thalyx wrote and started it —
+  no `-kernel`, no `-append`, no boot loader — and the machine found its own
+  store with nothing naming it, put its session on the screen through the
+  firmware's framebuffer, took `apagar` from the keyboard and powered down.
+  `thalyx install <disk>` writes the GPT, a 512 MiB FAT32 boot partition holding
+  the kernel, and the rest as a Btrfs store with its three subvolumes, with no
+  `sgdisk`, no `mkfs.vfat` and no `mkfs.btrfs`, because the image holds the Linux
+  kernel and one program. **What remains is hardware**: the USB keyboard (xHCI +
+  HID) and NVMe/AHCI disks, which a virtual machine cannot answer — QEMU's
+  keyboard is PS/2 and its disks are virtio. The same file that installs is the
+  medium: `dd` it to a USB stick and a PC started from it installs itself onto
+  its own disk with the session's `discos` and `instalar-en`, reading the kernel
+  off the stick with Thalyx's own FAT reader and mounting nothing.
+- **Four kernel options in this project's history were found by booting and by
+  nothing else**, the last of them on the first build after the drivers went in.
+  `thalyx.config` came from `allnoconfig` plus what QEMU needs and now names the
+  firmware's framebuffer, USB and PS/2 keyboards, and NVMe and AHCI. Expect more
+  of them on the first real machine.
 - **Nobody outside the project has done the six steps**, and that is no longer
   the exit criterion — it was suspended the same day, in favour of the ISO. The
   steps still have to work and are checked on every change; what is suspended

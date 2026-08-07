@@ -71,8 +71,12 @@ cleanup() {
     # out the next number, so nothing looks wrong until the machine has none left.
     for attached in "${LOOP:-}" "${ILOOP:-}" "${SECOND:-}"; do
         [ -n "$attached" ] || continue
-        losetup -d "$attached" 2>/dev/null \
-            || red "   could not detach $attached; run: losetup -d $attached"
+        losetup -d "$attached" 2>/dev/null
+        # Asked after the attempt rather than inferred from its exit status, which
+        # is non-zero both for "still attached" and for "already gone". Only the
+        # first of those is worth telling a person about.
+        losetup "$attached" > /dev/null 2>&1 \
+            && red "   could not detach $attached; run: losetup -d $attached"
     done
 
     # Kept when something failed. Around thirty failure messages in this script
@@ -2868,7 +2872,14 @@ read what Thalyx wrote"
                     echo "     so an installed machine could come up on the wrong one"
                     "$THALYX" disk find 2>&1 | sed 's/^/     /'
                 fi
-                losetup -d "$SECOND" 2>/dev/null
+                # Cleared, not just detached. The teardown trap walks this variable
+                # too, and a name left in it after the device is gone makes the trap
+                # try again, fail, and print "could not detach /dev/loop1; run:
+                # losetup -d /dev/loop1" at the end of a run where nothing is wrong.
+                # A warning that names a command with nothing to do is the same
+                # defect as a check that passes without checking: it is read once,
+                # found to be false, and never read again.
+                losetup -d "$SECOND" 2>/dev/null && SECOND=""
             fi
 
             # Running it again. An install interrupted by a power cut has to be

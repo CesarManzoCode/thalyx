@@ -154,24 +154,40 @@ archivo y sigue siendo el decreto—, un store que hoy nadie crea porque PID 1
 tiene prohibido fabricarlo, controladores reales, y una consola que hoy es un
 puerto serie que las PC modernas no tienen.
 
-### Lo que hay que hacer para cerrarlo, al 2026-08-07
+### El acto 1 está hecho — 2026-08-07
 
-Todo lo que el criterio pide está construido. Lo que falta es **correrlo**, y son
-dos actos porque el criterio son dos actos.
+**Corrido por Cesar, en una VM con OVMF.** `sudo ./dev/verify.sh` cerró en
+`proven 135 · not proven 1 · failed 0` —el único no probado es llama.cpp, que es
+Fase 2— y `make -C image run-installed` arrancó la máquina instalada.
 
-**Acto 1, en una VM con firmware UEFI de verdad.** Responde que el medio arranca
-solo, que la máquina instalada arranca sin él, que encuentra su store sin que nadie
-se lo nombre, y —desde el 2026-08-07— que la consola de framebuffer funciona, porque
-OVMF entrega un GOP real.
+Lo que ese arranque respondió, y hay que decirlo con nombres porque cada cosa es una
+afirmación distinta:
 
-```
-make -C image
-sudo make -C image installed
-make -C image run-installed
-```
+- **Un firmware UEFI encontró `\EFI\BOOT\BOOTX64.EFI` en un disco que escribió
+  Thalyx y lo ejecutó.** Sin `-kernel`, sin `-initrd`, sin `-append`, sin gestor de
+  arranque. La tabla GPT, la FAT32 y el kernel dentro de ella los escribió Thalyx
+  byte por byte.
+- **Encontró su store sin que nadie se lo nombrara.** No hay `thalyx.store=` en la
+  línea compilada; la máquina preguntó a cada disco cómo se llama.
+- **La sesión salió por la pantalla.** `FB_EFI` adoptando el framebuffer del
+  firmware, `FRAMEBUFFER_CONSOLE` y `FONT_8x16` — la ventana de QEMU mostró el
+  prompt, que es lo que el orden `console=ttyS0 console=tty0` decidía.
+- **Y el teclado llegó a la sesión.** Cesar escribió `apagar` **dentro de la
+  ventana**, o sea por el teclado PS/2 emulado: `SERIO_I8042` + `KEYBOARD_ATKBD` +
+  `VT`. Lo confirma un detalle que no se puede fingir: al intentar Impr Pant
+  aparecieron símbolos raros en la sesión, que es `atkbd` traduciendo scancodes de
+  una tecla que no es una letra.
+- **`apagar` apagó la máquina.** `reboot: Power down`.
+
+O sea que de los tres grupos de controladores nuevos, **la pantalla y el teclado
+PS/2 están probados en vivo**. Lo que sigue sin probarse es lo de siempre y es
+menos de lo que era: el teclado **USB** (xHCI + HID) y los discos **NVMe/AHCI**.
+
+### Lo que falta para cerrarlo, al 2026-08-07
 
 **Acto 2, en una PC.** Es lo único que responde el teclado USB y los discos
-NVMe/AHCI, y sigue siendo el único punto del criterio donde hace falta hierro.
+NVMe/AHCI, y sigue siendo el único punto del criterio donde hace falta hierro. Es
+también lo único que queda: el acto 1 está hecho.
 
 ```
 sudo dd if=image/build/installed.img of=/dev/sdX bs=4M status=progress conv=fsync

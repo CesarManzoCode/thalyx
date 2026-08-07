@@ -335,26 +335,25 @@ etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
 ### Lo que todavía no es cierto, dicho sin rodeos
 
-- **El instalador está escrito y ningún firmware ha arrancado lo que produce.**
-  Eso es lo que ahora cierra la Fase 1: un medio que, puesto en una PC sin
-  sistema operativo, la deje corriendo Thalyx. `thalyx install <disco>` escribe
-  una GPT, una partición de arranque de 512 MiB en FAT32 con el kernel en
-  `\EFI\BOOT\BOOTX64.EFI`, y el resto como store de Btrfs con sus tres
+- **Ninguna PC de verdad ha arrancado esto, sólo una virtual.** El 2026-08-07 un
+  firmware UEFI encontró `\EFI\BOOT\BOOTX64.EFI` en un disco escrito por Thalyx y
+  lo ejecutó —sin `-kernel`, sin `-append`, sin gestor de arranque—, y la máquina
+  encontró su store sin que nadie se lo nombrara, sacó la sesión por la pantalla a
+  través del framebuffer del firmware, recibió `apagar` del teclado y se apagó.
+  `thalyx install <disco>` escribe la GPT, una partición de arranque de 512 MiB en
+  FAT32 con el kernel adentro, y el resto como store de Btrfs con sus tres
   subvolúmenes — sin `sgdisk`, sin `mkfs.vfat` y sin `mkfs.btrfs`, porque la
-  imagen lleva el kernel de Linux y un programa. Cada byte está comprobado contra
-  headers del kernel capturados verbatim, y la etapa 20 de `verify.sh` hace que el
-  kernel lea la tabla, monte el arranque y compare el archivo de vuelta. **Lo que
-  no ha hecho nadie es arrancar el resultado**: `make -C image run-installed` le
-  entrega a un firmware UEFI el disco instalado y nada más, y nunca se ha corrido.
-  Ese mismo archivo es el medio — `dd` a una USB y una PC arrancada desde ella se
-  instala en su propio disco con `discos` e `instalar-en` de la sesión, leyendo el
-  kernel de la USB con el lector de FAT propio y sin montar nada.
-- **Los controladores de una PC de verdad están pedidos y no se han compilado.**
-  `thalyx.config` salía de `allnoconfig` más lo que QEMU necesita, y ahora nombra
-  el framebuffer que deja el firmware y una consola encima, teclado USB y PS/2, y
-  NVMe con AHCI. Tres opciones de kernel de la historia de este proyecto se
-  encontraron arrancando y de ninguna otra forma; hay que esperar más aquí. Es la
-  única parte del criterio de salida que una máquina virtual no puede responder.
+  imagen lleva el kernel de Linux y un programa. **Lo que falta es hierro**: el
+  teclado USB (xHCI + HID) y los discos NVMe/AHCI, que una VM no puede responder
+  — el teclado de QEMU es PS/2 y sus discos son virtio. El archivo que instala es
+  el medio: `dd` a una USB y una PC arrancada desde ella se instala en su propio
+  disco con `discos` e `instalar-en` de la sesión, leyendo el kernel de la USB con
+  el lector de FAT propio y sin montar nada.
+- **Cuatro opciones de kernel de la historia de este proyecto se encontraron
+  arrancando y de ninguna otra forma**, la última en la primera compilación
+  después de meter los controladores. `thalyx.config` salía de `allnoconfig` más lo
+  que QEMU necesita, y ahora nombra el framebuffer que deja el firmware, teclado
+  USB y PS/2, y NVMe con AHCI. Hay que esperar más en la primera máquina real.
 - **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el criterio
   de salida — se suspendió el mismo día, a favor de la ISO. Los pasos siguen
   teniendo que funcionar y se comprueban en cada cambio; lo suspendido es
