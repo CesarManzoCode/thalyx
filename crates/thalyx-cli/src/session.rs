@@ -800,6 +800,106 @@ fn start_module(store: &Store, rest: &str) {
     println!();
 }
 
+/// What arrived since the human last saw the screen, and whether any of it was
+/// lost before anyone looked.
+struct Fresh {
+    count: usize,
+    /// Records fell out of the ring buffer between the last look and this one,
+    /// so `count` is a floor and not a total.
+    lost: bool,
+    cursor: Option<u64>,
+}
+
+/// Trouble in `messages` that the human has not been told about.
+///
+/// Split out from [`KernelWatch`] so it can be exercised without a `/dev/kmsg`,
+/// which the development container does have but a test must not depend on the
+/// contents of.
+fn trouble_since(messages: &[thalyx_syscall::KernelMessage], seen: Option<u64>) -> Fresh {
+    let cursor = messages.iter().map(|m| m.sequence).max().or(seen);
+    let count = messages
+        .iter()
+        .filter(|m| seen.is_none_or(|seen| m.sequence > seen) && m.is_trouble())
+        .count();
+
+    // The oldest record still in the buffer is newer than the last one accounted
+    // for, so everything between them was overwritten unread. Saying "3" when it
+    // was 3 of some larger number is the kind of quiet undercount this system is
+    // not allowed to make.
+    let lost = match (seen, messages.first()) {
+        (Some(seen), Some(oldest)) => oldest.sequence > seen + 1,
+        _ => false,
+    };
+
+    Fresh {
+        count,
+        lost,
+        cursor,
+    }
+}
+
+/// The prompt's half of turning the kernel's console volume down.
+///
+/// `init.rs` leaves only emergencies on the console, because the first real
+/// machine to boot Thalyx had a USB device that would not enumerate and the
+/// kernel's retries made the prompt unusable. Turning the volume down without
+/// this would be hiding, which is the one thing this system is not allowed to
+/// do — so the prompt says, in its own words, that there is something to look
+/// at, and `nucleo` is where it is.
+struct KernelWatch {
+    seen: Option<u64>,
+    /// Said once and then not again. A watcher that cannot read the kernel and
+    /// announces it before every prompt has reinvented the problem it exists to
+    /// solve.
+    complained: bool,
+}
+
+impl KernelWatch {
+    /// Starts from what the kernel has already said, because all of that was on
+    /// the screen during the boot and announcing it again would be noise.
+    fn from_now() -> Self {
+        Self {
+            seen: thalyx_syscall::kernel_messages()
+                .ok()
+                .and_then(|messages| messages.iter().map(|m| m.sequence).max()),
+            complained: false,
+        }
+    }
+
+    /// One line, or nothing at all when the kernel has been quiet.
+    fn since_last_prompt(&mut self) -> Option<String> {
+        let messages = match thalyx_syscall::kernel_messages() {
+            Ok(messages) => messages,
+            // Rule 10: a failure to read is not a failure to exist. A prompt
+            // that silently stopped watching looks exactly like a kernel with
+            // nothing to say.
+            Err(error) => {
+                if self.complained {
+                    return None;
+                }
+                self.complained = true;
+                return Some(format!(
+                    "  !  cannot read what the kernel is saying, so this prompt \
+                     is no longer watching: {error}"
+                ));
+            }
+        };
+
+        let fresh = trouble_since(&messages, self.seen);
+        self.seen = fresh.cursor;
+        if fresh.count == 0 {
+            return None;
+        }
+        let at_least = if fresh.lost { "at least " } else { "" };
+        let plural = if fresh.count == 1 { "" } else { "s" };
+        Some(format!(
+            "  !  {at_least}{} new kernel problem{plural}; `nucleo` shows {}",
+            fresh.count,
+            if fresh.count == 1 { "it" } else { "them" }
+        ))
+    }
+}
+
 pub fn run(store: &Store, once: bool) -> Fallible {
     let standing = standing();
     let readings = gather(store);
@@ -893,7 +993,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     }
     println!();
 
+    let mut watch = KernelWatch::from_now();
+
     loop {
+        // Before the prompt and not after it, so the notice never lands on a
+        // line the human is in the middle of typing — which is the whole defect
+        // this exists to answer.
+        if let Some(notice) = watch.since_last_prompt() {
+            println!("{notice}");
+        }
         print!("  > ");
         std::io::stdout().flush()?;
 
@@ -1275,6 +1383,70 @@ const INSTALL_WORKSPACE: &str = "/run/thalyx/install";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One record, shaped like the kernel's own.
+    fn said(sequence: u64, priority: u8) -> thalyx_syscall::KernelMessage {
+        thalyx_syscall::KernelMessage {
+            priority,
+            sequence,
+            seconds: sequence as f64,
+            text: format!("record {sequence}"),
+        }
+    }
+
+    #[test]
+    fn a_problem_that_arrived_while_the_console_was_quiet_is_announced() {
+        // The whole point. With the console at emergencies only, an error like
+        // the USB timeout that made the first real machine's prompt unusable
+        // never reaches the screen, so the prompt has to say it is there.
+        let fresh = trouble_since(&[said(1, 6), said(2, 3)], Some(1));
+        assert_eq!(fresh.count, 1, "the error after the cursor was not counted");
+        assert_eq!(fresh.cursor, Some(2));
+        assert!(!fresh.lost);
+    }
+
+    #[test]
+    fn what_the_human_already_read_during_the_boot_is_not_announced_again() {
+        // Without this the first prompt of every boot would report every error
+        // the machine printed on its way up, which the human just watched go by.
+        let messages = [said(1, 3), said(2, 3)];
+        let fresh = trouble_since(&messages, Some(2));
+        assert_eq!(fresh.count, 0, "already-seen trouble was announced again");
+    }
+
+    #[test]
+    fn something_that_merely_happened_does_not_interrupt_the_prompt() {
+        // The control. A watcher that counted every record would fire on every
+        // prompt on a healthy machine, and a notice that is always there is one
+        // nobody reads — which is the defect being fixed, rebuilt one level up.
+        let fresh = trouble_since(&[said(9, 5), said(10, 6), said(11, 7)], Some(8));
+        assert_eq!(fresh.count, 0, "notices and info were treated as trouble");
+        assert_eq!(fresh.cursor, Some(11), "the cursor has to move anyway");
+    }
+
+    #[test]
+    fn records_lost_to_the_ring_buffer_make_the_count_a_floor_and_say_so() {
+        // The kernel overwrites its oldest records. A machine that was loud
+        // enough to wrap the buffer is exactly the one where "3 problems" would
+        // be an undercount presented as a total.
+        let fresh = trouble_since(&[said(50, 3), said(51, 3)], Some(2));
+        assert_eq!(fresh.count, 2);
+        assert!(
+            fresh.lost,
+            "records between the cursor and the oldest survivor went unread, \
+             and the count was reported as if it were all of them"
+        );
+    }
+
+    #[test]
+    fn a_first_look_with_no_cursor_counts_what_is_there_without_claiming_loss() {
+        // Only reachable when reading /dev/kmsg failed at session start. There
+        // is nothing to have lost yet, and reporting loss would send somebody
+        // looking for messages that never existed.
+        let fresh = trouble_since(&[said(1, 3), said(2, 6)], None);
+        assert_eq!(fresh.count, 1);
+        assert!(!fresh.lost);
+    }
 
     /// The profile the prompt asks for has to be one that exists.
     ///

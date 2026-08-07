@@ -1756,6 +1756,52 @@ preguntaban *«¿qué hardware tiene la PC?»*. Ésta no estaba en ninguna, porq
 pregunta que la encuentra es distinta: *«¿qué tiene que leer Thalyx, además de lo
 que el firmware ya leyó por él?»*. Un inventario de hardware no la contiene.
 
+## Regla derivada: un umbral por gravedad no ve la repetición, y lo que arruina una interfaz es la repetición
+
+Encontrada el 2026-08-07, en el primer arranque de Thalyx sobre una PC de verdad.
+
+`init.rs` bajaba la consola del kernel al nivel 4 y explicaba por qué en una
+frase que describe el síntoma **antes de que ocurriera**:
+
+> *From here there is a human at a prompt, and an info-level message arriving
+> mid-line steps on it — the machine looks like it stopped listening.*
+
+Y aun así ocurrió. La máquina de Cesar tenía un receptor inalámbrico que no
+enumeraba, el kernel lo reintentó para siempre, y
+`usb 1-6: device descriptor read/64, error -110` —prioridad 3, un error,
+**correctamente clasificado**— cayó sobre el prompt cada pocos segundos hasta
+volver la sesión inusable, con un teclado que funcionaba perfectamente.
+
+**El umbral no estaba mal puesto: estaba puesto sobre el eje equivocado.**
+Filtrar por gravedad contesta *«¿esto importa?»*, y lo que destruye una interfaz
+no es que un mensaje importe, es que vuelva. Un mensaje que se repite sin parar
+dejó de ser información — dice lo mismo la centésima vez que la primera — y
+ningún nivel de prioridad puede distinguirlo, porque la repetición no es una
+propiedad del mensaje sino de la serie.
+
+**El corolario, que es lo que se construyó:** cuando lo que se quiere es un canal
+utilizable, la respuesta no es elegir mejor qué dejar pasar sino **dejar de
+retransmitir el flujo ajeno y hablar de él**. La consola quedó en emergencias, y
+el prompt anuncia con una línea propia que hay problemas nuevos y que `nucleo` los
+tiene. Eso no es esconder: el buffer del kernel conserva cada palabra, y bajar el
+volumen sin la segunda mitad sí habría sido esconder.
+
+### Y las dos mitades del mismo criterio no coincidían
+
+Leyendo eso apareció un segundo defecto, más chico y del mismo día. El nivel de
+consola suprime todo lo que tenga prioridad **mayor o igual** que él, así que un 4
+tiraba las advertencias — mientras `KernelMessage::is_trouble()` cuenta la
+prioridad 4 **como** problema. `nucleo` las llamaba problemas y la consola las
+tiraba, y la línea impresa en el arranque decía *«warnings and worse only»*, que
+es exactamente lo que no hacía.
+
+**Un mismo juicio implementado en dos lugares se desincroniza en silencio**, y la
+dirección en que se rompió es la peor: la pantalla afirmaba mostrar más de lo que
+mostraba. La regla hermana ya existe para las precondiciones —*una comprobación y
+el uso que la sigue son dos momentos*—; ésta es su versión para un criterio
+partido en dos módulos, y la señal de alarma es la misma: si dos lugares deciden
+lo mismo, uno de los dos va a cambiar solo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

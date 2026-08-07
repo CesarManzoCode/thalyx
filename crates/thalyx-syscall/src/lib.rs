@@ -1215,6 +1215,14 @@ const PRINTK: &str = "/proc/sys/kernel/printk";
 pub struct KernelMessage {
     /// Syslog priority: 0 is emergency, 7 is debug.
     pub priority: u8,
+    /// The kernel's own record number, which only ever goes up.
+    ///
+    /// Kept rather than discarded because it is the only thing that can answer
+    /// "what has the kernel said **since I last looked**". Counting records
+    /// cannot: the ring buffer overwrites its oldest entries, so a count can go
+    /// down while messages are being added, and a session that inferred "new"
+    /// from a count would go quiet exactly when the kernel was loudest.
+    pub sequence: u64,
     /// Seconds since boot, as the kernel counts them.
     pub seconds: f64,
     pub text: String,
@@ -1293,7 +1301,7 @@ fn parse_kmsg(record: &[u8]) -> Option<KernelMessage> {
     let (header, rest) = record.split_once(';')?;
     let mut fields = header.split(',');
     let priority: u8 = fields.next()?.trim().parse().ok()?;
-    let _sequence = fields.next()?;
+    let sequence: u64 = fields.next()?.trim().parse().ok()?;
     let microseconds: u64 = fields.next()?.trim().parse().ok()?;
 
     // Continuation lines start with a space and belong to the record above.
@@ -1306,6 +1314,7 @@ fn parse_kmsg(record: &[u8]) -> Option<KernelMessage> {
 
     Some(KernelMessage {
         priority,
+        sequence,
         seconds: microseconds as f64 / 1_000_000.0,
         text: text.to_string(),
     })
@@ -1322,6 +1331,11 @@ mod kmsg_tests {
         let record = b"5,0,0,-;Linux version 6.18.5 (builder@sandboxing) (gcc (GCC) 15.2.0)";
         let message = parse_kmsg(record).expect("a record this shape parses");
         assert_eq!(message.priority, 5);
+        // Second field, and it is the one the prompt uses to know what the
+        // kernel has said since a human last looked. Read off a captured record
+        // rather than assumed, because taking the timestamp for the sequence
+        // would still be monotonic and still be wrong.
+        assert_eq!(message.sequence, 0);
         assert_eq!(message.seconds, 0.0);
         assert!(message.text.starts_with("Linux version 6.18.5"));
         assert!(!message.is_trouble(), "notice level is not trouble");

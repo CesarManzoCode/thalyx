@@ -14,9 +14,95 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El dispositivo tiene nombre, y el prompt ya no se pisa — 2026-08-07
+>
+> **Es lo primero que hay que leer.**
+>
+> ### Qué es `usb 1-6`
+>
+> `lsusb -t` y `dmesg` en Fedora lo contestaron sin arrancar nada:
+>
+> ```
+> usb 1-6: New USB device found, idVendor=248a, idProduct=16ab
+> usb 1-6: Product: Wireless Receiver
+> usb 1-6: Manufacturer: Telink
+> ```
+>
+> Un **receptor inalámbrico Telink** de teclado y ratón, a *full speed* (12M), con
+> dos interfaces HID. En Fedora enumera a los 1.2 s; en Thalyx agota el plazo.
+>
+> **Y no es el teclado con el que Cesar escribió**: hay otro HID de dos interfaces
+> en el bus 3, puerto 1. Por eso pudo teclear `apagar`. Desconectar el receptor
+> Telink es a la vez el atajo para usar la máquina hoy **y el control** que
+> confirma que ése era el dispositivo.
+>
+> **No se agregó ninguna opción de kernel.** Todavía no está descartado que el
+> dongle sea lento o defectuoso, y una opción agregada por corazonada es lo
+> contrario de lo que hace este proyecto. Lo que faltaba era el instrumento, y
+> ahora existe: con el prompt utilizable, `nucleo` muestra el buffer entero —
+> incluidas todas las líneas de nivel informativo de la enumeración USB que la
+> consola nunca imprimió— y eso sí dice si el kernel reintentó, cuántas veces, y
+> qué estaba haciendo en los 38 segundos previos.
+>
+> ### El arreglo de la consola, que son dos mitades
+>
+> **La consola queda en emergencias (`set_console_loglevel(1)`)**, y **el prompt
+> anuncia lo que llegó**:
+>
+> ```
+>   !  2 new kernel problem(s); `nucleo` shows them
+>   >
+> ```
+>
+> La segunda mitad es lo que impide que la primera sea esconder. Se imprime
+> **antes** del prompt y nunca a media línea, que es el defecto entero.
+>
+> Para saber *«qué ha dicho el kernel desde que miré»* hacía falta un cursor, y
+> contar registros no sirve: el buffer sobrescribe los viejos, así que la cuenta
+> puede **bajar** mientras llegan mensajes. Ahora `KernelMessage` lleva el número
+> de secuencia del kernel, que sólo sube. Comprobado contra el `/dev/kmsg` real de
+> este contenedor: 358 registros, monótono, y distinto del campo de tiempo — que es
+> el error que se habría visto igual de bien.
+>
+> Y si el buffer se dio la vuelta entre dos miradas, el aviso dice **«at least»**
+> en vez de presentar un subconteo como total.
+>
+> **Cinco pruebas nuevas**, incluida la de control: un mensaje que sólo *ocurrió*
+> no interrumpe el prompt. Sin ella, un aviso que aparece siempre es uno que nadie
+> lee, que es el mismo defecto reconstruido un nivel más arriba.
+>
+> ### Y el umbral estaba sobre el eje equivocado
+>
+> `init.rs` describía el síntoma **antes de que ocurriera** —*«a message arriving
+> mid-line steps on it — the machine looks like it stopped listening»*— y aun así
+> ocurrió. Filtrar por gravedad contesta *«¿esto importa?»*; lo que arruina una
+> interfaz no es que un mensaje importe, es que **vuelva**. Y la repetición no es
+> una propiedad del mensaje sino de la serie, así que ningún nivel la ve.
+>
+> Segundo defecto del mismo hilo: el nivel de consola suprime lo que tenga
+> prioridad **>= él**, así que el 4 tiraba las advertencias, mientras
+> `is_trouble()` las cuenta **como** problema y la línea del arranque decía
+> *«warnings and worse only»*. Un mismo juicio en dos lugares se desincronizó en
+> silencio, y hacia el lado peor: la pantalla afirmaba mostrar más de lo que
+> mostraba. Las dos reglas están en [[Estrategia-de-Pruebas]].
+>
+> ### Lo que falta, y es tuyo
+>
+> ```
+> git pull
+> make -C image
+> sudo make -C image installed INSTALLEDSIZE=2G
+> ```
+>
+> `dd` a la memoria otra vez (paso 4 de [[Arranque-en-Hierro]]), arrancar, y ahora
+> sí: **`nucleo`** —que es lo que dice qué pasó con el USB— y **`discos`**, que
+> nunca se ha corrido en hierro y que diría si el NVMe y el `sda` aparecen.
+>
+> **794 pruebas pasan** (789 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## Una PC de verdad arrancó Thalyx desde una USB de verdad — 2026-08-07
 >
-> **Es lo primero que hay que leer.** El acto 2a corrió. Firmware real, monitor
+> **El bloque de arriba es más reciente.** El acto 2a corrió. Firmware real, monitor
 > real por HDMI, memoria física, teclado físico. Lo que salió en la pantalla:
 >
 > ```

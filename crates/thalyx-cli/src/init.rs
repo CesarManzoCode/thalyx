@@ -392,12 +392,34 @@ pub fn run() -> Fallible {
     //
     // Until this point the kernel talking over Thalyx is harmless and often the
     // only clue about what went wrong. From here there is a human at a prompt,
-    // and an info-level message arriving mid-line steps on it — the machine
-    // looks like it stopped listening. Warnings and errors still come through,
-    // and `nucleo` in the session reads the whole ring buffer, so this turns the
-    // volume down and hides nothing.
-    match thalyx_syscall::set_console_loglevel(4) {
-        Ok(()) => println!("  ok  kernel talk  warnings and worse only; `nucleo` shows the rest"),
+    // and a message arriving mid-line steps on it — the machine looks like it
+    // stopped listening.
+    //
+    // This used to be 4, and 4 was wrong twice. The first real machine to boot
+    // this, on 2026-08-07, had a wireless receiver that would not enumerate, so
+    // the kernel retried it forever and `usb 1-6: device descriptor read/64,
+    // error -110` — priority 3, an error, correctly graded — landed on the
+    // prompt every few seconds until the session was unusable with a keyboard
+    // that worked perfectly. **A threshold on severity cannot see repetition**,
+    // and a message that repeats without end has stopped being information.
+    //
+    // And 4 did not mean what the line printed here said it meant: the console
+    // drops everything at priority >= level, so 4 suppressed warnings while
+    // `KernelMessage::is_trouble` counts warnings as trouble. The two halves of
+    // one judgement disagreed by a level, in the direction where the screen said
+    // more than it showed.
+    //
+    // 1 leaves only emergencies, which are the messages about a machine that is
+    // dying and has nothing left to interrupt. Nothing is hidden and nothing is
+    // silent: the ring buffer still has every word, `nucleo` reads all of it,
+    // and the prompt announces new trouble as it arrives — see
+    // `session::KernelWatch`, which is the other half of this change and without
+    // which this one would be exactly the hiding this system is not allowed to
+    // do.
+    match thalyx_syscall::set_console_loglevel(1) {
+        Ok(()) => {
+            println!("  ok  kernel talk  emergencies only; the prompt says when there is more")
+        }
         // Not fatal, and not silent: a machine whose prompt keeps getting
         // interrupted should say why rather than leave you guessing.
         Err(error) => println!("  no  kernel talk  still at full volume: {error}"),
