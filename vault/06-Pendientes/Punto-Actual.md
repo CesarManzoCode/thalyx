@@ -14,9 +14,86 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Los 40 segundos de arranque eran un puerto serie a 9600 baudios — 2026-08-07
+>
+> **`nucleo lento` corrió en hierro y contestó al primer intento.** La memoria USB
+> no tenía nada que ver.
+>
+> ```
+> 18.27s  at 0.07s
+>     after  printk: legacy console [ttyS0] enabled
+>     then   ACPI: Core revision 20240827
+> ```
+>
+> **18.27 de 38.5 segundos, en el segundo 0.07**, antes de que el kernel tocara un
+> disco. La hipótesis de «la USB es lenta» queda descartada por la **posición** del
+> hueco, no por su tamaño: si fuera la memoria, el tiempo estaría al final, donde se
+> leen discos — y ahí los huecos miden 0.25 s.
+>
+> ### La causa
+>
+> `CONFIG_CMDLINE` decía `console=ttyS0`, **sin velocidad**. Sin velocidad, el
+> driver 8250 usa **9600 baudios**, y `printk` es síncrono: el kernel no avanza
+> hasta que los caracteres salieron físicamente del puerto. Los 38.5 s son ese
+> puerto, en dos mitades:
+>
+> 1. **El hueco de 18.27 s.** Una consola se registra con `CON_PRINTBUFFER`, así que
+>    el kernel le vuelca **todo el log acumulado** en cuanto aparece — unas 250
+>    líneas de mapa de memoria y tablas ACPI. A 9600 baudios: `250 × ~70 × 10 ÷ 9600
+>    = 18.2 s`. Es el número que salió.
+> 2. **Los ~18 s restantes**, repartidos en 704 líneas: 25 ms por línea, que es lo
+>    que cuesta cada `printk` posterior por el mismo puerto.
+>
+> ### Y es la quinta vez que el anfitrión hacía algo gratis
+>
+> El puerto serie de QEMU es un pty: **no tiene baudios**, se vacía al instante. Las
+> cuatro veces anteriores el anfitrión hacía algo que en hierro *no existía*; ésta
+> hacía algo que en hierro **existe y cuesta**, que es peor de encontrar — nada
+> falta, nada falla, la máquina nada más tarda.
+>
+> Peor todavía: `run-uefi` y `run-hardware` **no pasan `-append` a propósito**, o
+> sea que usan esa misma línea compilada. **La trampa estaba dentro del camino que
+> sí se probaba**, y era invisible porque el anfitrión la pagaba.
+>
+> ### Lo que se decidió, y lo que no
+>
+> Cesar eligió **darle velocidad en vez de quitarlo**:
+> `console=ttyS0,115200 console=tty0`. Doce veces más rápido —los ~30 s se vuelven
+> ~2.5 s— y **no se cambia nada por nada**: `run-uefi` y `run-hardware` miran por
+> `-serial mon:stdio`, y eso es lo único que hace diagnosticable un arranque que
+> muera *antes* de que suba el framebuffer. Quitarlo del todo era más rápido y
+> costaba ese diagnóstico.
+>
+> ### El segundo defecto del mismo arranque, que `config-check` no puede ver
+>
+> `CPU topo: CPU limit of 2 reached. Ignoring further CPUs`. Nadie eligió 2:
+> `allnoconfig` corre con SMP apagado, donde `NR_CPUS` es 1, y encender SMP después
+> sólo lo sube al piso de su rango. Puesto **`CONFIG_NR_CPUS=64`**, que es lo que el
+> propio kernel usa para SMP x86_64.
+>
+> **`config-check` compara lo que `thalyx.config` pide contra lo que salió, así que
+> una opción que nadie pidió no tiene línea que comparar.** Es el mismo hueco
+> estructural que dejó pasar `CONFIG_SECURITY_NETWORK` y `CONFIG_USB_STORAGE`, y no
+> se cierra con más comparaciones. Por eso las dos afirmaciones nuevas viven en
+> `init.rs`, y las dos se verificaron fallando sin el arreglo.
+>
+> ### Lo que falta, y es un arranque
+>
+> ```
+> git pull && make -C image && sudo make -C image installed INSTALLEDSIZE=2G
+> ```
+>
+> `dd` a la memoria, arrancar, y teclear **`nucleo lento`** otra vez. Lo que debe
+> pasar: el hueco de 18.27 s desaparece y el total baja de 38.5 s a unos 6-8 s. Es
+> una medida de un solo lado —si el arranque se desploma, está probado— así que no
+> necesita una máquina quieta.
+>
+> **802 pruebas pasan** (800 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## La Fase 1 está cerrada: una PC se instaló Thalyx a sí misma y arrancó sin el medio — 2026-08-07
 >
-> **Es lo primero que hay que leer.** El acto 2b corrió en hierro y salió entero.
+> **El bloque de arriba es más reciente; éste es el que dice dónde está el
+> proyecto.** El acto 2b corrió en hierro y salió entero.
 >
 > ### Lo que pasó, con nombres
 >
@@ -108,6 +185,11 @@ tags: [continuidad, punto-actual, sesiones]
 > ```
 >
 > `dd` a la memoria, arrancar, y teclear **`nucleo lento`**.
+>
+> > **Contestado el mismo día — ver el bloque de arriba.** Era el puerto serie a
+> > 9600 baudios, no la memoria. Y la razón por la que la constancia entre dos
+> > memorias apuntaba a un plazo fijo era correcta en la forma y equivocada en el
+> > sitio: el tiempo constante estaba al **principio**, no al final.
 >
 > **800 pruebas pasan** (797 antes), `clippy` limpio, `cargo fmt` aplicado.
 >

@@ -962,6 +962,12 @@ boot:
 	@#
 	@# It moves to `run-uefi` once that has booted on a real machine, and not
 	@# before.
+	@#
+	@# The console speed matches the built-in line in thalyx.config, and it
+	@# changes nothing here: QEMU's serial port is a pty and has no baud rate at
+	@# all, which is exactly why the 9600-baud default went unnoticed for as long
+	@# as it did. Kept in step anyway — the line being tested should be the line
+	@# that ships.
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
 	    -smp 2 \
@@ -970,7 +976,7 @@ boot:
 	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
-	    -append "console=ttyS0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+	    -append "console=ttyS0,115200 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
 
 # ──────────────────────────────────────────────── booting with no bootloader
 

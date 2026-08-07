@@ -529,7 +529,7 @@ mod tests {
             .filter_map(|word| word.strip_prefix("console="))
             .collect();
         assert!(
-            consoles.contains(&"ttyS0"),
+            consoles.iter().any(|console| console.starts_with("ttyS0")),
             "nothing goes to the serial port, so QEMU and stage 16 see nothing: {line}"
         );
         assert_eq!(
@@ -538,6 +538,57 @@ mod tests {
             "the last console on the built-in line is not the screen, so a machine \
              started by a firmware would put its session somewhere a PC has no \
              hardware for: {line}"
+        );
+    }
+
+    #[test]
+    fn the_serial_console_is_told_a_speed_and_not_left_at_the_1970s_default() {
+        // `console=ttyS0` with nothing after it is 9600 baud, and `printk` waits for
+        // the characters to leave the port. On QEMU that is free — a pty has no baud
+        // rate — so it was free on every machine this was ever tested on, and on a
+        // real PC on 2026-08-07 it was about 30 of the 38.5 seconds the boot took.
+        //
+        // `nucleo lento` found it as an 18.27s silence at second 0.07, right after
+        // the console registered and the kernel replayed the whole log buffer into
+        // it. This test exists because deleting five characters from a string in a
+        // config file is an edit nobody reviews, and what it costs is not visible
+        // anywhere a test currently runs.
+        let config = kernel_config();
+        let line = config
+            .lines()
+            .find_map(|line| line.strip_prefix("CONFIG_CMDLINE=\""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("thalyx.config sets a built-in command line");
+
+        let serial = line
+            .split_whitespace()
+            .filter_map(|word| word.strip_prefix("console="))
+            .find(|console| console.starts_with("ttyS0"))
+            .expect("the built-in line names a serial console");
+        assert_eq!(
+            serial, "ttyS0,115200",
+            "the serial console has no speed on it, so the 8250 driver uses 9600 \
+             baud and every kernel message is paid for character by character: {line}"
+        );
+    }
+
+    #[test]
+    fn the_kernel_is_not_left_ignoring_most_of_the_cpus_the_machine_has() {
+        // A real PC said `CPU topo: CPU limit of 2 reached. Ignoring further CPUs`
+        // on 2026-08-07. Nobody chose 2: `allnoconfig` runs with SMP off, where
+        // NR_CPUS is 1, and turning SMP on afterwards lifts it only to the bottom of
+        // its range.
+        //
+        // `config-check` cannot see this class of defect at all — it compares what
+        // thalyx.config asks for against what came out, so an option nobody asks for
+        // has no line to compare. That is why the check lives here instead.
+        let config = kernel_config();
+        assert!(
+            config
+                .lines()
+                .any(|line| line.trim() == "CONFIG_NR_CPUS=64"),
+            "thalyx.config does not ask for a CPU count, so olddefconfig picks the \
+             bottom of the range and the machine quietly runs on two cores"
         );
     }
 

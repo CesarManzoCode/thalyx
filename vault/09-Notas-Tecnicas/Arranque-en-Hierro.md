@@ -198,8 +198,13 @@ Y **no** `instalar-en`. Ver el aviso de arriba.
 `-110` es `ETIMEDOUT`: hay un dispositivo USB en el bus 1, puerto 6, cuyo
 descriptor el kernel no puede leer. **Reintenta para siempre**, así que el
 mensaje vuelve cada pocos segundos encima del prompt y la sesión queda inusable
-aunque el teclado funcione. Los 38 segundos que tardó en aparecer el store son el
-mismo síntoma: la enumeración se pasó ese rato agotando plazos.
+aunque el teclado funcione.
+
+> **Aquí decía que los 38 segundos hasta ver el store eran ese mismo síntoma. Era
+> falso**, y lo corrigió `nucleo lento` el mismo día: los 38 segundos eran la
+> consola serie a 9600 baudios, y sucedían igual en arranques donde el `-110`
+> nunca apareció. Dos cosas raras en la misma pantalla no son la misma cosa rara,
+> y atribuir una a la otra es gratis mientras nadie mida. Ver el paso 10.
 
 **No es que el teclado no sirva**, y la forma de separarlo es la que Cesar usó:
 arrancar otra vez y teclear **antes** de que aparezca el error. Si eso funciona
@@ -286,6 +291,34 @@ el bus.
 
 Queda escrito aquí en vez de redondearse, porque es la misma advertencia que esta
 nota lleva desde el principio, un nivel más adentro.
+
+## Paso 10 — dónde se fue el tiempo, si tardó en arrancar
+
+```
+nucleo lento
+```
+
+Imprime los **silencios más largos** entre mensajes consecutivos del kernel, con
+la línea de antes y la de después de cada uno, y cuánto suman del total. El kernel
+lleva marcando la hora en cada línea desde siempre; esto las resta.
+
+Cómo se lee, que es lo que evita concluir de más:
+
+- **Un hueco dice a dónde se fue el tiempo, no qué lo tomó.** La línea *después*
+  de un silencio es la que **terminó de esperar**, no la que fue lenta.
+- **La posición importa tanto como el tamaño.** Un hueco antes de que el kernel
+  toque un disco no puede ser un disco lento, cueste lo que cueste.
+
+El 2026-08-07 esto contestó al primer intento: **18.27 de 38.5 segundos en el
+segundo 0.07**, justo después de `printk: legacy console [ttyS0] enabled`. Era la
+consola serie a **9600 baudios** —el valor por omisión del driver 8250 cuando
+`console=ttyS0` no lleva velocidad— y `printk` es síncrono, así que el kernel
+esperaba a que cada carácter saliera por un puerto sin nada del otro lado. El
+puerto serie de QEMU es un pty y no tiene baudios, por eso costó cero en todas las
+máquinas donde se había probado.
+
+Arreglado con `console=ttyS0,115200`. Un arranque después del arreglo debería
+mostrar ese hueco desaparecido y un total de unos 6-8 segundos.
 
 ## Lo que queda sin responder aunque todo salga bien
 

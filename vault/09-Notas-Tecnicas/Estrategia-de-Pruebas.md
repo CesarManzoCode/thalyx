@@ -1859,6 +1859,80 @@ Por eso el arreglo va en dos sitios y no en uno: `discos` deja de listarlas, e
 segundo es lo que impide perder un disco cuando alguien teclea el nombre de todas
 formas.
 
+## Regla derivada: lo que el anfitrión hacía gratis, quinta vez, y ahora tenía un precio en vez de no existir
+
+Las cuatro veces anteriores el anfitrión hacía algo que en hierro **no existía**:
+un directorio ya montado, un controlador ya delegado, un disco que el kernel veía
+sin driver, un medio que el firmware leía sin `USB_STORAGE`. Esta quinta vez el
+anfitrión hacía algo que en hierro **sí existe y cuesta**, que es peor de
+encontrar: nada falta, nada falla, y la máquina simplemente tarda.
+
+`CONFIG_CMDLINE` decía `console=ttyS0`, sin velocidad. Sin velocidad, el driver
+8250 usa **9600 baudios**, y `printk` es síncrono — el kernel no avanza hasta que
+los caracteres salieron por el puerto. El puerto serie de QEMU es un pty: **no
+tiene baudios**, se vacía instantáneamente. Así que el precio era exactamente cero
+en todas las máquinas donde esto se había probado.
+
+En un PC real, el 7 de agosto de 2026, eran unos 30 de los 38.5 segundos que
+tardaba en arrancar. El chipset todavía trae su UART aunque el gabinete no traiga
+el conector, así que el driver lo registra y el kernel le escribe con toda
+formalidad a un puerto que no tiene nada del otro lado.
+
+### Y estaba dentro del camino que sí se probaba
+
+`run-uefi` y `run-hardware` **no pasan `-append` a propósito** — ésa es su razón
+de existir, arrancar como arrancaría una máquina sin sistema operativo. O sea que
+usaban esta misma línea compilada. No es que el defecto viviera en un camino sin
+cubrir: vivía en el camino cubierto, y el anfitrión lo pagaba.
+
+**Un objetivo que reproduce el arranque de hierro reproduce sus decisiones, no sus
+costos.** Lo que ese objetivo no puede ver es todo lo que en QEMU es gratis y en
+silicio se cobra: velocidad de puerto, latencia de disco, tiempos de firmware.
+
+### Lo que lo encontró fue un instrumento, no una lectura
+
+Nadie iba a encontrar esto leyendo el código. La línea es correcta, arranca, y
+todo funciona. Lo encontró `nucleo lento`, que resta las marcas de tiempo entre
+mensajes consecutivos del kernel y ordena por silencio — y salió un hueco de
+18.27s en el segundo 0.07, justo después de `printk: legacy console [ttyS0]
+enabled`.
+
+**La posición del hueco descartó la hipótesis, no su tamaño.** La sospecha era que
+la memoria USB fuera lenta; un hueco antes de que el kernel toque un disco no
+puede ser eso.
+
+De ahí sale la regla, que es sobre instrumentos y no sobre consolas:
+
+> **«Tarda mucho» no es un síntoma hasta que algo dice dónde.** Un total no se
+> puede diagnosticar, y una bitácora de 712 líneas tampoco: las dos son la misma
+> falta de instrumento. Lo que convierte una queja en un defecto localizado es
+> restar dos marcas de tiempo que ya estaban ahí.
+
+Y el corolario, que es el que evita atribuir mal:
+
+> **Un hueco dice a dónde se fue el tiempo, no qué lo tomó.** La línea *después*
+> de un silencio es la que terminó de esperar, no la que fue lenta. El verbo lo
+> imprime así y no señala culpables.
+
+### Y `config-check` no podía ver ninguno de los dos defectos de ese arranque
+
+El mismo arranque reportó `CPU topo: CPU limit of 2 reached. Ignoring further
+CPUs`. Nadie eligió 2: `allnoconfig` corre con SMP apagado, donde `NR_CPUS` es 1,
+y encender SMP después sólo lo sube al piso de su rango.
+
+`config-check` compara lo que `thalyx.config` **pide** contra lo que salió. Un
+opción que nadie pidió no tiene línea que comparar, así que su valor puede ser
+cualquiera y la comprobación pasa limpia. Es el mismo hueco estructural que dejó
+pasar `CONFIG_SECURITY_NETWORK` y `CONFIG_USB_STORAGE`, y no se cierra con más
+comparaciones:
+
+> **Una comprobación que verifica que se obtuvo lo pedido es ciega a lo que no se
+> pidió.** El único lugar donde esa clase de defecto aparece es corriendo la
+> máquina, y el único lugar donde se puede fijar después es una prueba que afirme
+> el valor — no la comprobación que compara listas.
+
+Por eso las dos afirmaciones nuevas viven en `init.rs` y no en el `Makefile`.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
