@@ -1655,6 +1655,58 @@ sea una máquina muda que parece colgada. Lo que faltaba no era una comprobació
 la lectura: *un grupo de opciones descartadas juntas comparte una causa, y hay que
 buscar el `menuconfig` que las contiene antes que las dependencias de cada una*.
 
+## Regla derivada: un control destructivo repara lo que rompió, y la reparación se afirma
+
+**Un control que daña algo y lo deja dañado no terminó cuando pasó: todo lo que
+viene después sigue usando esa cosa. El daño se deshace en la misma línea que lo
+hizo, y que se deshizo es una afirmación más, no un supuesto.**
+
+Es la séptima vez que *el instrumento incluye al arnés*, y la primera en que el
+arnés no se equivocó al medir — se equivocó al dejar el mundo peor de como lo
+encontró.
+
+La etapa 20 monta la partición de arranque que el instalador escribió, compara el
+kernel byte a byte, y después **daña las dos copias del sector de arranque** para
+comprobar que un vfat roto no se monta. Eso es la regla 4 bien aplicada: sin el
+control, un kernel que monte cualquier cosa se ve igual que uno que valida el
+formato.
+
+Lo que faltaba es la línea siguiente. **Nadie reparaba la partición**, y las
+comprobaciones de abajo la siguen usando: la búsqueda del medio, la instalación sin
+`--kernel`, el segundo disco, la negativa ante dos medios. El 2026-08-07 eso produjo
+**cinco fallos de una sola causa**, y el primero de ellos decía:
+
+```
+FAILED   the kernel copied off the medium is not the kernel that was installed
+```
+
+que manda a mirar el lector de FAT. El lector estaba bien. Lo que había pasado es
+que cuarenta líneas antes el arnés había destruido el único medio Thalyx de la
+máquina, así que la búsqueda encontró **la partición EFI de la Fedora del anfitrión**
+—que también lleva `\EFI\BOOT\BOOTX64.EFI`, porque esa ruta la lleva todo— y copió
+su gestor de arranque al disco.
+
+Dos defectos distintos, uno encima del otro:
+
+- **El del código**, que sigue siendo real y ya está arreglado: pedir esa ruta no es
+  pedir Thalyx. Sin la etiqueta, con el medio sano, habría dos respuestas y la
+  instalación se habría negado — correcta, pero imposible en la máquina de nadie.
+- **El del arnés**, que es éste. Y hay que decirlo aparte: *arreglar el primero no
+  arreglaba el segundo*, y el segundo era el que estaba produciendo el mensaje.
+
+Tres cosas:
+
+1. **El control saca su copia antes y la devuelve después.** Ya existía la regla
+   hermana —*un control que daña un sitio concreto tiene que sacar su copia antes de
+   que ese sitio pueda moverse*— y le faltaba esta mitad: no basta con saber **qué**
+   bytes se van a romper, hay que ponerlos de vuelta.
+2. **La reparación se afirma con su propia línea.** Una reparación que
+   silenciosamente no funcionó se ve **idéntica** al bug original: todo lo de abajo
+   falla y nada dice por qué. La afirmación es lo único que separa las dos.
+3. **Un control destructivo pertenece al final de lo que usa esa cosa, o repara.**
+   Las dos salidas son válidas; lo que no es válido es ninguna de las dos, que es lo
+   que había.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

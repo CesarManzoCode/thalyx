@@ -2687,6 +2687,20 @@ read what Thalyx wrote"
                 # kernel that mounts anything: both copies of the boot sector are
                 # damaged — both, because one is there precisely so the other can
                 # be lost — and the mount has to fail.
+                #
+                # **The bytes come out first and go back afterwards**, and that is
+                # not tidiness. This control used to damage the partition and leave
+                # it damaged, and everything below here goes on using it: the medium
+                # search, the install with no --kernel, the second disk. On
+                # 2026-08-07 that produced five failures at once, and the first of
+                # them said the FAT reader had copied the wrong kernel — when what
+                # had happened is that this line destroyed the only Thalyx medium on
+                # the machine forty lines earlier, so the search found the *host's*
+                # EFI partition and read a kernel off that.
+                #
+                # Seven sectors: sector 0 and the backup at 6, which is where both
+                # damaged offsets live.
+                dd if="$ESPDEV" of="$WORK/esp-boot-sectors" bs=512 count=7 status=none
                 dd if=/dev/zero of="$ESPDEV" bs=1 seek=11 count=8 conv=notrunc status=none
                 dd if=/dev/zero of="$ESPDEV" bs=1 seek=$((6 * 512 + 11)) count=8 conv=notrunc status=none
                 blockdev --flushbufs "$ESPDEV" 2>/dev/null
@@ -2696,6 +2710,20 @@ read what Thalyx wrote"
                     echo "     so the mount above establishes nothing about the format being right"
                 else
                     proven "the same filesystem, damaged, is refused — so the mount was a real check"
+                fi
+
+                # And put back what was taken, **asserting that it took**. A repair
+                # that quietly did not work looks exactly like the bug above: every
+                # check below fails, and none of them says why. This is the line that
+                # tells the two apart.
+                dd if="$WORK/esp-boot-sectors" of="$ESPDEV" bs=512 count=7 conv=notrunc status=none
+                blockdev --flushbufs "$ESPDEV" 2>/dev/null
+                if mount -t vfat "$ESPDEV" "$IMNT" > /dev/null 2>&1; then
+                    umount "$IMNT" 2>/dev/null
+                    proven "the control's damage is undone, so what follows runs on a boot partition and not on rubble"
+                else
+                    failed "the control damaged the boot partition and the repair did not take;"
+                    echo "     every check below this line is now measuring a broken disk"
                 fi
             else
                 failed "Thalyx wrote a FAT32 filesystem and this kernel would not mount it"

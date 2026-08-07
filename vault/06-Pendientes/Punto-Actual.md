@@ -30,7 +30,21 @@ tags: [continuidad, punto-actual, sesiones]
 > las tres viven dentro de un `menuconfig HID_SUPPORT` que es `default y`, y bajo
 > `allnoconfig` un `default y` es un `n`. Una línea.
 >
-> **2. El instalador copió el gestor de arranque de Fedora.** La búsqueda del medio
+> **2. El instalador copió el gestor de arranque de Fedora — y tenía dos causas, no
+> una.** La primera corrida en frío encontró una y la segunda encontró la otra, que
+> era la que estaba produciendo el mensaje.
+>
+> **2a. El arnés destruía la partición y no la reparaba.** La etapa 20 daña las dos
+> copias del sector de arranque de la ESP para comprobar que un vfat roto no se
+> monta —regla 4, bien aplicada— y **la dejaba dañada**. Todo lo de abajo la sigue
+> usando. Cinco fallos de una sola causa, y el primero mandaba a mirar el lector de
+> FAT, que estaba bien. Ahora el control saca los siete sectores antes, los devuelve
+> después, y **afirma que la reparación tomó** — porque una reparación que
+> silenciosamente no funciona se ve idéntica al bug original. Séptima vez que *el
+> instrumento incluye al arnés*, y la primera en que el arnés no midió mal: dejó el
+> mundo peor de como lo encontró.
+>
+> **2b. Y la búsqueda del medio.** La búsqueda del medio
 > pedía `\EFI\BOOT\BOOTX64.EFI`, que **no es un archivo de Thalyx**: es el
 > *removable media fallback* de UEFI, o sea la ruta que llevan todos los medios de
 > arranque que existen, empezando por la partición EFI de la máquina en la que uno
@@ -47,9 +61,13 @@ tags: [continuidad, punto-actual, sesiones]
 > llevó el ajeno. Regla nueva en [[Estrategia-de-Pruebas]]: *un marcador que
 > identifica algo tiene que ser algo que sólo eso tenga*.
 >
+> Sin la etiqueta, aun con el medio sano, habría **dos** respuestas y la instalación
+> se habría negado — correcta, pero imposible en la máquina de cualquiera. O sea que
+> las dos correcciones hacían falta y ninguna cubría a la otra.
+>
 > Y un detalle del arnés: el `cmp` que falló decía sólo «difieren», que manda a mirar
-> el lector de FAT —que estaba bien—. Ahora imprime de qué dispositivo dijo el
-> instalador que estaba leyendo, y el tamaño de los dos archivos.
+> el lector de FAT. Ahora imprime de qué dispositivo dijo el instalador que estaba
+> leyendo, y el tamaño de los dos archivos.
 >
 > ### Al ir a cerrar apareció que faltaba algo grande, y era un decreto sin código
 >
