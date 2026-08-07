@@ -328,6 +328,22 @@ que esta nota puede afirmar es qué queda sin responder si se acepta: escribir e
 un disco interno, que en esta máquina significa destruir la Fedora que verifica
 todo lo demás.
 
+> **Aceptado por Cesar el 2026-08-07.** Instalar en una segunda memoria cuenta
+> como el acto 2b y cierra la Fase 1. El procedimiento es el paso 9 de
+> [[Arranque-en-Hierro]].
+>
+> **Lo que eso deja dicho, y se dice en vez de redondearse:** un disco **interno**
+> nunca ha recibido una instalación de Thalyx. Una memoria USB es un disco físico
+> real —GPT real escrita por Thalyx, particiones hechas por el kernel real, un
+> firmware real arrancando de ella— y el camino del instalador es el mismo hasta
+> el último byte: sysfs, `BLKRRPART`, los mismos escritores. Lo que cambia es el
+> bus por el que llega.
+>
+> Y **NVMe sobre silicio real sigue sin ejercerse**, no por un defecto sino
+> porque la única máquina disponible no tiene ninguno. Las dos cosas quedan como
+> lo que son: huecos conocidos de una fase cerrada, no cosas que se cuenten como
+> probadas.
+
 ### Y 2a encontró un defecto, que es exactamente para lo que sirve
 
 Un dispositivo USB que no enumera (`usb 1-6: device descriptor read/64, error

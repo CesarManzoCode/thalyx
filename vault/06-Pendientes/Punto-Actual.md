@@ -21,11 +21,23 @@ tags: [continuidad, punto-actual, sesiones]
 > problema entre 714 registros y ninguna es del USB— y el prompt no anunció nada,
 > que es lo correcto: no hubo problemas nuevos después de que arrancó la sesión.
 >
-> **Que no volviera no es todavía que esté arreglado**, y la diferencia importa: no
-> consta si el receptor Telink estaba conectado en esa corrida. Con él puesto, el
-> fallo es **intermitente** y sigue vivo; sin él, quedó identificado por
-> eliminación. Una pregunta separa las dos, y hasta contestarla **ninguna opción de
-> kernel está justificada**.
+> **Que no volviera no es que esté arreglado, y ahora consta cuál de las dos es.**
+> Cesar confirmó que **nunca desconectó nada**: el receptor Telink estaba puesto en
+> esa corrida. O sea que **el `-110` es intermitente y sigue vivo** — no ocurrió esa
+> vez, puede ocurrir la próxima.
+>
+> Y hubo que deshacer una confusión antes de poder concluirlo: el Telink **no es el
+> WiFi**. Son dos dispositivos distintos en el mismo bus, y su `lsusb -t` los
+> separa — puerto 6 es `usbhid` (el receptor de teclado y ratón) y puerto 8 es
+> `rtl8xxxu`, que ése sí es el WiFi. Preguntar *«¿estaba conectado el Telink?»* sin
+> decir cuál de los dos era invitaba justo a esa respuesta.
+>
+> **Lo que sí quedó resuelto es el síntoma, que era el que impedía usar la máquina.**
+> Con la consola en emergencias, el `-110` ya no pisa el prompt: si vuelve, la
+> sesión dirá `! N new kernel problem(s)` y seguirá siendo usable. La causa sigue
+> abierta y **ninguna opción de kernel está justificada** — un fallo intermitente
+> que aparece en un arranque y no en el siguiente se parece mucho más a un
+> dispositivo marginal que a un hueco de `thalyx.config`.
 >
 > ### Lo que `discos` respondió, y es lo bueno primero
 >

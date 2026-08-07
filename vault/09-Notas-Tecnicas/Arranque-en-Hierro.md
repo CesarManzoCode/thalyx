@@ -222,6 +222,71 @@ cámaras, lectores de tarjetas, controles— dejando sólo el teclado y la memor
 Si el error desaparece, el dispositivo era uno de los que se quitaron y queda
 identificado por eliminación.
 
+## Paso 9 — el acto 2b, con dos memorias en vez de un disco interno
+
+**Decidido por Cesar el 2026-08-07**, y es lo que cierra la Fase 1. No hay una
+segunda PC ni un disco interno que se pueda sacrificar, pero sí hay tres
+memorias, y eso alcanza para lo que el criterio pide: que la máquina **tenga**
+Thalyx en un disco propio y arranque de él con el medio quitado.
+
+**Las dos memorias van puestas a la vez.** La A es de la que se arrancó — el
+medio, de donde sale el kernel — y la B es el destino.
+
+### El único paso peligroso de todo este documento
+
+Dentro de la sesión, `discos` va a listar **tres** discos enteros, y uno de
+ellos es la Fedora:
+
+```
+  /dev/sd?      3 GiB     ← la memoria A, con `a Thalyx boot partition`
+  /dev/sd?     29 GiB     ← la memoria B, el destino
+  /dev/sd?    447 GiB     ← FEDORA. Lleva `btrfs `fedora`` en una partición
+```
+
+**El discriminador es el tamaño, y la etiqueta lo confirma.** Ningún disco de
+447 GiB es una memoria USB, y ninguna memoria dice `btrfs \`fedora\``. Las letras
+(`sda`, `sdb`, `sdc`) **cambian de un arranque a otro** según el orden en que el
+kernel enumera, así que la letra de ayer no sirve hoy.
+
+Desde el 2026-08-07 `instalar-en` **dice qué hay en el disco antes de preguntar**,
+leyéndolo del disco y no de la lista, y sigue exigiendo teclear la ruta completa
+en vez de una `y`. Si en esa pantalla aparece `btrfs \`fedora\``, la respuesta es
+no escribir nada.
+
+### Los comandos
+
+```
+discos                     mirar los tres, identificar B por su tamaño
+instalar-en /dev/sdX       X = la memoria B, NUNCA el disco de 447 GiB
+```
+
+Leer lo que imprime. Tiene que decir que el kernel viene de la memoria A, y que
+el disco de destino tiene lo que sea que tenga la B — **no** `btrfs \`fedora\``.
+Sólo entonces teclear la ruta para confirmar.
+
+```
+apagar
+```
+
+Quitar la memoria A. Encender. El firmware tiene que arrancar la B.
+
+### Por qué hay que quitar la A y no es opcional
+
+Con las dos puestas hay **dos** volúmenes etiquetados `thalyx-store`, y PID 1 se
+niega en vez de elegir — que es correcto y está decretado. El arranque diría que
+encontró dos y se detendría. Quitar la A no es higiene, es la condición.
+
+### Qué queda sin responder si esto sale bien
+
+**Que el disco sea interno.** Una memoria USB es un disco físico real, con una
+GPT real escrita por Thalyx, particiones creadas por el kernel real y un firmware
+real arrancando de ella — pero llega por otro transporte. El camino del
+instalador es idéntico (sysfs, `BLKRRPART`, los mismos bytes); lo que cambia es
+el bus.
+
+Queda escrito aquí en vez de redondearse, porque es la misma advertencia que esta
+nota lleva desde el principio, un nivel más adentro.
+
 ## Lo que queda sin responder aunque todo salga bien
 
 **Escribir en un NVMe físico.** Lo ejerció la VM de punta a punta contra un NVMe

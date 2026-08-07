@@ -1114,6 +1114,46 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 // So `discos` and `instalar-en <disco>`. They are the last two words the exit
 // criterion needed and they are the reason the criterion is reachable at all.
 
+/// What is on a partition right now, read off the disk rather than remembered.
+///
+/// Its own function because two places need the same sentence and they need it for
+/// different reasons: `discos` so a person can tell their disks apart, and
+/// `instalar-en` so the thing about to be destroyed is named **before** the
+/// question is asked. Those two drifting apart is how a disk gets lost — the list
+/// says `btrfs "fedora"` and the confirmation says nothing at all.
+fn whats_on(path: &std::path::Path) -> String {
+    match thalyx_btrfs::identify(path) {
+        Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label == thalyx_btrfs::LABEL => {
+            "a Thalyx store".to_string()
+        }
+        Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label.is_empty() => {
+            "btrfs, no label".to_string()
+        }
+        Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) => format!("btrfs `{label}`"),
+        // Not Btrfs, so ask the FAT reader before giving up. Thalyx writes exactly
+        // one FAT volume — the boot partition of everything it installs — and on
+        // 2026-08-07 it described its own, on the medium it was running from, as
+        // "something I do not recognise". A machine that cannot name its own work
+        // has no business naming anybody else's.
+        _ => match thalyx_install::medium::Volume::open(path) {
+            Ok(Some(mut volume)) => match volume.label() {
+                Ok(label) if label == thalyx_install::fat::LABEL => {
+                    "a Thalyx boot partition".to_string()
+                }
+                Ok(label) if label.trim().is_empty() => "FAT, no label".to_string(),
+                Ok(label) => format!("FAT `{}`", label.trim()),
+                // Rule 10: the volume is there and something about reading it
+                // failed, which is not the same as there being nothing.
+                Err(_) => "FAT I could not read the label of".to_string(),
+            },
+            // Everything that is neither Btrfs nor FAT reads the same from here, and
+            // saying "not btrfs" would read as "empty" about a disk somebody is
+            // deciding whether to destroy.
+            _ => "something I do not recognise".to_string(),
+        },
+    }
+}
+
 /// What Thalyx can see to install onto.
 ///
 /// Whole disks only. Installing writes a partition table, so a partition is not a
@@ -1166,38 +1206,7 @@ fn list_disks() {
             parts.len()
         );
         for (number, path) in &parts {
-            let what = match thalyx_btrfs::identify(path) {
-                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label == thalyx_btrfs::LABEL => {
-                    "a Thalyx store".to_string()
-                }
-                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label.is_empty() => {
-                    "btrfs, no label".to_string()
-                }
-                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) => format!("btrfs `{label}`"),
-                // Not Btrfs, so ask the FAT reader before giving up. Thalyx writes
-                // exactly one FAT volume — the boot partition of everything it
-                // installs — and on 2026-08-07 it described its own, on the medium
-                // it was running from, as "something I do not recognise". A machine
-                // that cannot name its own work has no business naming anybody
-                // else's.
-                _ => match thalyx_install::medium::Volume::open(path) {
-                    Ok(Some(mut volume)) => match volume.label() {
-                        Ok(label) if label == thalyx_install::fat::LABEL => {
-                            "a Thalyx boot partition".to_string()
-                        }
-                        Ok(label) if label.trim().is_empty() => "FAT, no label".to_string(),
-                        Ok(label) => format!("FAT `{}`", label.trim()),
-                        // Rule 10: the volume is there and something about reading
-                        // it failed, which is not the same as there being nothing.
-                        Err(_) => "FAT I could not read the label of".to_string(),
-                    },
-                    // Everything that is neither Btrfs nor FAT reads the same from
-                    // here, and saying "not btrfs" would read as "empty" about a
-                    // disk somebody is deciding whether to destroy.
-                    _ => "something I do not recognise".to_string(),
-                },
-            };
-            println!("      {number}  {what}");
+            println!("      {number}  {}", whats_on(path));
         }
     }
     println!();
@@ -1280,6 +1289,36 @@ fn install_onto(disk: &str) {
         mib(plan.store_sectors())
     );
     println!();
+
+    // What is there now, named before the question rather than after it. `thalyx
+    // install` on the host has always done this and the session's verb did not,
+    // which mattered the day `discos` ran on a machine with another operating
+    // system on it: the list said `btrfs "fedora"` and the confirmation said only
+    // "everything will be gone", leaving the human to carry the mapping from a
+    // device name to a system in their head. Read off the disk, so it describes
+    // the disk being destroyed and not the one that was listed a minute ago.
+    match thalyx_install::partitions::of(&disk) {
+        Ok(existing) if !existing.is_empty() => {
+            println!("  it has {} partition(s) on it now:", existing.len());
+            for (number, path) in &existing {
+                println!("    {number}  {}", whats_on(path));
+            }
+            println!();
+        }
+        Ok(_) => {
+            println!("  it has no partitions on it now.");
+            println!();
+        }
+        // Rule 10 again, and it matters most here: not being able to look is not
+        // the same as there being nothing to lose, and the difference decides
+        // whether somebody should go and check before answering.
+        Err(error) => {
+            println!("  I could not read what is on it: {error}");
+            println!("  That is not the same as it being empty.");
+            println!();
+        }
+    }
+
     println!(
         "  Everything on {} will be gone. This cannot be undone.",
         disk.display()
