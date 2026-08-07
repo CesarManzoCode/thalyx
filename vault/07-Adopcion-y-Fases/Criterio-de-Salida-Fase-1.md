@@ -284,6 +284,36 @@ sería Thalyx fallando.
 Lo que no puede pasar es que arrancar desde la USB se reporte como haber instalado
 — la misma regla de esta nota, un nivel más adentro otra vez.
 
+### 2a corrió el 2026-08-07, y salió
+
+Un firmware real arrancó Thalyx desde una memoria física, sin gestor de arranque.
+Sobre hardware que ninguna VM podía sustituir: **la pantalla** salió por el
+framebuffer que dejó ese firmware, en un monitor por HDMI — el punto 3 de la lista
+de riesgo de [[Construccion-del-ISO]], *«arrancaría bien y no se vería nada»*, que
+llevaba abierto desde el principio. **La memoria** apareció como `/dev/sdb2`, o sea
+`USB_STORAGE` contra un controlador real. **El store** se encontró por la etiqueta.
+**El LSM** se enganchó. Y **el teclado físico** funcionó: Cesar tecleó `apagar` y la
+máquina se apagó.
+
+Lo único del plan que no se alcanzó a correr es `discos`, por el defecto de abajo.
+
+**Queda 2b, y sólo 2b**: escribir en un disco interno, que hoy no se puede sin
+destruir la única máquina que verifica este proyecto.
+
+### Y 2a encontró un defecto, que es exactamente para lo que sirve
+
+Un dispositivo USB que no enumera (`usb 1-6: device descriptor read/64, error
+-110`) hace que el kernel reintente para siempre, y el mensaje cae encima del
+prompt cada pocos segundos hasta volver la sesión inusable — con el teclado
+funcionando perfectamente, lo cual es peor, porque *«no responde»* y *«no puedo
+leer lo que escribo»* se ven igual.
+
+Está en [[Punto-Actual]] con el detalle, incluido que `init.rs` ya había previsto
+el síntoma y eligió un umbral que mira la gravedad y no la repetición. **Es el
+primer defecto que sólo el hierro podía encontrar**, y llegó en el primer arranque,
+que es lo que la regla 1 de [[Estrategia-de-Pruebas]] viene diciendo desde el
+principio.
+
 ### Y una cosa que el criterio no pide y conviene no confundir
 
 Una PC recién instalada arranca con un store bueno y **vacío**: no hay nada

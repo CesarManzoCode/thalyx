@@ -11,10 +11,14 @@ tags: [hierro, arranque, acto-2, procedimiento, fase-1]
 > una memoria USB de por medio: es de aquí.** Los comandos en orden, lo que cada
 > uno debe imprimir, y qué significa cada fallo.
 >
-> **Ninguno de estos pasos se ha ejecutado.** Es el acto 2 de
-> [[Criterio-de-Salida-Fase-1]], y la razón por la que existe esta nota aparte de
-> [[Primer-Arranque]] es que aquí hay una máquina real con un sistema operativo
-> real encima, y el paso que se teclea mal no se deshace.
+> **Corrido el 2026-08-07, y salió.** Un firmware real arrancó Thalyx de una
+> memoria física: la pantalla salió por el framebuffer de ese firmware, la memoria
+> apareció como `/dev/sdb2`, el store se encontró por la etiqueta, el LSM se
+> enganchó y el teclado físico funcionó. Lo que queda abajo ya no es un pronóstico.
+>
+> **Y encontró un defecto**, que está en el paso 8. La razón por la que esta nota
+> existe aparte de [[Primer-Arranque]] sigue en pie: aquí hay una máquina real con
+> un sistema operativo real encima, y el paso que se teclea mal no se deshace.
 
 ## Qué se está intentando, y qué NO
 
@@ -184,6 +188,39 @@ apagar
 ```
 
 Y **no** `instalar-en`. Ver el aviso de arriba.
+
+### Lo que apareció el 2026-08-07, y qué hacer con ello
+
+```
+> [ 51.812474] usb 1-6: device descriptor read/64, error -110
+```
+
+`-110` es `ETIMEDOUT`: hay un dispositivo USB en el bus 1, puerto 6, cuyo
+descriptor el kernel no puede leer. **Reintenta para siempre**, así que el
+mensaje vuelve cada pocos segundos encima del prompt y la sesión queda inusable
+aunque el teclado funcione. Los 38 segundos que tardó en aparecer el store son el
+mismo síntoma: la enumeración se pasó ese rato agotando plazos.
+
+**No es que el teclado no sirva**, y la forma de separarlo es la que Cesar usó:
+arrancar otra vez y teclear **antes** de que aparezca el error. Si eso funciona
+—y funcionó—, el teclado está bien y lo que estorba es el ruido.
+
+Antes de tocar nada del kernel, **desde Fedora y sin riesgo**:
+
+```sh
+lsusb -t
+sudo dmesg | grep -i "1-6"
+```
+
+Eso dice qué dispositivo es. Hasta saberlo no se agrega ninguna opción: podría
+ser un hueco de `thalyx.config` o podría ser un dispositivo defectuoso, y las dos
+se ven igual desde adentro de Thalyx. Es la regla 5 — antes de creerle a lo que
+el sistema dice, descartar al que preguntó.
+
+Y un atajo mientras tanto: **desconectar todo lo que no haga falta** —hubs,
+cámaras, lectores de tarjetas, controles— dejando sólo el teclado y la memoria.
+Si el error desaparece, el dispositivo era uno de los que se quitaron y queda
+identificado por eliminación.
 
 ## Lo que queda sin responder aunque todo salga bien
 

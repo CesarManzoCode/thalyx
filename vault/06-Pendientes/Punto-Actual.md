@@ -14,9 +14,83 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Una PC de verdad arrancó Thalyx desde una USB de verdad — 2026-08-07
+>
+> **Es lo primero que hay que leer.** El acto 2a corrió. Firmware real, monitor
+> real por HDMI, memoria física, teclado físico. Lo que salió en la pantalla:
+>
+> ```
+> [ 38.075277] BTRFS: device label thalyx-store devid 1 transid 2 /dev/sdb2 (8:18) scanned by init (1)
+> ok  store       /dev/sdb2 ▪ three subvolumes, found by the label `thalyx-store`
+> ok  thalyx-lsm  2 hook(s) live, 3 map(s) pinned under /sys/fs/bpf/thalyx
+> ok  enforcement 2 of 2 hook(s) live: thalyx_socket_c, thalyx_file_ope
+> ```
+>
+> Cada línea es una afirmación distinta, y **ninguna la podía hacer una VM**:
+>
+> - **Un firmware real arrancó Thalyx de una memoria física**, por el
+>   *fallback* `\EFI\BOOT\BOOTX64.EFI`, sin gestor de arranque.
+> - **La pantalla funcionó en hierro.** `FB_EFI` adoptó el framebuffer que dejó
+>   *su* firmware, en un monitor por HDMI. Era la única parte de la pantalla que
+>   una VM no respondía, y es el punto 3 de la lista de riesgo de
+>   [[Construccion-del-ISO]] — *«arrancaría bien y no se vería nada»*.
+> - **`USB_STORAGE` funcionó en hierro**: la memoria salió como `/dev/sdb2`,
+>   major 8:18, o sea la capa SCSI de verdad. La línea que faltaba esa mañana.
+> - **Encontró su store por la etiqueta**, sin `thalyx.store=`.
+> - **El LSM se enganchó**, en un arranque por firmware sobre hardware real.
+> - **Y el teclado funcionó.** Cesar tecleó `apagar` y la máquina se apagó.
+>
+> Ese último punto lo estableció **él, con el control correcto**: volvió a
+> arrancar sólo para separar *«el teclado no sirve»* de *«algo me impide
+> teclear»*, tecleó antes de que apareciera el error, y funcionó. Es la regla 4 —
+> una negativa sin línea base y sin control no dice nada — aplicada por el humano
+> sin que nadie se la pidiera.
+>
+> **Hay un `sda` además del `sdb`**, así que esa máquina tiene otro disco SCSI —
+> probablemente SATA por AHCI. `discos` lo habría dicho y no se alcanzó a correr.
+>
+> ### Y encontró un defecto real, que es para lo que sirve correr las cosas
+>
+> ```
+> > [ 51.812474] usb 1-6: device descriptor read/64, error -110
+> ```
+>
+> `-110` es `ETIMEDOUT`: un dispositivo USB en el bus 1, puerto 6, cuyo descriptor
+> no se puede leer. El kernel **reintenta para siempre**, así que el mensaje
+> vuelve cada pocos segundos, encima del prompt. La sesión queda inusable aunque
+> el teclado funcione. Y los 38 segundos hasta encontrar el store son el mismo
+> síntoma: la enumeración se pasó ese tiempo agotando plazos.
+>
+> **Lo notable es que el código ya había previsto exactamente esto** y eligió el
+> umbral equivocado por uno. `init.rs:393` dice, textual:
+>
+> > *From here there is a human at a prompt, and an info-level message arriving
+> > mid-line steps on it — the machine looks like it stopped listening.*
+>
+> Y baja la consola a `4`. El razonamiento vale para un error que ocurre **una
+> vez**; no vale para uno que se repite sin parar. Un mensaje que se repite deja
+> de ser información y es ruido, y el umbral no distingue las dos cosas porque
+> mira la gravedad y no la repetición.
+>
+> **Y el mensaje del arranque miente por un nivel.** `set_console_loglevel(4)`
+> suprime todo lo que tenga prioridad `>= 4`, o sea **las advertencias se van** —
+> pero la línea dice *«warnings and worse only»* y el comentario dice *«warnings
+> and errors still come through»*. Mientras tanto `is_trouble()` cuenta la
+> prioridad 4 **como** problema, así que `nucleo` las llama problemas y la consola
+> las tira. Las dos mitades del mismo criterio no coinciden.
+>
+> ### Lo que falta, y son dos preguntas distintas que no hay que mezclar
+>
+> 1. **Qué es `usb 1-6`.** Se contesta desde Fedora, gratis y sin riesgo:
+>    `lsusb -t` y `dmesg | grep -i "1-6"`. Hasta saberlo, **no se agrega ninguna
+>    opción de kernel**: sería adivinar, y este proyecto tiene una regla sobre
+>    creerle a un instrumento antes de descartar al que preguntó.
+> 2. **Cómo sobrevive la sesión al ruido del kernel.** Es decisión de Cesar y
+>    está en [[Tareas-Pendientes]].
+>
 > ## Los cuatro grupos de controladores corrieron, y el acto 2 se parte en dos — 2026-08-07
 >
-> **Es lo primero que hay que leer.** Cesar corrió `run-hardware` entero. Lo que
+> **El bloque de arriba es más reciente.** Cesar corrió `run-hardware` entero. Lo que
 > devolvió la pantalla, con nombres:
 >
 > ```
