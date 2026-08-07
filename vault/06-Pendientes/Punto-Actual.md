@@ -14,9 +14,58 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Los cuatro grupos de controladores corrieron, y el acto 2 se parte en dos — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Cesar corrió `run-hardware` entero. Lo que
+> devolvió la pantalla, con nombres:
+>
+> ```
+> hid-generic 0003:0627:0001.0001: input: USB HID v1.11 Keyboard [QEMU QEMU USB Keyboard] on usb-0000:00:03
+> BTRFS: device label thalyx-store devid 1 transid 2 /dev/nvme0n1p2 (259:2)
+> ok  store   /dev/nvme0n1p2 ▪ three subvolumes, found by the label `thalyx-store`
+> ```
+>
+> - **El teclado USB enlazó**: `xhci_hcd` enumeró el dispositivo y `hid-generic`
+>   creó un dispositivo de entrada.
+> - **El NVMe enlazó y las particiones se llaman bien** — `nvme0n1p2`, major 259.
+>   Era el riesgo más caro que cargaba el acto 2, el que hace que `partitions.rs`
+>   lea los nombres de sysfs en vez de derivarlos.
+> - **Arrancó del NVMe sin medio puesto**: encontró **un solo** `thalyx-store`; con
+>   la USB conectada habría encontrado dos y se habría negado.
+> - Y de ahí se sigue lo que la pantalla no dice: para que ese store exista,
+>   `instalar-en` tuvo que leer el kernel del medio USB, así que **`USB_STORAGE`
+>   también funcionó**. La línea que faltaba esa misma mañana.
+>
+> **Lo que le queda al acto 2 ya no es «¿Thalyx tiene los drivers?».** Es silicio
+> concreto.
+>
+> ### Y la restricción real, que cambia la forma del acto 2
+>
+> Cesar tiene **una sola PC** y no va a tener otra: *«no puedo hacerla ni hoy ni
+> nunca, no tengo una pc limpia»*. Sí tiene memorias USB (4, 8 y 32 GB). Eso parte
+> el acto 2 en dos mitades de costo muy distinto:
+>
+> - **Arrancar desde la USB en su propia máquina** responde firmware real, xHCI
+>   real, su teclado real, `USB_STORAGE` real y su NVMe real visto por el driver
+>   real — **y no escribe un solo byte** en el disco interno.
+> - **Instalar en el disco interno destruiría Fedora.** `thalyx install` escribe una
+>   GPT nueva sobre el disco entero; el módulo abre diciendo *«turning a disk with
+>   no operating system on it»* y es literal. Instalar al lado **no está construido**
+>   y es un decreto que Cesar no ha tomado. Se puede hacer sin romper la filosofía
+>   —particiones en el espacio libre, el kernel en la ESP existente bajo
+>   `\EFI\thalyx\`, y el **menú del firmware** eligiendo, que es el firmware y no un
+>   segundo programa— pero lo que cuesta no es el código: es escribir en el disco
+>   que sostiene la única máquina que verifica este proyecto.
+>
+> El procedimiento entero está en [[Arranque-en-Hierro]], escrito para contestarse
+> desde sí mismo: 642 MiB es el mínimo instalable, así que 2 GiB de imagen basta y
+> entra en cualquiera de las tres memorias. Lleva el aviso que importa —**`discos`
+> va a listar el NVMe con Fedora adentro y `instalar-en` no se teclea**— y el paso
+> de Secure Boot, que es lo más probable que lo detenga y no es Thalyx fallando.
+>
 > ## El acto 2 habría fallado, y se supo sin correrlo — 2026-08-07
 >
-> **Es lo primero que hay que leer.** Cesar preguntó si GNOME Boxes servía para el
+> **El bloque de arriba es más reciente.** Cesar preguntó si GNOME Boxes servía para el
 > acto 2, porque no tiene una segunda PC. Buscar la respuesta encontró un defecto
 > que habría aparecido con la memoria USB ya puesta en una máquina.
 >

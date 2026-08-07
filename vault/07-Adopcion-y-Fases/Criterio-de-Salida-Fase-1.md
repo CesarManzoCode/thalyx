@@ -238,6 +238,52 @@ arriba aplicada un nivel más adentro: una VM mejor equipada sigue siendo una VM
 Lo que hace es que, cuando aparezca una PC, lo que quede por descubrir sea el
 hierro y no una opción de kernel que faltaba.
 
+### Corrido el 2026-08-07, y los cuatro grupos enlazaron
+
+Cesar corrió `run-hardware` completo. `hid-generic` creó un dispositivo de entrada
+desde un teclado USB detrás de `xhci_hcd`; el store apareció en `/dev/nvme0n1p2` —
+major 259, particiones nombradas como una PC las nombra— y la máquina arrancó de
+ese NVMe **sin medio puesto**, encontrando un solo `thalyx-store`. Y para que ese
+store existiera, `instalar-en` tuvo que leer el kernel del medio USB, así que
+`USB_STORAGE` corrió también.
+
+**Lo que le queda al acto 2 dejó de ser «¿Thalyx tiene los drivers?» y pasó a ser
+silicio concreto.**
+
+## El acto 2 se parte en dos, porque hay una sola PC — 2026-08-07
+
+Cesar no tiene ni va a tener una máquina limpia: *«no puedo hacerla ni hoy ni
+nunca, no tengo una pc limpia en donde instalar, solo tengo esta y ninguna otra»*.
+Sí tiene memorias USB. Eso no cancela el acto 2 — lo separa en dos mitades cuyo
+costo no se parece en nada:
+
+| | Qué responde | Qué cuesta |
+|---|---|---|
+| **2a — arrancar desde la USB en su propia PC** | Firmware real, su xHCI real, su teclado real, `USB_STORAGE` real, y su NVMe real listado por `discos` | **Nada.** No escribe un byte en el disco interno |
+| **2b — instalar en el disco interno** | Escribir de verdad en un NVMe físico | **Destruye su Fedora**, y con ella la única máquina que verifica este proyecto |
+
+**2b no se puede hacer con lo que existe.** `thalyx install` escribe una GPT nueva
+sobre el disco entero; el crate abre diciendo *«turning a disk with no operating
+system on it into a Thalyx machine»* y es literal. Instalar al lado de otro sistema
+es una capacidad que **no está construida** y un decreto que Cesar no ha tomado.
+
+Y si se decidiera, **no obliga a ceder [[Filosofia-Fundacional]]**: particiones
+añadidas al espacio libre de la GPT que ya está, el kernel en la ESP existente bajo
+`\EFI\thalyx\` —y no en `\EFI\BOOT\BOOTX64.EFI`, que es el *fallback* de UEFI y es
+del sistema que ya vive ahí—, y **el menú de arranque del firmware** eligiendo entre
+los dos. Eso es el firmware, no un segundo programa dentro de la imagen. Sin GRUB.
+Lo caro no es el código: es que ese instalador escribiría en el disco del que
+depende todo lo demás.
+
+El procedimiento de 2a está en [[Arranque-en-Hierro]], con el aviso que importa —
+dentro de la sesión, `discos` lista el NVMe con Fedora adentro, y `instalar-en` es
+lo único destructivo— y con Secure Boot como lo más probable que lo detenga, que no
+sería Thalyx fallando.
+
+**Cuando 2a salga bien, el acto 2 queda respondido salvo por 2b, y así se escribe.**
+Lo que no puede pasar es que arrancar desde la USB se reporte como haber instalado
+— la misma regla de esta nota, un nivel más adentro otra vez.
+
 ### Y una cosa que el criterio no pide y conviene no confundir
 
 Una PC recién instalada arranca con un store bueno y **vacío**: no hay nada
