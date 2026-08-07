@@ -9,6 +9,8 @@
 #   sudo make store       format the disk and copy that onto it
 #   make run              boot it in QEMU
 #   make count            list what is really inside the image
+#   sudo make installed   partition a disk image and install Thalyx onto it
+#   make run-installed    boot that disk, with no medium attached
 #
 # `store` is the one that needs root, and the only one. It will not build
 # anything: see the note above it.
@@ -35,12 +37,16 @@
 #
 # `boot` is what that stage runs, and it builds nothing: see the note above it.
 #
-# **`esp` and `run-uefi` have never run, anywhere.** They are the first half of
-# the Phase 1 exit criterion — a medium a firmware can boot with no bootloader —
-# and this container has no QEMU, no UEFI firmware and no kernel to build. The
-# kernel options they need (EFI_STUB, the built-in command line, the image built
-# into the kernel) are equally unexercised. Every previous boot of this image
-# found a kernel option no check here could see; expect this one to find more.
+# `esp` and `run-uefi` ran on 2026-08-06 and a firmware booted the medium with no
+# bootloader in front of it, which is the first half of the Phase 1 exit
+# criterion.
+#
+# **`installed` and `run-installed` have never run, anywhere.** They are the other
+# half — the disk the medium leaves behind, booted with no medium attached — and
+# this container can build neither: it has no QEMU, no UEFI firmware, no kernel to
+# build, and loop devices that support no partitions at all. Stage 20 of
+# `dev/verify.sh` exercises everything up to the boot; the boot itself is
+# `run-installed` and nothing else answers it.
 #
 # Stated here rather than in a footnote because the project's own rules say not
 # to stack unverified work and stay quiet about it.
@@ -126,7 +132,7 @@ GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
         store store-stage greeter lsm doctor hook-check boot pin-kernel \
-        esp run-uefi initramfs-check
+        esp run-uefi initramfs-check installed run-installed
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -1041,6 +1047,101 @@ run-uefi: esp
 	    -drive format=raw,file=fat:rw:$(ESP) \
 	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
+	    -nographic
+
+# ──────────────────────────────────────────── the disk an installed machine has
+#
+# `Criterio-de-Salida-Fase-1.md`: the ISO installs Thalyx onto a PC and is then
+# removed, so the machine *has* Thalyx rather than borrowing it. `run-uefi` above
+# boots the medium; this boots what the medium leaves behind, which is the other
+# half and the one nothing has ever exercised.
+#
+# Two targets and the same privilege split as `store`, for the same two reasons:
+# `installed` needs root for the loop device and the mounts, and a target that
+# runs a Rust build under sudo executes every dependency's build script with
+# privilege and leaves root-owned files in target/.
+#
+#     make -C image                    # you, and it builds the kernel
+#     sudo make -C image installed     # root, and it builds nothing
+#     make -C image run-installed      # you
+INSTALLED     := $(BUILD)/installed.img
+INSTALLEDSIZE := 8G
+
+installed:
+	@test "$$(id -u)" = 0 || { \
+	    echo "  make installed needs root: it attaches a loop device and mounts."; \
+	    echo "  sudo make -C image installed"; \
+	    exit 1; \
+	}
+	@test -f $(BZIMAGE) || { \
+	    echo "  no kernel at $(BZIMAGE), so there would be nothing to install."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    echo; \
+	    echo "  This target builds nothing on purpose: it runs as root."; \
+	    exit 1; \
+	}
+	@test -x $(THALYX) || { \
+	    echo "  $(THALYX) is not built, and it is the installer."; \
+	    echo "      make -C image binary"; \
+	    exit 1; \
+	}
+	rm -f $(INSTALLED)
+	truncate -s $(INSTALLEDSIZE) $(INSTALLED)
+	@# `-P` is what makes the kernel scan the table this is about to write. Without
+	@# it the loop device has no partitions no matter what is on it, and the
+	@# installer's own message would blame the table it wrote.
+	@loop=$$(losetup -f -P --show $(INSTALLED)) || exit 1; \
+	 echo "  attached $$loop"; \
+	 $(THALYX) install $$loop --kernel $(BZIMAGE) --yes; \
+	 status=$$?; \
+	 losetup -d $$loop; \
+	 test $$status = 0 || exit $$status
+	@# The file belongs to whoever asked, because `run-installed` opens it
+	@# read-write and a `run` that needed sudo would put the whole guest under
+	@# root. What is *inside* it is root's, which is what an installed machine has.
+	@if [ -n "$(SUDO_UID)" ]; then chown $(SUDO_UID):$(SUDO_GID) $(INSTALLED); fi
+	@echo
+	@echo "  installed: $(INSTALLED)"
+	@echo "  now:       make -C image run-installed"
+
+# Boot the disk, with nothing else attached.
+#
+# **No ESP, no -kernel, no -initrd, no -append, and no medium of any kind.** The
+# firmware is handed one disk and has to find a partition of the EFI system type,
+# read a FAT32 filesystem out of it, find \EFI\BOOT\BOOTX64.EFI and start it. That
+# is the entire claim of the exit criterion, and it is the one thing no test in the
+# workspace can make: every byte of that path is checked against a captured kernel
+# header and none of it has been read by a firmware.
+#
+# A firmware that finds nothing sits at a UEFI shell or reboots. That is what to
+# expect if the partition type, the FAT, or the file's place in it is wrong.
+run-installed:
+	@test -f $(INSTALLED) || { \
+	    echo "  no installed disk at $(INSTALLED)."; \
+	    echo; \
+	    echo "      sudo make -C image installed"; \
+	    echo; \
+	    exit 1; \
+	}
+	@test -n "$(OVMF_CODE)" || { \
+	    echo; \
+	    echo "  no UEFI firmware for QEMU on this machine, so there is nothing"; \
+	    echo "  to boot the disk *with*. This is not Thalyx failing — nothing"; \
+	    echo "  was tested at all."; \
+	    echo; \
+	    echo "      Fedora:  sudo dnf install edk2-ovmf"; \
+	    echo "      Debian:  sudo apt install ovmf"; \
+	    echo; \
+	    exit 1; \
+	}
+	cp $(OVMF_VARS) $(BUILD)/ovmf-vars-installed.fd
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp 2 \
+	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
+	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-installed.fd \
+	    -drive format=raw,file=$(INSTALLED) \
 	    -nographic
 
 clean:

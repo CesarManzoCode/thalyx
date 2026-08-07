@@ -10,6 +10,7 @@ members = [
     "crates/thalyx-syscall",
     "crates/thalyx-bpf",
     "crates/thalyx-btrfs",
+    "crates/thalyx-install",
     "crates/thalyx-sandbox",
     "crates/thalyx-graph",
     "crates/thalyx-memory",
@@ -39,6 +40,7 @@ thalyx-sandbox = { path = "crates/thalyx-sandbox" }
 thalyx-syscall = { path = "crates/thalyx-syscall" }
 thalyx-bpf = { path = "crates/thalyx-bpf" }
 thalyx-btrfs = { path = "crates/thalyx-btrfs" }
+thalyx-install = { path = "crates/thalyx-install" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-memory = { path = "crates/thalyx-memory" }
 thalyx-watch = { path = "crates/thalyx-watch" }

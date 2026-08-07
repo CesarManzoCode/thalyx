@@ -14,9 +14,117 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El instalador existe: un disco se vuelve una máquina — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Y viene con **un segundo commit encima**, el
+> de los controladores; los dos se verifican por caminos distintos y están
+> separados a propósito.
+>
+> ### Lo que se construyó
+>
+> `crates/thalyx-install` y **`thalyx install <disco> --kernel <archivo>`**. Es el
+> acto que juntaba las dos piezas caras, y lo que sale es esto:
+>
+> ```
+>   LBA 0          MBR protector
+>   LBA 1..34      la tabla de particiones, y su copia al otro extremo
+>   1 MiB          partición 1, 512 MiB, FAT32, con \EFI\BOOT\BOOTX64.EFI adentro
+>   513 MiB..      partición 2, el resto, btrfs `thalyx-store`, tres subvolúmenes
+> ```
+>
+> **Un archivo en la partición de arranque, y es el kernel con Thalyx adentro.**
+> Es `make -C image count` extendido al disco instalado.
+>
+> Costó **dos escritores de bytes más**, por el motivo de siempre: `sgdisk` y
+> `mkfs.vfat` son lo que usaría una persona, y la imagen lleva el kernel de Linux
+> y un programa. Van la cuarta y la quinta vez que este proyecto contesta a un
+> binario ausente con el trabajo en vez de con la herramienta — `bpftool`, `cpio`,
+> `btrfs`, `partprobe`, `mkfs.vfat` — y una cuarta llamada al kernel propia,
+> `BLKRRPART`, porque escribir una tabla en un disco que el kernel ya tiene abierto
+> no hace aparecer `/dev/sda1`.
+>
+> **FAT no es una preferencia, es del firmware.** La especificación UEFI obliga al
+> firmware a entender FAT y nada más. Es el único sistema de archivos de Thalyx que
+> existe para satisfacer algo de afuera, y conviene que quede dicho.
+>
+> ### Lo que decidió el diseño, y vale saberlo
+>
+> - **Los nombres de las particiones se le preguntan al kernel.** `/dev/sda` da
+>   `/dev/sda1` y `/dev/nvme0n1` da `/dev/nvme0n1p1`; la regla que produce las dos
+>   es una convención de las herramientas que las imprimen, no una promesa. Si se
+>   deriva, el instalador anda en SATA y escribe el store **en la nada** en NVMe —
+>   que es justo la mitad del hierro que aquí no se puede probar. Se leen de
+>   `/sys/dev/block/<mayor>:<menor>/`.
+> - **La ESP es de 512 MiB y la holgura es el punto.** No se agranda después sin
+>   mover el store, y lo que seguro va a pasar es que una actualización de kernel
+>   escriba el nuevo **al lado** del viejo. Una máquina que sobrescribe su único
+>   archivo arrancable y se queda sin corriente no vuelve.
+> - **Un disco de 4 KiB por sector se rechaza en vez de escribirse.**
+>
+> ### Y hay un fallo nuevo que no se parece a ningún otro de este proyecto
+>
+> **Una GPT con una suma equivocada no se reporta como rota: se ignora.** Linux cae
+> al MBR protector, no crea ninguna partición, y el disco vuelve **igual que si
+> nadie lo hubiera tocado**. El instalador habría dicho `ok`.
+>
+> Es distinto del Btrfs de la etapa 18, donde un superbloque dañado hace que
+> `mount(2)` conteste un error. Ahí el fallo llega; aquí no llega nada. Por eso la
+> etapa 20 no comprueba «el instalador terminó» sino **«el kernel hizo dos
+> particiones»**, leídas de sysfs, con línea base de que antes no había ninguna, y
+> comparando los tamaños contra lo que `--plan` dijo. Regla nueva en
+> [[Estrategia-de-Pruebas]].
+>
+> ### El contenedor no pudo establecerlo, y casi acusa a Thalyx
+>
+> `thalyx install` escribió la tabla aquí y el kernel no hizo particiones. La
+> lectura obvia era que la tabla estaba mal. Lo que lo resolvió fue escribir **un
+> MBR común** —cuyo parser está en todos los kernels de Linux— y ver que tampoco
+> producía nada: `/sys/block/loop0/range` vale `1`, o sea que este `loop` no admite
+> particiones de ningún tipo. **Regla 5, novena vez**, y la etapa 20 lleva ese
+> discriminador adentro en vez de una nota — cuando no aparecen particiones,
+> escribe un MBR y vuelve a mirar; si de ése tampoco salen dice `NOT PROVEN`, y si
+> salen, **entonces** el fallo es de Thalyx y lo dice como fallo.
+>
+> Lo que sí se pudo hacer aquí, y vale como red: las dos sumas de la GPT
+> recalculadas con un CRC-32 independiente, y el volumen FAT32 recorrido entero por
+> un lector escrito aparte —raíz, `EFI`, `BOOT`, la cadena de clusters— que devolvió
+> los 3 000 000 de bytes idénticos.
+>
+> ### Lo que falta, y es de Cesar
+>
+> 1. **Correr `sudo ./dev/verify.sh`.** La etapa 20 es nueva y son **once líneas**
+>    que sólo tu máquina puede establecer. Espero `proven 128 · not proven 1 ·
+>    failed 0`.
+> 2. **Y después `make -C image run-installed`**, que es la afirmación de verdad y
+>    no la ejerce ninguna etapa:
+>
+>    ```
+>    make -C image                      # el kernel, si no está construido
+>    sudo make -C image installed
+>    make -C image run-installed
+>    ```
+>
+>    Un firmware UEFI recibe **sólo el disco instalado** —sin ISO, sin `-kernel`,
+>    sin nada— y tiene que encontrar `\EFI\BOOT\BOOTX64.EFI` y arrancarlo. Si
+>    encuentra nada, se queda en el shell de UEFI o reinicia; eso es lo que hay que
+>    esperar si el tipo de partición, el FAT o el lugar del archivo están mal.
+>
+> **El kernel se le pasa por `--kernel` a propósito.** Un instalador corriendo
+> *dentro* de la máquina arrancada desde la ISO tendría que sacar el bzImage del
+> medio del que arrancó, y eso pide un **lector** de FAT y saber cuál disco es el
+> medio. Es su propio cambio y no va encima de éste; está en [[Tareas-Pendientes]]
+> junto con la otra cosa que el criterio va a pedir — que el store de una máquina
+> recién instalada queda **vacío**, así que los pasos 2 a 6 no se pueden hacer *en
+> ella* hasta que exista una forma de que el software llegue a una máquina que no
+> es ésta.
+>
+> **771 pruebas pasan, `clippy` limpio en 1.97, `cargo fmt` aplicado.** El
+> contenedor se actualizó a 1.97 antes de empezar, que es la regla del desfase de
+> versión del bloque anterior aplicándose por primera vez.
+
 > ## Thalyx hace los subvolúmenes, y clippy sí era un lint — 2026-08-07
 >
-> **Es lo primero que hay que leer.**
+> **El bloque de arriba es más reciente.**
 >
 > ### Lo que se construyó
 >

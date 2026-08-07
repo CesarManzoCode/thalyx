@@ -38,6 +38,10 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Orquestación de ejecución | `crates/thalyx-core/run.rs` | `thalyx module run`, ciclo completo |
 | Perfil `module_standard` | `crates/thalyx-sandbox/profile.rs` | Namespaces, seccomp y límites; falta user namespace |
 | Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente |
+| Escritura de un Btrfs vacío | `crates/thalyx-btrfs` | Ocho árboles, tres chunks y los superbloques, sin `mkfs.btrfs`; los tres subvolúmenes por ioctl |
+| Tabla de particiones GPT | `crates/thalyx-install/gpt.rs` | Una tabla de dos particiones con sus dos copias, sin `sgdisk` |
+| Sistema de archivos FAT32 | `crates/thalyx-install/fat.rs` | Un volumen con un archivo en `\EFI\BOOT\BOOTX64.EFI`, sin `mkfs.vfat`. No lee |
+| El instalador | `crates/thalyx-install` y `thalyx install` | Particiona, escribe el arranque y hace el store en un acto. **El arranque del disco instalado no lo ha ejercido nadie** |
 | Raíz propia del módulo (`pivot_root`) | `crates/thalyx-sandbox/rootfs.rs` | Solo el módulo, el sistema en RO y lo concedido |
 | Disciplina de cobertura del índice | `crates/thalyx-graph/watch.rs` | Completa y probada; el atajo se gana y se devuelve solo |
 | Contador de mutaciones del kernel | `crates/thalyx-watch` | Diez hooks, acotado al árbol; 5000 escrituras dentro, 0 fuera |

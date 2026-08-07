@@ -10,6 +10,7 @@ mod enforce;
 mod graph;
 mod image;
 mod init;
+mod install;
 mod memory;
 mod render;
 mod restore;
@@ -129,6 +130,13 @@ enum Command {
     /// The disk a machine keeps its store on
     #[command(subcommand)]
     Disk(store_disk::DiskCommand),
+
+    /// Turn a disk with no operating system on it into a Thalyx machine
+    ///
+    /// Partitions it, writes the kernel onto a boot partition a UEFI firmware
+    /// starts with no bootloader in front of it, and makes the rest into a
+    /// store. Everything on the disk is lost.
+    Install(install::InstallArgs),
 
     /// Packaging tools for module publishers
     #[command(subcommand)]
@@ -299,6 +307,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Enforce(command) => enforce::run(&root, command),
         Command::Disk(command) => store_disk::run(command),
+        Command::Install(args) => install::run(args),
         Command::Store(StoreCommand::Status) => {
             let store = Store::open(&root)?;
             render::store_status(&store)

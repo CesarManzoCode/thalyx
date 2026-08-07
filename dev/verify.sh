@@ -57,7 +57,9 @@ cleanup() {
     # interrupted run that left it mounted would turn this line into `rm -rf`
     # through a mount point — deleting the contents of a filesystem instead of
     # the file holding it.
-    for mounted in "${SMNT:-}" "${TMNT:-}" "${VMNT:-}" "${SWS:+$SWS/top}" "${SWS:+$SWS/check}"; do
+    for mounted in "${SMNT:-}" "${TMNT:-}" "${VMNT:-}" "${IMNT:-}" \
+                   "${SWS:+$SWS/top}" "${SWS:+$SWS/check}" \
+                   "${IWS:+$IWS/top}" "${IWS:+$IWS/check}"; do
         [ -n "$mounted" ] || continue
         mountpoint -q "$mounted" 2>/dev/null || continue
         umount "$mounted" 2>/dev/null || red "   could not unmount $mounted; not deleting $WORK"
@@ -67,9 +69,11 @@ cleanup() {
     # After the unmounts and before the rm. A loop device left attached holds the
     # deleted image file open, and the leak is invisible: `losetup -f` just hands
     # out the next number, so nothing looks wrong until the machine has none left.
-    if [ -n "${LOOP:-}" ]; then
-        losetup -d "$LOOP" 2>/dev/null || red "   could not detach $LOOP; run: losetup -d $LOOP"
-    fi
+    for attached in "${LOOP:-}" "${ILOOP:-}"; do
+        [ -n "$attached" ] || continue
+        losetup -d "$attached" 2>/dev/null \
+            || red "   could not detach $attached; run: losetup -d $attached"
+    done
 
     # Kept when something failed. Around thirty failure messages in this script
     # end with "see $WORK/something.log", and every one of them was a lie: the
@@ -2498,6 +2502,264 @@ fi
 # `mkfs.btrfs`, deliberately — it is the regression net for stages 13 and 16, and
 # swapping it in the same change that introduces what needs testing would leave
 # the net and the thing under test being the same unexercised code.
+
+
+# ─────────────────────────── 20. the installer: a disk becomes a machine
+
+step "20. Thalyx partitions a disk and makes it bootable, with no outside tool"
+
+# `Construccion-del-ISO.md`, at the end of *Los tres subvolúmenes*: the two
+# expensive pieces were built and nothing joined them. `thalyx install` is the
+# join — a GPT, a FAT32 boot partition holding the kernel at the one path a
+# firmware looks for, and the rest as a store.
+#
+# ## What this stage is for, and it is not the bytes
+#
+# Every byte here is already checked against `block/partitions/efi.h` and
+# `include/uapi/linux/msdos_fs.h`, captured verbatim, by `cargo test`. What no
+# test in the workspace can establish is that **a kernel reads it**, and the way
+# this fails makes that gap the whole risk: a GPT whose checksum is wrong is not
+# reported as broken, it is *ignored*. The disk comes back looking as though
+# nothing had been written to it, and the installer would have said `ok`.
+#
+# So this stage asks the kernel. `losetup -P`, then the partitions the kernel
+# made, read out of sysfs — not out of Thalyx.
+#
+# ## Four requirements, four guards, per rule 3
+#
+# Partition scanning on loop devices, vfat in the kernel, btrfs in the kernel,
+# and dosfstools for the independent check. One variable for all four would mean
+# the only way to demand what this machine has is to demand what it has not.
+#
+# The first one is not hypothetical: the development container this was written
+# in has `range=1` on its loop devices, so it can create no partitions at all —
+# neither from a GPT nor from a plain MBR, which is how that was told apart from
+# Thalyx writing a bad table. Rule 5, ninth time.
+
+IDISK="$WORK/installed.img"
+IWS="$WORK/install-workspace"
+IMNT="$WORK/install-mnt"
+IKERNEL="$WORK/kernel-to-install"
+ILOOP=""
+mkdir -p "$IWS" "$IMNT"
+
+detach_install_loop() {
+    [ -n "$ILOOP" ] || return 0
+    for mounted in "$IMNT" "$IWS/top" "$IWS/check"; do
+        mountpoint -q "$mounted" 2>/dev/null && umount -l "$mounted" 2>/dev/null
+    done
+    losetup -d "$ILOOP" 2>/dev/null || red "   could not detach $ILOOP; run: losetup -d $ILOOP"
+    ILOOP=""
+}
+
+# What gets installed. The real bzImage when this machine has built one, because
+# the size is the thing most likely to break the boot partition one day — and a
+# stand-in otherwise, since what this stage measures is the writing and not the
+# kernel.
+if [ -f "$ROOT/image/build/bzImage" ]; then
+    cp "$ROOT/image/build/bzImage" "$IKERNEL"
+    echo "   installing the kernel this machine built: $(du -h "$IKERNEL" | cut -f1)"
+else
+    head -c 4000000 /dev/urandom > "$IKERNEL"
+    echo "   no bzImage built here, so a 4 MB stand-in is installed instead"
+    echo "   (what this stage measures is the writing, not the kernel)"
+fi
+
+if ! command -v losetup > /dev/null; then
+    GAP="no losetup, so there was no disk to install onto"
+    if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    truncate -s 3G "$IDISK"
+    ILOOP="$(losetup -f -P --show "$IDISK" 2>/dev/null || true)"
+
+    if [ -z "$ILOOP" ]; then
+        failed "could not attach $IDISK to a loop device, so nothing below ran"
+    else
+        ILOOPNAME="$(basename "$ILOOP")"
+
+        # The baseline. Everything below is "the kernel sees two partitions", and
+        # a loop device that already had them would satisfy that without Thalyx
+        # having done anything. It also catches the environment: a machine whose
+        # loop devices support no partitions at all fails the *next* check and
+        # this one passes, which is how the two are told apart.
+        BEFORE="$(find "/sys/block/$ILOOPNAME" -mindepth 1 -maxdepth 1 -name "$ILOOPNAME*" | wc -l)"
+        if [ "$BEFORE" = 0 ]; then
+            proven "the disk starts with no partitions, so two appearing is something Thalyx did"
+        else
+            failed "the loop device already has $BEFORE partition(s) before anything was installed"
+        fi
+
+        # What Thalyx says it will do, kept so the kernel's answer can be compared
+        # against it rather than against numbers repeated in this file.
+        "$THALYX" install "$ILOOP" --kernel "$IKERNEL" --plan \
+            > "$WORK/install-plan.log" 2>&1
+
+        if "$THALYX" install "$ILOOP" --kernel "$IKERNEL" --yes --workspace "$IWS" \
+                > "$WORK/install.log" 2>&1; then
+            proven "Thalyx partitioned a disk and made it a machine, with no sgdisk and no mkfs"
+        else
+            failed "thalyx install did not finish; see $WORK/install.log"
+            tail -30 "$WORK/install.log" | sed 's/^/     /'
+        fi
+
+        # Asked of the kernel, in sysfs, and not of the program that just wrote it.
+        # Rule 2 — the same reason stage 19 reads its subvolumes back with mount(8).
+        P1="/sys/block/$ILOOPNAME/${ILOOPNAME}p1"
+        P2="/sys/block/$ILOOPNAME/${ILOOPNAME}p2"
+        if [ -d "$P1" ] && [ -d "$P2" ]; then
+            proven "the kernel parsed the table and made both partitions, read from sysfs"
+        else
+            GAP="this kernel made no partitions from the table Thalyx wrote"
+            # Told apart from Thalyx being wrong by a plain MBR, which every kernel
+            # can parse — if that produces no partitions either, the loop driver
+            # here supports none and there is nothing to conclude about the GPT.
+            dd if=/dev/zero of="$WORK/mbr.img" bs=1M count=64 status=none
+            printf '\x80\x00\x02\x00\x83\xff\xff\xff\x00\x08\x00\x00\x00\x80\x00\x00' \
+                | dd of="$WORK/mbr.img" bs=1 seek=446 conv=notrunc status=none
+            printf '\x55\xaa' | dd of="$WORK/mbr.img" bs=1 seek=510 conv=notrunc status=none
+            MLOOP="$(losetup -f -P --show "$WORK/mbr.img" 2>/dev/null || true)"
+            MPARTS=0
+            if [ -n "$MLOOP" ]; then
+                MPARTS="$(find "/sys/block/$(basename "$MLOOP")" -mindepth 1 -maxdepth 1 \
+                          -name "$(basename "$MLOOP")p*" | wc -l)"
+                losetup -d "$MLOOP" 2>/dev/null
+            fi
+            if [ "$MPARTS" = 0 ]; then
+                GAP="loop devices here support no partitions at all, so nothing could \
+read what Thalyx wrote"
+                if [ "${THALYX_REQUIRE_LOOP_PARTITIONS:-0}" = 1 ]; then
+                    failed "$GAP"
+                else
+                    unproven "$GAP"
+                fi
+            else
+                failed "$GAP, and a plain MBR on the same machine produced $MPARTS —"
+                echo "     so the partition table Thalyx wrote is the thing at fault"
+            fi
+        fi
+
+        if [ -d "$P1" ] && [ -d "$P2" ]; then
+            # Where the kernel put them against where Thalyx said it would. Two
+            # numbers that have to agree and are produced by different code: a
+            # `--plan` that described one disk while the writer made another would
+            # otherwise be invisible until somebody measured a real machine.
+            WANT_ESP="$(awk '/MiB  FAT32/ { print $2 }' "$WORK/install-plan.log")"
+            GOT_ESP="$(( $(cat "$P1/size") * 512 / 1024 / 1024 ))"
+            START_ESP="$(cat "$P1/start")"
+            if [ "$WANT_ESP" = "$GOT_ESP" ] && [ "$START_ESP" = 2048 ]; then
+                proven "the boot partition is where and how large \`--plan\` said, by the kernel's account"
+            else
+                failed "the plan said ${WANT_ESP}MiB at 2048 and the kernel made ${GOT_ESP}MiB at $START_ESP"
+            fi
+
+            ESPDEV="/dev/${ILOOPNAME}p1"
+            STOREDEV2="/dev/${ILOOPNAME}p2"
+
+            # ── the boot partition, read by something that is not Thalyx
+            if ! command -v fsck.vfat > /dev/null; then
+                GAP="dosfstools is not installed, so nothing validated the FAT32 Thalyx wrote"
+                if [ "${THALYX_REQUIRE_DOSFSTOOLS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+            elif fsck.vfat -n "$ESPDEV" > "$WORK/fsck-vfat.log" 2>&1; then
+                proven "fsck.vfat walks the boot partition and finds nothing wrong"
+            else
+                failed "fsck.vfat rejected the filesystem Thalyx wrote; see $WORK/fsck-vfat.log"
+                tail -20 "$WORK/fsck-vfat.log" | sed 's/^/     /'
+            fi
+
+            if ! grep -qw vfat /proc/filesystems 2>/dev/null; then
+                GAP="this kernel has no vfat, so nothing could mount the boot partition"
+                if [ "${THALYX_REQUIRE_VFAT:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+            elif mount -t vfat "$ESPDEV" "$IMNT" > "$WORK/esp-mount.log" 2>&1; then
+                proven "the kernel mounts the FAT32 Thalyx wrote byte by byte"
+
+                # The claim that matters, and it is not "a file is there". A
+                # firmware loads this file and jumps into it: a copy that is one
+                # cluster short boots into whatever followed it.
+                if cmp -s "$IMNT/EFI/BOOT/BOOTX64.EFI" "$IKERNEL"; then
+                    proven "the kernel is at \\EFI\\BOOT\\BOOTX64.EFI, byte for byte, read back by the kernel"
+                else
+                    failed "the file on the boot partition is not the kernel that went in"
+                    ls -lR "$IMNT" 2>&1 | sed 's/^/     /' | head -20
+                fi
+                umount "$IMNT" 2>/dev/null || red "   could not unmount $IMNT"
+
+                # The control, per rule 4. Everything above is also satisfied by a
+                # kernel that mounts anything: both copies of the boot sector are
+                # damaged — both, because one is there precisely so the other can
+                # be lost — and the mount has to fail.
+                dd if=/dev/zero of="$ESPDEV" bs=1 seek=11 count=8 conv=notrunc status=none
+                dd if=/dev/zero of="$ESPDEV" bs=1 seek=$((6 * 512 + 11)) count=8 conv=notrunc status=none
+                blockdev --flushbufs "$ESPDEV" 2>/dev/null
+                if mount -t vfat "$ESPDEV" "$IMNT" > /dev/null 2>&1; then
+                    umount "$IMNT" 2>/dev/null
+                    failed "the kernel mounted a boot partition with both boot sectors damaged,"
+                    echo "     so the mount above establishes nothing about the format being right"
+                else
+                    proven "the same filesystem, damaged, is refused — so the mount was a real check"
+                fi
+            else
+                failed "Thalyx wrote a FAT32 filesystem and this kernel would not mount it"
+                tail -20 "$WORK/esp-mount.log" | sed 's/^/     /'
+            fi
+
+            # ── the store, which stage 19 already proved Thalyx can make. What is
+            # new is that the installer made it, on a partition, in one act.
+            if ! grep -qw btrfs /proc/filesystems 2>/dev/null; then
+                GAP="this kernel has no Btrfs, so the store the installer made could not be mounted"
+                if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+            else
+                IMOUNTED=1
+                for subvol in system modules user; do
+                    if mount -o "subvol=$subvol" "$STOREDEV2" "$IMNT" \
+                            > "$WORK/install-mount-$subvol.log" 2>&1; then
+                        umount "$IMNT" 2>/dev/null
+                    else
+                        IMOUNTED=0
+                        red "   subvol=$subvol did not mount:"
+                        tail -5 "$WORK/install-mount-$subvol.log" | sed 's/^/     /'
+                    fi
+                done
+                if [ "$IMOUNTED" = 1 ]; then
+                    proven "the store the installer made mounts the way PID 1 mounts it, all three"
+                else
+                    failed "the installer reported a store PID 1 could not have mounted"
+                fi
+
+                # Found the way an installed machine finds it: by the label, which
+                # is the whole reason `thalyx.store=` is not on the built-in command
+                # line. A store the installer wrote and nothing can name is a
+                # machine that boots and reports no disk.
+                if "$THALYX" disk identify "$STOREDEV2" 2>/dev/null \
+                        | grep -q "this is a Thalyx store"; then
+                    proven "the store carries the label an installed machine looks for"
+                else
+                    failed "the installed store does not identify itself"
+                    "$THALYX" disk identify "$STOREDEV2" 2>&1 | sed 's/^/     /'
+                fi
+            fi
+
+            # Running it again. An install interrupted by a power cut has to be
+            # finishable, and the only alternative would be a disk that has to be
+            # thrown away because the first attempt got halfway.
+            if "$THALYX" install "$ILOOP" --kernel "$IKERNEL" --yes --workspace "$IWS" \
+                    > "$WORK/install-again.log" 2>&1; then
+                proven "installing again over a finished disk works, so a half-done install is repairable"
+            else
+                failed "installing twice does not work; see $WORK/install-again.log"
+                tail -20 "$WORK/install-again.log" | sed 's/^/     /'
+            fi
+        fi
+
+        detach_install_loop
+    fi
+fi
+
+# What this stage does **not** establish, and it is the claim itself: that a
+# firmware boots the disk. Nothing with a kernel and a mount can answer that —
+# the firmware has to find \EFI\BOOT\BOOTX64.EFI on its own, with no `-kernel`
+# and nothing told to it. `make -C image run-installed` is that, and it needs a
+# built kernel and OVMF, so it is a thing a person runs and watches rather than a
+# stage here.
 
 # ---------------------------------------------------------------- summary
 

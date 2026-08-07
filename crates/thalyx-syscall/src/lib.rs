@@ -188,6 +188,49 @@ pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -
     check(result)
 }
 
+// ─────────────────────────────────────── making the kernel look at a new table
+//
+// An installer writes a partition table onto a disk the kernel already has open,
+// and the kernel does not notice. Nothing appears under `/dev`, so the next step
+// — writing a filesystem into partition one — has nowhere to write it. `partprobe`
+// and `blockdev --rereadpt` are the two programs a person would reach for, and the
+// image holds the kernel and one program. Fourth time, same answer.
+
+/// `BLKRRPART`, from `include/uapi/linux/fs.h`: `_IO(0x12, 95)`.
+///
+/// Spelled out because `_IO` is a C macro and this workspace has no C.
+/// `thalyx-install` carries that header captured verbatim and its `tests/ioctl.rs`
+/// recomputes this number from the header's own text.
+///
+/// `_IO` and not `_IOW`: the call takes no argument at all, so the size field is
+/// zero. A number built with a size in it would be rejected by a kernel that
+/// supports the call — `ENOTTY`, which reads as "this kernel is too old".
+pub const BLKRRPART: u64 = 0x125f;
+
+/// Ask the kernel to read the partition table on `disk` again.
+///
+/// `disk` must be a descriptor on the **whole** block device, not on a partition
+/// of it, and nothing may have a partition of that disk mounted — the kernel
+/// answers `EBUSY` rather than pulling a mounted filesystem out from under its
+/// users, which is the right refusal and worth passing on unchanged.
+///
+/// What comes back is a fact about the kernel's view, never about the bytes: a
+/// table this accepts is still a table something else may reject. What it buys is
+/// that `/dev/sda1` exists, so the next step has somewhere to write.
+pub fn reread_partition_table(disk: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let request = BLKRRPART as libc::Ioctl;
+    debug_assert_eq!(request as u64, BLKRRPART);
+
+    // SAFETY: `BLKRRPART` takes no argument — its size field is zero, so the
+    // kernel reads nothing through the third parameter. `disk` is borrowed for
+    // the call, so it cannot be closed underneath it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(disk.as_raw_fd(), request, 0) };
+    check(result)
+}
+
 /// Clone a mount into a detached tree, returning a file descriptor for it.
 ///
 /// A detached mount can be reconfigured before anyone can see it — which is the

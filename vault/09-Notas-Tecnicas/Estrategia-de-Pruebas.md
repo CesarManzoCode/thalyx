@@ -1470,6 +1470,65 @@ descargar una versión concreta— y además cambia el problema en vez de resolv
 un proyecto que fija su linter deja de enterarse de los lints nuevos hasta que
 alguien mueva el archivo, y enterarse es lo que se quería.
 
+## Regla derivada: un formato cuyo lector lo ignora en vez de rechazarlo hace que escribirlo mal se vea igual que no haberlo escrito
+
+**Antes de creerle a un escritor, hay que saber qué hace el lector con lo mal
+escrito. Si lo rechaza, el fallo se ve. Si lo ignora, el fallo es invisible y se
+parece a no haber hecho nada.**
+
+Salió al escribir el instalador, el 2026-08-07. Una tabla de particiones GPT lleva
+dos sumas —una del encabezado y otra del arreglo de entradas— y **Linux no reporta
+una GPT que no cuadra: la descarta.** Cae al MBR protector, no crea ninguna
+partición, y el disco vuelve igual que si nadie lo hubiera tocado. El instalador
+habría dicho `ok` y el disco no arrancaría, sin un solo mensaje sobre por qué.
+
+Es distinto del Btrfs de la etapa 18, donde un superbloque dañado hace que
+`mount(2)` conteste un error: ahí el fallo llega. Aquí no llega nada.
+
+Dos consecuencias, y las dos están en la etapa 20:
+
+1. **La comprobación no es «el instalador terminó», es «el kernel hizo dos
+   particiones»**, leídas de `/sys/block/…` y no de Thalyx. Y con línea base: se
+   afirma primero que el disco **no** tenía particiones, porque «hay dos» también
+   es cierto de un disco que ya las tenía.
+2. **Los tamaños que el kernel reporta se comparan contra lo que `--plan` dijo.**
+   Un plan que describe un disco y un escritor que hace otro no se nota de ninguna
+   otra forma — las dos mitades son código distinto y sólo el kernel las junta.
+
+La forma general: **hay que preguntarse qué imprime el lector cuando lo que lee
+está mal, antes de decidir qué prueba a la escritura.** Un lector silencioso
+convierte cualquier prueba de la forma «no hubo error» en ninguna prueba.
+
+## Regla derivada: cuando el entorno no puede hacer la cosa en absoluto, el salto necesita su propio discriminador
+
+**«No pasó» y «aquí no puede pasar» se ven idénticos, y la diferencia decide si lo
+que se reporta es un defecto de Thalyx o un `NOT PROVEN`. Hay que poder separarlos
+con una medición, no con una creencia.**
+
+El 2026-08-07, escribiendo el instalador: `thalyx install` escribió la GPT en el
+contenedor de desarrollo, el kernel no creó ninguna partición, y **la lectura
+obvia era que la tabla estaba mal**. Los bytes se habían comprobado contra
+`block/partitions/efi.h` capturado y recalculado las dos sumas con un CRC-32
+independiente, así que la tabla estaba bien — y aun así no había forma de *saberlo*
+desde adentro.
+
+Lo que lo resolvió fue escribir **un MBR común, con una partición de tipo `0x83`**,
+y ver que tampoco producía nada. El parser de MBR está en todos los kernels de
+Linux desde siempre; el de GPT es una opción aparte. Que los dos fallaran igual
+dice que no es ninguno de los dos parsers: `/sys/block/loop0/range` vale `1`, o
+sea que este `loop` no admite particiones de ningún tipo. Es la **regla 5, novena
+vez** — el instrumento otra vez, ahora el driver del anfitrión.
+
+Así que la etapa 20 lleva ese discriminador adentro, y no una nota: cuando no
+aparecen particiones, escribe un MBR y vuelve a mirar. Si de ése tampoco salen,
+dice `NOT PROVEN` con el motivo; si de ése sí salen, **entonces** el fallo es de
+Thalyx y lo dice como fallo.
+
+Lo que hay que evitar es lo que casi se hizo: poner el salto por delante —«si el
+kernel no soporta X, saltar»— sin nada que compruebe que la razón del salto es la
+razón verdadera. Un salto así se dispara también el día que Thalyx se rompe, y
+entonces el defecto sale como `NOT PROVEN` para siempre.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

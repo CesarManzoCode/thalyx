@@ -420,9 +420,8 @@ sigue usando `mkfs.btrfs`.
 es la mitad separable — que existe porque necesita cosas que escribir los bytes no
 necesita: root, un kernel con Btrfs y un dispositivo de bloques.
 
-**Lo que sigue faltando:** el instalador. Particionar el disco (GPT), escribir la
-partición EFI con el kernel adentro, y formatear la otra como store. Las dos piezas
-que costaban ya están; lo que falta es el acto que las junta.
+**Lo que seguía faltando era el instalador**, y está construido — el bloque de
+abajo.
 
 Cómo se sabe que algo de esto es correcto está en [[Estrategia-de-Pruebas]], en
 las dos reglas nuevas. En una frase: dos headers de Linux capturados verbatim más
@@ -434,6 +433,104 @@ regresión de las etapas 13 y 16, y cambiarla en el mismo commit que introduce l
 que hay que probar dejaría la red y lo probado siendo el mismo código sin
 ejercer. Es la misma razón por la que `boot` siguió pasando `-kernel` cuando
 apareció `run-uefi`.
+
+### El instalador, el acto que junta las dos piezas — construido el 2026-08-07
+
+`crates/thalyx-install` y `thalyx install <disco> --kernel <archivo>`. Lo que sale:
+
+```
+  LBA 0          MBR protector
+  LBA 1..34      la tabla de particiones, y su copia al otro extremo
+  1 MiB          partición 1, 512 MiB, FAT32, con \EFI\BOOT\BOOTX64.EFI adentro
+  513 MiB..      partición 2, el resto, Btrfs etiquetado `thalyx-store`,
+                 con los tres subvolúmenes que decreta [[Journal-y-Snapshots]]
+```
+
+**Un archivo en la partición de arranque, y es el kernel con Thalyx adentro.** Es
+`make -C image count` extendido al disco instalado.
+
+Costó dos escritores de bytes más, por el mismo motivo de siempre. `sgdisk` y
+`mkfs.vfat` son lo que usaría una persona, y la imagen lleva el kernel de Linux y
+un programa — así que la GPT la escribe `gpt.rs` y el FAT32 lo escribe `fat.rs`.
+Van la **cuarta y la quinta** vez que este proyecto contesta a un binario ausente
+con el trabajo en vez de con la herramienta: `bpftool`, `cpio`, `btrfs`,
+`partprobe`, `mkfs.vfat`.
+
+**Por qué FAT, en un proyecto que eligió Btrfs.** Porque lo eligió el firmware: la
+especificación UEFI obliga al firmware a entender FAT y nada más, así que la
+partición donde busca `\EFI\BOOT\BOOTX64.EFI` tiene que ser FAT. Es el único
+sistema de archivos de Thalyx que existe para satisfacer algo de afuera, y conviene
+que quede dicho para que nadie lo lea como una preferencia.
+
+**Y una cuarta llamada al kernel:** `BLKRRPART`. Escribir una tabla en un disco que
+el kernel ya tiene abierto no cambia nada de lo que el kernel ve — `/dev/sda1` no
+aparece, así que el paso siguiente no tiene dónde escribir. `partprobe` es lo que
+correría una persona. En `thalyx-syscall`, con su número recalculado desde
+`include/uapi/linux/fs.h` capturado, porque `_IO` es un macro de C y aquí no hay C.
+
+Cuatro decisiones de forma que vale registrar:
+
+- **Los nombres de las particiones se le preguntan al kernel, no se derivan.**
+  `/dev/sda` da `/dev/sda1` y `/dev/nvme0n1` da `/dev/nvme0n1p1`, y la regla que
+  produce las dos —agregar `p` cuando el nombre termina en dígito— es una convención
+  de las herramientas que los imprimen, no una promesa del kernel. Derivarla da un
+  instalador que anda en SATA y escribe el store en la nada en NVMe, que es
+  justamente la mitad del hierro que no se puede probar aquí. Así que se leen de
+  `/sys/dev/block/<mayor>:<menor>/`, que es donde el kernel los publica.
+- **La ESP es de 512 MiB y la holgura es el punto.** No se puede agrandar después
+  sin mover el store, y lo único que seguro va a pasar es que una actualización de
+  kernel tenga que escribir el nuevo **al lado** del que está corriendo antes de
+  quitar el viejo. Una máquina que sobrescribe su único archivo arrancable y se
+  queda sin corriente no vuelve.
+- **Un disco de 4 KiB por sector se rechaza en vez de escribirse.** Cada LBA estaría
+  a cuatro veces el byte que el kernel mira, así que la tabla simplemente no se
+  encontraría — y eso no se ve como un disco roto, se ve como un disco intacto.
+- **Se le da el tipo `Linux filesystem data` al store**, y no un GUID propio de
+  Thalyx. Thalyx encuentra su store por la etiqueta del Btrfs y nunca por ese
+  número; la única vez que el campo importa es cuando un humano metió el disco en
+  otra máquina para ver qué tiene, y un tipo que nada reconoce contesta *desconocido*.
+
+**El kernel se le pasa por `--kernel`, y eso es a propósito por ahora.** Un
+instalador corriendo *dentro* de la máquina arrancada desde la ISO tendría que sacar
+el bzImage del medio del que arrancó, y eso pide un **lector** de FAT y una forma de
+saber cuál de los discos es el medio. Es su propio cambio y no va encima de éste;
+está anotado en [[Tareas-Pendientes]].
+
+#### Cómo se sabe que algo de esto es correcto
+
+Tres instrumentos, y sólo el primero es una prueba de `cargo`.
+
+1. **Los offsets contra los headers de Linux capturados verbatim**:
+   `block/partitions/efi.h`, `include/uapi/linux/msdos_fs.h`,
+   `include/linux/uuid.h` y `include/uapi/linux/fs.h`. El parser que los lee se
+   **gradúa antes de medir nada** contra cuatro tamaños que los headers afirman en
+   su propio texto — `legacy_mbr` y `fat_boot_fsinfo` contra `SECTOR_SIZE`,
+   `msdos_dir_entry` contra `MSDOS_DIR_BITS`, y `guid_t` contra `UUID_SIZE` —,
+   que es la regla 5 aplicada al arnés antes de usarlo.
+2. **La etapa 20 de `verify.sh`**, donde el **kernel** lee la tabla, monta el FAT32,
+   lee el archivo de vuelta y lo compara byte por byte, y monta los tres
+   subvolúmenes del store.
+3. **`make -C image run-installed`**, donde un firmware UEFI recibe **sólo el disco
+   instalado** —sin ISO, sin `-kernel`, sin nada— y tiene que encontrar el archivo y
+   arrancarlo. Ésa es la afirmación, y nada menos que eso es la afirmación.
+
+**El punto 1 no alcanza y hay que decir por qué**, porque es lo que distingue a esta
+pieza de las anteriores: **una GPT con una suma equivocada no se reporta como rota,
+se ignora.** Linux cae al MBR protector y contesta que el disco no tiene
+particiones — exactamente lo mismo que contesta un disco que nadie tocó. Un
+instalador con ese defecto imprime `ok`. La regla nueva está en
+[[Estrategia-de-Pruebas]].
+
+Y el contenedor de desarrollo **no puede establecer el punto 2**: sus dispositivos
+`loop` no admiten particiones de ningún tipo. Se comprobó escribiendo un MBR común
+—que todo kernel de Linux parsea— y viendo que tampoco producía ninguna; sin ese
+discriminador, «no aparecieron particiones» se habría leído como Thalyx escribiendo
+mal la tabla. La etapa 20 lleva ese discriminador adentro en vez de una nota.
+
+Lo que sí se pudo hacer aquí, y vale como red: las dos sumas de la GPT recalculadas
+con un CRC-32 independiente, y el volumen FAT32 recorrido entero por un lector
+escrito aparte —directorio raíz, `EFI`, `BOOT`, la cadena de clusters del archivo—
+que devolvió los 3 000 000 de bytes idénticos.
 
 ### Lo construido el 2026-08-06
 

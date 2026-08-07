@@ -915,6 +915,7 @@ dependencies = [
  "thalyx-contract",
  "thalyx-core",
  "thalyx-graph",
+ "thalyx-install",
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-memory",
@@ -973,6 +974,18 @@ dependencies = [
  "thalyx-parser",
  "thiserror",
  "walkdir",
+]
+
+[[package]]
+name = "thalyx-install"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thalyx-btrfs",
+ "thalyx-syscall",
+ "thiserror",
+ "time",
+ "uuid",
 ]
 
 [[package]]

@@ -1,0 +1,21 @@
+[package]
+name = "thalyx-install"
+description = "Turning a disk with no operating system on it into a Thalyx machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-btrfs = { path = "../thalyx-btrfs" }
+thalyx-syscall = { path = "../thalyx-syscall" }
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
