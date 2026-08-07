@@ -581,14 +581,49 @@ teclear**: no hay shell, y el único kernel cerca es el que cargó el firmware, 
 sistema de archivos que nadie montó.
 
 Así que Thalyx lo lee. `crates/thalyx-install/src/medium.rs` es un **lector** de
-FAT32 —lo único que `fat.rs` decía que no era— y encuentra el medio buscando
-`\EFI\BOOT\BOOTX64.EFI` en cada dispositivo de bloques que tenga un FAT32.
+FAT32 —lo único que `fat.rs` decía que no era— y encuentra el medio buscando un
+volumen FAT32 **etiquetado `THALYX`** que lleve `\EFI\BOOT\BOOTX64.EFI`.
 
-Misma forma que la etiqueta y la misma regla: es pedir un nombre que Thalyx escribe,
-no aceptar al primero que conteste, y **dos respuestas se niegan**. El disco sobre el
-que se está instalando se excluye de la búsqueda, porque si no, reinstalar sobre una
-máquina que ya tiene Thalyx encontraría dos y se negaría — lo que volvería imposible
-el segundo instalado de cualquier máquina.
+Misma forma que la etiqueta del store y la misma regla: es pedir un nombre que Thalyx
+escribe, no aceptar al primero que conteste, y **dos respuestas se niegan**. El disco
+sobre el que se está instalando se excluye de la búsqueda, porque si no, reinstalar
+sobre una máquina que ya tiene Thalyx encontraría dos y se negaría — lo que volvería
+imposible el segundo instalado de cualquier máquina.
+
+##### La etiqueta se agregó porque la ruta sola encontraba el disco equivocado
+
+Corregido el 2026-08-07, el mismo día, al correr la etapa 20 en la máquina de Cesar.
+Escrito aquí porque el error es fácil de repetir y se veía razonable.
+
+La primera versión pedía **sólo el archivo**: el dispositivo de bloques que tuviera
+`\EFI\BOOT\BOOTX64.EFI`. Pero ese archivo no lo inventó Thalyx — es el *removable
+media fallback* de la especificación UEFI, la ruta que una firmware busca cuando no
+le configuraron nada. O sea la ruta que llevan **todos** los medios de arranque que
+existen: la partición EFI de la PC en la que uno está sentado, una USB de Windows,
+una de Fedora.
+
+En la etapa 20, instalando un segundo disco sin `--kernel`, la búsqueda encontró la
+ESP de la Fedora del anfitrión y Thalyx **copió el gestor de arranque de otro sistema
+operativo al disco, reportando una instalación correcta**. Lo único que lo dijo fue
+la comparación byte a byte del final de la etapa.
+
+Lo que sí escribió Thalyx es la etiqueta del volumen: `THALYX`, en el sector de
+arranque y en la entrada del directorio raíz. Eso es lo que se pide ahora. La regla
+está en [[Estrategia-de-Pruebas]]: *un marcador que identifica algo tiene que ser
+algo que sólo eso tenga*.
+
+Con dos consecuencias prácticas:
+
+- **`thalyx disk medium`** contesta a qué disco iría a buscar el kernel, sin escribir
+  nada — el gemelo de `thalyx disk find`. La etapa 20 lo usa como afirmación *y* como
+  control: la máquina donde corre tiene una ESP propia, así que pasar quiere decir
+  las dos cosas a la vez, que encontró el volumen que Thalyx escribió y que no se
+  llevó el ajeno.
+- **`make -C image run-uefi` no sirve para instalar desde adentro**, y ahora lo dice:
+  el disco que le da a QEMU es vvfat, un FAT que QEMU inventa a partir de un
+  directorio, y no lleva la etiqueta. La máquina reportará —correctamente— que no
+  encuentra medio. Instalar desde adentro es `make installed` y `run-installed`,
+  donde el disco lo escribió Thalyx.
 
 **No monta nada.** `mount(2)` sobre un vfat necesitaría `CONFIG_VFAT_FS`, que esta
 imagen no pide y no necesita: los bytes se leen igual que se escribieron.
@@ -647,7 +682,7 @@ su párrafo cada grupo:
 | Qué | Opciones | Qué falla sin eso |
 |---|---|---|
 | La pantalla | `FB`, `FB_EFI`, `FRAMEBUFFER_CONSOLE`, `FONT_8x16`, `VT`, `VT_CONSOLE` | La ISO arranca en una PC y **no se ve nada** |
-| El teclado | `INPUT`, `HID`, `HID_GENERIC`, `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | La máquina llega al prompt y no se le puede contestar |
+| El teclado | `INPUT`, `HID_SUPPORT`, `HID`, `HID_GENERIC`, `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | La máquina llega al prompt y no se le puede contestar |
 | Los discos | `BLK_DEV_NVME`, `SATA_AHCI`, `ATA`, `SCSI`, `BLK_DEV_SD`, `PCI_MSI` | El instalador no ve el disco en el que va a instalar |
 
 Tres cosas de esa tabla que no son obvias:
@@ -663,6 +698,16 @@ Tres cosas de esa tabla que no son obvias:
   archivo lo habría pedido.
 - **`BLK_DEV_SD` es lo que hace que AHCI sirva.** SATA pasa por la capa SCSI; sin
   eso el controlador se encuentra, sus puertos se sondean, y no aparece `/dev/sda`.
+- **`HID_SUPPORT` no es un driver, es el menú que contiene a los otros tres.**
+  Faltaba, y por eso el primer `make -C image` con el teclado adentro se detuvo
+  nombrando `HID`, `HID_GENERIC` y `USB_HID` — las tres bien escritas y ninguna la
+  causa. `drivers/hid/Kconfig` abre con `menuconfig HID_SUPPORT`, que es `default y`,
+  y bajo `allnoconfig` un `default y` es un `n`: el menú queda apagado y sus hijos
+  quedan invisibles, no rechazados. Nadie que escriba un `.config` a mano se topa
+  nunca con ese símbolo, porque en cualquier configuración normal ya está encendido.
+  La regla está en [[Estrategia-de-Pruebas]]: *un grupo de opciones descartadas
+  juntas comparte una causa, y hay que buscar el `menuconfig` que las contiene antes
+  que las dependencias de cada una*.
 
 #### La consola, que es una decisión de Cesar y no un detalle
 

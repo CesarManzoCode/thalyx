@@ -14,13 +14,42 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La Fase 1 está construida entera, y falta correrla — 2026-08-07
+> ## La Fase 1 está construida entera, y la primera corrida encontró dos cosas — 2026-08-07
 >
 > **Es lo primero que hay que leer.** Cesar pidió cerrar la fase sin poder verificar
 > entre cambios, aceptando apilar comprobaciones: *«no importa que apilemos 2
 > comprobaciones, nuestro verify.sh nos indica dónde están, no es necesario saber en
-> qué momento se introdujeron»*. Así que hay **cuatro commits del día** y una sola
-> corrida por delante.
+> qué momento se introdujeron»*. Así que hubo **cuatro commits del día** y una sola
+> corrida por delante — y la apuesta salió como se dijo: el arnés nombró las dos
+> cosas rotas, sin que hiciera falta saber cuál commit las metió.
+>
+> ### Lo que devolvió esa corrida, y el segundo es serio
+>
+> **1. El kernel no compiló: faltaba `CONFIG_HID_SUPPORT`.** `config-check` nombró
+> tres opciones descartadas —`HID`, `HID_GENERIC`, `USB_HID`— y ninguna era la causa:
+> las tres viven dentro de un `menuconfig HID_SUPPORT` que es `default y`, y bajo
+> `allnoconfig` un `default y` es un `n`. Una línea.
+>
+> **2. El instalador copió el gestor de arranque de Fedora.** La búsqueda del medio
+> pedía `\EFI\BOOT\BOOTX64.EFI`, que **no es un archivo de Thalyx**: es el
+> *removable media fallback* de UEFI, o sea la ruta que llevan todos los medios de
+> arranque que existen, empezando por la partición EFI de la máquina en la que uno
+> está sentado. La etapa 20 instaló un segundo disco sin `--kernel`, la búsqueda
+> encontró tu ESP, y Thalyx copió el arranque de otro sistema al disco **reportando
+> una instalación correcta**. Lo único que lo dijo fue la comparación byte a byte del
+> final.
+>
+> Ahora el medio se identifica por la **etiqueta del volumen FAT32, `THALYX`**, que
+> sí la escribe Thalyx — el mismo cambio que el store por su etiqueta, un día tarde.
+> `thalyx disk medium` contesta a qué disco iría a buscar el kernel, y la etapa 20 lo
+> usa como afirmación *y* como control: tu máquina tiene una ESP propia, así que
+> pasar quiere decir las dos cosas, que encontró el volumen de Thalyx y que no se
+> llevó el ajeno. Regla nueva en [[Estrategia-de-Pruebas]]: *un marcador que
+> identifica algo tiene que ser algo que sólo eso tenga*.
+>
+> Y un detalle del arnés: el `cmp` que falló decía sólo «difieren», que manda a mirar
+> el lector de FAT —que estaba bien—. Ahora imprime de qué dispositivo dijo el
+> instalador que estaba leyendo, y el tamaño de los dos archivos.
 >
 > ### Al ir a cerrar apareció que faltaba algo grande, y era un decreto sin código
 >
@@ -53,8 +82,9 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > `thalyx install` recibía el kernel por `--kernel`, y **adentro no hay ruta que
 > teclear**. Ahora Thalyx **lee** el medio del que arrancó: `medium.rs` es un lector
-> de FAT32 que busca `\EFI\BOOT\BOOTX64.EFI` en cada dispositivo de bloques, se niega
-> si hay dos, y excluye el disco de destino para que reinstalar siga siendo posible.
+> de FAT32 que busca un volumen etiquetado `THALYX` con `\EFI\BOOT\BOOTX64.EFI`
+> adentro, se niega si hay dos, y excluye el disco de destino para que reinstalar
+> siga siendo posible.
 > **No monta nada** — los bytes se leen igual que se escribieron, así que el kernel
 > no necesita `CONFIG_VFAT_FS`.
 >
@@ -87,7 +117,7 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > ```
 > git pull
-> sudo ./dev/verify.sh        # la etapa 20 creció a diecisiete líneas
+> sudo ./dev/verify.sh        # la etapa 20 va en diecinueve líneas
 > make -C image               # aquí se sabe si las opciones nuevas del kernel sobrevivieron
 > sudo make -C image installed
 > make -C image run-installed
@@ -97,12 +127,11 @@ tags: [continuidad, punto-actual, sesiones]
 > `dd` a una USB, arrancar, `discos`, `instalar-en /dev/nvme0n1`, `apagar`, sacar la
 > USB, encender.
 >
-> **Lo primero que puede fallar es la compilación del kernel**, y eso es correcto:
-> `config-check` detiene el build si `olddefconfig` descartó alguna de las opciones
-> nuevas. Si pasa, **la línea que falta es la que hay que mirar**, no el grupo — cada
-> una tiene su párrafo al lado. Van tres opciones encontradas arrancando en la
-> historia de este proyecto y hay una regla que dice que ninguna comprobación de
-> construcción encuentra la siguiente.
+> **Lo primero que puede fallar sigue siendo la compilación del kernel**, y eso es
+> correcto: `config-check` detiene el build si `olddefconfig` descartó alguna opción.
+> Ya lo hizo una vez, con `HID_SUPPORT`. Si vuelve a pasar, la lectura es la que dejó
+> ese fallo: **un grupo de opciones descartadas juntas comparte una causa**, y hay que
+> buscar el `menuconfig` que las contiene antes que las dependencias de cada una.
 >
 > ### Una cosa que el criterio no pide y conviene no confundir
 >

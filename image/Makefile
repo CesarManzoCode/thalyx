@@ -1044,6 +1044,13 @@ OVMF_VARS = $$(for f in \
 # A firmware that finds nothing sits at a UEFI shell or reboots, and either way
 # the machine never speaks. That is the failure to expect if EFI_STUB did not
 # take.
+#
+# What this cannot be used for is `instalar-en`. The disk below is QEMU's vvfat,
+# a FAT volume QEMU invents out of a directory, and it is not labelled `THALYX` —
+# so the machine booted from it will correctly report that it can find no Thalyx
+# medium to read a kernel off. That is not a bug in either half: installing from
+# inside the machine is `make installed` and `make run-installed`, where the disk
+# is one Thalyx wrote.
 run-uefi: esp
 	@test -n "$(OVMF_CODE)" || { \
 	    echo; \

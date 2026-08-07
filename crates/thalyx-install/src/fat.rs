@@ -281,7 +281,7 @@ fn timestamp(seconds: u64) -> (u16, u16) {
 }
 
 /// Attribute bits, from the captured header.
-mod attr {
+pub mod attr {
     pub const VOLUME: u8 = 8;
     pub const DIRECTORY: u8 = 16;
     pub const ARCHIVE: u8 = 32;

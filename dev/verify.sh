@@ -2757,6 +2757,26 @@ read what Thalyx wrote"
                 "$THALYX" disk find 2>&1 | sed 's/^/     /'
             fi
 
+            # The same question for the *medium*, and this one is a control as much
+            # as a check — because the machine running it has an EFI system partition
+            # of its own, and that partition carries \EFI\BOOT\BOOTX64.EFI exactly
+            # like a Thalyx medium does. On 2026-08-07 the search asked only for that
+            # file, found this machine's own ESP, and an install with no --kernel
+            # copied Fedora's boot loader onto the disk and reported success. Nothing
+            # said so until the byte comparison twenty lines below.
+            #
+            # So a pass here means two things at once: the volume Thalyx wrote was
+            # found, and the one it did not write was not.
+            PICKED="$("$THALYX" disk medium 2>/dev/null \
+                | awk '$1 == "ok" && $2 == "medium" { print $3 }')"
+            if [ "$PICKED" = "$ESPDEV" ]; then
+                proven "the medium search finds the boot partition Thalyx wrote, on a machine that has an ESP of its own"
+            else
+                failed "the medium search did not settle on $ESPDEV"
+                echo "     an install with no --kernel would read a kernel off whatever it did pick"
+                "$THALYX" disk medium 2>&1 | sed 's/^/     /'
+            fi
+
             # The control, per rule 4, and it is the normal case right after an
             # install: the medium is still plugged in and now two disks answer to the
             # same name. Choosing between them is the probe the decree forbids, and
@@ -2788,10 +2808,29 @@ read what Thalyx wrote"
                         proven "the kernel it copied off the medium is the one that went on the first disk"
                     else
                         failed "the kernel copied off the medium is not the kernel that was installed"
+                        # Which device it read is the whole diagnosis, and it is in
+                        # the log the install already wrote. Printed here because a
+                        # `cmp` that says only "differ" sent a person looking at the
+                        # FAT reader for an hour when the reader was right and the
+                        # search had picked another disk.
+                        grep -i "comes off\|medium" "$WORK/install-from-medium.log" | sed 's/^/     /'
+                        ls -l "$IMNT/EFI/BOOT/BOOTX64.EFI" "$IKERNEL" | sed 's/^/     /'
                     fi
                     umount "$IMNT" 2>/dev/null
                 else
                     failed "the second disk's boot partition would not mount"
+                fi
+
+                # And the medium's own version of the refusal. Both disks now carry
+                # a boot partition Thalyx wrote, so the search has two right answers
+                # and no way to tell which one this machine started from. Picking is
+                # what installs a kernel nobody chose.
+                if "$THALYX" disk medium 2>/dev/null | grep -q "choosing between them"; then
+                    proven "two Thalyx boot media are refused, not chosen between"
+                else
+                    failed "two boot media did not stop the medium search,"
+                    echo "     so an install with no --kernel could copy the wrong kernel"
+                    "$THALYX" disk medium 2>&1 | sed 's/^/     /'
                 fi
 
                 if "$THALYX" disk find 2>/dev/null | grep -q "Choosing between them"; then

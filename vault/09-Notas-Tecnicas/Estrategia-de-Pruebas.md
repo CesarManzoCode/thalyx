@@ -1572,6 +1572,89 @@ Tres consecuencias:
    que equivocarse es más caro — y porque una función que nadie puede llamar es una
    función que nadie nota que no está.
 
+## Regla derivada: un marcador que identifica algo tiene que ser algo que sólo eso tenga
+
+**Buscar «lo que mi cosa tiene» encuentra todo lo que lo tiene. El marcador que
+identifica una cosa no es el que ella cumple, es el que nadie más cumple — y la
+diferencia entre los dos no se ve en la máquina de desarrollo hasta que se ve.**
+
+El instalador, cuando nadie le nombra un kernel, busca el medio del que arrancó
+la máquina. Lo buscaba así: **el dispositivo de bloques que tenga
+`\EFI\BOOT\BOOTX64.EFI`**, y si hay dos, negarse.
+
+El razonamiento estaba escrito y era el correcto en su forma: no es la sonda
+prohibida —*probar `/dev/vda`, luego `/dev/sda`, y quedarse con el primero que
+conteste*—, es pedir un nombre que Thalyx escribió, y dos respuestas se niegan en
+vez de resolverse.
+
+**Salvo que ese archivo no lo escribió Thalyx.** `\EFI\BOOT\BOOTX64.EFI` es el
+*removable-media fallback* de la especificación UEFI: es la ruta que una firmware
+busca cuando no le han configurado nada, o sea la ruta que está en **todos los
+medios de arranque que existen**. La partición EFI de la máquina en la que uno está
+sentado la tiene. Una USB de instalación de Windows la tiene. La de Fedora la tiene.
+
+Pedir ese archivo no es preguntar por Thalyx, es preguntar por UEFI.
+
+El 2026-08-07 la etapa 20 instaló un segundo disco sin `--kernel`, la búsqueda
+encontró la ESP **de la Fedora de Cesar**, y Thalyx copió el gestor de arranque de
+otro sistema operativo al disco y reportó una instalación correcta. Lo único que lo
+dijo fue la comparación byte a byte del final:
+
+```
+FAILED      the kernel copied off the medium is not the kernel that was installed
+```
+
+Y esa línea no dice nada de esto. Mandó a mirar el lector de FAT, que estaba bien.
+
+Tres cosas de aquí:
+
+1. **El marcador es la etiqueta, no la ruta.** El volumen FAT32 que Thalyx escribe
+   se llama `THALYX` —en el sector de arranque y en la entrada del directorio raíz—
+   y ese nombre lo puso Thalyx. La ruta sigue pidiéndose; lo que cambió es que ya no
+   es lo que decide. Es la misma forma que el store por su etiqueta `thalyx-store`,
+   y el paralelo debió haberse visto el mismo día en que se construyó el otro.
+2. **La máquina de desarrollo es el control, no el estorbo.** Una PC con UEFI tiene
+   una ESP propia; una Thalyx recién instalada no tiene ninguna otra. O sea que el
+   falso positivo **sólo se puede ver en la máquina de Cesar**, y por eso la
+   comprobación nueva de la etapa 20 —`thalyx disk medium` tiene que quedarse con la
+   partición que Thalyx escribió— vale doble: afirma que encuentra la suya y que no
+   se lleva la ajena.
+3. **Un `cmp` que sólo dice «difieren» ha reportado un fallo sin diagnosticarlo.**
+   La etapa ahora imprime, cuando falla, de qué dispositivo dijo el instalador que
+   estaba leyendo, y el tamaño de los dos archivos. Un gestor de arranque de 950 KB
+   al lado de un kernel de 12 MB se explica solo.
+
+## Regla derivada: un `default y` de Kconfig es un `n` bajo `allnoconfig`, y un menú invisible se lleva a sus hijos
+
+**Cuando `config-check` nombra tres opciones descartadas, la causa puede ser una
+sola línea que no está — y no es ninguna de las tres.**
+
+`make -C image` se detuvo con:
+
+```
+  These were asked for and are not in the kernel's .config:
+    CONFIG_HID=y
+    CONFIG_HID_GENERIC=y
+    CONFIG_USB_HID=y
+```
+
+Las tres estaban bien escritas y ninguna era la causa. `drivers/hid/Kconfig` empieza
+con `menuconfig HID_SUPPORT`, que es `default y` y `depends on INPUT`, y **todo lo
+demás de ese archivo —más `usbhid/Kconfig`— vive dentro de su `if`**. Bajo
+`allnoconfig`, que parte de nada, un `default y` es un `n`: el menú queda apagado,
+sus hijos quedan invisibles, y `olddefconfig` los descarta sin decir por qué.
+
+Lo que hace difícil verlo es justo lo que hace cómodo el resto del tiempo: nadie que
+escriba un `.config` a mano se topa nunca con `HID_SUPPORT`, porque en cualquier
+configuración normal ya está encendido. Es un símbolo que sólo existe para quien
+parte de cero.
+
+**El chequeo que ya existía hizo su trabajo**: sin `config-check` esto habría sido un
+kernel que arranca perfecto y no responde al teclado, en una PC sin puerto serie, o
+sea una máquina muda que parece colgada. Lo que faltaba no era una comprobación sino
+la lectura: *un grupo de opciones descartadas juntas comparte una causa, y hay que
+buscar el `menuconfig` que las contiene antes que las dependencias de cada una*.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

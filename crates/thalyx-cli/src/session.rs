@@ -1072,10 +1072,12 @@ fn list_disks() {
 
 /// Put this machine onto a disk, so it stops needing the medium it booted from.
 ///
-/// The kernel comes off the medium this machine started from, found by looking for
-/// the one file a firmware looks for — see `thalyx_install::medium`, which explains
-/// why that is a name and not a guess. Nothing is mounted to do it: the bytes are
-/// read the same way they were written, so this needs no vfat in the kernel.
+/// The kernel comes off the medium this machine started from, found by looking for a
+/// FAT32 volume Thalyx labelled carrying the one file a firmware looks for — see
+/// `thalyx_install::medium`, which explains why that is a name and not a guess, and
+/// what happened the day it asked for the file alone. Nothing is mounted to do it:
+/// the bytes are read the same way they were written, so this needs no vfat in the
+/// kernel.
 fn install_onto(disk: &str) {
     use std::io::{IsTerminal, Write};
 

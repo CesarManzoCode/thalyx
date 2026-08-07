@@ -443,6 +443,15 @@ pub enum DiskCommand {
     /// before the machine is switched on.
     Find,
 
+    /// Which disk `thalyx install` would read a kernel off, if nobody named one
+    ///
+    /// The other search an installed machine makes with nothing told to it, and the
+    /// one that went wrong first: `\EFI\BOOT\BOOTX64.EFI` is on every UEFI machine's
+    /// own boot partition, so asking for that file alone finds the wrong disk on any
+    /// computer a person would be sitting at. Run here, on a machine that has an EFI
+    /// partition of its own, this is the only cheap way to see which one it picks.
+    Medium,
+
     /// Create the three subvolumes on a store that has none
     ///
     /// The other half of `format`, separable because it needs things `format`
@@ -477,6 +486,10 @@ pub fn run(command: DiskCommand) -> Fallible {
         }
         DiskCommand::Find => {
             find();
+            Ok(())
+        }
+        DiskCommand::Medium => {
+            medium();
             Ok(())
         }
         DiskCommand::Identify { device } => {
@@ -570,6 +583,42 @@ fn find() {
     println!("  Nothing was mounted: this is what a boot would decide, asked early.");
     println!("  A disk named by `{PARAMETER}` would win over all of this, and is not");
     println!("  considered here: this is the question an installed machine asks.");
+}
+
+/// Report what the medium search finds, without writing anything.
+///
+/// The counterpart of [`find`] and for the same reason. This one is worth having
+/// twice over: the search it runs is the one that picked the wrong disk on
+/// 2026-08-07, and the machine where that is easiest to notice is a development
+/// machine, because a development machine has an EFI system partition of its own and
+/// an installed Thalyx does not.
+fn medium() {
+    println!(
+        "  looking for a FAT32 volume labelled `{}`",
+        thalyx_install::fat::LABEL
+    );
+    println!("  with {} on it", thalyx_install::fat::BOOT_PATH.join("\\"));
+    println!();
+    match thalyx_install::medium::find(None) {
+        Ok(found) => {
+            println!("  ok  medium       {}", found.device.display());
+            println!(
+                "      {} — {} bytes, which is what an install with no --kernel",
+                thalyx_install::fat::BOOT_PATH.join("\\"),
+                found.kernel_bytes
+            );
+            println!("      would put on the disk it is given.");
+        }
+        Err(error) => {
+            println!("  no  medium");
+            for line in error.to_string().lines() {
+                println!("      {line}");
+            }
+        }
+    }
+    println!();
+    println!("  Nothing was read off it and nothing was written: this is the question");
+    println!("  `thalyx install` asks when no --kernel is given, asked on its own.");
 }
 
 /// Say what a device turned out to be, in the three terms that decide what to do.

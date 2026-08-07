@@ -14,15 +14,25 @@
 //!
 //! ## How the medium is identified, and why it is not a guess
 //!
-//! By looking for `\EFI\BOOT\BOOTX64.EFI` on every block device that holds a FAT32
-//! volume, and **refusing when more than one has it**.
+//! By looking for a FAT32 volume **labelled `THALYX`** that carries
+//! `\EFI\BOOT\BOOTX64.EFI`, and **refusing when more than one device has one**.
 //!
-//! That is the same shape as finding the store by its label, and it obeys the same
-//! rule `store_disk.rs` sets: what is forbidden is *"try /dev/vda, then /dev/sda,
-//! and take the first that answers"*, because that heuristic finds the wrong disk
-//! exactly once and the cost is a machine overwritten. Asking for a path that Thalyx
-//! itself writes is not that — it is asking for a name, and two answers to a name is
-//! refused rather than resolved.
+//! The label is not decoration and it is not belt-and-braces. `\EFI\BOOT\BOOTX64.EFI`
+//! is the removable-media fallback from the UEFI specification, which means it is the
+//! path on *every* boot medium anybody has ever made: the EFI system partition of the
+//! machine you are sitting at has it, a Windows installer stick has it, a Fedora
+//! stick has it. Asked for on its own it is not a marker of Thalyx, it is a marker of
+//! UEFI — and on 2026-08-07 that is exactly what happened. Stage 20 installed a
+//! second disk with no `--kernel`, the search found the *host's* ESP, and Thalyx
+//! copied somebody else's boot loader onto the disk and reported an install. The one
+//! check that caught it was the byte comparison at the end.
+//!
+//! The label is what Thalyx itself writes, in [`fat::LABEL`], and it is the same
+//! shape as finding the store by its own label. It obeys the same rule
+//! `store_disk.rs` sets: what is forbidden is *"try /dev/vda, then /dev/sda, and take
+//! the first that answers"*, because that heuristic finds the wrong disk exactly once
+//! and the cost is a machine overwritten. Asking for a name Thalyx wrote is not that
+//! — and two answers to a name is refused rather than resolved.
 //!
 //! **The disk being installed onto is excluded from the search.** Re-installing over
 //! a machine that already has Thalyx would otherwise find two boot files — the
@@ -42,6 +52,7 @@
 //! are read directly, the same way they were written.
 
 use crate::fat;
+use crate::fat::attr;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -56,23 +67,30 @@ pub enum MediumError {
     },
 
     #[error(
-        "no block device on this machine carries {path}.\n  \
-         That is not the same as not looking: {looked} device(s) were read and none \
-         of them holds a Thalyx boot medium. If this machine was booted some other \
-         way, name the kernel with --kernel."
+        "no block device on this machine holds a Thalyx boot medium: a FAT32 volume \
+         labelled `{label}` with {path} on it.\n  \
+         That is not the same as not looking — {looked} device(s) were read.{strangers}\n  \
+         If this machine was booted some other way, name the kernel with --kernel."
     )]
-    NotFound { path: String, looked: usize },
+    NotFound {
+        path: String,
+        label: &'static str,
+        looked: usize,
+        /// The volumes that carry the boot file under another label, named. Rule 10:
+        /// "nothing was found" and "four things were found and none of them is
+        /// Thalyx's" send a person to different halves of the problem.
+        strangers: String,
+    },
 
     #[error(
-        "{count} devices carry {path}, and choosing between them would be guessing \
-         which one this machine started from:\n{names}\n  \
+        "{count} devices hold a Thalyx boot medium, and choosing between them would \
+         be guessing which one this machine started from:\n{names}\n  \
          Name the kernel with --kernel instead."
     )]
-    Ambiguous {
-        count: usize,
-        path: String,
-        names: String,
-    },
+    Ambiguous { count: usize, names: String },
+
+    #[error("{path} holds no {what}")]
+    NoBootFile { path: PathBuf, what: String },
 
     #[error(
         "{path} looks like a FAT32 volume and its {what}. A boot medium Thalyx wrote \
@@ -91,6 +109,12 @@ pub struct Volume {
     file: std::fs::File,
     path: PathBuf,
     geometry: fat::Geometry,
+    /// The label as the boot sector states it, kept from the sector already read.
+    ///
+    /// The fallback, not the answer: the root directory's volume-label entry is the
+    /// one `blkid` and `dosfslabel` treat as authoritative, and a volume relabelled
+    /// after it was made has the new name there and the old name here.
+    boot_label: [u8; 11],
 }
 
 impl Volume {
@@ -167,9 +191,13 @@ impl Volume {
             });
         }
 
+        let mut boot_label = [b' '; 11];
+        boot_label.copy_from_slice(&boot[71..82]);
+
         Ok(Some(Self {
             file,
             path: device.to_path_buf(),
+            boot_label,
             geometry: fat::Geometry {
                 sectors,
                 fat_sectors,
@@ -211,10 +239,16 @@ impl Volume {
         Ok(Some(next))
     }
 
-    /// Find one 8.3 name in the directory starting at `cluster`.
+    /// Walk the records of the directory starting at `cluster` until `visit` answers.
     ///
-    /// Returns the entry's first cluster and its recorded size.
-    fn entry(&mut self, cluster: u32, name: &[u8; 11]) -> Result<Option<(u32, u32)>, MediumError> {
+    /// Deleted entries and long-filename slots never reach `visit`. Long names are
+    /// skipped rather than parsed: everything looked for here has an 8.3 name by
+    /// construction, and every long name also has a short one right after its slots.
+    fn records<T>(
+        &mut self,
+        cluster: u32,
+        mut visit: impl FnMut(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, MediumError> {
         let mut at = Some(cluster);
         let mut seen = 0u64;
         while let Some(current) = at {
@@ -240,22 +274,56 @@ impl Volume {
                     0xE5 => continue,
                     _ => {}
                 }
-                // A long-filename slot, which is not an entry. Skipped rather than
-                // parsed: what is being looked for has an 8.3 name by construction,
-                // and every long name also has a short one right after its slots.
                 if record[11] & 0x0F == 0x0F {
                     continue;
                 }
-                if &record[0..11] == name {
-                    let high = u16::from_le_bytes(record[20..22].try_into().unwrap());
-                    let low = u16::from_le_bytes(record[26..28].try_into().unwrap());
-                    let size = u32::from_le_bytes(record[28..32].try_into().unwrap());
-                    return Ok(Some(((u32::from(high) << 16) | u32::from(low), size)));
+                if let Some(answer) = visit(record) {
+                    return Ok(Some(answer));
                 }
             }
             at = self.next(current)?;
         }
         Ok(None)
+    }
+
+    /// Find one 8.3 name in the directory starting at `cluster`.
+    ///
+    /// Returns the entry's first cluster and its recorded size.
+    fn entry(&mut self, cluster: u32, name: &[u8; 11]) -> Result<Option<(u32, u32)>, MediumError> {
+        self.records(cluster, |record| {
+            // The volume label lives in the root directory as an entry whose name
+            // field is the label, so a volume called `EFI` would otherwise be
+            // followed as if it were the directory of that name — into cluster
+            // zero, which is not a cluster.
+            if record[11] & attr::VOLUME != 0 || &record[0..11] != name {
+                return None;
+            }
+            let high = u16::from_le_bytes(record[20..22].try_into().unwrap());
+            let low = u16::from_le_bytes(record[26..28].try_into().unwrap());
+            let size = u32::from_le_bytes(record[28..32].try_into().unwrap());
+            Some(((u32::from(high) << 16) | u32::from(low), size))
+        })
+    }
+
+    /// What the volume calls itself.
+    ///
+    /// The root directory's volume-label entry, and the boot sector's field only if
+    /// there is no such entry. That order is `blkid`'s and `mkfs.vfat` writes both,
+    /// so the two agree on everything Thalyx makes — it matters for a volume somebody
+    /// relabelled, where the boot sector keeps the name the volume was born with.
+    pub fn label(&mut self) -> Result<String, MediumError> {
+        let root = self.geometry.root_cluster;
+        let found = self.records(root, |record| {
+            (record[11] & attr::VOLUME != 0).then(|| {
+                let mut bytes = [b' '; 11];
+                bytes.copy_from_slice(&record[0..11]);
+                bytes
+            })
+        })?;
+        let bytes = found.unwrap_or(self.boot_label);
+        // Trailing spaces are padding, not part of the name, and a label read with
+        // them on would never compare equal to anything a person or this crate wrote.
+        Ok(String::from_utf8_lossy(&bytes).trim_end().to_string())
     }
 
     /// Whether this volume holds the file at [`fat::BOOT_PATH`], and how big it is.
@@ -282,9 +350,9 @@ impl Volume {
         let mut size = 0u32;
         for (index, component) in fat::BOOT_PATH.iter().enumerate() {
             let name = short_name(component);
-            let found = self.entry(cluster, &name)?.ok_or(MediumError::NotFound {
-                path: fat::BOOT_PATH.join("\\"),
-                looked: 1,
+            let found = self.entry(cluster, &name)?.ok_or(MediumError::NoBootFile {
+                path: self.path.clone(),
+                what: fat::BOOT_PATH.join("\\"),
             })?;
             cluster = found.0;
             size = found.1;
@@ -358,6 +426,10 @@ pub fn find(except: Option<&Path>) -> Result<Found, MediumError> {
     };
 
     let mut found: Vec<Found> = Vec::new();
+    // Volumes that carry the boot file under some other name. Kept so that the
+    // failure can say "your EFI partition is not a Thalyx medium" instead of
+    // "nothing was found", which are different problems with different answers.
+    let mut strangers: Vec<(PathBuf, String)> = Vec::new();
     let mut looked = 0usize;
     for device in crate::partitions::every() {
         if Some(device.as_path()) == except || excluded.iter().any(|(_, path)| *path == device) {
@@ -370,23 +442,54 @@ pub fn find(except: Option<&Path>) -> Result<Found, MediumError> {
         let Ok(Some(mut volume)) = Volume::open(&device) else {
             continue;
         };
-        if let Ok(Some(kernel_bytes)) = volume.boot_file() {
-            found.push(Found {
-                device,
-                kernel_bytes,
-            });
+        let Ok(Some(kernel_bytes)) = volume.boot_file() else {
+            continue;
+        };
+        // Fail closed, rule 9: a label that cannot be read is not this machine's
+        // medium. The cautious answer is to refuse and let a person name the kernel,
+        // never to install whatever was on the unreadable volume.
+        let label = volume.label().unwrap_or_default();
+        if label != fat::LABEL {
+            strangers.push((device, label));
+            continue;
         }
+        found.push(Found {
+            device,
+            kernel_bytes,
+        });
     }
 
     match found.len() {
         1 => Ok(found.remove(0)),
         0 => Err(MediumError::NotFound {
             path: fat::BOOT_PATH.join("\\"),
+            label: fat::LABEL,
             looked,
+            strangers: if strangers.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<String> = strangers
+                    .iter()
+                    .map(|(device, label)| {
+                        let called = if label.is_empty() {
+                            "no label".to_string()
+                        } else {
+                            format!("labelled `{label}`")
+                        };
+                        format!("    {}  {called}", device.display())
+                    })
+                    .collect();
+                format!(
+                    "\n  {} of them carry that file and belong to something else — an EFI \
+                     system\n  partition looks exactly like a boot medium, which is why the \
+                     label is\n  asked for:\n{}",
+                    strangers.len(),
+                    names.join("\n")
+                )
+            },
         }),
         count => Err(MediumError::Ambiguous {
             count,
-            path: fat::BOOT_PATH.join("\\"),
             names: found
                 .iter()
                 .map(|one| format!("    {}", one.device.display()))
@@ -456,6 +559,75 @@ mod tests {
         volume.extract_boot_file(&out).unwrap();
         assert_eq!(std::fs::read(&out).unwrap().len(), kernel.len());
         assert_eq!(std::fs::read(&out).unwrap(), kernel);
+    }
+
+    #[test]
+    fn a_kernel_of_the_size_a_kernel_actually_is_comes_back_whole() {
+        // The tests above run on three megabytes, and `image/build/bzImage` is four
+        // times that. Written because on 2026-08-07 a real install copied the wrong
+        // file and there were two candidate explanations — the search picking
+        // somebody else's ESP, or this reader losing its way on a file bigger than
+        // anything it had been asked for. This rules out the second one, so the
+        // first cannot be assumed to have been fixed by fixing it.
+        let kernel: Vec<u8> = (0..12_582_912u32).map(|i| (i % 251) as u8).collect();
+        let (dir, image) = written(&kernel);
+
+        let mut volume = Volume::open(&image).unwrap().unwrap();
+        let out = dir.path().join("recovered");
+        assert_eq!(volume.extract_boot_file(&out).unwrap(), kernel.len() as u64);
+        assert_eq!(std::fs::read(&out).unwrap(), kernel);
+    }
+
+    #[test]
+    fn a_volume_that_carries_the_boot_file_is_not_a_thalyx_medium_unless_it_says_so() {
+        // The defect this whole label check exists for, modelled: a FAT32 volume with
+        // \EFI\BOOT\BOOTX64.EFI on it and another operating system's name on the
+        // outside. Every UEFI machine on earth has one of these attached, so a search
+        // that asked only for the file would find it — and did, on 2026-08-07, and
+        // installed a stranger's boot loader onto a disk while reporting success.
+        let kernel: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let (_dir, image) = written(&kernel);
+
+        let mut volume = Volume::open(&image).unwrap().unwrap();
+        assert_eq!(volume.label().unwrap(), fat::LABEL);
+        assert!(volume.boot_file().unwrap().is_some());
+        drop(volume);
+
+        // Relabelled the way `dosfslabel` does it: the root directory's volume entry,
+        // which is the one that counts. The boot sector keeps saying THALYX, so this
+        // also establishes which of the two the reader believes.
+        let geometry = fat::Geometry::of(512 * 1024 * 1024 / fat::SECTOR).unwrap();
+        let mut bytes = std::fs::read(&image).unwrap();
+        let root = geometry.cluster_at(2) as usize;
+        assert_eq!(bytes[root + 11] & fat::attr::VOLUME, fat::attr::VOLUME);
+        bytes[root..root + 11].copy_from_slice(b"NO NAME    ");
+        std::fs::write(&image, &bytes).unwrap();
+
+        let mut volume = Volume::open(&image).unwrap().unwrap();
+        assert_eq!(volume.label().unwrap(), "NO NAME");
+        // And it still has the file. That is the point: the file is not the marker.
+        assert!(volume.boot_file().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_volume_with_no_label_entry_falls_back_to_the_one_in_the_boot_sector() {
+        // Rule 10 applied to a name: a volume whose root directory has no label entry
+        // has not been found to be nameless — it has been found to keep its name
+        // somewhere else. Reporting it as unlabelled would refuse a medium that says
+        // THALYX on it in the one place every reader looks first.
+        let (_dir, image) = written(b"a kernel this is not");
+
+        let geometry = fat::Geometry::of(512 * 1024 * 1024 / fat::SECTOR).unwrap();
+        let mut bytes = std::fs::read(&image).unwrap();
+        let root = geometry.cluster_at(2) as usize;
+        // Delete it the way FAT deletes anything, so the entry after it — the EFI
+        // directory — is still found.
+        bytes[root] = 0xE5;
+        std::fs::write(&image, &bytes).unwrap();
+
+        let mut volume = Volume::open(&image).unwrap().unwrap();
+        assert_eq!(volume.label().unwrap(), fat::LABEL);
+        assert!(volume.boot_file().unwrap().is_some());
     }
 
     #[test]
