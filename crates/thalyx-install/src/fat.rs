@@ -148,11 +148,20 @@ pub struct Written {
 /// Separate from the writing so it can be checked without a device: every one of
 /// these numbers appears in the boot sector, and a reader that disagrees with any
 /// of them reads the wrong sector for everything after it.
+/// **Every field here comes from the volume, not from this module's constants.**
+/// The writer fills them in from [`SECTORS_PER_CLUSTER`] and friends; the reader
+/// fills them in from a boot sector somebody else may have written. A reader that
+/// used the constants would work on volumes Thalyx made and silently read the wrong
+/// sector of every volume `mkfs.vfat` made — which is most of them.
 #[derive(Debug, Clone, Copy)]
 pub struct Geometry {
     pub sectors: u64,
     pub fat_sectors: u64,
     pub clusters: u64,
+    pub reserved_sectors: u64,
+    pub sectors_per_cluster: u64,
+    pub fats: u64,
+    pub root_cluster: u32,
 }
 
 impl Geometry {
@@ -190,6 +199,10 @@ impl Geometry {
                     sectors,
                     fat_sectors,
                     clusters,
+                    reserved_sectors: RESERVED_SECTORS,
+                    sectors_per_cluster: SECTORS_PER_CLUSTER,
+                    fats: FATS,
+                    root_cluster: ROOT_CLUSTER,
                 });
             }
             fat_sectors = needed;
@@ -202,16 +215,21 @@ impl Geometry {
 
     /// The first sector of the data area — where cluster 2 begins.
     pub fn data_start(&self) -> u64 {
-        RESERVED_SECTORS + FATS * self.fat_sectors
+        self.reserved_sectors + self.fats * self.fat_sectors
     }
 
     /// The byte offset of a cluster.
     pub fn cluster_at(&self, cluster: u32) -> u64 {
-        (self.data_start() + (u64::from(cluster) - 2) * SECTORS_PER_CLUSTER) * SECTOR
+        (self.data_start() + (u64::from(cluster) - 2) * self.sectors_per_cluster) * SECTOR
     }
 
     pub fn cluster_bytes(&self) -> u64 {
-        SECTORS_PER_CLUSTER * SECTOR
+        self.sectors_per_cluster * SECTOR
+    }
+
+    /// The byte offset of one cluster's entry in the first FAT.
+    pub fn fat_entry_at(&self, cluster: u32) -> u64 {
+        self.reserved_sectors * SECTOR + u64::from(cluster) * 4
     }
 }
 

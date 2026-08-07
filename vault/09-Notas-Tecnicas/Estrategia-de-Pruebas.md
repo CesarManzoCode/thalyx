@@ -1529,6 +1529,49 @@ kernel no soporta X, saltar»— sin nada que compruebe que la razón del salto 
 razón verdadera. Un salto así se dispara también el día que Thalyx se rompe, y
 entonces el defecto sale como `NOT PROVEN` para siempre.
 
+## Regla derivada: un decreto que nadie implementó se lee igual que uno implementado, y la bóveda no lo distingue
+
+**Que una nota diga cómo funciona algo no es que funcione. Cuando un decreto se
+resuelve escribiendo la decisión y no el código, hay que decirlo en la misma
+frase — porque a los tres días nadie puede notar la diferencia leyendo.**
+
+El 2026-08-06 se decretó que una máquina instalada encuentra su store **por la
+etiqueta del sistema de archivos**, con su razonamiento entero: por qué no es la
+sonda que `store_disk.rs` prohíbe, qué pasa si no hay ninguna, qué pasa si hay dos.
+Quedó escrito en [[Construccion-del-ISO]] y en [[Tareas-Pendientes]] marcado con
+`[x]`, o sea **resuelto**.
+
+**No se escribió una sola línea de código.** `store_disk.rs` seguía leyendo
+`thalyx.store=` y contestando *«nadie me dijo cuál es el disco»* cuando no estaba —
+que es exactamente lo que le pasa a una máquina instalada, siempre, porque la línea
+de comandos va compilada dentro del kernel.
+
+Se encontró el 2026-08-07, un día después de construir el instalador entero, al ir a
+preguntarse qué faltaba para cerrar la fase. **El instalador estaba terminado y el
+disco que producía habría arrancado reportando que no tiene store.** Todo lo demás
+funcionando no habría alcanzado, y nada lo habría dicho antes de que Cesar arrancara
+la máquina.
+
+Lo que lo hizo invisible es la forma del `[x]`: una tarea de *decreto* se marca
+resuelta cuando la decisión está tomada, y una de *implementación* cuando el código
+existe, y las dos se ven igual en la lista. Peor: la nota técnica describía el
+mecanismo en presente —*«Thalyx lee el superbloque de Btrfs de cada dispositivo»*—
+que es como se describe algo que existe.
+
+Tres consecuencias:
+
+1. **Un decreto sin código lo dice en su propia línea.** No al final, no en otra
+   nota: donde se marca resuelto. `[x]` significa *decidido*, y si además está
+   construido, eso se escribe.
+2. **Una nota técnica describe en presente sólo lo que existe.** Lo decidido y no
+   construido va en futuro o con la palabra «decretado» delante. Es la misma regla
+   que ya rige para las afirmaciones de atomicidad, extendida a los mecanismos.
+3. **Y la comprobación que lo habría atrapado**: `thalyx disk find` corre el código
+   de PID 1 sin ser PID 1. Existe porque la rama que niega dos discos con la misma
+   etiqueta, si no, se ejecutaría por primera vez en la máquina de alguien el día en
+   que equivocarse es más caro — y porque una función que nadie puede llamar es una
+   función que nadie nota que no está.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

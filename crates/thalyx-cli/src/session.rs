@@ -868,6 +868,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
+            println!("  `discos` lists the disks I can see and `instalar-en <disco>`");
+            println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
             println!("  machine, `nucleo` shows what the kernel has been saying,");
@@ -875,7 +877,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
         Standing::AProgram { .. } => {
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
-            println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`.");
+            println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
+            println!("  `discos`, `instalar-en <disco>`.");
             println!("  `salir` to leave.");
         }
     }
@@ -952,6 +955,18 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 println!("  Which one. `disponibles` lists what the repository holds.");
                 println!();
             }
+            "discos" | "disks" => {
+                list_disks();
+            }
+            _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                install_onto(rest);
+            }
+            "instalar-en" | "install-onto" => {
+                println!();
+                println!("  Which disk. `discos` lists them.");
+                println!();
+            }
             "nucleo" | "núcleo" | "kernel" | "dmesg" => {
                 show_kernel(false);
             }
@@ -979,6 +994,281 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 
     Ok(())
 }
+
+// ─────────────────────────────────────────── installing this machine onto a disk
+//
+// `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`: the criterion is a
+// medium that, put into a PC with no operating system, leaves that machine running
+// Thalyx. Everything up to here made that possible from a terminal on a development
+// machine — and **there is no terminal on the PC**. There is no shell, so a verb
+// that is not here does not exist for the person holding the machine.
+//
+// So `discos` and `instalar-en <disco>`. They are the last two words the exit
+// criterion needed and they are the reason the criterion is reachable at all.
+
+/// What Thalyx can see to install onto.
+///
+/// Whole disks only. Installing writes a partition table, so a partition is not a
+/// thing that can be installed onto — offering one would produce a table written
+/// inside a partition, which is legal, invisible, and boots nothing.
+fn list_disks() {
+    let disks = thalyx_install::partitions::every();
+    let whole: Vec<&std::path::PathBuf> = disks
+        .iter()
+        .filter(|device| {
+            // A whole disk is one sysfs knows as a disk rather than as somebody's
+            // partition, and `partitions::of` answers for the first and errors for
+            // the second. Asked rather than derived from the name, for the same
+            // reason the installer asks: `nvme0n1` and `nvme0n1p1` differ by a
+            // convention of the tools that print them.
+            thalyx_install::partitions::of(device).is_ok()
+        })
+        .collect();
+
+    println!();
+    if whole.is_empty() {
+        println!("  I can see no disks at all.");
+        println!();
+        println!("  Either nothing is attached, or this kernel has no driver for the");
+        println!("  controller it is attached to. `estado` says what else is missing.");
+        println!();
+        return;
+    }
+
+    println!("  {} disk(s):", whole.len());
+    println!();
+    for device in &whole {
+        let size = std::fs::File::open(device)
+            .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
+            .map(|bytes| format!("{} GiB", bytes / (1024 * 1024 * 1024)))
+            .unwrap_or_else(|_| "size unreadable".to_string());
+        let parts = thalyx_install::partitions::of(device).unwrap_or_default();
+        println!(
+            "    {:<16} {size}, {} partition(s)",
+            device.display(),
+            parts.len()
+        );
+        for (number, path) in &parts {
+            let what = match thalyx_btrfs::identify(path) {
+                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label == thalyx_btrfs::LABEL => {
+                    "a Thalyx store".to_string()
+                }
+                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) if label.is_empty() => {
+                    "btrfs, no label".to_string()
+                }
+                Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) => format!("btrfs `{label}`"),
+                // Everything that is not Btrfs reads the same from here, and saying
+                // "not btrfs" would read as "empty" about a disk somebody is deciding
+                // whether to destroy.
+                _ => "something I do not recognise".to_string(),
+            };
+            println!("      {number}  {what}");
+        }
+    }
+    println!();
+    println!("  `instalar-en <disco>` puts Thalyx on one. Everything on it is lost.");
+    println!();
+}
+
+/// Put this machine onto a disk, so it stops needing the medium it booted from.
+///
+/// The kernel comes off the medium this machine started from, found by looking for
+/// the one file a firmware looks for — see `thalyx_install::medium`, which explains
+/// why that is a name and not a guess. Nothing is mounted to do it: the bytes are
+/// read the same way they were written, so this needs no vfat in the kernel.
+fn install_onto(disk: &str) {
+    use std::io::{IsTerminal, Write};
+
+    let disk = std::path::PathBuf::from(disk);
+
+    println!();
+    let sectors = match std::fs::File::open(&disk)
+        .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
+    {
+        Ok(bytes) => bytes / thalyx_install::gpt::SECTOR,
+        Err(error) => {
+            println!("  I cannot open {}: {error}", disk.display());
+            println!("  `discos` lists what I can see.");
+            println!();
+            return;
+        }
+    };
+
+    let plan = match thalyx_install::Plan::of(&disk, sectors) {
+        Ok(plan) => plan,
+        Err(error) => {
+            println!("  {error}");
+            println!();
+            return;
+        }
+    };
+
+    // The kernel is found **before** anything is said about destroying the disk. A
+    // machine that asked for confirmation, got it, wiped the disk and only then
+    // discovered it had no kernel to write would have destroyed the disk for nothing
+    // — and this is the one verb where that is unrecoverable.
+    let found = match thalyx_install::medium::find(Some(&disk)) {
+        Ok(found) => found,
+        Err(error) => {
+            println!("  I cannot find the medium I started from, so I have no kernel");
+            println!(
+                "  to install. Nothing has been written to {}.",
+                disk.display()
+            );
+            println!();
+            for line in error.to_string().lines() {
+                println!("  {line}");
+            }
+            println!();
+            return;
+        }
+    };
+
+    let mib = |sectors: u64| sectors * thalyx_install::gpt::SECTOR / (1024 * 1024);
+    println!("  About to install Thalyx onto {}.", disk.display());
+    println!();
+    println!(
+        "  the kernel comes from {} — {} bytes",
+        found.device.display(),
+        found.kernel_bytes
+    );
+    println!();
+    println!("  it will become:");
+    println!(
+        "    1  {:>8} MiB  the boot partition, holding that kernel",
+        mib(plan.esp_sectors())
+    );
+    println!(
+        "    2  {:>8} MiB  the store: system, modules, user",
+        mib(plan.store_sectors())
+    );
+    println!();
+    println!(
+        "  Everything on {} will be gone. This cannot be undone.",
+        disk.display()
+    );
+    println!();
+
+    // The same confirmation `thalyx install` uses on the host, and for the same
+    // reason: this is the most destructive thing Thalyx can be asked to do, the
+    // argument is one word, and a `y` confirms a sentence the human stopped reading.
+    if !std::io::stdin().is_terminal() {
+        println!("  There is no terminal to confirm on, so I will not do this.");
+        println!("  Silence is not consent.");
+        println!();
+        return;
+    }
+    print!("  Type the disk's path to confirm: ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err()
+        || answer.trim() != disk.display().to_string()
+    {
+        println!();
+        println!("  That is not {}. Nothing was written.", disk.display());
+        println!();
+        return;
+    }
+    println!();
+
+    // Onto the tmpfs, because that is the only writable place on this machine and
+    // because the kernel must not touch the disk being installed onto before the
+    // partition table replaces it.
+    let staged = std::path::Path::new(INSTALL_WORKSPACE).join("bzImage");
+    if let Some(parent) = staged.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        println!("  I could not make {}: {error}", parent.display());
+        println!();
+        return;
+    }
+
+    let mut volume = match thalyx_install::medium::Volume::open(&found.device) {
+        Ok(Some(volume)) => volume,
+        Ok(None) => {
+            println!(
+                "  {} stopped being readable between finding it and",
+                found.device.display()
+            );
+            println!("  reading it. Nothing was written.");
+            println!();
+            return;
+        }
+        Err(error) => {
+            println!("  I could not read {}: {error}", found.device.display());
+            println!();
+            return;
+        }
+    };
+    if let Err(error) = volume.extract_boot_file(&staged) {
+        println!("  I could not take the kernel off the medium: {error}");
+        println!("  Nothing was written to {}.", disk.display());
+        println!();
+        return;
+    }
+    println!("  ok  kernel       taken off {}", found.device.display());
+
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+
+    match thalyx_install::install(
+        &disk,
+        &staged,
+        std::path::Path::new(INSTALL_WORKSPACE),
+        seconds,
+    ) {
+        Ok(installed) => {
+            println!(
+                "  ok  boot         {} — the kernel, at the one path a firmware looks for",
+                installed.esp.display()
+            );
+            println!(
+                "  ok  store        {} — labelled `{}`",
+                installed.store.display(),
+                installed.filesystem.label
+            );
+            for (name, why) in &installed.subvolumes.mounted {
+                match why {
+                    None => println!("  ok  subvolume    {name}"),
+                    Some(reason) => println!("  NO  subvolume    {name}: {reason}"),
+                }
+            }
+            println!();
+            if installed.subvolumes.is_a_store() {
+                println!("  That disk is a Thalyx machine now. `apagar`, take the medium");
+                println!("  out, and start it again — it will find its store by the label");
+                println!("  and will not need me.");
+            } else {
+                println!("  The boot half is written and the store is not finished.");
+                println!(
+                    "  Running `instalar-en {}` again finishes it.",
+                    disk.display()
+                );
+            }
+            println!();
+        }
+        Err(error) => {
+            println!();
+            println!("  The install did not finish: {error}");
+            println!();
+            println!(
+                "  Whatever was on {} before is gone either way — the",
+                disk.display()
+            );
+            println!("  partition table is written first. Running this again is safe");
+            println!("  and is the way to finish it.");
+            println!();
+        }
+    }
+}
+
+/// Where the install puts the kernel it takes off the medium, and its mount points.
+///
+/// `/run` and not `/tmp`, because the image has thirteen directories and `/tmp` is
+/// not one of them. Same constant and same reason as `store_disk` and `install`.
+const INSTALL_WORKSPACE: &str = "/run/thalyx/install";
 
 #[cfg(test)]
 mod tests {

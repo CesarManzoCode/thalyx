@@ -305,7 +305,7 @@ Cada afirmación de esta sección o se puede comprobar con un comando de este
 repositorio, o está marcada como todavía no comprobada. Esa distinción es la
 regla de trabajo principal del proyecto.
 
-**Construido y cubierto por pruebas: 775.** Entre pruebas unitarias, inyección
+**Construido y cubierto por pruebas: 785.** Entre pruebas unitarias, inyección
 de fallos que mata el binario real en cada punto del commit atómico, y corridas
 de punta a punta del criterio de salida. `cargo test --workspace` corre todo.
 
@@ -346,6 +346,9 @@ etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
   kernel lea la tabla, monte el arranque y compare el archivo de vuelta. **Lo que
   no ha hecho nadie es arrancar el resultado**: `make -C image run-installed` le
   entrega a un firmware UEFI el disco instalado y nada más, y nunca se ha corrido.
+  Ese mismo archivo es el medio — `dd` a una USB y una PC arrancada desde ella se
+  instala en su propio disco con `discos` e `instalar-en` de la sesión, leyendo el
+  kernel de la USB con el lector de FAT propio y sin montar nada.
 - **Los controladores de una PC de verdad están pedidos y no se han compilado.**
   `thalyx.config` salía de `allnoconfig` más lo que QEMU necesita, y ahora nombra
   el framebuffer que deja el firmware y una consola encima, teclado USB y PS/2, y

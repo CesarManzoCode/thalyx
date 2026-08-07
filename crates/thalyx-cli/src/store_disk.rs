@@ -18,14 +18,28 @@
 //! on purpose so that the regression net for the boot stages is not the same code
 //! as the thing being tested. Neither path is reachable from PID 1.
 //!
-//! ## Why the device comes from the kernel command line
+//! ## How the device is decided, and why neither way is a guess
 //!
-//! The alternative is probing `/dev/vda`, then `/dev/sda`, then whatever else
-//! looks plausible, and mounting the first one that answers. That is a
-//! heuristic that succeeds on the wrong disk exactly once, and the failure is
-//! that Thalyx wrote its store onto something else's filesystem. `thalyx.store=`
-//! says which one; nothing is guessed, and when the parameter is absent that is
-//! reported as its own fact rather than as a missing disk.
+//! Two ways, in order, and the order matters.
+//!
+//! **`thalyx.store=` on the kernel command line wins.** It is what `make run` and
+//! every stage of `verify.sh` use, and a bootloader or a human naming a disk is the
+//! most explicit thing there is.
+//!
+//! **When nothing named one, every disk is asked what it is called.** An installed
+//! machine's command line is compiled into the kernel, so it *cannot* name a device:
+//! it is one line, and the disk is `vda` under QEMU and `nvme0n1` or `sda` on a real
+//! PC. So Thalyx reads each block device's Btrfs superblock and looks for the label
+//! `thalyx-store` — decided by Cesar on 2026-08-06 and built on 2026-08-07.
+//!
+//! What is forbidden, and is a different thing, is probing `/dev/vda`, then
+//! `/dev/sda`, then whatever else looks plausible, and mounting the first that
+//! answers. That heuristic succeeds on the wrong disk exactly once, and the failure
+//! is Thalyx writing its store onto somebody else's filesystem. Asking for a **name
+//! Thalyx itself wrote** is not that, and it keeps the property that matters, with
+//! two explicit refusals: nothing carrying the label is reported and nothing is
+//! made, and **two disks carrying it is refused rather than resolved** — choosing
+//! would be the probe again with a coat of paint on it.
 //!
 //! ## Why `system` holds the whole store and not just part of it
 //!
@@ -81,12 +95,36 @@ const SUBVOLUMES: &[Subvolume] = &[
     },
 ];
 
+/// How the disk that got mounted was decided on.
+///
+/// Kept as its own fact and printed, because the two are not interchangeable: one
+/// means a human or a bootloader said which disk, and the other means Thalyx looked.
+/// A machine that came up on the wrong disk is diagnosed from this line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FoundBy {
+    /// `thalyx.store=` on the kernel command line named it.
+    Named,
+    /// Nothing named one, so the disks were asked what they are called.
+    Label,
+}
+
 /// What came of trying to bring the store up.
 pub enum Store {
     /// Every subvolume is mounted. The machine keeps what it is told.
-    Mounted { device: PathBuf },
-    /// No `thalyx.store=` on the command line, so no disk was even named.
-    Unnamed,
+    Mounted { device: PathBuf, how: FoundBy },
+    /// No `thalyx.store=` on the command line, and no disk carries the label.
+    ///
+    /// The one that used to mean "nobody told me which disk". It no longer can:
+    /// since the label search exists, getting here means both ways of finding a
+    /// store came back empty, which is a stronger statement and a different one.
+    Unnamed { looked: usize },
+    /// More than one disk carries the label, so choosing would be guessing.
+    ///
+    /// Refused rather than resolved. `Construccion-del-ISO.md` decrees it: picking
+    /// one is the probe this whole module refuses, with a coat of paint on it —
+    /// and the cost of picking wrong is Thalyx writing over somebody's other
+    /// machine.
+    Ambiguous { devices: Vec<PathBuf> },
     /// The disk was named and is not there.
     Absent { why: String },
     /// The disk is there and something about it did not work.
@@ -153,10 +191,77 @@ fn why_absent(device: &Path) -> String {
     }
 }
 
+/// Every device that says it is a Thalyx store, by reading its superblock.
+///
+/// `vault/09-Notas-Tecnicas/Construccion-del-ISO.md`, *Cómo encuentra su store una
+/// máquina instalada*, decided 2026-08-06: **by the filesystem label.** An installed
+/// machine's command line is compiled into the kernel, so it cannot name a device —
+/// the disk is `vda` under QEMU and `nvme0n1` or `sda` on a real PC, and there is one
+/// line for both.
+///
+/// **This is not the probe the module refuses**, and the distinction is the whole
+/// reason it is allowed. Forbidden is *"try /dev/vda, then /dev/sda, and mount the
+/// first that answers"*, because that succeeds on the wrong disk exactly once and the
+/// failure is Thalyx writing its store over somebody else's filesystem. This asks
+/// every disk what it is **called** and accepts only a name Thalyx itself wrote. A
+/// disk that is not a Thalyx store answers something else and is passed over; two
+/// that answer the same are refused rather than chosen between.
+fn devices_carrying_the_label() -> (Vec<PathBuf>, usize) {
+    let mut found = Vec::new();
+    let candidates = thalyx_install::partitions::every();
+    let looked = candidates.len();
+    for device in candidates {
+        // A device that cannot be read is skipped and not reported. On a real
+        // machine this list holds an empty card reader and a CD tray, and neither
+        // of those is a fact about the store.
+        if let Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) = thalyx_btrfs::identify(&device)
+            && label == thalyx_btrfs::LABEL
+        {
+            found.push(device);
+        }
+    }
+    (found, looked)
+}
+
+/// Which disk to bring up, or why none.
+///
+/// Pure, and taking the search as a closure, so the three outcomes can be exercised
+/// on a machine with no disks — which is every machine this project develops on.
+/// The one that matters is the third: without a test, "two disks carry the label" is
+/// a branch that only ever runs on somebody's real machine, on the day it is most
+/// expensive to get wrong.
+fn decide(
+    named: Option<PathBuf>,
+    search: impl FnOnce() -> (Vec<PathBuf>, usize),
+) -> Result<(PathBuf, FoundBy), Store> {
+    // The command line wins, and it is not even checked against the label. A human
+    // or a bootloader naming a disk is the most explicit statement there is, and a
+    // Thalyx that second-guessed it would have no way to be told about a store whose
+    // label got damaged.
+    if let Some(named) = named {
+        return Ok((named, FoundBy::Named));
+    }
+    let (carrying, looked) = search();
+    match carrying.len() {
+        1 => Ok((
+            carrying.into_iter().next().expect("exactly one"),
+            FoundBy::Label,
+        )),
+        0 => Err(Store::Unnamed { looked }),
+        _ => Err(Store::Ambiguous { devices: carrying }),
+    }
+}
+
 /// Mount the store, or say precisely which way it was not there.
 pub fn mount() -> Store {
-    let Some(device) = named_device() else {
-        return Store::Unnamed;
+    // The command line first, and it wins. An installed machine has nothing there
+    // and falls through to the search; `make run` and every stage of `verify.sh`
+    // name a device and keep the behaviour they have always had, which is what
+    // stops this change from being the same change as the thing it has to be
+    // tested against.
+    let (device, how) = match decide(named_device(), devices_carrying_the_label) {
+        Ok(chosen) => chosen,
+        Err(nothing) => return nothing,
     };
 
     // Checked before mounting so that "no disk" and "a disk that will not
@@ -189,7 +294,7 @@ pub fn mount() -> Store {
     }
 
     if failures.is_empty() {
-        Store::Mounted { device }
+        Store::Mounted { device, how }
     } else {
         Store::Broken { device, failures }
     }
@@ -204,13 +309,40 @@ impl Store {
     /// that touches the third.
     pub fn report(&self) {
         match self {
-            Store::Mounted { device } => {
-                println!("  ok  store        {} — three subvolumes", device.display());
+            Store::Mounted { device, how } => {
+                let found = match how {
+                    FoundBy::Named => format!("named by {PARAMETER}"),
+                    FoundBy::Label => format!("found by the label `{}`", thalyx_btrfs::LABEL),
+                };
+                println!(
+                    "  ok  store        {} — three subvolumes, {found}",
+                    device.display()
+                );
             }
-            Store::Unnamed => {
-                println!("  no  store        no {PARAMETER} on the kernel command line");
-                println!("      nothing will survive this boot. The disk is not missing;");
-                println!("      nobody told me which one it is.");
+            Store::Unnamed { looked } => {
+                println!("  no  store        no {PARAMETER} on the command line, and none of the");
+                println!(
+                    "      {looked} block device(s) here is labelled `{}`",
+                    thalyx_btrfs::LABEL
+                );
+                println!("      nothing will survive this boot. Both ways of finding a store");
+                println!("      came back empty, which is stronger than nobody having named");
+                println!("      one: I looked. I will not make one — a machine that did could");
+                println!("      never tell you it had lost the old one.");
+            }
+            Store::Ambiguous { devices } => {
+                println!(
+                    "  no  store        {} devices are labelled `{}`:",
+                    devices.len(),
+                    thalyx_btrfs::LABEL
+                );
+                for device in devices {
+                    println!("      {}", device.display());
+                }
+                println!("      Choosing between them would be guessing which machine's");
+                println!("      store this is, and guessing wrong writes over the other one.");
+                println!("      Name the right one with {PARAMETER}<device>, or detach the");
+                println!("      disk that does not belong here.");
             }
             Store::Absent { why } => {
                 println!("  no  store        {why}");
@@ -302,6 +434,15 @@ pub enum DiskCommand {
         workspace: PathBuf,
     },
 
+    /// Which disk PID 1 would find if nothing named one
+    ///
+    /// The label search, run without being PID 1 and without mounting anything.
+    /// An installed machine has no `thalyx.store=` to go on — the command line is
+    /// compiled into the kernel — so this is the code that decides whether it comes
+    /// up with a store or without one, and this is the only way to ask it a question
+    /// before the machine is switched on.
+    Find,
+
     /// Create the three subvolumes on a store that has none
     ///
     /// The other half of `format`, separable because it needs things `format`
@@ -332,6 +473,10 @@ pub fn run(command: DiskCommand) -> Fallible {
             describe();
             println!();
             describe_plan();
+            Ok(())
+        }
+        DiskCommand::Find => {
+            find();
             Ok(())
         }
         DiskCommand::Identify { device } => {
@@ -396,6 +541,35 @@ fn describe_plan() {
         plan.device_used
     );
     println!("  and none of it covering a superblock.");
+}
+
+/// Report what the label search finds, without mounting anything.
+///
+/// The same three outcomes `mount` acts on, printed. It exists because those three
+/// are otherwise only reachable by being PID 1 on a machine with the right disks
+/// attached — which means the branch that refuses two identically labelled disks
+/// would first run on somebody's real machine, on the day it matters most.
+fn find() {
+    let (carrying, looked) = devices_carrying_the_label();
+    println!(
+        "  read {looked} block device(s) looking for the label `{}`",
+        thalyx_btrfs::LABEL
+    );
+    println!();
+    match decide(None, || (carrying, looked)) {
+        Ok((device, _)) => {
+            println!("  ok  store        {}", device.display());
+            println!("      PID 1 would mount this one, with nothing on the command line.");
+        }
+        // The same reporter the boot uses, so there is one message and not two —
+        // including its "nothing will survive this boot", which is what a boot
+        // *would* say and is why the line below names this as a dry run.
+        Err(nothing) => nothing.report(),
+    }
+    println!();
+    println!("  Nothing was mounted: this is what a boot would decide, asked early.");
+    println!("  A disk named by `{PARAMETER}` would win over all of this, and is not");
+    println!("  considered here: this is the question an installed machine asks.");
 }
 
 /// Say what a device turned out to be, in the three terms that decide what to do.
@@ -1302,6 +1476,93 @@ mod tests {
             text.contains(&format!("\"{root}\",")),
             "the image archive has no `{root}` directory, so {WORKSPACE} cannot be made there"
         );
+    }
+
+    #[test]
+    fn a_named_disk_wins_over_anything_the_search_would_have_found() {
+        // The property that keeps this change from being the same change as the one
+        // that has to test it. `make run` and every stage of verify.sh pass
+        // `thalyx.store=`, so they must behave exactly as they did before the label
+        // search existed — otherwise the regression net and the new code are one
+        // unexercised thing.
+        let (device, how) = decide(Some(PathBuf::from("/dev/vda")), || {
+            panic!("the search ran even though a disk was named")
+        })
+        .unwrap_or_else(|_| panic!("a named disk was not used"));
+        assert_eq!(device, PathBuf::from("/dev/vda"));
+        assert_eq!(how, FoundBy::Named);
+    }
+
+    #[test]
+    fn one_disk_carrying_the_label_is_the_store_and_says_it_was_found() {
+        // An installed machine has nothing on its command line, because that line is
+        // compiled into the kernel and one line cannot name both `vda` and
+        // `nvme0n1p2`.
+        let outcome = decide(None, || (vec![PathBuf::from("/dev/nvme0n1p2")], 4));
+        let Ok((device, how)) = outcome else {
+            panic!("one labelled disk was not taken as the store");
+        };
+        assert_eq!(device, PathBuf::from("/dev/nvme0n1p2"));
+        assert_eq!(how, FoundBy::Label);
+    }
+
+    #[test]
+    fn two_disks_carrying_the_label_are_refused_rather_than_chosen_between() {
+        // The branch that would otherwise only run on a real machine, on the day
+        // somebody has two Thalyx disks attached — an installed machine with the
+        // medium still plugged in is exactly that, so it is the *normal* case for the
+        // first boot after an install.
+        //
+        // Choosing would be the probe `Construccion-del-ISO.md` forbids with a coat
+        // of paint on it, and choosing wrong is Thalyx writing over the other
+        // machine's store.
+        let devices = vec![PathBuf::from("/dev/sda2"), PathBuf::from("/dev/sdb2")];
+        let Err(Store::Ambiguous { devices: refused }) = decide(None, || (devices, 6)) else {
+            panic!("two labelled disks did not come back as ambiguous");
+        };
+        assert_eq!(refused.len(), 2);
+    }
+
+    #[test]
+    fn no_disk_carrying_the_label_says_how_many_were_looked_at() {
+        // The baseline for the line above, and the distinction rule 10 asks for:
+        // "nobody told me which disk" and "I read six disks and none is a Thalyx
+        // store" send a person to different halves of the problem, and this used to
+        // say the first for both.
+        let Err(Store::Unnamed { looked }) = decide(None, || (Vec::new(), 6)) else {
+            panic!("an empty search did not come back as nothing found");
+        };
+        assert_eq!(looked, 6);
+    }
+
+    #[test]
+    fn the_four_ways_of_having_no_store_stay_four_different_things() {
+        // Each one is a different thing to do about it: make a store, unplug the
+        // other machine's disk, attach this one, or repair it. A report that
+        // collapsed any two would send somebody to the wrong half of the problem, and
+        // collapsing them is one careless edit away at all times.
+        let states = [
+            Store::Unnamed { looked: 3 },
+            Store::Ambiguous {
+                devices: vec![PathBuf::from("/dev/sda2"), PathBuf::from("/dev/sdb2")],
+            },
+            Store::Absent {
+                why: "gone".to_string(),
+            },
+            Store::Broken {
+                device: PathBuf::from("/dev/sda2"),
+                failures: vec![("system", "ENOENT".to_string())],
+            },
+        ];
+        let kinds: Vec<std::mem::Discriminant<Store>> =
+            states.iter().map(std::mem::discriminant).collect();
+        for (index, kind) in kinds.iter().enumerate() {
+            assert_eq!(
+                kinds.iter().filter(|other| *other == kind).count(),
+                1,
+                "state {index} shares a variant with another"
+            );
+        }
     }
 
     #[test]

@@ -154,6 +154,49 @@ archivo y sigue siendo el decreto—, un store que hoy nadie crea porque PID 1
 tiene prohibido fabricarlo, controladores reales, y una consola que hoy es un
 puerto serie que las PC modernas no tienen.
 
+### Lo que hay que hacer para cerrarlo, al 2026-08-07
+
+Todo lo que el criterio pide está construido. Lo que falta es **correrlo**, y son
+dos actos porque el criterio son dos actos.
+
+**Acto 1, en una VM con firmware UEFI de verdad.** Responde que el medio arranca
+solo, que la máquina instalada arranca sin él, que encuentra su store sin que nadie
+se lo nombre, y —desde el 2026-08-07— que la consola de framebuffer funciona, porque
+OVMF entrega un GOP real.
+
+```
+make -C image
+sudo make -C image installed
+make -C image run-installed
+```
+
+**Acto 2, en una PC.** Es lo único que responde el teclado USB y los discos
+NVMe/AHCI, y sigue siendo el único punto del criterio donde hace falta hierro.
+
+```
+sudo dd if=image/build/installed.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+y desde la máquina que arranca de esa USB: `discos`, `instalar-en /dev/nvme0n1`,
+`apagar`, sacar la USB, encender.
+
+**Lo que no puede pasar es que el acto 1 se reporte como si fuera el acto 2**, que es
+lo que esta nota ya decía y ahora tiene nombres concretos.
+
+### Y una cosa que el criterio no pide y conviene no confundir
+
+Una PC recién instalada arranca con un store bueno y **vacío**: no hay nada
+instalado en ella y nada que instalar, porque la imagen lleva el kernel y un
+programa y el `greeter` vive en el store de la máquina de desarrollo. Así que los
+pasos 2 a 6 de la lista original **no se pueden hacer en la PC recién instalada**;
+se siguen haciendo en la de desarrollo, donde `make -C image store` pone el bundle
+en el repositorio, y se siguen comprobando en cada cambio y en la etapa 16.
+
+Eso no es un hueco del criterio vigente —que es *«ponerla en una PC sin sistema
+operativo y que ahora tenga Thalyx como OS»*, y eso se cumple— sino la pregunta de
+cómo llega el software a una máquina que no es ésta, que es la Fase 2. Está escrito
+aquí para que nadie lo descubra creyendo que descubrió un fallo.
+
 ## Y lo que la cancelación ya enseñó
 
 Que no se pudo convencer a nadie de hacerlo **es un dato**, no un contratiempo

@@ -33,6 +33,16 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 /// same reason: the image has no `/tmp`.
 const WORKSPACE: &str = "/run/thalyx/store-setup";
 
+/// Where the kernel that goes on the boot partition comes from.
+///
+/// Two cases and they are not the same act. One is a person naming a file they
+/// built; the other is the machine reading its own boot medium, which is what an
+/// install from inside the image has to do because there is no path to name.
+enum Kernel {
+    Named(PathBuf),
+    OnTheMedium(PathBuf),
+}
+
 #[derive(clap::Args)]
 pub struct InstallArgs {
     /// The whole disk to install onto, e.g. /dev/nvme0n1. Everything on it is lost.
@@ -43,8 +53,12 @@ pub struct InstallArgs {
     /// A bzImage built with CONFIG_EFI_STUB, which is a valid UEFI application —
     /// there is no bootloader here and none is wanted. `image/build/bzImage` is what
     /// `make -C image kernel` produces.
+    ///
+    /// Without it, the medium this machine was booted from is found and the kernel
+    /// is read off it. That is the path an install *inside* the machine takes, where
+    /// there is no shell and no path anybody could type.
     #[arg(long)]
-    pub kernel: PathBuf,
+    pub kernel: Option<PathBuf>,
 
     /// Print what would be written and do nothing
     #[arg(long)]
@@ -74,22 +88,43 @@ pub fn run(args: InstallArgs) -> Fallible {
     describe(&plan);
     println!();
 
-    if !args.kernel.exists() {
-        // Said here rather than let through to fail after the disk has been
-        // partitioned. A machine whose install stopped between the table and the
-        // boot partition has a disk that boots nothing and no message about why.
-        return Err(format!(
-            "there is no kernel at {}. Nothing has been written.\n  \
-             `make -C image kernel` produces one at image/build/bzImage.",
-            args.kernel.display()
-        )
-        .into());
+    // Resolved **before** anything is said about destroying the disk, and before the
+    // confirmation. An install that asked, got a yes, wiped the disk and only then
+    // found it had no kernel to write would have destroyed the disk for nothing —
+    // and this is the one command where that cannot be undone.
+    let kernel = match &args.kernel {
+        Some(named) => {
+            if !named.exists() {
+                return Err(format!(
+                    "there is no kernel at {}. Nothing has been written.\n  \
+                     `make -C image kernel` produces one at image/build/bzImage.",
+                    named.display()
+                )
+                .into());
+            }
+            Kernel::Named(named.clone())
+        }
+        None => {
+            let found = thalyx_install::medium::find(Some(&args.device)).map_err(|error| {
+                format!(
+                    "no --kernel was given and no boot medium was found, so there is \n                       nothing to install. Nothing has been written.\n\n  {error}"
+                )
+            })?;
+            println!(
+                "  no --kernel given, so the kernel comes off {} — {} bytes",
+                found.device.display(),
+                found.kernel_bytes
+            );
+            Kernel::OnTheMedium(found.device)
+        }
+    };
+    if let Kernel::Named(path) = &kernel {
+        println!(
+            "  the boot partition will hold {} — {} bytes",
+            path.display(),
+            std::fs::metadata(path)?.len()
+        );
     }
-    let kernel_bytes = std::fs::metadata(&args.kernel)?.len();
-    println!(
-        "  the boot partition will hold {} — {kernel_bytes} bytes",
-        args.kernel.display()
-    );
     println!();
 
     if args.plan {
@@ -126,19 +161,42 @@ pub fn run(args: InstallArgs) -> Fallible {
         .map(|since| since.as_secs())
         .unwrap_or(0);
 
-    let installed = thalyx_install::install(&args.device, &args.kernel, &args.workspace, seconds)
+    // Taken off the medium only once the human has said yes, because reading forty
+    // megabytes off a USB stick is not something to do to answer a `--plan`.
+    let staged = match &kernel {
+        Kernel::Named(path) => path.clone(),
+        Kernel::OnTheMedium(device) => {
+            std::fs::create_dir_all(&args.workspace)?;
+            let staged = args.workspace.join("bzImage");
+            let mut volume = thalyx_install::medium::Volume::open(device)?.ok_or_else(|| {
+                format!(
+                    "{} stopped being a readable FAT32 volume between finding it and \n  \
+                     reading it. Nothing has been written.",
+                    device.display()
+                )
+            })?;
+            let bytes = volume.extract_boot_file(&staged)?;
+            println!(
+                "  ok  kernel       {bytes} bytes taken off {}",
+                device.display()
+            );
+            staged
+        }
+    };
+
+    let installed = thalyx_install::install(&args.device, &staged, &args.workspace, seconds)
         .inspect_err(|_| {
-        // The disk is partly written by the time most failures here can happen,
-        // and a message that stopped at the error would leave a person guessing
-        // whether their old data is still there. It is not.
-        println!();
-        println!(
-            "  The install did not finish. Whatever was on {} before is",
-            args.device.display()
-        );
-        println!("  gone either way — the partition table is written first. Running");
-        println!("  this again is safe and is the way to finish it.");
-    })?;
+            // The disk is partly written by the time most failures here can happen,
+            // and a message that stopped at the error would leave a person guessing
+            // whether their old data is still there. It is not.
+            println!();
+            println!(
+                "  The install did not finish. Whatever was on {} before is",
+                args.device.display()
+            );
+            println!("  gone either way — the partition table is written first. Running");
+            println!("  this again is safe and is the way to finish it.");
+        })?;
 
     report(&installed);
     Ok(())

@@ -64,6 +64,7 @@
 pub mod crc32;
 pub mod fat;
 pub mod gpt;
+pub mod medium;
 pub mod partitions;
 
 use std::path::{Path, PathBuf};

@@ -14,9 +14,111 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La Fase 1 está construida entera, y falta correrla — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Cesar pidió cerrar la fase sin poder verificar
+> entre cambios, aceptando apilar comprobaciones: *«no importa que apilemos 2
+> comprobaciones, nuestro verify.sh nos indica dónde están, no es necesario saber en
+> qué momento se introdujeron»*. Así que hay **cuatro commits del día** y una sola
+> corrida por delante.
+>
+> ### Al ir a cerrar apareció que faltaba algo grande, y era un decreto sin código
+>
+> **Una máquina instalada no encontraba su store.** Decretado el 2026-08-06 —*por la
+> etiqueta del sistema de archivos*—, escrito con su razonamiento entero, marcado
+> `[x]` en [[Tareas-Pendientes]], y **nunca implementado**. `store_disk.rs` leía
+> `thalyx.store=` y, sin él, decía que nadie le había dicho cuál era el disco.
+>
+> En una máquina instalada nunca está: la línea de comandos va compilada dentro del
+> kernel, es una sola, y el disco se llama `vda` aquí y `nvme0n1p2` en una PC.
+>
+> O sea: **el instalador de esta mañana estaba terminado y el disco que produce
+> habría arrancado diciendo que no tiene store.** Nada lo habría dicho antes de que
+> encendieras la máquina. Regla nueva en [[Estrategia-de-Pruebas]]: un decreto que
+> nadie implementó se lee igual que uno implementado, y un `[x]` de *decidido* se ve
+> igual que uno de *construido*.
+>
+> Ya está construido, con los dos caminos en orden: **`thalyx.store=` gana** —lo que
+> deja `make run` y todas las etapas exactamente como estaban— y sin él se le
+> pregunta a cada disco cómo se llama. Con las dos negativas: **ninguno** se reporta
+> diciendo cuántos discos se leyeron, y **dos se niegan** en vez de elegir. Lo
+> segundo no es raro: es el caso normal justo después de instalar, con el medio
+> todavía puesto.
+>
+> `thalyx disk find` corre ese código sin ser PID 1 y sin montar nada. Existe porque
+> si no, la rama que niega dos discos iguales se ejecutaría por primera vez en tu
+> máquina, el día en que equivocarse es más caro.
+>
+> ### Y la otra mitad: la máquina se instala a sí misma
+>
+> `thalyx install` recibía el kernel por `--kernel`, y **adentro no hay ruta que
+> teclear**. Ahora Thalyx **lee** el medio del que arrancó: `medium.rs` es un lector
+> de FAT32 que busca `\EFI\BOOT\BOOTX64.EFI` en cada dispositivo de bloques, se niega
+> si hay dos, y excluye el disco de destino para que reinstalar siga siendo posible.
+> **No monta nada** — los bytes se leen igual que se escribieron, así que el kernel
+> no necesita `CONFIG_VFAT_FS`.
+>
+> Y dos verbos, que es lo que lo vuelve alcanzable sin shell:
+>
+> ```
+>   discos                 qué discos veo, y qué tiene cada uno
+>   instalar-en <disco>    pon esta máquina en ese disco
+> ```
+>
+> El kernel se busca **antes** de decir nada sobre destruir el disco: una máquina que
+> preguntara, recibiera un sí, borrara el disco y sólo entonces descubriera que no
+> tenía kernel lo habría destruido para nada.
+>
+> ### El medio y la máquina instalada son el mismo archivo
+>
+> No hay un ISO aparte que construir. Un disco con una partición de arranque que un
+> firmware puede iniciar es eso mismo, esté atornillado a una máquina o enchufado en
+> un costado:
+>
+> ```
+> sudo dd if=image/build/installed.img of=/dev/sdX bs=4M status=progress conv=fsync
+> ```
+>
+> ### Lo que falta, y es todo tuyo
+>
+> **Acto 1, en una VM** — responde que el medio arranca solo, que la máquina
+> instalada arranca sin él, que encuentra su store sin que nadie se lo nombre, y que
+> la consola de framebuffer funciona (OVMF entrega un GOP de verdad):
+>
+> ```
+> git pull
+> sudo ./dev/verify.sh        # la etapa 20 creció a diecisiete líneas
+> make -C image               # aquí se sabe si las opciones nuevas del kernel sobrevivieron
+> sudo make -C image installed
+> make -C image run-installed
+> ```
+>
+> **Acto 2, en una PC** — es lo único que responde el teclado USB y NVMe/AHCI:
+> `dd` a una USB, arrancar, `discos`, `instalar-en /dev/nvme0n1`, `apagar`, sacar la
+> USB, encender.
+>
+> **Lo primero que puede fallar es la compilación del kernel**, y eso es correcto:
+> `config-check` detiene el build si `olddefconfig` descartó alguna de las opciones
+> nuevas. Si pasa, **la línea que falta es la que hay que mirar**, no el grupo — cada
+> una tiene su párrafo al lado. Van tres opciones encontradas arrancando en la
+> historia de este proyecto y hay una regla que dice que ninguna comprobación de
+> construcción encuentra la siguiente.
+>
+> ### Una cosa que el criterio no pide y conviene no confundir
+>
+> Una PC recién instalada arranca con un store bueno y **vacío**: la imagen lleva el
+> kernel y un programa, así que no hay nada instalado en ella ni nada que instalar, y
+> los pasos 2 a 6 de la lista original no se pueden hacer *en ella*. Se siguen
+> haciendo en la de desarrollo y se siguen comprobando en cada cambio. No es un hueco
+> del criterio vigente —*«ponerla en una PC sin sistema operativo y que ahora tenga
+> Thalyx como OS»*, y eso se cumple— sino la pregunta de cómo llega el software a una
+> máquina que no es ésta, que es la Fase 2.
+>
+> **785 pruebas pasan, `clippy` limpio en 1.97, `cargo fmt` aplicado.**
+
 > ## Y los controladores de una PC de verdad — 2026-08-07
 >
-> **Es lo primero que hay que leer.** Es un commit **aparte** del instalador, a
+> **El bloque de arriba es más reciente.** Es un commit **aparte** del instalador, a
 > propósito: se verifican por caminos distintos y ninguno de los dos tiene que
 > esconder al otro si falla.
 >

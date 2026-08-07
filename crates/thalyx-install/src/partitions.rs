@@ -175,6 +175,45 @@ pub fn of(device: &Path) -> Result<Vec<(u32, PathBuf)>, PartitionError> {
     Ok(found)
 }
 
+/// Every block device the kernel knows about, disks and their partitions alike.
+///
+/// From `/sys/block`, which is the kernel's own list, plus each disk's partition
+/// subdirectories — because what a store or a boot medium lives on is a partition,
+/// and `/sys/block` holds only whole disks.
+///
+/// Errors are swallowed on purpose and the list comes back possibly short: this is
+/// used to *search*, and every caller of it refuses when it finds no answer or more
+/// than one. A machine with an unreadable card reader must not fail to install.
+pub fn every() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/sys/block") else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let node = |name: &str| PathBuf::from("/dev").join(name.replace('!', "/"));
+        found.push(node(&name));
+
+        let Ok(children) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for child in children.flatten() {
+            if !child.path().join("partition").exists() {
+                continue;
+            }
+            if let Some(child_name) = child.file_name().to_str() {
+                found.push(node(child_name));
+            }
+        }
+    }
+    found.retain(|path| path.exists());
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// Re-read the table and wait until the nodes for `wanted` partitions are there.
 ///
 /// The wait exists for hosts where `/dev` is made by udev rather than by the kernel:

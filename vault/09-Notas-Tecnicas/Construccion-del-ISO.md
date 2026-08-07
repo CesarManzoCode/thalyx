@@ -532,6 +532,111 @@ con un CRC-32 independiente, y el volumen FAT32 recorrido entero por un lector
 escrito aparte —directorio raíz, `EFI`, `BOOT`, la cadena de clusters del archivo—
 que devolvió los 3 000 000 de bytes idénticos.
 
+### Lo que faltaba para que la ISO sirviera sola — 2026-08-07
+
+Con el instalador escrito quedaban **dos huecos**, y ninguno de los dos era código
+que faltara escribir en un sitio obvio: los dos eran cosas decretadas que nadie
+había construido, y las dos rompían el criterio de salida entero.
+
+#### 1. Una máquina instalada no encontraba su store
+
+Decretado el 2026-08-06 —*por la etiqueta del sistema de archivos*— y **nunca
+implementado**. `store_disk.rs` leía `thalyx.store=` de la línea de comandos y, si
+no estaba, decía que nadie le había dicho cuál era el disco. Y en una máquina
+instalada nunca está: la línea va compilada dentro del kernel, es una sola, y el
+disco se llama `vda` aquí y `nvme0n1p2` en una PC.
+
+O sea: **el disco que el instalador produce habría arrancado y reportado que no
+tiene store.** Todo lo demás del instalador funcionando no habría alcanzado.
+
+Ahora hay dos caminos, en orden:
+
+1. **`thalyx.store=` gana.** Es lo que usan `make run` y todas las etapas de
+   `verify.sh`, y que un humano o un gestor de arranque nombre un disco es lo más
+   explícito que hay. Que gane es además lo que impide que este cambio sea el mismo
+   cambio que la red que tiene que probarlo.
+2. **Si nadie nombró uno, se le pregunta a cada disco cómo se llama.** Thalyx lee el
+   superbloque de Btrfs de cada dispositivo de bloques y busca `thalyx-store`.
+
+**Y no es la heurística que el módulo prohíbe.** Lo prohibido es *probar `/dev/vda`,
+luego `/dev/sda`, y montar el primero que conteste* — eso acierta con el disco
+equivocado exactamente una vez y el fallo es Thalyx escribiendo encima del sistema
+de archivos de otro. Pedir **un nombre que Thalyx mismo escribió** no es eso, y se
+conserva con dos negativas explícitas:
+
+- **Ninguno con la etiqueta** → se dice, con cuántos discos se leyeron, y no se
+  fabrica nada. Es un hecho más fuerte que «nadie me dijo cuál»: *miré*.
+- **Dos con la etiqueta** → se niega. Y no es un caso raro: **es el caso normal
+  justo después de instalar**, con el medio todavía puesto. Elegir sería la sonda
+  otra vez con una capa de pintura.
+
+`thalyx disk find` corre exactamente ese código sin ser PID 1 y sin montar nada.
+Existe porque, si no, la rama que niega dos discos iguales se ejecutaría por primera
+vez en la máquina de alguien, el día en que equivocarse es más caro.
+
+#### 2. No se podía instalar desde adentro de la máquina
+
+`thalyx install` recibía el kernel por `--kernel`, y **adentro no hay ruta que
+teclear**: no hay shell, y el único kernel cerca es el que cargó el firmware, en un
+sistema de archivos que nadie montó.
+
+Así que Thalyx lo lee. `crates/thalyx-install/src/medium.rs` es un **lector** de
+FAT32 —lo único que `fat.rs` decía que no era— y encuentra el medio buscando
+`\EFI\BOOT\BOOTX64.EFI` en cada dispositivo de bloques que tenga un FAT32.
+
+Misma forma que la etiqueta y la misma regla: es pedir un nombre que Thalyx escribe,
+no aceptar al primero que conteste, y **dos respuestas se niegan**. El disco sobre el
+que se está instalando se excluye de la búsqueda, porque si no, reinstalar sobre una
+máquina que ya tiene Thalyx encontraría dos y se negaría — lo que volvería imposible
+el segundo instalado de cualquier máquina.
+
+**No monta nada.** `mount(2)` sobre un vfat necesitaría `CONFIG_VFAT_FS`, que esta
+imagen no pide y no necesita: los bytes se leen igual que se escribieron.
+
+Y dos verbos nuevos en la sesión, que es lo que vuelve alcanzable todo lo anterior
+para la persona que tiene la máquina en las manos:
+
+```
+  discos                 qué discos veo, y qué tiene cada uno
+  instalar-en <disco>    pon esta máquina en ese disco
+```
+
+La confirmación pide **teclear la ruta del disco**, igual que en el host y por lo
+mismo. Y el kernel se busca **antes** de decir nada sobre destruir el disco: una
+máquina que preguntara, recibiera un sí, borrara el disco y sólo entonces
+descubriera que no tenía kernel que escribir lo habría destruido para nada.
+
+#### El medio y la máquina instalada son el mismo archivo
+
+No es una casualidad y conviene que quede dicho: un disco con una partición de
+arranque que un firmware puede iniciar es eso mismo, esté atornillado a una máquina
+o enchufado en un costado. Así que lo que escribe `sudo make -C image installed`
+**es** el medio:
+
+```
+sudo dd if=image/build/installed.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+No hay un ISO aparte que construir y no hay un segundo formato que acertar.
+
+#### Cómo se cierra el criterio, y qué queda sin probar
+
+```
+make -C image                      # el kernel, con los controladores nuevos
+sudo make -C image installed       # el disco, que es también el medio
+make -C image run-installed        # arrancarlo en una VM con firmware de verdad
+```
+
+Y en hierro: `dd` a una USB, arrancar una PC, `discos`, `instalar-en /dev/nvme0n1`,
+`apagar`, sacar la USB, encender.
+
+**Lo que una VM responde**: que el medio arranca solo, que la máquina instalada
+arranca sin el medio, que encuentra su store por la etiqueta, y que el framebuffer
+funciona — OVMF entrega un GOP de verdad.
+
+**Lo que sólo responde una PC**: el teclado USB y los discos NVMe/AHCI. Sigue siendo
+el único punto donde este criterio necesita hierro, y sigue estando dicho.
+
 ### Los controladores de una PC de verdad — 2026-08-07
 
 Los puntos 2 y 3 de la lista de riesgo de arriba, y **son la única parte del

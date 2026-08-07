@@ -69,7 +69,7 @@ cleanup() {
     # After the unmounts and before the rm. A loop device left attached holds the
     # deleted image file open, and the leak is invisible: `losetup -f` just hands
     # out the next number, so nothing looks wrong until the machine has none left.
-    for attached in "${LOOP:-}" "${ILOOP:-}"; do
+    for attached in "${LOOP:-}" "${ILOOP:-}" "${SECOND:-}"; do
         [ -n "$attached" ] || continue
         losetup -d "$attached" 2>/dev/null \
             || red "   could not detach $attached; run: losetup -d $attached"
@@ -2736,6 +2736,72 @@ read what Thalyx wrote"
                     failed "the installed store does not identify itself"
                     "$THALYX" disk identify "$STOREDEV2" 2>&1 | sed 's/^/     /'
                 fi
+            fi
+
+            # ── the two halves the exit criterion needs and nothing else has
+            #
+            # An installed machine boots with **nothing on its command line**: the
+            # line is compiled into the kernel and one line cannot name `vda` on this
+            # machine and `nvme0n1p2` on a PC. So it has to find its own store, and it
+            # has to be able to install itself without a path anybody could type.
+            #
+            # Both were decreed and neither existed until 2026-08-07.
+
+            # The store, found the way an installed machine finds it: by the label.
+            # `thalyx disk find` runs exactly the code PID 1 runs, without being PID 1
+            # — otherwise this branch would first execute on a machine with no shell.
+            if "$THALYX" disk find 2>/dev/null | grep -q "$STOREDEV2"; then
+                proven "PID 1's own search finds the installed store by its label, with nothing naming it"
+            else
+                failed "the store the installer made would not be found by an installed machine"
+                "$THALYX" disk find 2>&1 | sed 's/^/     /'
+            fi
+
+            # The control, per rule 4, and it is the normal case right after an
+            # install: the medium is still plugged in and now two disks answer to the
+            # same name. Choosing between them is the probe the decree forbids, and
+            # choosing wrong is Thalyx writing over the other machine's store.
+            truncate -s 3G "$WORK/second.img"
+            SECOND="$(losetup -f -P --show "$WORK/second.img" 2>/dev/null || true)"
+            if [ -z "$SECOND" ]; then
+                unproven "no second loop device, so two stores with one label went unchecked"
+            else
+                # Installed with **no --kernel at all**, which is the other half: the
+                # kernel is read off the first disk's boot partition by Thalyx's own
+                # FAT reader, with nothing mounted and no vfat in the kernel needed.
+                if "$THALYX" install "$SECOND" --yes --workspace "$IWS" \
+                        > "$WORK/install-from-medium.log" 2>&1; then
+                    proven "Thalyx installed with no kernel named, reading it off the medium it found"
+                else
+                    failed "installing without --kernel did not work; see $WORK/install-from-medium.log"
+                    tail -25 "$WORK/install-from-medium.log" | sed 's/^/     /'
+                fi
+
+                # And what it wrote is the same kernel, byte for byte — read back
+                # through the *kernel's* vfat and not through Thalyx's reader, so the
+                # reader is not grading itself.
+                if ! grep -qw vfat /proc/filesystems 2>/dev/null; then
+                    GAP="no vfat here, so what the FAT reader copied could not be read back independently"
+                    if [ "${THALYX_REQUIRE_VFAT:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+                elif mount -t vfat "/dev/$(basename "$SECOND")p1" "$IMNT" > /dev/null 2>&1; then
+                    if cmp -s "$IMNT/EFI/BOOT/BOOTX64.EFI" "$IKERNEL"; then
+                        proven "the kernel it copied off the medium is the one that went on the first disk"
+                    else
+                        failed "the kernel copied off the medium is not the kernel that was installed"
+                    fi
+                    umount "$IMNT" 2>/dev/null
+                else
+                    failed "the second disk's boot partition would not mount"
+                fi
+
+                if "$THALYX" disk find 2>/dev/null | grep -q "Choosing between them"; then
+                    proven "two disks with the same label are refused, not chosen between"
+                else
+                    failed "two stores carrying the same label did not stop the search,"
+                    echo "     so an installed machine could come up on the wrong one"
+                    "$THALYX" disk find 2>&1 | sed 's/^/     /'
+                fi
+                losetup -d "$SECOND" 2>/dev/null
             fi
 
             # Running it again. An install interrupted by a power cut has to be

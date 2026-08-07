@@ -1078,6 +1078,13 @@ run-uefi: esp
 # boots the medium; this boots what the medium leaves behind, which is the other
 # half and the one nothing has ever exercised.
 #
+# **The two are the same file, and that is not a coincidence.** A disk with a boot
+# partition a firmware can start is a disk a firmware can start, whether it is
+# screwed into a machine or plugged into its side. So what `installed` writes is
+# also the medium: `dd` it to a USB stick, boot a PC from it, and that machine can
+# then install itself onto its own disk with `discos` and `instalar-en`. There is
+# no separate ISO to build, and there is no second format to get right.
+#
 # Two targets and the same privilege split as `store`, for the same two reasons:
 # `installed` needs root for the loop device and the mounts, and a target that
 # runs a Rust build under sudo executes every dependency's build script with
@@ -1125,7 +1132,18 @@ installed:
 	@if [ -n "$(SUDO_UID)" ]; then chown $(SUDO_UID):$(SUDO_GID) $(INSTALLED); fi
 	@echo
 	@echo "  installed: $(INSTALLED)"
-	@echo "  now:       make -C image run-installed"
+	@echo
+	@echo "  This file is both halves of the exit criterion. Booted in QEMU it is"
+	@echo "  the installed machine:"
+	@echo
+	@echo "      make -C image run-installed"
+	@echo
+	@echo "  Written to a USB stick it is the medium, and a PC started from it can"
+	@echo "  install itself onto its own disk with 'discos' and 'instalar-en':"
+	@echo
+	@echo "      sudo dd if=$(INSTALLED) of=/dev/sdX bs=4M status=progress conv=fsync"
+	@echo
+	@echo "  Check /dev/sdX twice. dd will not ask."
 
 # Boot the disk, with nothing else attached.
 #

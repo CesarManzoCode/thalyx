@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 775 of them**, across unit tests, fault injection
+**Built and covered by tests: 785 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -336,7 +336,10 @@ boot.
   kernel read the table, mount the boot partition and compare the file back.
   **What nothing has done is boot the result**: `make -C image run-installed`
   hands a UEFI firmware the installed disk and nothing else, and it has never
-  been run.
+  been run. The same file is also the medium — `dd` it to a USB stick and a PC
+  started from it can install itself onto its own disk with the session's
+  `discos` and `instalar-en`, reading the kernel off the stick with Thalyx's own
+  FAT reader and mounting nothing.
 - **The drivers a real PC needs are asked for and have never been compiled.**
   `thalyx.config` came from `allnoconfig` plus what QEMU needs, and now names the
   firmware's framebuffer and a console on it, USB and PS/2 keyboards, and NVMe

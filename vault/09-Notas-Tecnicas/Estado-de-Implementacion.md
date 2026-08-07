@@ -43,6 +43,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Sistema de archivos FAT32 | `crates/thalyx-install/fat.rs` | Un volumen con un archivo en `\EFI\BOOT\BOOTX64.EFI`, sin `mkfs.vfat`. No lee |
 | El instalador | `crates/thalyx-install` y `thalyx install` | Particiona, escribe el arranque y hace el store en un acto. **El arranque del disco instalado no lo ha ejercido nadie** |
 | Controladores de una PC de verdad | `image/thalyx.config` | Framebuffer, teclado USB y PS/2, NVMe y AHCI, y `console=tty0`. **Ninguna de esas opciones se ha compilado ni arrancado** |
+| Lectura de FAT32 y hallazgo del medio | `crates/thalyx-install/medium.rs` | Saca el kernel del medio del que se arrancó, sin montar nada |
+| El store por etiqueta | `crates/thalyx-cli/store_disk.rs` | Lo que decretaba el 2026-08-06 y no existía; con `thalyx disk find` para preguntarlo sin ser PID 1 |
+| Instalar desde adentro | `discos` y `instalar-en <disco>` | Los dos verbos que vuelven alcanzable el criterio sin shell |
 | Raíz propia del módulo (`pivot_root`) | `crates/thalyx-sandbox/rootfs.rs` | Solo el módulo, el sistema en RO y lo concedido |
 | Disciplina de cobertura del índice | `crates/thalyx-graph/watch.rs` | Completa y probada; el atajo se gana y se devuelve solo |
 | Contador de mutaciones del kernel | `crates/thalyx-watch` | Diez hooks, acotado al árbol; 5000 escrituras dentro, 0 fuera |
