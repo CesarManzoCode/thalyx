@@ -131,6 +131,11 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
+Y van nueve. La novena, del 2026-08-07, es la del control de la etapa 18 que
+dañaba espacio libre y acusaba al kernel de montar basura — está escrita abajo,
+con su propia regla, porque el mecanismo es distinto: ahí el arnés no se equivocó
+al preguntar, se equivocó en *cuándo* sacó la muestra.
+
 Y van ocho, con la del 2026-08-07: el parser que comprueba los offsets de
 `thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con
 un comentario al final de su línea**, porque quitaba el `;` sin quitar el `/* … */`
@@ -1330,6 +1335,91 @@ leer los errores.
 Generaliza: cuando un formato lleva su propia versión, esa versión se comprueba
 aparte y explícitamente. Hay una prueba que sólo afirma ese bit, y dice en su
 comentario qué pasó sin él.
+
+## Regla derivada: un control que daña un sitio concreto tiene que sacar su copia antes de que ese sitio pueda moverse
+
+**Cuando el control consiste en romper algo y exigir que se note, la copia que se
+rompe se saca antes de que el sistema haya tenido oportunidad de mover lo que se
+va a romper. Si no, se daña espacio libre, no se nota nada, y el informe acusa al
+sistema de aceptar basura.**
+
+La etapa 18 monta un sistema de archivos que escribió Thalyx, y su control es el
+mismo sistema de archivos dañado: si el kernel lo monta igual, el montaje de
+arriba no demostró nada. La primera versión sacaba la copia **al final**, después
+de montar, crear los tres subvolúmenes y escribir un archivo. Cesar lo corrió el
+2026-08-07 y salió:
+
+```
+FAILED  the kernel mounted a filesystem with both copies of its root tree damaged,
+        so the mount above establishes nothing about the format being right
+```
+
+El kernel no aceptó basura. **Btrfs es copy-on-write**: la primera transacción que
+el kernel confirma escribe un árbol raíz *nuevo* en otro sitio y retira el que
+Thalyx había escrito. Los bytes que el control estaba pisando eran espacio libre
+de la generación 1. El sistema de archivos dañado montaba perfecto porque no
+estaba dañado en nada que se use.
+
+Dos cosas que valen más que el arreglo:
+
+1. **El informe acusaba al kernel de un defecto del arnés**, y lo decía con
+   confianza, en una línea escrita precisamente para no dejarse engañar. Es la
+   quinta regla otra vez, y van nueve.
+2. **La prueba equivalente en `cargo test` pasaba**, y sigue pasando, porque ahí
+   el sistema de archivos nunca se monta: el bloque sigue vivo. Una prueba y una
+   etapa que afirman lo mismo pueden diferir en si el sujeto se movió mientras
+   nadie miraba, y **la que se mueve es la que corre en la máquina de verdad**.
+
+Arreglado sacando la copia antes de cualquier montaje. Y con una línea base para
+el control mismo: **se comprueba que la copia dañada difiere de la original.** Un
+`cp` que falló o un `dd` que no escribió nada dejan una imagen intacta, que monta
+— y eso se reportaría otra vez como el kernel aceptando basura, que es la
+conclusión equivocada a la que esta etapa ya llegó una vez.
+
+## Regla derivada: un arnés que borra la evidencia del fallo que acaba de reportar ha vuelto ese fallo indiagnosticable
+
+**Un informe que dice «ver tal archivo» tiene que dejar ese archivo. Si el que lo
+escribió lo borra al salir, la frase es falsa, y se ve idéntica a una verdadera.**
+
+`verify.sh` construye su directorio de trabajo con `mktemp -d` y lo borra en el
+`trap` de salida. Unos treinta mensajes de fallo terminan en `see
+$WORK/algo.log`. **Los treinta apuntaban a una ruta que ya no existía** en el
+momento en que alguien iba a leerla.
+
+Se encontró el 2026-08-07 de la peor manera posible: clippy falló en la máquina de
+Cesar, pasó en el contenedor de desarrollo contra el mismo código y la misma
+versión de `rustc` —comprobado cuatro veces: 1.94 en limpio, 1.90 en limpio, y
+1.90 incremental sobre el cambio— y **el único artefacto que podía decir qué lint
+era lo había borrado el script que lo escribió.** El fallo sigue sin explicación
+por eso.
+
+Tres arreglos, y los tres son de la misma familia:
+
+1. **El directorio se conserva cuando algo falló**, y el resumen dice dónde está.
+   Una corrida limpia sigue sin dejar nada.
+2. **Los diagnósticos se imprimen**, no se referencian. Casi todas las demás
+   etapas ya hacían `tail` de su log; ésta no.
+3. **«clippy objetó al código» y «clippy no pudo correr» son hechos opuestos** y
+   se reportaban con la misma línea. Ahora el segundo es `NOT PROVEN` y dice qué
+   componente instalar. Regla 10, en el sitio donde costó un diagnóstico.
+
+Y una cuarta cosa, que es la causa más probable de lo de Cesar y es un defecto por
+su propia cuenta: el arreglo del entorno de rustup bajo `sudo` —poner
+`RUSTUP_HOME` y `CARGO_HOME` apuntando a la instalación del usuario— estaba
+**condicionado a que `cargo` *no* estuviera en el `PATH` de root**. Pero que
+`command -v cargo` encuentre el shim de rustup dice que el archivo está en el
+`PATH`; **no dice que ese shim pueda resolver una cadena de herramientas**, porque
+la busca bajo `$HOME/.rustup` y `sudo` pudo haber puesto `$HOME` en `/root`. La
+reparación estaba condicionada a una prueba que no mide lo que repara — misma
+forma que la regla de la precondición que comprueba un artefacto de quien la
+escribió — y el fallo que deja es **por componente**: una cadena que contesta
+`build` y `fmt` pero no `clippy` se reporta como clippy encontrando problemas.
+Ahora se aplica siempre que se corra bajo `sudo`.
+
+Y por eso la etapa 1 imprime ahora la **versión** de la cadena de herramientas y
+no sólo su ruta: una corrida contra otra cadena se ve idéntica a una corrida
+contra la esperada, que es la misma razón por la que el encabezado nombra el
+commit.
 
 ## Regla de documentación
 

@@ -14,9 +14,98 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El kernel montó el Btrfs que escribió Thalyx — 2026-08-07
+>
+> **Es lo primero que hay que leer.**
+>
+> ```
+> proven 110 · not proven 1 · failed 2
+> ```
+>
+> Fedora 43, kernel 7.1.5, `main @ 9229268`. Lo que la etapa 18 cerró, y ninguna
+> corrida anterior podía cerrar:
+>
+> ```
+>   PROVEN  Thalyx wrote a Btrfs filesystem with no mkfs.btrfs and no libbtrfs
+>   PROVEN  the kernel mounts a filesystem Thalyx wrote byte by byte
+>   PROVEN  the three decreed subvolumes can be created on it
+>   PROVEN  a file written to it comes back, so the allocator has somewhere to go
+> ```
+>
+> **El kernel monta lo que Thalyx escribió**, acepta los tres subvolúmenes
+> decretados, y un archivo escrito en él vuelve. `btrfs check` ya lo aceptaba; eso
+> no era un montaje, y ahora sí lo hay. La máquina puede hacer el disco en el que
+> guarda.
+>
+> ### Y los dos fallos eran míos, ninguno del formato
+>
+> **1. El control de la etapa 18 dañaba espacio libre y acusaba al kernel.**
+>
+> ```
+> FAILED  the kernel mounted a filesystem with both copies of its root tree damaged
+> ```
+>
+> El kernel no aceptó basura. **Btrfs es copy-on-write**: la copia que el control
+> rompe se sacaba *después* de montar, crear los subvolúmenes y escribir un
+> archivo, y a esa altura la primera transacción del kernel ya había escrito un
+> árbol raíz nuevo en otro sitio y retirado el que escribió Thalyx. Los bytes que
+> se pisaban eran espacio libre de la generación 1.
+>
+> Lo peor no es el error sino que **el informe acusaba al kernel de un defecto del
+> arnés, en una línea escrita precisamente para no dejarse engañar.** Y la prueba
+> equivalente de `cargo test` pasaba y sigue pasando, porque ahí el sistema de
+> archivos nunca se monta y el bloque sigue vivo.
+>
+> Arreglado sacando la copia antes de cualquier montaje, y con **línea base para el
+> control mismo**: se comprueba que la copia dañada difiera de la original, porque
+> un `cp` que falla o un `dd` que no escribe nada dejan una imagen intacta —que
+> monta— y eso se reportaría otra vez como el kernel aceptando basura.
+>
+> Comprobado aquí con `btrfs check`, que es lo que este contenedor puede hacer:
+> dañando la copia pristina en los mismos offsets, `checksum verify failed on
+> 5242880` en las dos copias y `cannot open file system`. El mecanismo estaba bien;
+> lo que estaba mal era cuándo se sacaba la muestra.
+>
+> **2. Clippy falló en tu máquina y no lo pude reproducir.**
+>
+> Lo intenté cuatro veces con el mismo código: `rustc` 1.94 en limpio, 1.90 en
+> limpio, y 1.90 incremental sobre el cambio. Las cuatro salieron limpias. **No
+> puedo decir que esté arreglado**, y no lo voy a decir.
+>
+> Lo que sí encontré es por qué no se puede saber: `verify.sh` construye su
+> directorio con `mktemp -d` y **lo borra al salir**. Unos treinta mensajes de
+> fallo terminan en `see $WORK/algo.log`, y los treinta apuntaban a una ruta que ya
+> no existía cuando alguien iba a leerla. El único artefacto que podía decir qué
+> lint era lo borró el script que lo escribió.
+>
+> Cuatro arreglos, y el cuarto es la causa más probable de lo que viste:
+>
+> 1. **El directorio se conserva cuando algo falló**, y el resumen dice dónde está.
+> 2. **Los diagnósticos de clippy se imprimen** en vez de referenciarse.
+> 3. **«clippy objetó al código» y «clippy no pudo correr» dejaron de ser la misma
+>    línea.** El segundo es `NOT PROVEN` y dice qué componente instalar — regla 10,
+>    en el sitio donde costó un diagnóstico.
+> 4. **El arreglo del entorno de rustup bajo `sudo` estaba condicionado a que
+>    `cargo` no estuviera en el `PATH` de root.** Pero que `command -v cargo`
+>    encuentre el shim de rustup no dice que ese shim pueda resolver una cadena de
+>    herramientas: la busca bajo `$HOME/.rustup`, y `sudo` pudo haber puesto `$HOME`
+>    en `/root`. En tu corrida la etapa 1 encontró cargo, así que `RUSTUP_HOME`
+>    **nunca se puso**. El fallo que eso deja es por componente: una cadena que
+>    contesta `build` y `fmt` pero no `clippy` se reporta como clippy encontrando
+>    problemas. Ahora se aplica siempre que se corra bajo `sudo`.
+>
+> Y la etapa 1 ahora imprime la **versión** de la cadena de herramientas, no sólo su
+> ruta: una corrida contra otra cadena se ve idéntica a una contra la esperada.
+>
+> **Si en la próxima corrida clippy vuelve a fallar, el informe va a decir qué
+> lint es.** Si sale limpio, era el punto 4.
+>
+> Las dos reglas nuevas están en [[Estrategia-de-Pruebas]], y la cuenta de la regla
+> 5 va en nueve.
+
 > ## Thalyx escribe su propio Btrfs — 2026-08-07
 >
-> **Es lo primero que hay que leer, y lo único pendiente de comprobar.**
+> **El bloque de arriba es más reciente. Esto es lo que se construyó.**
 >
 > `crates/thalyx-btrfs`: ocho árboles, tres chunks y los superbloques, escritos
 > byte por byte. **Sin `mkfs.btrfs` y sin `libbtrfs`.** Es el punto 2 del orden de
@@ -981,9 +1070,10 @@ enforcement dentro de la imagen; el cargador propio salió verde en hardware el
 arranque frío, con un reinicio de verdad en medio.** En esa corrida no quedaba
 código sin ejercer: `proven 104 · not proven 1 · failed 0`.
 
-> Desde el 2026-08-07 vuelve a haber una cosa sin ejercer, y es una sola:
-> **Thalyx escribe su propio Btrfs y nadie lo ha montado.** Es la etapa 18, y es
-> el bloque de arriba.
+> Y desde el 2026-08-07 la máquina puede hacer el disco en el que guarda:
+> **el kernel monta el Btrfs que Thalyx escribió byte por byte.** Etapa 18, en
+> verde. Lo que queda sin ejercer no es código del sistema: son los tres
+> subvolúmenes, que todavía no están escritos.
 
 **Y ahora la máquina puede hacer el disco en el que guarda**, que es el punto 2
 del ISO y el poste largo de los tres. Falta que ese disco se vuelva un store.
@@ -1006,7 +1096,7 @@ Escrito aparte para que no se confunda con lo que sí está probado:
 | El `doctor` | **Corrido el 2026-08-06** en la máquina de Cesar: encontró el ancla del kernel ausente y nada más. |
 | La imagen con enforcement puesto | **Probado el 2026-08-06**: `ok thalyx-lsm` dentro de la máquina, con el kernel recompilado. |
 | Los arreglos de la auditoría por la ruta confinada | **Probados el 2026-08-06**, etapas 6, 12, 13 y 17 enteras. |
-| El Btrfs que Thalyx escribe | **Validado con `btrfs check`** y contra los headers de uapi capturados. El montaje es la etapa 18 y **está sin correr**: sólo tu máquina puede hacerlo. |
+| El Btrfs que Thalyx escribe | **Probado el 2026-08-07**, etapa 18: el kernel lo monta, acepta los tres subvolúmenes, y un archivo escrito en él vuelve. Con `btrfs check` en verde y los headers de uapi capturados. |
 | Los tres subvolúmenes desde dentro | No construido. Van por ioctl, y hasta entonces un store escrito por Thalyx es un filesystem y no un store. |
 | `thalyx_watch` cargado sin bpftool | No intentado. Diez hooks en vez de dos; el mismo cargador debería servir. **Es lo único de la lista que sigue abierto.** |
 
@@ -1045,8 +1135,23 @@ Hay pruebas para los cuatro, y tres de ellas leen el `Makefile`.
 
 ## Última corrida verificada
 
-**2026-08-06, Fedora 43, kernel 7.1.5, Btrfs, `bpf` en el orden de LSM,
-`main @ 9e1c5f8`.**
+**2026-08-07, Fedora 43, kernel 7.1.5, Btrfs, `bpf` en el orden de LSM,
+`main @ 9229268`.**
+
+```
+proven 110 · not proven 1 · failed 2
+```
+
+**Cerró la etapa 18**: el kernel monta el Btrfs que Thalyx escribió byte por byte,
+acepta los tres subvolúmenes, y un archivo escrito en él vuelve. Los dos fallos
+eran del arnés y no del formato — el control de la etapa 18 dañaba espacio libre
+por copy-on-write, y clippy falló sin dejar rastro porque el script borra su propio
+directorio al salir. Los dos están arreglados; el de clippy **no está reproducido**
+y así queda escrito. Ver el bloque de arriba.
+
+### La anterior, y es la que sigue siendo la referencia limpia
+
+**2026-08-06, `main @ 9e1c5f8`.**
 
 ```
 proven 104 · not proven 1 · failed 0
@@ -1133,8 +1238,9 @@ por riesgo descendente:
 1. ~~**Arrancar sin gestor de arranque.**~~ **Hecho y probado el 2026-08-06.**
    Un firmware arrancó Thalyx entera: `switch_root`, los siete montajes, los
    controladores, **el LSM enganchado** y la sesión. Ver el bloque de arriba.
-2. ~~**El store, que Thalyx va a escribir él mismo.**~~ **Escrito el 2026-08-07**,
-   validado con `btrfs check` y **pendiente de montarse en tu máquina** — etapa 18.
+2. ~~**El store, que Thalyx va a escribir él mismo.**~~ **Hecho y probado el
+   2026-08-07**: el kernel monta lo que Thalyx escribió, y acepta los tres
+   subvolúmenes creados sobre él — etapa 18, en verde.
    `crates/thalyx-btrfs`, invocado por `thalyx disk format`. El decreto de que PID
    1 nunca fabrica **se conservó entero**: quien crea el store es un humano y PID
    1 no alcanza ese código. Falta que el filesystem se vuelva un store, que son

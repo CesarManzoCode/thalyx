@@ -301,10 +301,10 @@ that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
 **Verified on real hardware**: 104 checks, on one machine with a BPF LSM, cgroup
-v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-06. Nothing failed. Since then
-one thing has been built and **not yet exercised on hardware**: Thalyx writes its
-own Btrfs with no `mkfs.btrfs`, and nobody has mounted it. `btrfs check` accepts
-it, and `btrfs check` is not a mount. One thing
+v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07: 110 checks, including the
+kernel mounting a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`.
+Two things failed and both were the harness rather than Thalyx; they are fixed,
+and one of them is not reproduced, which the vault says plainly. One thing
 went unproven, and it is a thing that does not exist yet rather than a check
 that could not be made: the agent has no model. The BPF LSM has denied a real
 network connection to a process that lacked the permission, and only to that

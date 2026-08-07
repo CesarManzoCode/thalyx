@@ -63,6 +63,24 @@ cleanup() {
         umount "$mounted" 2>/dev/null || red "   could not unmount $mounted; not deleting $WORK"
         mountpoint -q "$mounted" 2>/dev/null && return
     done
+
+    # Kept when something failed. Around thirty failure messages in this script
+    # end with "see $WORK/something.log", and every one of them was a lie: the
+    # directory went with the run that made it, so by the time anybody read the
+    # sentence the file was gone.
+    #
+    # Found on 2026-08-07, when clippy failed on Cesar's machine, passed in the
+    # development container against the same source and the same rustc, and the
+    # one artifact that would have said which lint it was had been deleted by the
+    # script that wrote it. **A harness that removes the evidence of a failure it
+    # just reported has made that failure undiagnosable**, and it looks exactly
+    # like a harness that works.
+    if [ "${FAILED:-0}" -gt 0 ]; then
+        printf '\n'
+        yellow "   logs kept for the failure(s) above: ${WORK:-none}"
+        yellow "   delete them when you are done: rm -rf ${WORK:-none}"
+        return
+    fi
     rm -rf "${WORK:-/nonexistent}"
 }
 trap cleanup EXIT INT TERM
@@ -176,10 +194,25 @@ fi
 # privileges this script genuinely needs — cargo is right there and invisible.
 # Reporting "cargo is missing" on a machine that has it is exactly the kind of
 # instrument failure this project keeps writing rules about.
-if ! command -v cargo >/dev/null 2>&1 && [ -n "${SUDO_USER:-}" ]; then
+# Unconditional under sudo, and that is the fix rather than a tidy-up.
+#
+# This used to be guarded by `! command -v cargo`, so the toolchain environment
+# was repaired only on machines where cargo was *missing* from root's PATH. But
+# `command -v cargo` finding rustup's shim says the file is on the PATH; it says
+# nothing about whether that shim can resolve a toolchain, because the shim looks
+# for one under $HOME/.rustup and sudo may have made $HOME be /root.
+#
+# So the repair was conditional on a test that does not measure what it repairs —
+# and the failure it leaves is per-component: a toolchain that answers `build` and
+# `fmt` and not `clippy` reports itself as clippy finding problems. Which is what
+# happened on 2026-08-07.
+if [ -n "${SUDO_USER:-}" ]; then
     OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
     if [ -x "$OWNER_HOME/.cargo/bin/cargo" ]; then
-        export PATH="$OWNER_HOME/.cargo/bin:$PATH"
+        case ":$PATH:" in
+            *":$OWNER_HOME/.cargo/bin:"*) ;;
+            *) export PATH="$OWNER_HOME/.cargo/bin:$PATH" ;;
+        esac
         # rustup's binaries are proxies: without RUSTUP_HOME they look for a
         # toolchain under root's home and find nothing.
         export RUSTUP_HOME="${RUSTUP_HOME:-$OWNER_HOME/.rustup}"
@@ -188,7 +221,11 @@ if ! command -v cargo >/dev/null 2>&1 && [ -n "${SUDO_USER:-}" ]; then
 fi
 
 if command -v cargo >/dev/null 2>&1; then
-    proven "cargo present ($(command -v cargo))"
+    # The version, not just the path. A run against a different toolchain looks
+    # identical in this report to a run against the expected one — the same reason
+    # the header names the commit. On 2026-08-07 a clippy failure could not be
+    # reproduced and the report did not say which toolchain had produced it.
+    proven "cargo present ($(command -v cargo)), $(cargo --version 2>/dev/null | cut -d' ' -f1-2), rustc $(rustc --version 2>/dev/null | cut -d' ' -f2)"
 else
     red "cargo is not on this root shell's PATH, and no rustup install was found"
     red "under \$SUDO_USER's home."
@@ -230,8 +267,24 @@ fi
 
 if cargo clippy --all-targets --quiet > "$WORK/clippy.log" 2>&1; then
     proven "clippy is clean, with warnings denied"
+elif grep -qE "no such command|not installed|is not installed|error: toolchain" "$WORK/clippy.log"; then
+    # Rule 10, at the place it cost a diagnosis. "clippy objected to the code" and
+    # "clippy could not be run" are opposite facts about the machine, and this line
+    # reported both as the first one — which sends somebody to look for a lint that
+    # does not exist while the actual problem is a missing component.
+    unproven "clippy could not run here, so the code was not linted"
+    sed 's/^/     /' "$WORK/clippy.log" | head -10
+    echo "     This is not a complaint about the code. Install the component:"
+    echo "         rustup component add clippy"
 else
-    failed "clippy found problems (see $WORK/clippy.log)"
+    # Printed, not pointed at. `cleanup` used to delete $WORK on the way out, so
+    # "see $WORK/clippy.log" named a file that no longer existed by the time
+    # anybody went to look. It is kept now when something fails, and the
+    # diagnostics are printed here as well, because the whole point of a report is
+    # not having to go and fetch the thing it is reporting about.
+    failed "clippy objected to the code"
+    grep -E "^(error|warning)" -A 12 "$WORK/clippy.log" | sed 's/^/     /' | head -60
+    echo "     ($(grep -cE '^error' "$WORK/clippy.log") error line(s) in total)"
 fi
 
 if ! cargo build --quiet > "$WORK/build.log" 2>&1; then
@@ -2150,6 +2203,19 @@ else
     tail -15 "$WORK/disk-format.log" | sed 's/^/     /'
 fi
 
+# The copy the control damages, taken **here** — before anything mounts $TDISK.
+#
+# It used to be taken at the end, after the mount had created subvolumes and
+# written a file, and that made the control useless in a way that reported the
+# opposite of what was wrong. Btrfs is copy-on-write: the first transaction the
+# kernel commits writes a *new* root tree somewhere else and retires the one
+# Thalyx wrote. So the bytes being damaged were free space from generation 1, the
+# damaged image mounted perfectly, and the stage said the kernel accepts anything.
+#
+# Cesar's run on 2026-08-07 is what found it. Rule 5 again: the failure was in the
+# thing that asked, and it was accusing the kernel.
+cp --sparse=always "$TDISK" "$WORK/pristine.img"
+
 # Read back through Thalyx's own reader. This is the half of the label decision
 # that PID 1 will depend on: a store is found by asking each device what it is
 # called, so a store whose label cannot be read is a store nothing finds.
@@ -2220,19 +2286,24 @@ elif mount -o loop "$TDISK" "$TMNT" > "$WORK/disk-mount.log" 2>&1; then
 
     umount "$TMNT" 2>/dev/null || red "   could not unmount $TMNT"
 
-    # The control, per rule 4. Everything above is also satisfied by a kernel
-    # that mounts anything it is handed — and the way to find out is to hand it
-    # something broken. Sixteen bytes in *both* copies of the metadata chunk's
-    # first block, because Btrfs is designed to survive damage to one of a DUP
-    # pair, and expecting a refusal there would be asserting that the redundancy
-    # does not work.
-    # The offsets come from Thalyx, not from this file. Written here they would be
-    # a second copy of the layout, and when the two disagreed the control would
-    # damage an unallocated part of the device, watch it mount, and report that
-    # the kernel accepts anything — a false alarm pointing at the wrong thing.
+    # The control, per rule 4. Everything above is also satisfied by a kernel that
+    # mounts anything it is handed, and the way to find out is to hand it something
+    # broken.
+    #
+    # Damaged on `pristine.img`, the copy taken before any of this mounted
+    # $TDISK — see the comment where that copy is made. Sixteen bytes in *both*
+    # copies of the metadata chunk's first block, because Btrfs is designed to
+    # survive damage to one of a DUP pair and expecting a refusal there would be
+    # asserting that the redundancy does not work.
+    #
+    # The offsets come from Thalyx and not from this file: written here they would
+    # be a second copy of the layout, and when the two disagreed the control would
+    # damage an unallocated part of the device, watch it mount, and report the
+    # kernel as accepting anything — which is the same false alarm the copy-order
+    # bug produced, arrived at by a different route.
     STRIPES="$("$THALYX" disk layout 2>/dev/null |
                awk '$1 == "metadata" { for (i = 4; i <= NF; i++) { gsub(",", "", $i); print $i } }')"
-    cp --sparse=always "$TDISK" "$WORK/damaged.img"
+    cp --sparse=always "$WORK/pristine.img" "$WORK/damaged.img"
     if [ -z "$STRIPES" ]; then
         failed "could not read the metadata stripes out of \`thalyx disk layout\`,"
         echo "     so the control below could not be set up and the mount above"
@@ -2242,7 +2313,15 @@ elif mount -o loop "$TDISK" "$TMNT" > "$WORK/disk-mount.log" 2>&1; then
             dd if=/dev/zero of="$WORK/damaged.img" bs=1 seek=$((offset + 200)) \
                count=16 conv=notrunc status=none 2>/dev/null
         done
-        if mount -o loop "$WORK/damaged.img" "$TMNT" > /dev/null 2>&1; then
+
+        # The baseline for the control itself: the copy has to have been damaged.
+        # A `cp` that failed, or a `dd` that wrote nothing, leaves an intact image
+        # — which mounts, and would be reported as the kernel accepting garbage.
+        # That is precisely the wrong conclusion this stage reached once already.
+        if cmp -s "$WORK/pristine.img" "$WORK/damaged.img"; then
+            failed "the copy meant to be damaged is identical to the original, so the"
+            echo "     control below would be measuring an undamaged filesystem"
+        elif mount -o loop "$WORK/damaged.img" "$TMNT" > /dev/null 2>&1; then
             umount "$TMNT" 2>/dev/null
             failed "the kernel mounted a filesystem with both copies of its root tree damaged,"
             echo "     so the mount above establishes nothing about the format being right"

@@ -309,11 +309,11 @@ regla de trabajo principal del proyecto.
 de fallos que mata el binario real en cada punto del commit atómico, y corridas
 de punta a punta del criterio de salida. `cargo test --workspace` corre todo.
 
-**Verificado en hardware real**: 104 comprobaciones, en una máquina con LSM de
-BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`, el 2026-08-06. No falló nada.
-Desde entonces hay una cosa construida y **sin ejercer en hardware**: Thalyx
-escribe su propio Btrfs sin `mkfs.btrfs`, y nadie lo ha montado todavía. `btrfs
-check` lo acepta, y `btrfs check` no es un montaje.
+**Verificado en hardware real**: 110 comprobaciones, en una máquina con LSM de
+BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`, el 2026-08-07. Incluye que **el
+kernel monta un Btrfs que Thalyx escribió byte por byte**, sin `mkfs.btrfs`.
+Fallaron dos cosas y las dos eran del arnés y no de Thalyx; están arregladas, y
+una de ellas no está reproducida, que es como queda escrito.
 Una sola quedó sin probar, y es algo que **todavía no existe** en vez de una
 comprobación que no se pudo hacer: el agente no tiene modelo. El LSM de BPF ha
 denegado una conexión de red real a un proceso que no tenía el permiso, y solo a
