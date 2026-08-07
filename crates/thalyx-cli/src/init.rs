@@ -469,6 +469,144 @@ pub fn describe() {
 mod tests {
     use super::*;
 
+    /// The kernel configuration the machine is built from.
+    fn kernel_config() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../image/thalyx.config")
+            .canonicalize()
+            .expect("image/thalyx.config is part of the repository");
+        std::fs::read_to_string(&path).expect("reading image/thalyx.config")
+    }
+
+    #[test]
+    fn the_last_console_on_the_built_in_line_is_the_one_a_pc_actually_has() {
+        // The kernel prints to every `console=` it is given, and the **last** one
+        // is what becomes `/dev/console` — which is the one file this session talks
+        // through. So the order in that string is not cosmetic: it decides whether
+        // a person looking at a PC sees anything at all.
+        //
+        // A firmware appends nothing, so the last one on this line wins there. QEMU
+        // appends `console=ttyS0` after it — `arch/x86/kernel/setup.c` concatenates
+        // the built-in line first and the bootloader's after — so the serial keeps
+        // winning under `make run` and stage 16 is untouched.
+        //
+        // Worth a test because reordering two words in a string is an edit nobody
+        // reviews, and the failure it causes is a machine that boots perfectly and
+        // shows a blank screen. That is the third item on the risk list in
+        // Construccion-del-ISO.md, and it reads as "it does not work" while being
+        // "you cannot look".
+        let config = kernel_config();
+        let line = config
+            .lines()
+            .find_map(|line| line.strip_prefix("CONFIG_CMDLINE=\""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("thalyx.config sets a built-in command line");
+
+        let consoles: Vec<&str> = line
+            .split_whitespace()
+            .filter_map(|word| word.strip_prefix("console="))
+            .collect();
+        assert!(
+            consoles.contains(&"ttyS0"),
+            "nothing goes to the serial port, so QEMU and stage 16 see nothing: {line}"
+        );
+        assert_eq!(
+            consoles.last(),
+            Some(&"tty0"),
+            "the last console on the built-in line is not the screen, so a machine \
+             started by a firmware would put its session somewhere a PC has no \
+             hardware for: {line}"
+        );
+    }
+
+    #[test]
+    fn the_screen_the_session_lands_on_has_a_driver_and_a_font_behind_it() {
+        // `console=tty0` names a virtual terminal, and a virtual terminal with no
+        // framebuffer under it is a console that registers, accepts every write,
+        // and displays nothing. Same for a framebuffer console with no font
+        // compiled in: it initialises, reports nothing wrong, and draws blanks.
+        //
+        // `config-check` in image/Makefile catches an option that Kconfig dropped.
+        // It cannot catch one nobody asked for, which is the mistake that cost this
+        // project CONFIG_SECURITY_NETWORK and a whole boot. This is that check, for
+        // the four options the console needs to be visible.
+        let config = kernel_config();
+        for option in [
+            "CONFIG_VT=y",
+            "CONFIG_VT_CONSOLE=y",
+            "CONFIG_FB_EFI=y",
+            "CONFIG_FRAMEBUFFER_CONSOLE=y",
+            "CONFIG_FONT_8x16=y",
+        ] {
+            assert!(
+                config.lines().any(|line| line.trim() == option),
+                "thalyx.config does not ask for {option}, so `console=tty0` would \
+                 have nothing behind it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_machine_can_see_a_disk_that_is_not_qemus() {
+        // `thalyx install` writes onto a block device, and until 2026-08-07 the
+        // only block device this kernel could see was virtio. An installer that
+        // cannot see the disk it is installing onto is not an installer, and the
+        // symptom on real hardware is the store step reporting that there are no
+        // disks — which reads as a broken disk.
+        let config = kernel_config();
+        for (option, why) in [
+            (
+                "CONFIG_BLK_DEV_NVME=y",
+                "an NVMe disk, which is what a machine bought since about 2016 has",
+            ),
+            ("CONFIG_SATA_AHCI=y", "a SATA disk"),
+            (
+                "CONFIG_BLK_DEV_SD=y",
+                "the SCSI layer AHCI hands its ports to; without it the controller is found and no /dev/sda appears",
+            ),
+            (
+                "CONFIG_PCI_MSI=y",
+                "the interrupts NVMe allocates its queues around",
+            ),
+            (
+                "CONFIG_VIRTIO_BLK=y",
+                "QEMU's disk, which every stage of verify.sh boots with",
+            ),
+        ] {
+            assert!(
+                config.lines().any(|line| line.trim() == option),
+                "thalyx.config does not ask for {option}, so the machine cannot see {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_machine_can_be_typed_at_by_a_keyboard_that_is_not_emulated() {
+        // QEMU's keyboard arrives over the serial console, so none of this was ever
+        // needed and none of it can be exercised by a VM. It is the one part of the
+        // exit criterion that only real hardware answers, and the failure it
+        // prevents is a machine that boots, shows its prompt, and cannot be
+        // answered.
+        let config = kernel_config();
+        for option in [
+            "CONFIG_INPUT=y",
+            "CONFIG_HID=y",
+            "CONFIG_HID_GENERIC=y",
+            "CONFIG_USB_HID=y",
+            "CONFIG_USB_XHCI_HCD=y",
+            // The built-in keyboard of many laptops still arrives through the PS/2
+            // controller even where there is no PS/2 socket on the case.
+            "CONFIG_SERIO_I8042=y",
+            "CONFIG_KEYBOARD_ATKBD=y",
+        ] {
+            assert!(
+                config.lines().any(|line| line.trim() == option),
+                "thalyx.config does not ask for {option}, so a PC's keyboard would \
+                 not reach the session"
+            );
+        }
+    }
+
     #[test]
     fn every_filesystem_says_why_it_is_there() {
         // So that removing one is a decision somebody makes rather than a

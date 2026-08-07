@@ -305,7 +305,7 @@ Cada afirmación de esta sección o se puede comprobar con un comando de este
 repositorio, o está marcada como todavía no comprobada. Esa distinción es la
 regla de trabajo principal del proyecto.
 
-**Construido y cubierto por pruebas: 721.** Entre pruebas unitarias, inyección
+**Construido y cubierto por pruebas: 775.** Entre pruebas unitarias, inyección
 de fallos que mata el binario real en cada punto del commit atómico, y corridas
 de punta a punta del criterio de salida. `cargo test --workspace` corre todo.
 
@@ -335,14 +335,23 @@ etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
 ### Lo que todavía no es cierto, dicho sin rodeos
 
-- **No hay instalador, y eso es lo que ahora cierra la Fase 1.** El criterio,
-  fijado el 2026-08-06: un solo archivo que, puesto en una PC sin sistema
-  operativo, la deje corriendo Thalyx. La mitad está hecha — el 2026-08-06 un
-  firmware UEFI arrancó Thalyx desde un medio con **un archivo**, sin gestor de
-  arranque de ninguna clase, y todo lo que la máquina hace funcionó adentro. Lo
-  que falta es lo que la hace quedarse: Thalyx todavía no sabe crear su propio
-  store, ni escribirse en un disco, y su consola es un puerto serie que una PC
-  de verdad no tiene. `make -C image run-uefi` la arranca; no guarda nada.
+- **El instalador está escrito y ningún firmware ha arrancado lo que produce.**
+  Eso es lo que ahora cierra la Fase 1: un medio que, puesto en una PC sin
+  sistema operativo, la deje corriendo Thalyx. `thalyx install <disco>` escribe
+  una GPT, una partición de arranque de 512 MiB en FAT32 con el kernel en
+  `\EFI\BOOT\BOOTX64.EFI`, y el resto como store de Btrfs con sus tres
+  subvolúmenes — sin `sgdisk`, sin `mkfs.vfat` y sin `mkfs.btrfs`, porque la
+  imagen lleva el kernel de Linux y un programa. Cada byte está comprobado contra
+  headers del kernel capturados verbatim, y la etapa 20 de `verify.sh` hace que el
+  kernel lea la tabla, monte el arranque y compare el archivo de vuelta. **Lo que
+  no ha hecho nadie es arrancar el resultado**: `make -C image run-installed` le
+  entrega a un firmware UEFI el disco instalado y nada más, y nunca se ha corrido.
+- **Los controladores de una PC de verdad están pedidos y no se han compilado.**
+  `thalyx.config` salía de `allnoconfig` más lo que QEMU necesita, y ahora nombra
+  el framebuffer que deja el firmware y una consola encima, teclado USB y PS/2, y
+  NVMe con AHCI. Tres opciones de kernel de la historia de este proyecto se
+  encontraron arrancando y de ninguna otra forma; hay que esperar más aquí. Es la
+  única parte del criterio de salida que una máquina virtual no puede responder.
 - **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el criterio
   de salida — se suspendió el mismo día, a favor de la ISO. Los pasos siguen
   teniendo que funcionar y se comprueban en cada cambio; lo suspendido es

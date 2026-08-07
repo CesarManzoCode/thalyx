@@ -242,15 +242,15 @@ lo dice para que nadie lo cite como si estuviera hecho.
    imagen. Alguien tiene que crearlo en el primer arranque, y **«lo creo porque
    es la primera vez» y «lo creo porque no encontré el tuyo» tienen que seguir
    siendo distinguibles**, que es lo que el decreto actual protege.
-2. **Los controladores.** `thalyx.config` sale de `allnoconfig` más lo que QEMU
-   necesita: virtio y un puerto serie. Una PC de verdad necesita UEFI, consola
-   sobre el framebuffer, teclado USB (xHCI y HID) y almacenamiento real (NVMe,
-   AHCI). **Cada uno es una opción de Kconfig**, y ya hay tres opciones
-   encontradas arrancando y una regla que dice que ninguna comprobación de
-   construcción encuentra la siguiente. Ésta es la parte que la VM no prueba.
-3. **La consola.** Hoy es `console=ttyS0`. Una PC moderna no tiene puerto serie:
-   arrancaría bien y **no se vería nada**, que es el fallo que se lee como «no
-   funciona» siendo «no puedes mirar».
+2. ~~**Los controladores.**~~ **Pedidos el 2026-08-07** y sin ejercer: consola
+   sobre el framebuffer del firmware, teclado USB y PS/2, y NVMe y AHCI. Cada uno
+   es una opción de Kconfig y están todas en `thalyx.config` con su párrafo — ver
+   abajo. **Sigue siendo la parte que la VM no prueba**, salvo el framebuffer, que
+   OVMF sí entrega de verdad.
+3. ~~**La consola.**~~ **Resuelto el 2026-08-07**: la línea compilada dice
+   `console=ttyS0 console=tty0`, y la última es la que se vuelve `/dev/console`.
+   Arrancada por firmware la sesión sale en la pantalla; arrancada por QEMU el
+   serie sigue ganando porque `-append` se pega después. Ver abajo.
 4. **BIOS o sólo UEFI.** Arrancar por BIOS heredado exige código de arranque en
    el MBR, que es un gestor de arranque otra vez. Sólo-UEFI evita el problema
    entero y deja fuera máquinas de antes de ~2012.
@@ -531,6 +531,89 @@ Lo que sí se pudo hacer aquí, y vale como red: las dos sumas de la GPT recalcu
 con un CRC-32 independiente, y el volumen FAT32 recorrido entero por un lector
 escrito aparte —directorio raíz, `EFI`, `BOOT`, la cadena de clusters del archivo—
 que devolvió los 3 000 000 de bytes idénticos.
+
+### Los controladores de una PC de verdad — 2026-08-07
+
+Los puntos 2 y 3 de la lista de riesgo de arriba, y **son la única parte del
+criterio de salida que una VM no puede responder**. `thalyx.config` salía de
+`allnoconfig` más lo que QEMU necesita: virtio y un puerto serie. Ahora pide, con
+su párrafo cada grupo:
+
+| Qué | Opciones | Qué falla sin eso |
+|---|---|---|
+| La pantalla | `FB`, `FB_EFI`, `FRAMEBUFFER_CONSOLE`, `FONT_8x16`, `VT`, `VT_CONSOLE` | La ISO arranca en una PC y **no se ve nada** |
+| El teclado | `INPUT`, `HID`, `HID_GENERIC`, `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | La máquina llega al prompt y no se le puede contestar |
+| Los discos | `BLK_DEV_NVME`, `SATA_AHCI`, `ATA`, `SCSI`, `BLK_DEV_SD`, `PCI_MSI` | El instalador no ve el disco en el que va a instalar |
+
+Tres cosas de esa tabla que no son obvias:
+
+- **`FB_EFI` no es un controlador de video.** Es el framebuffer que el firmware
+  **ya configuró** antes de que el kernel arranque, y este driver lo adopta. Por
+  eso no hay aquí un driver de ninguna tarjeta real: Thalyx necesita dibujar texto,
+  no levantar una GPU, y un driver por cada chip del mercado es un userland entero
+  — que es justo lo que esta imagen existe para no tener. El costo se dice en vez
+  de esconderse: la resolución es la que eligió el firmware y no se puede cambiar.
+- **`PCI_MSI` no es un lujo.** El driver de NVMe arma sus colas alrededor de
+  interrupciones por mensaje, y `allnoconfig` lo deja apagado. Nada más de este
+  archivo lo habría pedido.
+- **`BLK_DEV_SD` es lo que hace que AHCI sirva.** SATA pasa por la capa SCSI; sin
+  eso el controlador se encuentra, sus puertos se sondean, y no aparece `/dev/sda`.
+
+#### La consola, que es una decisión de Cesar y no un detalle
+
+La línea de comandos compilada dice ahora:
+
+```
+console=ttyS0 console=tty0 lsm=capability,bpf panic=-1
+```
+
+**El kernel imprime en todas las que se le den, y la ÚLTIMA es la que se vuelve
+`/dev/console`** — que es el único archivo por el que habla la sesión. Así que el
+orden no es cosmético: decide qué pantalla ve una persona.
+
+- **Arrancada por firmware** no se le pega nada, así que gana `tty0`: la sesión
+  sale en la pantalla, que es lo que una PC tiene.
+- **Arrancada por QEMU** con `-append console=ttyS0`, esa línea va **después** — se
+  comprobó en `arch/x86/kernel/setup.c`, que concatena la compilada primero y la
+  del gestor de arranque atrás — así que el serie sigue ganando y la etapa 16 ni se
+  entera.
+
+La alternativa —`tty0` primero y `ttyS0` último— dependería de que el driver 8250
+**no** registre `ttyS0` en una PC sin puerto serie para que `tty0` se quede con
+`/dev/console`. Es cierto en la mayoría de las máquinas, no está documentado, y no
+es una cosa de la que colgar la única salida visible del sistema. Cesar eligió el
+orden de arriba el 2026-08-07.
+
+Hay cuatro pruebas que leen `thalyx.config` y afirman esto: que `tty0` es la
+última, que hay algo detrás de ella (`VT`, el framebuffer y una fuente), que la
+máquina ve un disco que no es de QEMU, y que un teclado que no es emulado llega a
+la sesión. `config-check` atrapa una opción que Kconfig descartó; **no puede
+atrapar una que nadie pidió**, que es el error que costó `CONFIG_SECURITY_NETWORK`
+y un arranque entero.
+
+#### Y `run-uefi` deja de ser `-nographic`
+
+Con la sesión en `tty0`, apagar la pantalla de QEMU la dejaría corriendo
+perfectamente donde nadie la ve — que es exactamente el fallo que el cambio existe
+para evitar. Ahora `make -C image run-uefi` y `run-installed` abren una ventana, con
+`-serial mon:stdio` para que los mensajes del kernel sigan en la terminal al mismo
+tiempo. `HEADLESS=1` vuelve al comportamiento anterior, y lo que cuesta está dicho.
+
+**Y esto hace que la ventana sea la única forma de probar el framebuffer sin
+hierro**: OVMF sí entrega un framebuffer GOP de verdad, así que `FB_EFI` se engancha
+a algo real. El teclado y los discos siguen necesitando una PC.
+
+#### Lo que no se probó, y no lo puede probar nadie más que Cesar
+
+**Ninguna de estas opciones se ha ejercido.** Ni siquiera se ha compilado el kernel
+con ellas: este contenedor no compila kernels. Y hay una regla de este archivo que
+dice que **ninguna comprobación de construcción encuentra la siguiente opción que
+falta** — van tres encontradas arrancando (`BPF_LSM` con BTF, `SECURITY_NETWORK`,
+`FUNCTION_TRACER`), y lo razonable es esperar más aquí.
+
+Lo primero que puede fallar es la compilación misma: `config-check` detiene el
+build si `olddefconfig` descartó cualquiera de estas líneas, que es su trabajo. Si
+eso pasa, la línea que falta es la que hay que mirar y no el grupo entero.
 
 ### Lo construido el 2026-08-06
 

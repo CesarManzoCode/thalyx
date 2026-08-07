@@ -14,11 +14,86 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Y los controladores de una PC de verdad — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Es un commit **aparte** del instalador, a
+> propósito: se verifican por caminos distintos y ninguno de los dos tiene que
+> esconder al otro si falla.
+>
+> Son los puntos 2 y 3 de la lista de riesgo de [[Construccion-del-ISO]], y **es
+> la única parte del criterio de salida que una VM no puede responder.**
+>
+> | Qué | Qué falla sin eso |
+> |---|---|
+> | Pantalla — `FB_EFI`, `FRAMEBUFFER_CONSOLE`, `VT`, `FONT_8x16` | La ISO arranca en una PC y **no se ve nada** |
+> | Teclado — `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | Llega al prompt y no se le puede contestar |
+> | Discos — `BLK_DEV_NVME`, `SATA_AHCI`, `BLK_DEV_SD`, `PCI_MSI` | El instalador no ve el disco en el que va a instalar |
+>
+> Tres cosas que no son obvias:
+>
+> - **`FB_EFI` no es un driver de video.** Es el framebuffer que el firmware **ya
+>   configuró**, y este driver lo adopta. Por eso no hay aquí un driver de ninguna
+>   tarjeta: Thalyx dibuja texto, no levanta una GPU, y un driver por chip es un
+>   userland entero. El costo: la resolución es la que eligió el firmware.
+> - **`PCI_MSI` no es un lujo.** NVMe arma sus colas alrededor de interrupciones
+>   por mensaje y `allnoconfig` lo deja apagado. Nada más de ese archivo lo pedía.
+> - **`BLK_DEV_SD` es lo que hace que AHCI sirva.** Sin él el controlador se
+>   encuentra, sus puertos se sondean, y no aparece `/dev/sda`.
+>
+> ### La consola, que fue tu decisión
+>
+> ```
+> CONFIG_CMDLINE="console=ttyS0 console=tty0 lsm=capability,bpf panic=-1"
+> ```
+>
+> **El kernel imprime en todas, y la ÚLTIMA es la que se vuelve `/dev/console`** —
+> el único archivo por el que habla la sesión. Arrancada por firmware no se le pega
+> nada, así que gana `tty0` y la sesión sale en la pantalla. Arrancada por QEMU,
+> `-append console=ttyS0` va **después** —comprobado en `arch/x86/kernel/setup.c`,
+> que concatena la compilada primero— así que el serie sigue ganando y la etapa 16
+> ni se entera.
+>
+> Hay **cuatro pruebas** que leen `thalyx.config` y afirman esto, porque
+> `config-check` atrapa una opción que Kconfig descartó y **no puede atrapar una
+> que nadie pidió** — que es el error que costó `CONFIG_SECURITY_NETWORK` y un
+> arranque entero.
+>
+> ### Y `run-uefi` abre una ventana
+>
+> Con la sesión en `tty0`, `-nographic` la dejaría corriendo perfecta donde nadie
+> la ve, que es justo el fallo que el cambio evita. Ahora `run-uefi` y
+> `run-installed` abren ventana, con `-serial mon:stdio` para que los mensajes del
+> kernel sigan en la terminal. `HEADLESS=1` vuelve atrás.
+>
+> **Eso hace que la ventana sea la única forma de probar el framebuffer sin
+> hierro**: OVMF sí entrega un framebuffer GOP de verdad. El teclado y los discos
+> siguen necesitando una PC.
+>
+> ### Lo que falta, y es tuyo
+>
+> **Ninguna de estas opciones se ha compilado siquiera.** Este contenedor no
+> compila kernels. Y la regla de este proyecto dice que **ninguna comprobación de
+> construcción encuentra la siguiente opción que falta** — van tres encontradas
+> arrancando (`BPF_LSM` con BTF, `SECURITY_NETWORK`, `FUNCTION_TRACER`), y lo
+> razonable es esperar más aquí.
+>
+> Lo primero que puede fallar es la compilación: `config-check` detiene el build si
+> `olddefconfig` descartó cualquiera de estas líneas. Si pasa, **la línea que falta
+> es la que hay que mirar**, no el grupo entero — cada una tiene su párrafo al lado.
+>
+> ```
+> make -C image                      # aquí es donde se sabe si sobrevivieron
+> sudo ./dev/verify.sh               # el instalador, etapa 20
+> sudo make -C image installed
+> make -C image run-installed        # y aquí si una PC arranca
+> ```
+>
+> **775 pruebas pasan, `clippy` limpio en 1.97, `cargo fmt` aplicado.**
+
 > ## El instalador existe: un disco se vuelve una máquina — 2026-08-07
 >
-> **Es lo primero que hay que leer.** Y viene con **un segundo commit encima**, el
-> de los controladores; los dos se verifican por caminos distintos y están
-> separados a propósito.
+> **El bloque de arriba es más reciente y es el otro commit de hoy.** Los dos se
+> verifican por caminos distintos y están separados a propósito.
 >
 > ### Lo que se construyó
 >

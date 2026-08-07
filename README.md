@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 721 of them**, across unit tests, fault injection
+**Built and covered by tests: 775 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -325,14 +325,24 @@ boot.
 
 ### Not yet true, stated plainly
 
-- **There is no installer, and that is what now ends Phase 1.** The criterion,
-  set on 2026-08-06: a single file that, put into a PC with no operating system,
-  leaves that machine running Thalyx. Half of it is done — on 2026-08-06 a UEFI
-  firmware booted Thalyx from a medium carrying **one file**, with no bootloader
-  of any kind, and everything the machine does worked inside it. What is missing
-  is what makes it stay: Thalyx cannot yet create its own store, cannot write
-  itself to a disk, and its console is a serial port that a real PC does not
-  have. `make -C image run-uefi` boots it; it keeps nothing.
+- **The installer is written and no firmware has booted what it produces.**
+  That is what now ends Phase 1: a medium that, put into a PC with no operating
+  system, leaves that machine running Thalyx. `thalyx install <disk>` writes a
+  GPT, a 512 MiB FAT32 boot partition holding the kernel at
+  `\EFI\BOOT\BOOTX64.EFI`, and the rest as a Btrfs store with its three
+  subvolumes — with no `sgdisk`, no `mkfs.vfat` and no `mkfs.btrfs`, because the
+  image holds the Linux kernel and one program. Every byte of it is checked
+  against kernel headers captured verbatim, and stage 20 of `verify.sh` has the
+  kernel read the table, mount the boot partition and compare the file back.
+  **What nothing has done is boot the result**: `make -C image run-installed`
+  hands a UEFI firmware the installed disk and nothing else, and it has never
+  been run.
+- **The drivers a real PC needs are asked for and have never been compiled.**
+  `thalyx.config` came from `allnoconfig` plus what QEMU needs, and now names the
+  firmware's framebuffer and a console on it, USB and PS/2 keyboards, and NVMe
+  and AHCI. Three kernel options in this project's history were found by booting
+  and by nothing else; expect more here. It is the one part of the exit criterion
+  a virtual machine cannot answer.
 - **Nobody outside the project has done the six steps**, and that is no longer
   the exit criterion — it was suspended the same day, in favour of the ISO. The
   steps still have to work and are checked on every change; what is suspended

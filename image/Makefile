@@ -969,6 +969,28 @@ boot:
 
 # ──────────────────────────────────────────────── booting with no bootloader
 
+# How a firmware-booted machine is watched.
+#
+# **Not `-nographic`, by default, and that is a real check and not a preference.**
+# Since 2026-08-07 the built-in command line ends with `console=tty0`, so a machine
+# started by a firmware puts its session on the screen — which is what a PC has and
+# a serial port is not. `-nographic` switches QEMU's display off entirely, so the
+# session would be running perfectly somewhere nobody can see, which is precisely
+# the failure the tty0 change exists to prevent.
+#
+# With a window, OVMF hands the kernel a real GOP framebuffer and `FB_EFI` adopts
+# it, so this is also **the only part of the driver work a VM can answer**. The
+# keyboard and the disks need iron.
+#
+# `-serial mon:stdio` keeps the kernel's messages in the terminal at the same time,
+# which is what makes a boot that dies before the framebuffer is up diagnosable.
+#
+# `HEADLESS=1` goes back to the old behaviour for a machine with no display. What
+# it costs is stated because it is not obvious: the session lands on tty0 and tty0
+# is not being shown, so the terminal gets the kernel's output and then silence.
+WATCH := $(if $(HEADLESS),-nographic,-serial mon:stdio)
+
+
 # The EFI system partition, which is the whole boot medium.
 #
 # One file, at the one path a UEFI firmware looks for with nothing configured:
@@ -1047,7 +1069,7 @@ run-uefi: esp
 	    -drive format=raw,file=fat:rw:$(ESP) \
 	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
-	    -nographic
+	    $(WATCH)
 
 # ──────────────────────────────────────────── the disk an installed machine has
 #
@@ -1142,7 +1164,7 @@ run-installed:
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-installed.fd \
 	    -drive format=raw,file=$(INSTALLED) \
-	    -nographic
+	    $(WATCH)
 
 clean:
 	rm -rf $(BUILD)
