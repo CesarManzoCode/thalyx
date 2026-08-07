@@ -14,9 +14,104 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## `discos` corrió en hierro y ofrecía la Fedora de Cesar como destino — 2026-08-07
+>
+> **Es lo primero que hay que leer.** Segundo arranque en la PC real, con el arreglo
+> de la consola puesto. El error del USB **no volvió** —`nucleo` lista 10 líneas de
+> problema entre 714 registros y ninguna es del USB— y el prompt no anunció nada,
+> que es lo correcto: no hubo problemas nuevos después de que arrancó la sesión.
+>
+> **Que no volviera no es todavía que esté arreglado**, y la diferencia importa: no
+> consta si el receptor Telink estaba conectado en esa corrida. Con él puesto, el
+> fallo es **intermitente** y sigue vivo; sin él, quedó identificado por
+> eliminación. Una pregunta separa las dos, y hasta contestarla **ninguna opción de
+> kernel está justificada**.
+>
+> ### Lo que `discos` respondió, y es lo bueno primero
+>
+> ```
+> 7 disk(s):
+>   /dev/sda    3 GiB, 2 partition(s)     ← la memoria USB
+>   /dev/sdb  447 GiB, 3 partition(s)
+>     3  btrfs `fedora`                   ← su sistema
+> ```
+>
+> - **AHCI y SATA quedaron probados en hierro.** `sd 9:0:0:0: [sda]` y un disco de
+>   447 GiB con la Fedora adentro: eso es `SATA_AHCI` + `SCSI` + `BLK_DEV_SD`
+>   funcionando contra silicio real. Era una de las tres filas de la tabla de
+>   riesgo.
+> - **Esa máquina no tiene NVMe.** Siete discos y ninguno es `nvme0n1`; su sistema
+>   vive en un SATA. Así que **NVMe sobre silicio real es incontestable en esta
+>   máquina** — no porque el driver falle, sino porque no hay hardware. Queda dicho
+>   en vez de contarse como probado.
+>
+> ### Y el defecto, que es el más peligroso encontrado hasta ahora
+>
+> **Cuatro de esos «siete discos» son particiones**, incluidos los 444 GiB de
+> `/dev/sdb3` —la Fedora— listados bajo la línea *«`instalar-en <disco>` puts
+> Thalyx on one. Everything on it is lost.»*
+>
+> El filtro existía y su comentario decía que `partitions::of` *«errors for a
+> partition»*. **No erraba.** Busca `/sys/dev/block/<major>:<minor>`, que existe
+> igual para las dos, `read_dir` funciona sobre una partición, y como no tiene
+> hijos con archivo `partition` devolvía **`Ok([])`**. *«No tiene particiones»* y
+> *«esto no es la clase de cosa que tiene particiones»* salían por el mismo canal,
+> y el llamador sólo miraba `is_ok()`.
+>
+> Y `install` las habría aceptado: escribe la tabla en el LBA 0 de lo que reciba.
+> Una tabla dentro de una partición es **legal, invisible, y no arranca nada**,
+> mientras el sistema de archivos que había ahí ya no está — la misma forma que la
+> GPT con suma equivocada, donde el fallo no llega y el disco vuelve pareciendo
+> intacto.
+>
+> **Arreglado en los dos sitios**, que es lo que importa: `discos` deja de
+> listarlas —presentación— e **`install` se niega antes de escribir un byte**, que
+> es lo que impide perder un disco cuando alguien teclea el nombre igual. El
+> discriminador es el que el kernel ya tenía y nadie le preguntó: el archivo
+> `partition`. Tres pruebas, incluida una que le pregunta al kernel que corre las
+> pruebas si el modelo es correcto, porque un falso que modela la propiedad
+> equivocada no es un falso sino otro sistema.
+>
+> Regla nueva en [[Estrategia-de-Pruebas]], y una segunda dentro de ella: **un
+> comentario que enuncia una propiedad es una prueba que nunca corre.** Lo único
+> capaz de contradecir esa frase era una máquina con particiones, que durante
+> semanas fue ninguna máquina.
+>
+> ### Y Thalyx no reconocía su propia partición de arranque
+>
+> `discos` describía la ESP de la memoria de la que estaba corriendo como
+> *«something I do not recognise»*, teniendo un lector de FAT32 adentro. Ahora dice
+> **«a Thalyx boot partition»**, y una FAT ajena la nombra con su etiqueta. Una
+> máquina que no sabe nombrar su propio trabajo no tiene autoridad para nombrar el
+> ajeno.
+>
+> ### Dos cosas del `nucleo` que no son defectos y conviene no confundir
+>
+> - **`GPT: 4194303 != 7831551`.** La imagen es de 2 GiB y la memoria de ~3.7 GiB,
+>   así que la copia de respaldo de la tabla quedó donde termina la imagen y no
+>   donde termina el dispositivo. Le pasa a **toda** imagen escrita con `dd` a un
+>   medio más grande. Linux avisa y sigue.
+> - **`CPU limit of 2 reached`.** `allnoconfig` deja `NR_CPUS` en 2 y esa máquina
+>   tiene más. No rompe nada; explica parte de la lentitud del arranque.
+>
+> ### Lo que falta para cerrar la Fase 1, y ya no es imposible
+>
+> **Falta el acto 2b**, y el criterio de Cesar es *«ponerla en una PC sin sistema
+> operativo y que ahora tenga Thalyx como OS»*: la máquina tiene que **tener**
+> Thalyx en un disco propio, con el medio quitado. En hierro eso nunca ha pasado.
+>
+> Pero tiene **tres memorias** (4, 8 y 32 GB), y eso vuelve alcanzable hoy lo que
+> parecía imposible: **arrancar de la memoria A e `instalar-en` la memoria B**,
+> quitar A, y encender. Firmware real, instalación real escribiendo una GPT real en
+> un disco físico real, y un arranque real desde ese disco sin medio puesto. Lo
+> único que no responde es que el disco sea interno. Si eso cumple el decreto lo
+> decide Cesar, porque el decreto es suyo.
+>
+> **797 pruebas pasan** (794 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## El dispositivo tiene nombre, y el prompt ya no se pisa — 2026-08-07
 >
-> **Es lo primero que hay que leer.**
+> **El bloque de arriba es más reciente.**
 >
 > ### Qué es `usb 1-6`
 >

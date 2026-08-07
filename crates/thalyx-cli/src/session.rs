@@ -1129,6 +1129,15 @@ fn list_disks() {
             // the second. Asked rather than derived from the name, for the same
             // reason the installer asks: `nvme0n1` and `nvme0n1p1` differ by a
             // convention of the tools that print them.
+            //
+            // That property was asserted here and did not exist until 2026-08-07,
+            // when Cesar's own machine printed seven disks of which four were
+            // partitions — including 444 GiB of his Fedora, offered under a line
+            // saying everything on it is lost. `of` looked up
+            // /sys/dev/block/<major>:<minor>, which a partition has too, found no
+            // children carrying a `partition` file, and returned `Ok([])`. **A
+            // comment claiming a property is not the property**, and the one thing
+            // that could tell was a machine with partitions on it.
             thalyx_install::partitions::of(device).is_ok()
         })
         .collect();
@@ -1165,10 +1174,28 @@ fn list_disks() {
                     "btrfs, no label".to_string()
                 }
                 Ok(thalyx_btrfs::Identity::Btrfs { label, .. }) => format!("btrfs `{label}`"),
-                // Everything that is not Btrfs reads the same from here, and saying
-                // "not btrfs" would read as "empty" about a disk somebody is deciding
-                // whether to destroy.
-                _ => "something I do not recognise".to_string(),
+                // Not Btrfs, so ask the FAT reader before giving up. Thalyx writes
+                // exactly one FAT volume — the boot partition of everything it
+                // installs — and on 2026-08-07 it described its own, on the medium
+                // it was running from, as "something I do not recognise". A machine
+                // that cannot name its own work has no business naming anybody
+                // else's.
+                _ => match thalyx_install::medium::Volume::open(path) {
+                    Ok(Some(mut volume)) => match volume.label() {
+                        Ok(label) if label == thalyx_install::fat::LABEL => {
+                            "a Thalyx boot partition".to_string()
+                        }
+                        Ok(label) if label.trim().is_empty() => "FAT, no label".to_string(),
+                        Ok(label) => format!("FAT `{}`", label.trim()),
+                        // Rule 10: the volume is there and something about reading
+                        // it failed, which is not the same as there being nothing.
+                        Err(_) => "FAT I could not read the label of".to_string(),
+                    },
+                    // Everything that is neither Btrfs nor FAT reads the same from
+                    // here, and saying "not btrfs" would read as "empty" about a
+                    // disk somebody is deciding whether to destroy.
+                    _ => "something I do not recognise".to_string(),
+                },
             };
             println!("      {number}  {what}");
         }

@@ -262,6 +262,14 @@ pub fn install(
 ) -> Result<Installed, InstallError> {
     // Refused before a byte is written, and each for its own reason. A disk this
     // cannot address correctly is not a disk to find out about halfway through.
+    //
+    // The whole-disk check is first because it is the one whose failure is
+    // unrecoverable. A partition table written at the start of a partition is
+    // legal and invisible: no tool looks for one there, so nothing reports it as
+    // broken, and the machine comes back looking as if the install simply did not
+    // happen — with the filesystem that was there overwritten. `discos` offered
+    // exactly that on 2026-08-07, listing 444 GiB of Cesar's Fedora as a disk.
+    partitions::whole_disk(device)?;
     let sector_size = partitions::logical_sector_size(device)?;
     if sector_size != gpt::SECTOR {
         return Err(partitions::PartitionError::SectorSize {

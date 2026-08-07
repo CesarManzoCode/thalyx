@@ -1802,6 +1802,63 @@ el uso que la sigue son dos momentos*—; ésta es su versión para un criterio
 partido en dos módulos, y la señal de alarma es la misma: si dos lugares deciden
 lo mismo, uno de los dos va a cambiar solo.
 
+## Regla derivada: «vacío» y «esa pregunta no aplica» son la misma respuesta cuando el llamador sólo mira si hubo error
+
+Encontrada el 2026-08-07, cuando `discos` corrió por primera vez en una máquina
+con particiones de verdad y contestó **siete discos**, de los cuales cuatro eran
+particiones — incluidos los 444 GiB de la Fedora de Cesar, listados bajo una
+línea que dice *«everything on it is lost»*.
+
+El filtro estaba escrito y explicado:
+
+```rust
+// A whole disk is one sysfs knows as a disk rather than as somebody's
+// partition, and `partitions::of` answers for the first and errors for
+// the second.
+thalyx_install::partitions::of(device).is_ok()
+```
+
+**Y `of` no erraba para una partición.** Busca
+`/sys/dev/block/<major>:<minor>`, que existe igual para las dos; `read_dir` sobre
+una partición funciona; y como una partición no tiene hijos con archivo
+`partition`, la respuesta era `Ok([])`. *«Este disco no tiene particiones»* y
+*«esto no es la clase de cosa que tiene particiones»* salían por el mismo canal,
+y el llamador sólo miraba `is_ok()`.
+
+**La regla:** una función que contesta *«nada»* con un `Ok` vacío hace
+indistinguible el caso vacío del caso inaplicable, y cualquier llamador que use
+`is_ok()` como predicado está preguntando otra cosa de la que cree. El arreglo no
+es un `if` en el llamador: es que la función **se niegue** cuando la pregunta no
+aplica, para que la propiedad que el comentario afirmaba exista de verdad.
+
+Es la familia de la regla 10 —*una falla al leer no es una falla al existir*—
+girada un cuarto de vuelta: allí eran ausencia y error los que se confundían,
+aquí son ausencia e **inaplicabilidad**. El discriminador correcto ya estaba en
+el kernel y nadie se lo preguntó: **el archivo `partition`**, que existe sólo
+dentro del directorio de una partición y lleva su número.
+
+### Y el comentario era la única prueba que existía
+
+Nada afirmaba esa propiedad. La frase *«answers for the first and errors for the
+second»* iba en un comentario, que es donde una afirmación no puede fallar. **Un
+comentario que enuncia una propiedad es una prueba que nunca corre**, y lo único
+capaz de contradecirlo era una máquina con particiones — que durante semanas fue
+ninguna máquina.
+
+### La mitad que importaba de verdad
+
+`discos` **ofrecía** esas particiones como destino, y `install` las habría
+aceptado: escribe la tabla en el LBA 0 de lo que reciba. Una tabla escrita dentro
+de una partición es **legal, invisible para toda herramienta que busque una, y no
+arranca nada** — mientras el sistema de archivos que había ahí ya no está. Es la
+misma forma que la GPT con suma equivocada: el fallo no llega, y el disco vuelve
+pareciendo que nadie lo tocó.
+
+Por eso el arreglo va en dos sitios y no en uno: `discos` deja de listarlas, e
+`install` se niega **antes de escribir un byte**. Lo primero es presentación; lo
+segundo es lo que impide perder un disco cuando alguien teclea el nombre de todas
+formas.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

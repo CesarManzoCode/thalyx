@@ -81,6 +81,14 @@ pub enum PartitionError {
          would come back with no partition table rather than with a broken one."
     )]
     SectorSize { device: PathBuf, size: u64 },
+
+    #[error(
+        "{0} is a partition, not a whole disk. Installing writes a partition table \
+         at the start of what it is given, and a table written inside a partition \
+         is legal, invisible to every tool that looks for one, and boots nothing — \
+         while whatever filesystem was there is gone."
+    )]
+    NotAWholeDisk(PathBuf),
 }
 
 /// The sysfs directory the kernel keeps this block device under.
@@ -148,9 +156,48 @@ pub fn reread(device: &Path) -> Result<(), PartitionError> {
     })
 }
 
+/// Whether this sysfs directory is somebody's partition rather than a whole disk.
+///
+/// The `partition` file is the kernel's own marker: it holds the partition number
+/// and exists only inside a partition's directory. Asked of the directory rather
+/// than derived from the name for the reason the whole crate asks — `nvme0n1` and
+/// `nvme0n1p1` differ by a convention of the tools that print them, and `sda` and
+/// `sda1` differ by another.
+///
+/// Takes the directory rather than the device so it can be exercised without a
+/// block device to hand, which the development container has no partitioned one of.
+fn is_a_partition(directory: &Path) -> bool {
+    directory.join("partition").exists()
+}
+
+/// Refuses anything that is not a whole disk.
+///
+/// Installing writes a partition table at LBA 0 of what it is given. Given a
+/// partition, that is a table written *inside* one — legal, invisible to every
+/// tool, and it boots nothing, while the filesystem that used to be there is gone.
+///
+/// Its own function because two callers need it and they need it at different
+/// moments: [`of`] so that "is this a whole disk" has an answer, and
+/// [`crate::install`] before it writes a byte. Found on 2026-08-07 on Cesar's own
+/// machine, where `discos` listed `/dev/sdb3` — 444 GiB of his Fedora — as
+/// something `instalar-en` would take.
+pub fn whole_disk(device: &Path) -> Result<(), PartitionError> {
+    if is_a_partition(&sysfs(device)?) {
+        return Err(PartitionError::NotAWholeDisk(device.to_path_buf()));
+    }
+    Ok(())
+}
+
 /// Every partition the kernel currently believes `device` has, by number.
+///
+/// Errors for a partition, which is the property `discos` relies on to tell a disk
+/// from one. It did not hold until 2026-08-07: `/sys/dev/block/<major>:<minor>`
+/// exists for both, `read_dir` succeeds on both, and a partition simply has no
+/// children with a `partition` file — so this returned `Ok([])` and every partition
+/// on the machine was offered as a disk to install onto.
 pub fn of(device: &Path) -> Result<Vec<(u32, PathBuf)>, PartitionError> {
     let directory = sysfs(device)?;
+    whole_disk(device)?;
     let mut found = Vec::new();
     let entries = std::fs::read_dir(&directory).map_err(|source| PartitionError::Stat {
         path: directory.clone(),
@@ -277,6 +324,57 @@ mod tests {
             "{error:?}"
         );
         assert!(error.to_string().contains("losetup -f -P"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_the_kernel_marked_with_a_partition_number_is_not_a_whole_disk() {
+        // The bug this exists to stop, found on hardware on 2026-08-07. `discos`
+        // filtered its list with `of(...).is_ok()` and a comment claiming that
+        // errors for a partition. It did not: `/sys/dev/block/<major>:<minor>`
+        // exists for a partition too, `read_dir` succeeds on it, and it simply has
+        // no children carrying a `partition` file — so the answer was `Ok([])` and
+        // every partition on the machine was offered as somewhere to install.
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("partition"), "3\n").unwrap();
+        assert!(
+            is_a_partition(directory.path()),
+            "a directory carrying the kernel's own partition marker read as a disk"
+        );
+    }
+
+    #[test]
+    fn a_directory_without_that_marker_is_a_whole_disk() {
+        // The control. Without it, a predicate that answered "partition" to
+        // everything would pass the test above and leave `discos` listing nothing
+        // at all — which looks like a machine with no disks rather than a bug.
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("size"), "7831552\n").unwrap();
+        assert!(!is_a_partition(directory.path()));
+    }
+
+    #[test]
+    fn the_kernel_running_this_agrees_that_a_whole_disk_carries_no_partition_file() {
+        // The two tests above are built on a model of sysfs. This one asks the
+        // kernel whether the model is right, because a fake that models the wrong
+        // property is not a fake, it is a different system — and everything in
+        // /sys/block is by definition a whole disk.
+        let Ok(entries) = std::fs::read_dir("/sys/block") else {
+            eprintln!("NOT PROVEN: no /sys/block here, so the kernel was not asked");
+            return;
+        };
+        let mut asked = 0;
+        for entry in entries.flatten() {
+            assert!(
+                !is_a_partition(&entry.path()),
+                "{} is in /sys/block and carries a partition file, so the marker \
+                 this relies on does not mean what it is taken to mean",
+                entry.path().display()
+            );
+            asked += 1;
+        }
+        if asked == 0 {
+            eprintln!("NOT PROVEN: /sys/block is empty, so nothing was checked");
+        }
     }
 
     #[test]

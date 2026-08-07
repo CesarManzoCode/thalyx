@@ -300,6 +300,34 @@ Lo único del plan que no se alcanzó a correr es `discos`, por el defecto de ab
 **Queda 2b, y sólo 2b**: escribir en un disco interno, que hoy no se puede sin
 destruir la única máquina que verifica este proyecto.
 
+### Y la segunda corrida cerró AHCI y abrió el camino a 2b — 2026-08-07
+
+`discos` corrió en hierro por primera vez. **AHCI y SATA quedaron probados**:
+`sd 9:0:0:0: [sda]` y el disco de 447 GiB con la Fedora adentro son `SATA_AHCI`
+más `SCSI` más `BLK_DEV_SD` contra silicio real.
+
+**Y esa máquina no tiene NVMe** — siete entradas y ninguna es `nvme0n1`. Así que
+NVMe sobre silicio real es **incontestable aquí**, y eso se escribe en vez de
+contarse como probado: no es que el driver falle, es que no hay hardware que lo
+ejerza. Lo único que responde por NVMe sigue siendo la corrida emulada.
+
+`discos` también encontró el defecto más peligroso hasta ahora —listaba las
+particiones de la Fedora como destinos de instalación— y está en [[Punto-Actual]].
+
+#### 2b es alcanzable hoy, con una segunda memoria
+
+Cesar tiene tres memorias. **Arrancar de la A e `instalar-en` la B**, quitar la A
+y encender, da: firmware real, una GPT real escrita por Thalyx en un disco físico
+real, particiones creadas por el kernel real, y un arranque real desde ese disco
+**sin medio puesto**. Es el acto 2b entero salvo por una cosa — que el disco es
+removible y no interno.
+
+**Si eso cumple el decreto lo decide Cesar**, porque el decreto es suyo y dice
+*«ponerla en una PC sin sistema operativo y que ahora tenga Thalyx como OS»*. Lo
+que esta nota puede afirmar es qué queda sin responder si se acepta: escribir en
+un disco interno, que en esta máquina significa destruir la Fedora que verifica
+todo lo demás.
+
 ### Y 2a encontró un defecto, que es exactamente para lo que sirve
 
 Un dispositivo USB que no enumera (`usb 1-6: device descriptor read/64, error
