@@ -17,9 +17,18 @@
 //! exists, everything that happens to it happens through the kernel's Btrfs, which
 //! is the only code here that was written by people who do this for a living.
 //!
-//! It performs no system calls beyond `open`, `seek`, `write` and `fsync` through
-//! `std::fs`, so all of it can be exercised on a machine with no Btrfs support
-//! whatsoever — which is every machine this project develops on.
+//! ## Two halves, and the line between them matters
+//!
+//! [`format`], [`leaf`], [`disk`], [`layout`] and [`superblock`] perform no system
+//! calls beyond `open`, `seek`, `write` and `fsync` through `std::fs`, so all of
+//! that can be exercised on a machine with no Btrfs support whatsoever — which is
+//! every machine this project develops on.
+//!
+//! [`subvolume`] cannot. It mounts the filesystem and asks the kernel to change
+//! it, so it needs root, a block device and a kernel with Btrfs. That is not an
+//! inconsistency to be tidied away: writing the bytes and asking a running Btrfs
+//! to do something are different acts with different failure modes, and the split
+//! is where the honest `NOT PROVEN` goes.
 //!
 //! ## Who may call it
 //!
@@ -33,11 +42,13 @@
 //!
 //! Two instruments, and neither is a reading of the format.
 //!
-//! `tests/uapi_header.h` is `include/uapi/linux/btrfs_tree.h`, captured verbatim.
-//! `tests/layout.rs` parses it and checks every structure size and every offset
-//! this crate writes against it — rule 6 of
+//! `tests/uapi_btrfs_tree.h` and `tests/uapi_btrfs.h` are
+//! `include/uapi/linux/btrfs_tree.h` and `include/uapi/linux/btrfs.h`, captured
+//! verbatim. `tests/layout.rs` parses them and checks every structure size and
+//! every offset this crate writes against them — rule 6 of
 //! `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`, applied to a writer instead
-//! of a parser.
+//! of a parser. `tests/ioctl.rs` does the same for the one ioctl number
+//! [`subvolume`] depends on, recomputing `_IOW` out of the header's own text.
 //!
 //! `tests/against_btrfs_progs.rs` writes a filesystem and hands it to `btrfs
 //! check`, which validates the trees, the back references, the block group
@@ -49,14 +60,17 @@
 //! What neither instrument establishes is a mount. `btrfs check` reads the
 //! filesystem with btrfs-progs' own code, not the kernel's, and the two have
 //! disagreed before. **Only Cesar's machine can mount this**, and until it has,
-//! nothing here should be described as working.
+//! nothing here should be described as working. Stages 18 and 19 of
+//! `dev/verify.sh` are where that happens.
 
 pub mod crc32c;
 pub mod disk;
 pub mod format;
 pub mod layout;
 pub mod leaf;
+pub mod subvolume;
 pub mod superblock;
 
 pub use format::{FormatError, LABEL, Uuids, Written, write};
+pub use subvolume::{DECREED, Made, Outcome, SubvolumeError};
 pub use superblock::{Identity, ReadError, identify};

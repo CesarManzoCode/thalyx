@@ -14,9 +14,95 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El kernel montó el Btrfs que escribió Thalyx — 2026-08-07
+> ## Thalyx hace los subvolúmenes, y clippy sí era un lint — 2026-08-07
 >
 > **Es lo primero que hay que leer.**
+>
+> ### Lo que se construyó
+>
+> **Un sistema de archivos recién escrito ya no es lo único que sale de
+> `thalyx disk format`.** Los tres subvolúmenes decretados —`system`, `modules`,
+> `user`— los crea Thalyx por **`BTRFS_IOC_SUBVOL_CREATE`**, porque adentro de la
+> imagen no hay binario `btrfs`. Tercera vez que este proyecto contesta a un
+> binario ausente con una llamada al kernel: `bpftool`, `cpio`, y ahora `btrfs`.
+>
+> ```
+>   ok  subvolume    system — created
+>   ok  subvolume    modules — created
+>   ok  subvolume    user — created
+>
+>   ok  mountable    subvol=system
+>   ok  mountable    subvol=modules
+>   ok  mountable    subvol=user
+>
+>   This is a store. PID 1 can mount it.
+> ```
+>
+> **La comprobación es montar, no mirar.** Cada uno se monta con
+> `-o subvol=<nombre>`, exactamente como lo hace PID 1. Preguntar si apareció un
+> directorio con ese nombre daría *sí* para un directorio común, que es justo lo
+> único que PID 1 no puede montar.
+>
+> Y **el número del ioctl no se toma de fe.** `_IOW` es un macro de C, aquí no hay
+> C, así que la constante está escrita a mano y `tests/ioctl.rs` la recalcula desde
+> el header capturado — incluido el tamaño del argumento, que va codificado adentro
+> del número. Un tamaño equivocado no falla limpio: el kernel compara la palabra
+> entera y contesta `ENOTTY` en un sistema de archivos que soporta la llamada
+> perfectamente, lo que se lee como «este kernel es viejo».
+>
+> ### El fallo de clippy era un lint de verdad, y mi diagnóstico estaba mal
+>
+> Con el informe arreglado, tu corrida dijo qué era: **`unnecessary_sort_by`**, dos
+> veces en `format.rs`. **No era `RUSTUP_HOME`.** Era **desfase de versión**: tu
+> clippy es 1.97 y el del contenedor era 1.94, y el lint aprendió ese caso en
+> medio. Actualizado el contenedor a 1.97, apareció en el primer intento; el
+> arreglo fueron dos líneas.
+>
+> Las cuatro corridas «con el mismo `rustc`» comparaban 1.94 contra 1.94. Es la
+> regla 5 con una vuelta que valía escribir aparte: **el instrumento incluye su
+> número de versión**, y un linter es un instrumento cuyo trabajo entero es cambiar
+> de opinión entre versiones. Ahora la etapa 2 imprime la versión de clippy en las
+> dos líneas, y **el contenedor se mantiene al menos tan nuevo como tu máquina** —
+> lo contrario garantiza que cada lint nuevo se descubra en la única máquina que no
+> puede arreglarlo.
+>
+> No se fijó la cadena con un `rust-toolchain.toml`. Sería decisión tuya, te
+> obligaría a descargar una versión concreta, y además un proyecto que fija su
+> linter deja de enterarse de los lints nuevos — que es lo que se quería.
+>
+> ### Lo que falta, y es de Cesar
+>
+> **Correr `sudo ./dev/verify.sh`.** La etapa 19 es nueva y **sólo tu máquina puede
+> establecerla**: este contenedor no tiene Btrfs en el kernel, así que aquí sale
+> `NOT PROVEN` y eso es lo correcto.
+>
+> Espero `proven 117 · not proven 1 · failed 0`: tus 110, más los dos que fallaron
+> y ya no deberían, más las cinco nuevas.
+>
+> Las cinco líneas que se agregan, y cada una tiene por qué existir:
+>
+> ```
+>   PROVEN  a filesystem Thalyx just wrote has no subvolumes, so there is something to do
+>   PROVEN  Thalyx created the three subvolumes through the kernel, with no btrfs binary
+>   PROVEN  all three mount the way PID 1 mounts them, read back by mount(8) and not by Thalyx
+>   PROVEN  a name nobody created does not mount, so subvol= is really being honoured
+>   PROVEN  run again on a finished store it reports them as already there and changes nothing
+> ```
+>
+> La primera es la línea base —sin ella, un comando que no hiciera nada pasaría la
+> etapa—. La tercera lo lee con `mount(8)` y no con Thalyx, porque preguntarle al
+> programa que acaba de hacer el trabajo no prueba nada. La cuarta es el control: un
+> kernel que ignorara `subvol=` montaría los cuatro. La quinta es el camino de
+> reparación, porque un instalador que falla a la mitad no puede costar el disco.
+>
+> **Es un cambio solo, a propósito.** El instalador no va encima de esto hasta que
+> la etapa 19 haya corrido.
+>
+> **721 pruebas pasan, `clippy` limpio en 1.97, `cargo fmt` aplicado.**
+
+> ## El kernel montó el Btrfs que escribió Thalyx — 2026-08-07
+>
+> **El bloque de arriba es más reciente.**
 >
 > ```
 > proven 110 · not proven 1 · failed 2
@@ -78,7 +164,13 @@ tags: [continuidad, punto-actual, sesiones]
 > no existía cuando alguien iba a leerla. El único artefacto que podía decir qué
 > lint era lo borró el script que lo escribió.
 >
-> Cuatro arreglos, y el cuarto es la causa más probable de lo que viste:
+> > **Resuelto al día siguiente y no era esto.** Con el informe arreglado, la
+> > siguiente corrida dijo el lint: `unnecessary_sort_by`, y la causa era que tu
+> > clippy es 1.97 y el del contenedor era 1.94. Ver el bloque de arriba. Lo de
+> > abajo queda escrito porque los cuatro arreglos son buenos y porque el punto 4
+> > sigue siendo un defecto real — sólo no era *este* fallo.
+>
+> Cuatro arreglos, y el cuarto parecía la causa de lo que viste:
 >
 > 1. **El directorio se conserva cuando algo falló**, y el resumen dice dónde está.
 > 2. **Los diagnósticos de clippy se imprimen** en vez de referenciarse.
@@ -98,10 +190,10 @@ tags: [continuidad, punto-actual, sesiones]
 > ruta: una corrida contra otra cadena se ve idéntica a una contra la esperada.
 >
 > **Si en la próxima corrida clippy vuelve a fallar, el informe va a decir qué
-> lint es.** Si sale limpio, era el punto 4.
+> lint es.** Y así fue: dijo `unnecessary_sort_by`, que es el bloque de arriba.
 >
 > Las dos reglas nuevas están en [[Estrategia-de-Pruebas]], y la cuenta de la regla
-> 5 va en nueve.
+> 5 va en diez con la del desfase de versión.
 
 > ## Thalyx escribe su propio Btrfs — 2026-08-07
 >
@@ -201,13 +293,12 @@ tags: [continuidad, punto-actual, sesiones]
 > Las dos primeras están escritas como reglas nuevas en [[Estrategia-de-Pruebas]];
 > la tercera se sumó a la cuenta de la regla 5.
 >
-> ### Lo que sigue faltando, dicho como lo que es
+> ### Lo que seguía faltando, y se hizo el mismo día
 >
 > **Un sistema de archivos recién escrito no tiene subvolúmenes**, y PID 1 monta
-> `subvol=system`. Así que un store hecho con `thalyx disk format` **todavía no es
-> un store**, y el comando lo dice al terminar en vez de dejar que parezca que sí.
-> Crear los tres va por ioctl, porque tampoco hay binario `btrfs` adentro, y con
-> eso el instalador queda completo.
+> `subvol=system`. Así que un store hecho con `thalyx disk format` **todavía no era
+> un store**, y el comando lo decía al terminar en vez de dejar que pareciera que
+> sí. Ya los crea, por ioctl — el primer bloque de esta nota.
 >
 > Y `make -C image store` **sigue usando `mkfs.btrfs`** a propósito: es la red de
 > regresión de las etapas 13 y 16, y cambiarla en el mismo commit que introduce lo
@@ -1146,8 +1237,18 @@ proven 110 · not proven 1 · failed 2
 acepta los tres subvolúmenes, y un archivo escrito en él vuelve. Los dos fallos
 eran del arnés y no del formato — el control de la etapa 18 dañaba espacio libre
 por copy-on-write, y clippy falló sin dejar rastro porque el script borra su propio
-directorio al salir. Los dos están arreglados; el de clippy **no está reproducido**
-y así queda escrito. Ver el bloque de arriba.
+directorio al salir. Los dos están arreglados.
+
+### Y la corrida corta que resolvió lo de clippy
+
+**2026-08-07, la misma máquina, con el informe arreglado.** Un solo fallo, y esta
+vez con el lint impreso: `unnecessary_sort_by` en `crates/thalyx-btrfs/src/format.rs`,
+dos veces. **Era desfase de versión** —clippy 1.97 contra 1.94— y no lo que se
+había supuesto. Arreglado, y el contenedor actualizado a 1.97 para que el próximo
+lint nuevo no se descubra otra vez en la máquina que no puede arreglarlo.
+
+**La etapa 19 está sin correr.** Es la que comprueba que Thalyx crea los tres
+subvolúmenes por ioctl, y no la puede correr ningún otro sitio.
 
 ### La anterior, y es la que sigue siendo la referencia limpia
 

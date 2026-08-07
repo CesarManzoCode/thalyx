@@ -131,12 +131,19 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
-Y van nueve. La novena, del 2026-08-07, es la del control de la etapa 18 que
-dañaba espacio libre y acusaba al kernel de montar basura — está escrita abajo,
-con su propia regla, porque el mecanismo es distinto: ahí el arnés no se equivocó
-al preguntar, se equivocó en *cuándo* sacó la muestra.
+**Y van diez.** Las tres últimas son todas del 2026-08-07 y las tres tienen
+mecanismos distintos, por eso cada una tiene su regla abajo:
 
-Y van ocho, con la del 2026-08-07: el parser que comprueba los offsets de
+- **La octava**, el parser de headers que descartaba campos con comentario al
+  final de la línea — está justo debajo.
+- **La novena**, el control de la etapa 18 que dañaba espacio libre y acusaba al
+  kernel de montar basura. Ahí el arnés no se equivocó al preguntar: se equivocó
+  en *cuándo* sacó la muestra.
+- **La décima**, clippy fallando en una máquina y pasando en la otra contra el
+  mismo código. Ahí el arnés era el correcto y tenía **otra versión**, que es un
+  arnés distinto.
+
+Y la octava, con detalle: el parser que comprueba los offsets de
 `thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con
 un comentario al final de su línea**, porque quitaba el `;` sin quitar el `/* … */`
 que venía después. Reportó `btrfs_root_item` de 343 bytes cuando el escritor
@@ -1387,11 +1394,16 @@ $WORK/algo.log`. **Los treinta apuntaban a una ruta que ya no existía** en el
 momento en que alguien iba a leerla.
 
 Se encontró el 2026-08-07 de la peor manera posible: clippy falló en la máquina de
-Cesar, pasó en el contenedor de desarrollo contra el mismo código y la misma
-versión de `rustc` —comprobado cuatro veces: 1.94 en limpio, 1.90 en limpio, y
-1.90 incremental sobre el cambio— y **el único artefacto que podía decir qué lint
-era lo había borrado el script que lo escribió.** El fallo sigue sin explicación
-por eso.
+Cesar, pasó en el contenedor de desarrollo contra el mismo código —comprobado
+cuatro veces— y **el único artefacto que podía decir qué lint era lo había borrado
+el script que lo escribió.** Cuatro intentos se gastaron buscando un fantasma
+porque el informe no dejaba lo que decía dejar.
+
+> **Resuelto el mismo día, y no era lo que se creía.** Cesar volvió a correrlo con
+> los arreglos de abajo puestos, y el informe imprimió el lint:
+> `unnecessary_sort_by`, dos veces en `format.rs`. Era **desfase de versión** — su
+> clippy es 1.97 y el del contenedor era 1.94, y el lint aprendió el caso en
+> medio. Nada que ver con `RUSTUP_HOME`. Ver la regla propia más abajo.
 
 Tres arreglos, y los tres son de la misma familia:
 
@@ -1403,8 +1415,8 @@ Tres arreglos, y los tres son de la misma familia:
    se reportaban con la misma línea. Ahora el segundo es `NOT PROVEN` y dice qué
    componente instalar. Regla 10, en el sitio donde costó un diagnóstico.
 
-Y una cuarta cosa, que es la causa más probable de lo de Cesar y es un defecto por
-su propia cuenta: el arreglo del entorno de rustup bajo `sudo` —poner
+Y una cuarta cosa, que **no** era la causa de lo de Cesar y sigue siendo un defecto
+por su propia cuenta: el arreglo del entorno de rustup bajo `sudo` —poner
 `RUSTUP_HOME` y `CARGO_HOME` apuntando a la instalación del usuario— estaba
 **condicionado a que `cargo` *no* estuviera en el `PATH` de root**. Pero que
 `command -v cargo` encuentre el shim de rustup dice que el archivo está en el
@@ -1419,7 +1431,44 @@ Ahora se aplica siempre que se corra bajo `sudo`.
 Y por eso la etapa 1 imprime ahora la **versión** de la cadena de herramientas y
 no sólo su ruta: una corrida contra otra cadena se ve idéntica a una corrida
 contra la esperada, que es la misma razón por la que el encabezado nombra el
-commit.
+commit. Fue justo lo que hacía falta — ver la regla siguiente.
+
+## Regla derivada: un instrumento tiene versión, y otra versión es otro instrumento
+
+**Cuando dos máquinas dan respuestas distintas sobre el mismo código, la primera
+cosa a comparar es la versión de lo que preguntó, no el código.**
+
+El 2026-08-07 clippy falló en la máquina de Cesar y pasó en el contenedor cuatro
+veces seguidas: 1.94 en limpio, 1.90 en limpio, 1.90 incremental sobre el cambio, y
+con su invocación exacta en un directorio de compilación vacío. La conclusión que
+se sacó fue *«no reproducible, probablemente el entorno de rustup bajo sudo»*, que
+era una hipótesis razonable sobre un mecanismo real y **era falsa**.
+
+Su clippy era **1.97**; el del contenedor, **1.94**. `unnecessary_sort_by` aprendió
+a ver `sort_by(|a, b| a.0.cmp(&b.0))` en algún punto entre las dos. Actualizado el
+contenedor, el fallo apareció en el primer intento, idéntico al suyo, y el arreglo
+fueron dos líneas.
+
+Es la regla 5 otra vez —el instrumento incluye al arnés— con una vuelta que valía
+escribir aparte: **el instrumento incluye su número de versión**, y un linter es un
+instrumento cuyo trabajo entero es cambiar de opinión entre versiones. Cuatro
+corridas «con el mismo `rustc`» compararon 1.94 contra 1.94 y se leyeron como
+prueba de que el código estaba bien.
+
+Dos consecuencias, y la segunda es la que importa:
+
+1. **La etapa 2 imprime la versión de clippy**, en la línea que pasa y en la que
+   falla. Un informe que dice «clippy objetó» sin decir cuál clippy manda a alguien
+   a buscar en el sitio equivocado, que es exactamente lo que pasó.
+2. **El contenedor de desarrollo se mantiene al menos tan nuevo como su máquina.**
+   Lo contrario garantiza que los lints se descubran en la única máquina que no
+   puede arreglarlos, y que cada uno cueste una ronda entera de ida y vuelta.
+
+No se fijó la cadena de herramientas con un `rust-toolchain.toml`, que es la otra
+respuesta posible. Sería decisión de Cesar y tiene un costo real —lo obligaría a
+descargar una versión concreta— y además cambia el problema en vez de resolverlo:
+un proyecto que fija su linter deja de enterarse de los lints nuevos hasta que
+alguien mueva el archivo, y enterarse es lo que se quería.
 
 ## Regla de documentación
 

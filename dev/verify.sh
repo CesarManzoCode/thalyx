@@ -57,12 +57,19 @@ cleanup() {
     # interrupted run that left it mounted would turn this line into `rm -rf`
     # through a mount point — deleting the contents of a filesystem instead of
     # the file holding it.
-    for mounted in "${SMNT:-}" "${TMNT:-}"; do
+    for mounted in "${SMNT:-}" "${TMNT:-}" "${VMNT:-}" "${SWS:+$SWS/top}" "${SWS:+$SWS/check}"; do
         [ -n "$mounted" ] || continue
         mountpoint -q "$mounted" 2>/dev/null || continue
         umount "$mounted" 2>/dev/null || red "   could not unmount $mounted; not deleting $WORK"
         mountpoint -q "$mounted" 2>/dev/null && return
     done
+
+    # After the unmounts and before the rm. A loop device left attached holds the
+    # deleted image file open, and the leak is invisible: `losetup -f` just hands
+    # out the next number, so nothing looks wrong until the machine has none left.
+    if [ -n "${LOOP:-}" ]; then
+        losetup -d "$LOOP" 2>/dev/null || red "   could not detach $LOOP; run: losetup -d $LOOP"
+    fi
 
     # Kept when something failed. Around thirty failure messages in this script
     # end with "see $WORK/something.log", and every one of them was a lie: the
@@ -204,8 +211,12 @@ fi
 #
 # So the repair was conditional on a test that does not measure what it repairs —
 # and the failure it leaves is per-component: a toolchain that answers `build` and
-# `fmt` and not `clippy` reports itself as clippy finding problems. Which is what
-# happened on 2026-08-07.
+# `fmt` and not `clippy` reports itself as clippy finding problems.
+#
+# That is not what happened on 2026-08-07 — that one was plain version skew, a
+# clippy three releases newer than the one the code was written against. This
+# guard is kept because the hazard is real and cost nothing to remove, not
+# because it explained anything.
 if [ -n "${SUDO_USER:-}" ]; then
     OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
     if [ -x "$OWNER_HOME/.cargo/bin/cargo" ]; then
@@ -265,8 +276,15 @@ else
     failed "cargo fmt --all --check reports differences"
 fi
 
+# The version, because clippy's opinion changes between releases and the report
+# has to say whose opinion it is. On 2026-08-07 this stage failed on Cesar's
+# machine and came back clean four times here on identical source: his clippy was
+# 1.97 and the container's was 1.94, and `unnecessary_sort_by` had learned a case
+# in between. Four attempts went into looking for a phantom because neither
+# report named the linter. Rule 5, tenth time: the instrument includes the
+# version of the instrument.
 if cargo clippy --all-targets --quiet > "$WORK/clippy.log" 2>&1; then
-    proven "clippy is clean, with warnings denied"
+    proven "clippy is clean, with warnings denied ($(cargo clippy --version 2>/dev/null))"
 elif grep -qE "no such command|not installed|is not installed|error: toolchain" "$WORK/clippy.log"; then
     # Rule 10, at the place it cost a diagnosis. "clippy objected to the code" and
     # "clippy could not be run" are opposite facts about the machine, and this line
@@ -282,7 +300,7 @@ else
     # anybody went to look. It is kept now when something fails, and the
     # diagnostics are printed here as well, because the whole point of a report is
     # not having to go and fetch the thing it is reporting about.
-    failed "clippy objected to the code"
+    failed "clippy objected to the code ($(cargo clippy --version 2>/dev/null))"
     grep -E "^(error|warning)" -A 12 "$WORK/clippy.log" | sed 's/^/     /' | head -60
     echo "     ($(grep -cE '^error' "$WORK/clippy.log") error line(s) in total)"
 fi
@@ -2196,7 +2214,12 @@ truncate -s 2G "$TDISK"
 
 # The write itself needs nothing at all, so it is not behind either skip. A
 # failure here is Thalyx, on any machine.
-if "$THALYX" disk format "$TDISK" --yes > "$WORK/disk-format.log" 2>&1; then
+#
+# `--no-subvolumes` because this is an image file and the subvolume step mounts a
+# block device. The flag is not a convenience: without it the command refuses,
+# rather than writing half a store and calling the result done. Stage 19 attaches
+# a loop device and does the other half.
+if "$THALYX" disk format "$TDISK" --yes --no-subvolumes > "$WORK/disk-format.log" 2>&1; then
     proven "Thalyx wrote a Btrfs filesystem with no mkfs.btrfs and no libbtrfs"
 else
     failed "Thalyx could not write a store; see $WORK/disk-format.log"
@@ -2337,10 +2360,144 @@ else
     echo "     kernel is the one that matters."
 fi
 
-# What this stage does *not* establish: that PID 1 can bring the store up. It
-# mounts `subvol=system`, and a freshly written filesystem has no subvolumes at
-# all — creating them is the next thing to be built, and it is done above with
-# btrfs-progs rather than by Thalyx.
+# What this stage does *not* establish: that **Thalyx** can create those
+# subvolumes. The three above are made with btrfs-progs, on purpose — this stage's
+# claim is that the filesystem Thalyx wrote is a working Btrfs, and measuring that
+# with Thalyx's own subvolume code would make one failure hide the other. Stage 19
+# is where Thalyx does it.
+
+# ------------------------------------ 19. Thalyx makes the subvolumes itself
+
+step "19. Thalyx turns that filesystem into a store, with no btrfs binary"
+
+# A filesystem is not a store. PID 1 mounts `subvol=system` and a freshly written
+# Btrfs has no subvolumes at all, so `thalyx disk format` produced something that
+# identifies as a Thalyx store and that PID 1 cannot bring up.
+#
+# `btrfs subvolume create` is not available to fix that: the image holds the Linux
+# kernel and one program. So `BTRFS_IOC_SUBVOL_CREATE` goes through
+# `thalyx-syscall`, which is the third time this project has answered a missing
+# binary with a system call instead of a second program.
+#
+# Three requirements, three guards, per rule 3 — a kernel with Btrfs, a loop
+# device to attach an image file to, and btrfs-progs for the independent reading.
+# One variable for all three would mean the only way to demand what this machine
+# has is to demand what it has not.
+SDISK="$WORK/thalyx-store.img"
+SWS="$WORK/store-workspace"
+VMNT="$WORK/store-verify"
+LOOP=""
+mkdir -p "$SWS" "$VMNT"
+
+# Detached however this script leaves. A loop device that outlives the run holds
+# a deleted file open, and the next `losetup -f` hands out a different number, so
+# the leak is invisible until the machine runs out of them.
+detach_loop() {
+    [ -n "$LOOP" ] || return 0
+    for mounted in "$VMNT" "$SWS/top" "$SWS/check"; do
+        mountpoint -q "$mounted" 2>/dev/null && umount -l "$mounted" 2>/dev/null
+    done
+    losetup -d "$LOOP" 2>/dev/null || red "   could not detach $LOOP; run: losetup -d $LOOP"
+    LOOP=""
+}
+
+if ! grep -qw btrfs /proc/filesystems 2>/dev/null; then
+    GAP="this kernel has no Btrfs, so Thalyx could not be asked to make a subvolume"
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+elif ! command -v losetup > /dev/null; then
+    GAP="no losetup, so an image file could not be attached for Thalyx to work on"
+    if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    truncate -s 2G "$SDISK"
+    "$THALYX" disk format "$SDISK" --yes --no-subvolumes > "$WORK/store-format.log" 2>&1
+    LOOP="$(losetup -f --show "$SDISK" 2>/dev/null || true)"
+
+    if [ -z "$LOOP" ]; then
+        failed "could not attach $SDISK to a loop device, so nothing below ran"
+    else
+        # The baseline, and it is the one that matters. Everything after this is
+        # "subvol=system mounts", which is also true of a filesystem that already
+        # had the subvolumes — and this image was formatted seconds ago by code
+        # that could, in principle, have started creating them. Without this line
+        # a `disk subvolumes` that did nothing at all would pass the stage.
+        if mount -o "subvol=system" "$LOOP" "$VMNT" > /dev/null 2>&1; then
+            umount "$VMNT" 2>/dev/null
+            failed "the freshly written filesystem already had a \`system\` subvolume,"
+            echo "     so the checks below cannot tell creating one from finding one"
+        else
+            proven "a filesystem Thalyx just wrote has no subvolumes, so there is something to do"
+        fi
+
+        if "$THALYX" disk subvolumes "$LOOP" --workspace "$SWS" \
+                > "$WORK/store-subvolumes.log" 2>&1; then
+            proven "Thalyx created the three subvolumes through the kernel, with no btrfs binary"
+        else
+            failed "Thalyx could not create the subvolumes; see $WORK/store-subvolumes.log"
+            tail -25 "$WORK/store-subvolumes.log" | sed 's/^/     /'
+        fi
+
+        # Not Thalyx's own account of it. Rule 2: asking the confined program
+        # whether it worked proves nothing, and the same goes for asking the
+        # program that just did the work. This mounts each one the way PID 1
+        # mounts it, with the host's `mount`.
+        MOUNTED=1
+        for subvol in system modules user; do
+            if mount -o "subvol=$subvol" "$LOOP" "$VMNT" > "$WORK/store-mount-$subvol.log" 2>&1; then
+                umount "$VMNT" 2>/dev/null
+            else
+                MOUNTED=0
+                red "   subvol=$subvol did not mount:"
+                tail -5 "$WORK/store-mount-$subvol.log" | sed 's/^/     /'
+            fi
+        done
+        if [ "$MOUNTED" = 1 ]; then
+            proven "all three mount the way PID 1 mounts them, read back by mount(8) and not by Thalyx"
+        else
+            failed "Thalyx reported subvolumes that PID 1 could not have mounted"
+        fi
+
+        # The control for the line above, per rule 4. `mount -o subvol=` failing
+        # for a name nobody created is what makes it succeeding for the three mean
+        # something; a kernel that ignored the option entirely would mount all
+        # four of these and the stage would read as a pass.
+        #
+        # Only run when the three did mount, and this gate is the point: on a
+        # machine where nothing mounts at all, "the made-up name did not mount"
+        # comes back true and means nothing. Its own baseline is the check above,
+        # so counting it while that one failed would be exactly the mistake rule 4
+        # names — a denial and an operation that never worked looking identical.
+        if [ "$MOUNTED" != 1 ]; then
+            yellow "   (the control for it is not interpretable while nothing mounts)"
+        elif mount -o "subvol=nothing-was-ever-created-here" "$LOOP" "$VMNT" > /dev/null 2>&1; then
+            umount "$VMNT" 2>/dev/null
+            failed "a subvolume nobody created also mounted, so \`subvol=\` is being ignored"
+            echo "     and the three mounts above establish nothing"
+        else
+            proven "a name nobody created does not mount, so subvol= is really being honoured"
+        fi
+
+        # The repair path, run second on purpose. An installer that fails halfway
+        # leaves a store with some of its subvolumes, and the only fix must not be
+        # to reformat the disk the human's files are on. Running it again has to be
+        # allowed and has to say that it created nothing.
+        if "$THALYX" disk subvolumes "$LOOP" --workspace "$SWS" \
+                > "$WORK/store-again.log" 2>&1 &&
+           grep -q "already there" "$WORK/store-again.log"; then
+            proven "run again on a finished store it reports them as already there and changes nothing"
+        else
+            failed "running it twice is not safe, so a half-finished store cannot be repaired"
+            tail -20 "$WORK/store-again.log" | sed 's/^/     /'
+        fi
+
+        detach_loop
+    fi
+fi
+
+# What this stage does *not* establish: that the machine boots off a store made
+# this way. `make -C image store` still builds the development disk with
+# `mkfs.btrfs`, deliberately — it is the regression net for stages 13 and 16, and
+# swapping it in the same change that introduces what needs testing would leave
+# the net and the thing under test being the same unexercised code.
 
 # ---------------------------------------------------------------- summary
 

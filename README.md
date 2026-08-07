@@ -296,19 +296,23 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 710 of them**, across unit tests, fault injection
+**Built and covered by tests: 721 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
-**Verified on real hardware**: 104 checks, on one machine with a BPF LSM, cgroup
-v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07: 110 checks, including the
-kernel mounting a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`.
-Two things failed and both were the harness rather than Thalyx; they are fixed,
-and one of them is not reproduced, which the vault says plainly. One thing
-went unproven, and it is a thing that does not exist yet rather than a check
-that could not be made: the agent has no model. The BPF LSM has denied a real
-network connection to a process that lacked the permission, and only to that
-process.
+**Verified on real hardware**: 110 checks, on one machine with a BPF LSM, cgroup
+v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07 — including the kernel
+mounting a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`. Two
+things failed and both were the harness rather than Thalyx; both are fixed. One
+thing went unproven, and it is a thing that does not exist yet rather than a
+check that could not be made: the agent has no model. The BPF LSM has denied a
+real network connection to a process that lacked the permission, and only to
+that process.
+
+**Not yet run anywhere**: five more checks covering Thalyx creating a store's
+three Btrfs subvolumes through `BTRFS_IOC_SUBVOL_CREATE`, since there is no
+`btrfs` binary in the image. They need a kernel with Btrfs, so the development
+container reports them as `NOT PROVEN` and says so.
 
 **The image boots, and does the six steps by itself.** A kernel built from
 `allnoconfig` comes up in QEMU with one program inside it, attaches its own

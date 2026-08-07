@@ -305,19 +305,25 @@ Cada afirmación de esta sección o se puede comprobar con un comando de este
 repositorio, o está marcada como todavía no comprobada. Esa distinción es la
 regla de trabajo principal del proyecto.
 
-**Construido y cubierto por pruebas: 710.** Entre pruebas unitarias, inyección
+**Construido y cubierto por pruebas: 721.** Entre pruebas unitarias, inyección
 de fallos que mata el binario real en cada punto del commit atómico, y corridas
 de punta a punta del criterio de salida. `cargo test --workspace` corre todo.
 
 **Verificado en hardware real**: 110 comprobaciones, en una máquina con LSM de
 BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`, el 2026-08-07. Incluye que **el
 kernel monta un Btrfs que Thalyx escribió byte por byte**, sin `mkfs.btrfs`.
-Fallaron dos cosas y las dos eran del arnés y no de Thalyx; están arregladas, y
-una de ellas no está reproducida, que es como queda escrito.
+Fallaron dos cosas y las dos eran del arnés y no de Thalyx; las dos están
+arregladas.
 Una sola quedó sin probar, y es algo que **todavía no existe** en vez de una
 comprobación que no se pudo hacer: el agente no tiene modelo. El LSM de BPF ha
 denegado una conexión de red real a un proceso que no tenía el permiso, y solo a
 ese proceso.
+
+**Sin correr en ningún sitio todavía**: cinco comprobaciones más, de que Thalyx
+crea los tres subvolúmenes Btrfs de un store por `BTRFS_IOC_SUBVOL_CREATE`,
+porque adentro de la imagen no hay binario `btrfs`. Necesitan un kernel con
+Btrfs, así que el contenedor de desarrollo las reporta como `NOT PROVEN` y lo
+dice.
 
 **La imagen arranca, y hace los seis pasos sola.** Un kernel construido desde
 `allnoconfig` arranca en QEMU con un solo programa adentro, engancha su propio

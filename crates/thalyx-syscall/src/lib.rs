@@ -92,6 +92,102 @@ pub fn umount2(target: &Path, flags: i32) -> io::Result<()> {
     check(result)
 }
 
+// ──────────────────────────────────────────────── making a Btrfs subvolume
+//
+// `vault/09-Notas-Tecnicas/Construccion-del-ISO.md` decrees an image holding the
+// kernel and one program, so there is no `btrfs` binary to run — the same shape
+// as `bpftool` for the LSM and `cpio` for the initramfs, and the same answer.
+// `thalyx-snapshot` shells out to `btrfs` and is right to, because it runs on a
+// host that has it; an installer running inside the image cannot.
+
+/// `BTRFS_IOC_SUBVOL_CREATE`, from `include/uapi/linux/btrfs.h`:
+/// `_IOW(BTRFS_IOCTL_MAGIC, 14, struct btrfs_ioctl_vol_args)`.
+///
+/// Written out because `_IOW` is a macro and this crate has no C. Not taken on
+/// trust either: `thalyx-btrfs` carries that header captured verbatim and
+/// `tests/ioctl.rs` recomputes this number out of its text, including the
+/// argument size the encoding folds in. An ioctl number that is wrong in the
+/// size field does not fail cleanly — the kernel matches on the whole word, so
+/// the answer is `ENOTTY` on a filesystem that supports the call perfectly.
+///
+/// Typed `u64`, which is the width of an ioctl number, and converted at the call
+/// site. `libc::Ioctl` is `c_ulong` against glibc and `c_int` against musl, and
+/// the image is headed for a static musl build — a constant declared as either one
+/// would stop compiling when the target changed, on a line that has nothing to do
+/// with the target.
+pub const BTRFS_IOC_SUBVOL_CREATE: u64 = 0x5000_940e;
+
+/// The longest a subvolume name may be, `BTRFS_VOL_NAME_MAX`.
+///
+/// The `name` field of `btrfs_ioctl_vol_args` is 4088 bytes, and the kernel
+/// nevertheless refuses anything past 255 for this ioctl. Checking the field's
+/// size instead of this would send a 300-byte name to the kernel and get back a
+/// bare `EINVAL`.
+pub const BTRFS_VOL_NAME_MAX: usize = 255;
+
+/// Create a Btrfs subvolume called `name` inside the directory `parent` refers to.
+///
+/// `parent` must be a descriptor on a directory of a mounted Btrfs filesystem —
+/// the ioctl is answered by the filesystem the descriptor belongs to, so the
+/// mount is the caller's business and not this crate's.
+///
+/// The name is refused here when it cannot be a single directory entry. That is
+/// conversion rather than logic: a name holding a NUL is not a shorter name, it
+/// is a different name, and passing one on would create a subvolume whose title
+/// the caller never asked for.
+pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `struct btrfs_ioctl_vol_args`: `__s64 fd` then `char name[4088]`. Built as
+    // bytes rather than as a `repr(C)` struct for the reason `thalyx-btrfs`
+    // builds every on-disk shape that way — the layout is the kernel's, and a
+    // Rust type that happens to agree today is agreement by coincidence.
+    const NAME_AT: usize = 8;
+    const ARGS_LEN: usize = 4096;
+
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{name}` cannot be a subvolume name"),
+        ));
+    }
+    if name.len() > BTRFS_VOL_NAME_MAX {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "a subvolume name may be at most {BTRFS_VOL_NAME_MAX} bytes and `{name}` is {}",
+                name.len()
+            ),
+        ));
+    }
+    if name.contains('/') || name.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{name}` is not a single name: a subvolume name holds no `/` and no NUL"),
+        ));
+    }
+
+    let mut args = [0u8; ARGS_LEN];
+    // `fd` is left zero: this ioctl ignores it. `BTRFS_IOC_SNAP_CREATE` shares
+    // the struct and does read it, which is why the field is here at all.
+    args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
+
+    // The request narrows to `c_int` on a musl target, and 0x5000940e is positive
+    // in 32 bits, so nothing is lost. Asserted rather than assumed, because the
+    // day it stops being true the symptom is a different ioctl being called.
+    let request = BTRFS_IOC_SUBVOL_CREATE as libc::Ioctl;
+    debug_assert_eq!(request as u64, BTRFS_IOC_SUBVOL_CREATE);
+
+    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole
+    // call, which is exactly `sizeof(struct btrfs_ioctl_vol_args)` and the size
+    // the ioctl number itself declares. The name is NUL-terminated because the
+    // buffer starts zeroed and the name is shorter than the field. `parent` is
+    // borrowed, so it cannot be closed underneath the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
+    check(result)
+}
+
 /// Clone a mount into a detached tree, returning a file descriptor for it.
 ///
 /// A detached mount can be reconfigured before anyone can see it — which is the

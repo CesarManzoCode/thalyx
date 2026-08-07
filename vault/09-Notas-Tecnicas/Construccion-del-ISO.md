@@ -368,11 +368,61 @@ superbloque dañado, que es la regla 10 donde más importa— y `thalyx disk lay
 imprime la geometría, que es de donde `verify.sh` saca los offsets de su control
 en vez de repetirlos.
 
-**Lo que sigue faltando, dicho como lo que es:** un sistema de archivos recién
-escrito **no tiene subvolúmenes**, y PID 1 monta `subvol=system`. Así que un store
-hecho así todavía no es un store, y el propio comando lo dice al terminar en vez
-de dejar que parezca que sí. Crear los tres —por ioctl, porque tampoco hay binario
-`btrfs` adentro— es lo siguiente, y con eso el instalador queda completo.
+### Los tres subvolúmenes, por ioctl — construido el 2026-08-07
+
+Un sistema de archivos recién escrito **no tiene subvolúmenes**, y PID 1 monta
+`subvol=system`. Así que lo que salía de `thalyx disk format` era un sistema de
+archivos y no un store, y el comando lo decía al terminar en vez de dejar que
+pareciera que sí. Ahora los crea.
+
+`btrfs subvolume create` no está disponible para eso: la imagen lleva el kernel de
+Linux y un programa. Así que va por **`BTRFS_IOC_SUBVOL_CREATE`**, en
+`thalyx-syscall`, que es la tercera vez que este proyecto contesta a un binario
+ausente con una llamada al kernel en lugar de un segundo programa — `bpftool`,
+`cpio`, y ahora `btrfs`.
+
+**El número del ioctl no se toma de fe.** `_IOW` es un macro de C y en este
+workspace no hay C, así que la constante está escrita a mano — y
+`tests/ioctl.rs` la **recalcula desde el header capturado**, incluyendo el tamaño
+del argumento que el número lleva codificado adentro. Importa porque el fallo no es
+limpio: el kernel compara la palabra entera, así que un tamaño equivocado contesta
+`ENOTTY` en un sistema de archivos que soporta la llamada perfectamente, y eso se
+lee como «este kernel es viejo» o «esto no es btrfs».
+
+Tres decisiones de forma:
+
+- **La verificación es montar, no mirar.** Después de crearlos, cada uno se monta
+  con `-o subvol=<nombre>` —exactamente como lo hace PID 1— y se reporta por
+  nombre. Preguntar si apareció un directorio con ese nombre daría *sí* para un
+  directorio común, que es lo único que PID 1 no puede montar. Y el truco del
+  número de inodo (256) se descarta por el motivo que [[Journal-y-Snapshots]] ya
+  registra: es cierto de Btrfs hoy y no es una interfaz documentada.
+- **Correrlo dos veces es seguro**, y no es comodidad. Un instalador que falla a
+  la mitad deja un store con dos de tres subvolúmenes, y si la única forma de
+  arreglarlo fuera reformatear, la reparación costaría el disco entero. Un nombre
+  que ya estaba se reporta como *ya estaba*, que es un hecho distinto de *lo creé*
+  y distinto de un error.
+- **Necesita un dispositivo de bloques, y lo dice.** `mount(2)` contesta `ENOTBLK`
+  para un archivo común, porque enganchar un archivo a un loop es trabajo que
+  util-linux hace en espacio de usuario. Thalyx no tiene por qué reimplementarlo:
+  un instalador particiona un disco y escribe en particiones. Para un archivo de
+  imagen, el error nombra `losetup`.
+
+**Lo que la etapa 18 hace y la 19 no, a propósito.** La 18 crea los tres
+subvolúmenes con btrfs-progs; la 19 los crea con Thalyx. Son dos afirmaciones
+distintas —*el sistema de archivos que Thalyx escribió es un Btrfs que funciona* y
+*Thalyx sabe crear un subvolumen*— y medir la primera con el código de la segunda
+haría que un fallo esconda al otro. Misma razón por la que `make -C image store`
+sigue usando `mkfs.btrfs`.
+
+**Y el decreto se conserva entero.** Nada de esto es alcanzable desde PID 1.
+`thalyx disk format` lo hace de una vez, y `thalyx disk subvolumes <dispositivo>`
+es la mitad separable — que existe porque necesita cosas que escribir los bytes no
+necesita: root, un kernel con Btrfs y un dispositivo de bloques.
+
+**Lo que sigue faltando:** el instalador. Particionar el disco (GPT), escribir la
+partición EFI con el kernel adentro, y formatear la otra como store. Las dos piezas
+que costaban ya están; lo que falta es el acto que las junta.
 
 Cómo se sabe que algo de esto es correcto está en [[Estrategia-de-Pruebas]], en
 las dos reglas nuevas. En una frase: dos headers de Linux capturados verbatim más

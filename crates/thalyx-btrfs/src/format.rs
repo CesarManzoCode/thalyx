@@ -284,7 +284,7 @@ pub fn write(
             disk::block_group_item(*used, chunk.flags),
         ));
     }
-    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows.sort_by_key(|row| row.0);
 
     let mut extent_tree = new_leaf(objectid::EXTENT_TREE);
     for (key, body) in rows {
@@ -407,7 +407,7 @@ pub fn write(
             root_item(objectid::DATA_RELOC_TREE, objectid::FIRST_FREE, [0; 16], 0),
         ),
     ];
-    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows.sort_by_key(|row| row.0);
 
     let mut root_tree = new_leaf(objectid::ROOT_TREE);
     for (key, body) in rows {

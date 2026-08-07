@@ -11,9 +11,12 @@
 //! whenever it failed to find the old one would come up looking perfect on the
 //! day the disk was not attached, and the human would find out what had
 //! happened by noticing that everything they had installed was gone. Absent is
-//! reported and nothing is written. The store is made once, by
-//! `make -C image store`, on a machine that has `mkfs.btrfs` — the image does
-//! not, and cannot: it has one program in it.
+//! reported and nothing is written.
+//!
+//! The store is made once, by a human, with `thalyx disk format` — or by
+//! `make -C image store` for the development disk, which still uses `mkfs.btrfs`
+//! on purpose so that the regression net for the boot stages is not the same code
+//! as the thing being tested. Neither path is reachable from PID 1.
 //!
 //! ## Why the device comes from the kernel command line
 //!
@@ -286,8 +289,41 @@ pub enum DiskCommand {
         /// Skip the confirmation. For scripts and tests.
         #[arg(long)]
         yes: bool,
+        /// Write the filesystem and stop, leaving it without subvolumes.
+        ///
+        /// What comes out is not a store: PID 1 mounts `subvol=system` and there
+        /// will not be one. For writing an image file on a machine that cannot
+        /// mount Btrfs, which is the only case where the second half is
+        /// impossible rather than merely unwanted.
+        #[arg(long)]
+        no_subvolumes: bool,
+        /// Where to put the mount points the subvolume step needs.
+        #[arg(long, default_value = WORKSPACE)]
+        workspace: PathBuf,
+    },
+
+    /// Create the three subvolumes on a store that has none
+    ///
+    /// The other half of `format`, separable because it needs things `format`
+    /// does not: root, a kernel with Btrfs, and a block device. Safe to run on a
+    /// store that already has them — it says so rather than failing, because
+    /// otherwise the only way to fix two-of-three would be to reformat.
+    Subvolumes {
+        /// The block device to work on. Not an image file: see the error it gives.
+        device: PathBuf,
+        /// Where to put the mount points it needs.
+        #[arg(long, default_value = WORKSPACE)]
+        workspace: PathBuf,
     },
 }
+
+/// Where the subvolume step puts its mount points.
+///
+/// `/run` and not `/tmp`, because inside the image there is no `/tmp` — the
+/// archive carries thirteen directories and that is not one of them. A default of
+/// `std::env::temp_dir()` would work on every development machine and fail on the
+/// only machine that matters.
+const WORKSPACE: &str = "/run/thalyx/store-setup";
 
 /// Run one of them.
 pub fn run(command: DiskCommand) -> Fallible {
@@ -302,7 +338,14 @@ pub fn run(command: DiskCommand) -> Fallible {
             report_identity(&device, &thalyx_btrfs::identify(&device)?);
             Ok(())
         }
-        DiskCommand::Format { device, label, yes } => format(&device, &label, yes),
+        DiskCommand::Format {
+            device,
+            label,
+            yes,
+            no_subvolumes,
+            workspace,
+        } => format(&device, &label, yes, no_subvolumes, &workspace),
+        DiskCommand::Subvolumes { device, workspace } => subvolumes(&device, &workspace),
     }
 }
 
@@ -399,7 +442,13 @@ fn hex(bytes: &[u8]) -> String {
 /// word long: `/dev/sda` and `/dev/sdb` differ by a keystroke, and a `y` confirms
 /// a sentence the human has already stopped reading. Typing the path back is the
 /// one answer that cannot be given by mistake to the wrong disk.
-fn format(device: &Path, label: &str, yes: bool) -> Fallible {
+fn format(
+    device: &Path,
+    label: &str,
+    yes: bool,
+    no_subvolumes: bool,
+    workspace: &Path,
+) -> Fallible {
     use std::io::{IsTerminal, Write};
 
     println!("About to write a Thalyx store onto {}.", device.display());
@@ -459,13 +508,78 @@ fn format(device: &Path, label: &str, yes: bool) -> Fallible {
         written.superblocks, written.metadata_bytes
     );
     println!();
-    // Said plainly, because the store is not usable yet and a message that
-    // stopped here would read as though it were.
-    println!("  It has no subvolumes yet, so PID 1 cannot mount it: `system`,");
-    println!("  `modules` and `user` are what it looks for. Creating them is the");
-    println!("  next thing to be built, and until then a store made this way is");
-    println!("  a filesystem rather than a store.");
-    Ok(())
+
+    if no_subvolumes {
+        // Said plainly, because what is on the disk now is not a store and a
+        // message that stopped at "ok" would read as though it were.
+        println!("  --no-subvolumes: it has none, so PID 1 cannot mount it. `system`,");
+        println!("  `modules` and `user` are what it looks for, and until they exist");
+        println!("  this is a filesystem rather than a store.");
+        println!();
+        // Named as a block device rather than as this path, because the flag's
+        // reason for existing is that this path is often a file — and `subvolumes`
+        // on a file refuses. Printing the command with the file's name here would
+        // hand the human something that cannot work.
+        println!("  Finish it with `thalyx disk subvolumes` on the block device.");
+        return Ok(());
+    }
+
+    // The filesystem is already on the disk at this point, so a failure here is
+    // not "nothing happened" — it is a half-made store, and the message has to
+    // say which half and how to finish it. Returned as an error all the same: an
+    // installer calling this needs the non-zero exit, not the paragraph.
+    subvolumes(device, workspace).inspect_err(|_| {
+        println!();
+        println!("  The filesystem is written and it has no subvolumes, so it is not a");
+        println!("  store yet. Nothing above needs redoing: `thalyx disk subvolumes`");
+        println!("  finishes it once whatever the line below asks for is in place.");
+    })
+}
+
+/// Create the three, and report whether PID 1 could mount each one.
+///
+/// The report is per name and it is the mount that is reported, not the creation.
+/// A directory called `system` that is not a subvolume gets created by nobody here
+/// and would come back as "already there" — with a mount that failed. Printing the
+/// creation alone would call that a success.
+fn subvolumes(device: &Path, workspace: &Path) -> Fallible {
+    use thalyx_btrfs::subvolume::{DECREED, Made};
+
+    let outcome = thalyx_btrfs::subvolume::create(device, workspace, &DECREED)?;
+
+    for (name, made) in &outcome.subvolumes {
+        let what = match made {
+            Made::Created => "created",
+            // Not an error and not a success either. On a device being formatted
+            // this cannot happen; on a repair it is the normal case.
+            Made::AlreadyThere => "already there",
+        };
+        println!("  ok  subvolume    {name} — {what}");
+    }
+
+    println!();
+    for (name, why) in &outcome.mounted {
+        match why {
+            None => println!("  ok  mountable    subvol={name}"),
+            Some(reason) => {
+                println!("  NO  mountable    subvol={name}");
+                for line in reason.lines() {
+                    println!("      {line}");
+                }
+            }
+        }
+    }
+
+    println!();
+    if outcome.is_a_store() {
+        println!("  This is a store. PID 1 can mount it.");
+        Ok(())
+    } else {
+        // A non-zero exit, because a store that PID 1 cannot mount is the exact
+        // failure this whole command exists to prevent, and an installer calling
+        // it needs the failure and not the printout.
+        Err("the subvolumes are not all mountable, so this is not a store yet".into())
+    }
 }
 
 #[cfg(test)]
@@ -1152,6 +1266,41 @@ mod tests {
         assert!(
             text.contains(&format!("{PARAMETER}$(STOREDEV)")),
             "the boot line does not carry {PARAMETER}"
+        );
+    }
+
+    #[test]
+    fn the_names_thalyx_creates_are_the_names_pid_1_mounts() {
+        // The same failure as the Makefile test above, one crate over. `thalyx
+        // disk format` creates what `thalyx_btrfs::DECREED` lists and PID 1
+        // mounts what `SUBVOLUMES` lists; a machine whose installer made two of
+        // three boots and reports a broken store, with the message naming a
+        // mount that failed rather than a subvolume nobody made.
+        let mut created: Vec<&str> = thalyx_btrfs::DECREED.to_vec();
+        created.sort_unstable();
+        let mut mounted: Vec<&str> = subvolume_names().collect();
+        mounted.sort_unstable();
+        assert_eq!(
+            created, mounted,
+            "thalyx-btrfs and PID 1 disagree about what a store is made of"
+        );
+    }
+
+    #[test]
+    fn the_workspace_default_is_a_directory_the_image_actually_has() {
+        // `/tmp` is the obvious default and the image has no `/tmp`. The mount
+        // points the subvolume step needs would fail to be created on the only
+        // machine where this has to work, and the error would name a path a
+        // developer sees on every other machine.
+        let root = WORKSPACE
+            .strip_prefix('/')
+            .and_then(|rest| rest.split('/').next())
+            .expect("the workspace default is an absolute path");
+        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/image.rs");
+        let text = std::fs::read_to_string(&image).expect("image.rs is part of the crate");
+        assert!(
+            text.contains(&format!("\"{root}\",")),
+            "the image archive has no `{root}` directory, so {WORKSPACE} cannot be made there"
         );
     }
 

@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thalyx-syscall = { path = "../thalyx-syscall" }
 thiserror.workspace = true
 uuid.workspace = true
 
