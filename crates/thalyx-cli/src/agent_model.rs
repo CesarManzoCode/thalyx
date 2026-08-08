@@ -29,6 +29,7 @@ use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thalyx_agent::config::Settings;
+use thalyx_agent::llama::GrammarCheck;
 use thalyx_agent::{ForeignText, Model, Segment, Tier, Transcript};
 use thalyx_contract::Caller;
 use thalyx_core::Store;
@@ -86,6 +87,17 @@ pub enum ModelCommand {
         #[arg(default_value = "dev.thalyx.demo, ese")]
         utterance: String,
     },
+
+    /// Prove the grammar constrains the answer, rather than merely being accepted
+    ///
+    /// `check` proves llama.cpp took --grammar-file, because it exits non-zero
+    /// on a flag it does not know. It cannot prove the grammar changed
+    /// anything: the prompt asks for an object, so a model that produces one
+    /// was only doing as it was told.
+    ///
+    /// This asks for a word the grammar cannot emit, twice — with the flag and
+    /// without it. Two inferences.
+    GrammarCheck,
 }
 
 pub fn model(store: &Store, command: ModelCommand) -> Fallible {
@@ -98,6 +110,7 @@ pub fn model(store: &Store, command: ModelCommand) -> Fallible {
         } => choose(store, &tier, &weights, &binary),
         ModelCommand::Forget => forget(store),
         ModelCommand::Check { utterance } => check(store, &utterance),
+        ModelCommand::GrammarCheck => grammar_check(store),
     }
 }
 
@@ -311,6 +324,58 @@ fn check(store: &Store, utterance: &str) -> Fallible {
         }
     }
     Ok(())
+}
+
+/// Ask for something the grammar forbids, with the flag and without it.
+///
+/// The exit code is the point: this is the one claim `check` cannot make, and
+/// an inconclusive result exits non-zero too. A probe that measured nothing is
+/// not a pass — it just means the model would have answered that way regardless,
+/// and `Gamas-de-Modelo.md` rests four tiers on the grammar doing real work.
+fn grammar_check(store: &Store) -> Fallible {
+    let settings = configured(store)?.ok_or("no model is configured; `thalyx agent model use`")?;
+    let model = settings.model()?;
+
+    println!("tier    {} ▪ {}", settings.tier, settings.weights.display());
+    println!(
+        "asking  for the one word the grammar cannot say, twice — with \
+         --grammar-file and without"
+    );
+    println!();
+
+    match model.grammar_check()? {
+        GrammarCheck::InForce {
+            constrained,
+            unconstrained,
+        } => {
+            println!("with the grammar     {constrained}");
+            println!("without it           {unconstrained}");
+            println!();
+            println!("PROVEN: told to say one word it could not, and left alone it did.");
+            println!("--grammar-file is constraining the decoding, not just being accepted.");
+            Ok(())
+        }
+        GrammarCheck::NotInForce { constrained } => {
+            println!("with the grammar     {constrained}");
+            println!();
+            println!("FAILED: it said the word while the grammar was supposedly in force.");
+            println!("The grammar cannot express that, so it is not being applied. Every");
+            println!("guarantee in Gamas-de-Modelo.md that rests on the grammar is void.");
+            Err("the grammar is not constraining the model".into())
+        }
+        GrammarCheck::Inconclusive {
+            constrained,
+            unconstrained,
+        } => {
+            println!("with the grammar     {constrained}");
+            println!("without it           {unconstrained}");
+            println!();
+            println!("NOT PROVEN: both answers are proposals, so this model would have");
+            println!("produced one either way and the probe cannot see the grammar work.");
+            println!("It is not evidence the grammar is broken — it is no evidence at all.");
+            Err("the probe could not tell the two apart".into())
+        }
+    }
 }
 
 /// A memory figure that was never sampled says so.

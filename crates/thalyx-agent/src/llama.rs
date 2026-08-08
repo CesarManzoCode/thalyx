@@ -246,6 +246,40 @@ pub struct Run {
     pub peak_rss: Option<u64>,
 }
 
+/// Whether a run is handed `--grammar-file`.
+///
+/// Only [`LlamaModel::grammar_check`] ever passes [`Constrained::No`]. It is a
+/// private argument rather than a field on [`Invocation`] on purpose: an
+/// unconstrained inference is not a mode Thalyx supports, and a setting for it
+/// in the config file would be one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Constrained {
+    Yes,
+    No,
+}
+
+/// What [`LlamaModel::grammar_check`] found.
+///
+/// Three outcomes and not two. `Inconclusive` is the one that has to exist:
+/// rule 3 says a check that could not be made must say so rather than counting
+/// as a pass, and a probe both arms answer the same way has not measured
+/// anything.
+#[derive(Debug, Clone)]
+pub enum GrammarCheck {
+    /// Constrained it could not say the word; left alone it did.
+    InForce {
+        constrained: String,
+        unconstrained: String,
+    },
+    /// Constrained it said the word anyway, which the grammar forbids.
+    NotInForce { constrained: String },
+    /// Both arms produced a proposal, so this probe cannot tell them apart.
+    Inconclusive {
+        constrained: String,
+        unconstrained: String,
+    },
+}
+
 /// The model the decree describes.
 #[derive(Debug, Clone)]
 pub struct LlamaModel {
@@ -278,9 +312,84 @@ impl LlamaModel {
 
     /// Run one inference and report what it cost.
     pub fn run(&self, transcript: &Transcript) -> Result<Run, LlamaError> {
+        let run = self.complete(&Prompt::render(transcript), Constrained::Yes)?;
+
+        // The prompt was completed, so cut the completion out of what came
+        // back. The marker said where the answer begins; the grammar says where
+        // it ends, and llama.cpp prints ` [end of text]` past that point.
+        // Taking the whole region instead is what turned a correct proposal
+        // into an accusation — see `Proposal::completion_in`.
+        //
+        // Silence is left alone: a tool that completed to nothing is a quiet
+        // model, not a broken tool, and `Proposal::parse` has a word for it.
+        if run.answer.is_empty() {
+            return Ok(run);
+        }
+
+        match crate::proposal::Proposal::completion_in(&run.answer) {
+            Some(completion) if crate::proposal::Proposal::parse(completion).is_ok() => Ok(Run {
+                answer: completion.to_string(),
+                ..run
+            }),
+            // A grammar-constrained decode *cannot* produce anything that is
+            // not a proposal, so this is the grammar not being applied.
+            _ => Err(LlamaError::GrammarNotInForce {
+                binary: self.invocation.binary.clone(),
+                answer: sample_of(&run.answer),
+            }),
+        }
+    }
+
+    /// Ask the model for something the grammar forbids, with and without it.
+    ///
+    /// The one thing `run` cannot establish. See [`Prompt::probe`] for why the
+    /// probe is shaped the way it is, and [`GrammarCheck`] for what each of the
+    /// three outcomes means.
+    ///
+    /// Two runs of the *same* prompt so that `--grammar-file` is the only thing
+    /// that differs between them. A check whose two arms differ in two things
+    /// cannot say which one moved the result.
+    pub fn grammar_check(&self) -> Result<GrammarCheck, LlamaError> {
+        let probe = Prompt::probe();
+        let constrained = self.complete(&probe, Constrained::Yes)?.answer;
+        let unconstrained = self.complete(&probe, Constrained::No)?.answer;
+
+        let constrained_is_proposal = crate::proposal::Proposal::completion_in(&constrained)
+            .is_some_and(|c| crate::proposal::Proposal::parse(c).is_ok());
+        let unconstrained_is_proposal = crate::proposal::Proposal::completion_in(&unconstrained)
+            .is_some_and(|c| crate::proposal::Proposal::parse(c).is_ok());
+
+        Ok(match (constrained_is_proposal, unconstrained_is_proposal) {
+            // Told to say one word, it emitted a proposal instead — and left to
+            // itself it obeyed. Nothing but the grammar does that.
+            (true, false) => GrammarCheck::InForce {
+                constrained,
+                unconstrained,
+            },
+            // It said the word while the grammar was supposedly in force. The
+            // grammar cannot express it, so the grammar was not applied.
+            (false, _) => GrammarCheck::NotInForce { constrained },
+            // Both proposals. The grammar may be working perfectly; this probe
+            // cannot see it, because the model would have answered that way
+            // anyway. Rule 4: without the control arm, a check that always
+            // passes and a check that works look the same.
+            (true, true) => GrammarCheck::Inconclusive {
+                constrained,
+                unconstrained,
+            },
+        })
+    }
+
+    /// Spawn the tool, wait for it, and take what follows the marker.
+    ///
+    /// Everything both callers share, and nothing about what a good answer is.
+    /// `constrained` is not a setting: [`Constrained::No`] exists for the
+    /// grammar probe alone, since `Gamas-de-Modelo.md` decrees that every
+    /// inference runs grammar-constrained, and a config knob for turning that
+    /// off would be a decree with an opt-out.
+    fn complete(&self, prompt: &Prompt, constrained: Constrained) -> Result<Run, LlamaError> {
         self.preflight()?;
 
-        let prompt = Prompt::render(transcript);
         let scratch = tempfile::tempdir()?;
         let prompt_file = scratch.path().join("prompt.txt");
         let grammar_file = scratch.path().join("proposal.gbnf");
@@ -288,7 +397,7 @@ impl LlamaModel {
         std::fs::write(&grammar_file, crate::grammar::gbnf())?;
 
         let started = Instant::now();
-        let mut child = self.spawn(&prompt_file, &grammar_file)?;
+        let mut child = self.spawn(&prompt_file, &grammar_file, constrained)?;
 
         let peak = Arc::new(AtomicU64::new(0));
         let sampler = sample_peak_rss(child.id(), Arc::clone(&peak));
@@ -315,13 +424,15 @@ impl LlamaModel {
 
         let text = String::from_utf8_lossy(&out).into_owned();
 
-        // The contract, checked in two steps rather than assumed. Both of these
-        // used to end up at `Proposal::parse` as "the model said something
-        // unparseable", which names the wrong culprit — and named it wrongly
-        // for the one failure a real llama.cpp actually produced.
+        // The marker is gone, so the prompt was never completed. That is a tool
+        // which does not do this job, not an answer that came out bad — and it
+        // used to arrive at `Proposal::parse` as "the model said something
+        // unparseable", naming the wrong culprit for the one failure a real
+        // llama.cpp actually produced.
         //
-        // 1. The marker is gone, so the prompt was never completed. That is a
-        //    tool which does not do this job, not an answer that came out bad.
+        // Checked here rather than in `run` because it is true of any
+        // completion, grammar or no grammar: a tool that never read the prompt
+        // has not answered the probe either.
         let Some(answer) = prompt.answer_in(&text) else {
             return Err(LlamaError::NotOneShot {
                 binary: self.invocation.binary.clone(),
@@ -329,32 +440,6 @@ impl LlamaModel {
             });
         };
         let answer = answer.trim().to_string();
-
-        // 2. The prompt was completed, so cut the completion out of what came
-        //    back. The marker said where the answer begins; the grammar says
-        //    where it ends, and llama.cpp prints ` [end of text]` past that
-        //    point. Taking the whole region instead is what turned a correct
-        //    proposal into an accusation — see `Proposal::completion_in`.
-        //
-        //    Silence is left alone: a tool that completed to nothing is a quiet
-        //    model, not a broken tool, and `Proposal::parse` has a word for it.
-        let answer = if answer.is_empty() {
-            String::new()
-        } else {
-            match crate::proposal::Proposal::completion_in(&answer) {
-                Some(completion) if crate::proposal::Proposal::parse(completion).is_ok() => {
-                    completion.to_string()
-                }
-                // A grammar-constrained decode *cannot* produce anything that
-                // is not a proposal, so this is the grammar not being applied.
-                _ => {
-                    return Err(LlamaError::GrammarNotInForce {
-                        binary: self.invocation.binary.clone(),
-                        answer: sample_of(&answer),
-                    });
-                }
-            }
-        };
 
         Ok(Run {
             answer,
@@ -366,14 +451,22 @@ impl LlamaModel {
         })
     }
 
-    fn spawn(&self, prompt_file: &Path, grammar_file: &Path) -> Result<Child, LlamaError> {
-        Command::new(&self.invocation.binary)
+    fn spawn(
+        &self,
+        prompt_file: &Path,
+        grammar_file: &Path,
+        constrained: Constrained,
+    ) -> Result<Child, LlamaError> {
+        let mut command = Command::new(&self.invocation.binary);
+        command
             .arg("-m")
             .arg(&self.invocation.weights)
             .arg("-f")
-            .arg(prompt_file)
-            .arg("--grammar-file")
-            .arg(grammar_file)
+            .arg(prompt_file);
+        if constrained == Constrained::Yes {
+            command.arg("--grammar-file").arg(grammar_file);
+        }
+        command
             .arg("-n")
             .arg(self.invocation.predict.to_string())
             .arg("--seed")
@@ -747,6 +840,132 @@ CAPTURED"#,
             matches!(error, LlamaError::GrammarNotInForce { .. }),
             "got {error}"
         );
+    }
+
+    /// A stand-in that actually is constrained by the flag.
+    ///
+    /// Rule 8, and the reason this one is written the long way: a fake that
+    /// printed a proposal whatever it was given would pass the check that says
+    /// the grammar works, while modelling a tool that ignores the grammar
+    /// completely. What has to be modelled is the *dependence* — say the word
+    /// when free to, and be unable to when not.
+    fn obeys_the_grammar(dir: &Path) -> PathBuf {
+        stand_in(
+            dir,
+            r#"cat "$4"
+case "$*" in
+  *--grammar-file*) printf '%s' '{"operation": "install_module", "targets": []}' ;;
+  *)                printf '%s' 'BANANA' ;;
+esac"#,
+        )
+    }
+
+    #[test]
+    fn a_tool_whose_answer_changes_with_the_grammar_flag_proves_the_grammar_is_applied() {
+        // The claim `run` cannot make. llama.cpp exits non-zero on a flag it
+        // does not know, so a clean run proves --grammar-file was *accepted*;
+        // it says nothing about whether it constrained anything, because the
+        // real prompt asks for an object and a model that gives one was only
+        // doing as it was told.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = obeys_the_grammar(scratch.path());
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+
+        let GrammarCheck::InForce { unconstrained, .. } = &check else {
+            panic!("a tool that plainly obeys the grammar was reported as {check:?}");
+        };
+        assert!(
+            unconstrained.contains(crate::prompt::PROBE_WORD),
+            "the control arm did not show the model doing what it was asked: {unconstrained:?}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_says_the_forbidden_word_while_constrained_is_not_applying_the_grammar() {
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(scratch.path(), r#"cat "$4"; printf '%s' 'BANANA'"#);
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+        assert!(
+            matches!(check, GrammarCheck::NotInForce { .. }),
+            "a tool ignoring --grammar-file was reported as {check:?}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_answers_the_same_either_way_is_inconclusive_and_not_a_pass() {
+        // Rule 3 and rule 4 together. This is the shape a real 3B might take —
+        // a model that gives JSON whether or not anything made it — and it must
+        // not be counted as evidence the grammar works. Without this arm, a
+        // grammar that is silently doing nothing looks exactly like one that is.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": []}'"#,
+        );
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+        assert!(
+            matches!(check, GrammarCheck::Inconclusive { .. }),
+            "a probe that measured nothing was reported as {check:?}"
+        );
+    }
+
+    #[test]
+    fn the_word_the_probe_asks_for_is_one_the_grammar_cannot_produce() {
+        // The instrument includes the harness. If the probe word happened to be
+        // readable as a proposal, every arm of the check above would invert and
+        // the whole thing would report the opposite of what it saw.
+        assert!(crate::proposal::Proposal::completion_in(crate::prompt::PROBE_WORD).is_none());
+        assert!(crate::grammar::gbnf().contains(r#"root       ::= "{""#));
+    }
+
+    #[test]
+    fn the_stored_settings_have_no_field_that_could_turn_the_grammar_off() {
+        // `Gamas-de-Modelo.md` decrees that every inference runs grammar
+        // constrained, so a setting for skipping it would be a decree with an
+        // opt-out. `Constrained::No` is a private argument only the probe
+        // passes, and this reads the *serialised shape* rather than the source
+        // text — a doc comment mentioning the grammar is not a knob, and the
+        // first version of this test could not tell the two apart.
+        //
+        // Not sealed, and saying so is the point: `extra_args` takes arbitrary
+        // flags by design, so somebody can hand their own llama.cpp a second
+        // --grammar-file. That is a person switching off a quality guarantee on
+        // their own machine, not a hole — the defence against a model that
+        // misbehaves is attribution, and it holds whatever the grammar does.
+        let settings = crate::config::Settings {
+            tier: "media".to_string(),
+            weights: PathBuf::from("/models/qwen.gguf"),
+            binary: PathBuf::from(COMPLETION_BINARY),
+            extra_args: vec![],
+            predict: 256,
+            seed: 1,
+            timeout_seconds: 180,
+            weights_bytes: 1,
+            weights_digest: "sha256:00".to_string(),
+        };
+
+        for line in toml::to_string(&settings)
+            .expect("the settings serialise")
+            .lines()
+        {
+            let key = line.split('=').next().unwrap_or_default().trim();
+            assert!(
+                !key.contains("grammar") && !key.contains("constrain"),
+                "the config file grew {key:?}, which is how the grammar becomes optional"
+            );
+        }
     }
 
     #[test]

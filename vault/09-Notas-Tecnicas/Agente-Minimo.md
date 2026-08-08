@@ -70,10 +70,11 @@ de máquina: hay RAM y disco de sobra.
 | Que el plazo mate un proceso colgado, y el desborde | Contenedor, con procesos sustitutos |
 | Que una herramienta que abre sesión en vez de completar se detecte | Contenedor, con un sustituto del `llama-cli` interactivo |
 | Que la respuesta termine donde termina la gramática, y no donde deje de imprimir la herramienta | Contenedor, con **la salida capturada de una corrida real** |
+| Que un sondeo distinga una gramática aplicada de una bandera aceptada | Contenedor, con un sustituto que **cambia de respuesta según la bandera** |
 | Que `llama-completion` acepte las banderas | **Su máquina** — hecho el 2026-08-08 |
 | El flujo completo con inferencia real | **Su máquina** — hecho el 2026-08-08, una gama, un enunciado |
-| Que `--grammar-file` sea lo que restringe la respuesta | **Su máquina**, y todavía sin comprobación que lo separe de un modelo que da JSON solo |
-| Acierto, latencia y RAM por gama | **Su máquina** |
+| Que `--grammar-file` restrinja de verdad esa respuesta | **Su máquina** — `thalyx agent model grammar-check` |
+| Acierto, latencia y RAM por gama | **Su máquina** — `thalyx agent bench` |
 
 > **Revisión del 2026-08-08.** Las tres filas del medio son nuevas: antes el
 > camino real no existía y todo lo que lo rodea caía del lado de «su máquina» por

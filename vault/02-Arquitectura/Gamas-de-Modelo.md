@@ -257,16 +257,32 @@ apoya cuatro gamas sobre esta pieza:
 | Las banderas que Thalyx pasa las acepta esta compilación | **Probado** — `llama.cpp` sale distinto de cero ante una bandera que no conoce |
 | Los pesos cargan y el prompt vuelve con el marcador intacto | **Probado** |
 | Vuelve una propuesta bien formada, dentro del plazo | **Probado**, una gama, un enunciado |
-| **`--grammar-file` es lo que restringió esa respuesta** | **No probado** |
+| **`--grammar-file` es lo que restringió esa respuesta** | Comprobación construida; **falta correrla** |
 | Los números por gama del banco | **No probado**, ninguna gama medida |
 
-La cuarta fila es la que importa y es fácil de dar por buena: un modelo de 3B al
+La cuarta fila es la que importa y era fácil de dar por buena: un modelo de 3B al
 que se le pide JSON puede producir JSON por su cuenta, así que **una bandera
-aceptada y una gramática aplicada se ven exactamente igual desde aquí**.
-Separarlas necesita un enunciado que el modelo contestaría con prosa si lo
-dejaran. Hasta que exista esa comprobación, la frase de este decreto —«un
-contrato malformado es imposible en las cuatro gamas»— está sostenida por las
-pruebas del parser, que corren en todas partes, y no por ninguna corrida real.
+aceptada y una gramática aplicada se ven exactamente igual** desde una corrida
+normal. Sin separarlas, la frase de este decreto —«un contrato malformado es
+imposible en las cuatro gamas»— estaría sostenida por las pruebas del parser y
+por ninguna corrida real.
+
+`thalyx agent model grammar-check` las separa: le pide al modelo **la única
+palabra que la gramática no puede emitir**, dos veces, con la bandera y sin ella,
+sin más diferencia entre las dos corridas. Si restringido no puede decirla y
+suelto sí, sólo la gramática explica eso. Tiene **tres** resultados y no dos —
+si el modelo contesta con una propuesta en las dos ramas, el sondeo no midió nada
+y dice `NOT PROVEN`, que no es lo mismo que pasar.
+
+### La primera medición real, contra la estimación de la tabla
+
+| Gama | RAM estimada aquí | RAM medida | Latencia |
+|---|---|---|---|
+| media (Qwen2.5-3B Q4_K_M) | ~8 GB | **4.77 GB** | **6.88 s** |
+
+Un enunciado, una gama, una máquina — no es el banco. Pero es el primer número
+de esta nota que **alguien midió en vez de estimar**, y la estimación iba alta
+por casi el doble.
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

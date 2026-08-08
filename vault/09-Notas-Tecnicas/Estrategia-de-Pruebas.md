@@ -2118,6 +2118,39 @@ contradicción saltaba sola.
 El mensaje corregido explica además dónde corta, para que la próxima acusación
 falsa se delate igual de rápido.
 
+## Regla derivada: probar que algo restringe necesita un enunciado que sin la restricción daría otra respuesta
+
+Del mismo día, y no de un defecto sino de una afirmación que estaba a punto de
+darse por buena. `verify.sh` decía *«`llama.cpp` tomó las banderas y la
+gramática»* porque `llama.cpp` sale distinto de cero ante una bandera que no
+conoce. Eso prueba que `--grammar-file` fue **aceptada**. No prueba que
+restringiera nada:
+
+> El prompt real **le pide al modelo un objeto**. Un modelo que da un objeto sólo
+> hizo lo que le dijeron. Así que una bandera aceptada y una gramática aplicada
+> **producen exactamente la misma evidencia**, y cuatro gamas del decreto se
+> apoyaban en no notarlo.
+
+La regla:
+
+> **Una comprobación de que X restringe la salida necesita un enunciado cuya
+> respuesta sin X sea distinta.** Si el sistema, libre, habría contestado igual,
+> la corrida no midió X — midió al sistema. Y el sondeo tiene que decirlo: hace
+> falta un tercer resultado, «no concluyente», o esos dos casos se confunden con
+> pasar.
+
+`thalyx agent model grammar-check` pide la única palabra que la gramática no
+puede emitir, dos veces, con la bandera y sin ella y sin ninguna otra diferencia
+entre las dos corridas. Restringido no puede decirla; suelto sí. Las dos ramas
+con propuesta ⇒ `NOT PROVEN`, que es regla 3 y regla 4 juntas: sin la rama de
+control, una gramática que no hace nada y una que funciona se ven igual.
+
+El sustituto que lo prueba **modela la dependencia**, no el resultado: dice la
+palabra cuando puede y emite un objeto cuando le pasan la bandera. Un falso que
+imprimiera siempre un objeto habría pasado la prueba mientras modelaba justo la
+herramienta que el sondeo tiene que cazar — regla 8, en su forma más fácil de
+equivocar.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

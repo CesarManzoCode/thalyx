@@ -14,6 +14,54 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El agente contesta desde hierro real, y falta una comprobación por correr — 2026-08-08
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ```
+> thalyx agent model check "dev.thalyx.demo, ese quiero"
+> answer    {"operation": "install_module", "targets": ["dev.thalyx.demo"]}
+> latency   6.88s
+> peak rss  4.77 GB
+> parsed as: Proposal { operation: InstallModule, targets: ["dev.thalyx.demo"], … }
+> ```
+>
+> Enunciado → modelo real → propuesta parseada, de extremo a extremo, en la
+> Fedora de Cesar. **La RAM medida es 4.77 GB contra los ~8 GB que estimaba
+> [[Gamas-de-Modelo]]**: el primer número de esa tabla que alguien midió.
+>
+> ### Lo construido después: separar «bandera aceptada» de «gramática aplicada»
+>
+> `llama.cpp` sale distinto de cero ante una bandera que no conoce, así que una
+> corrida limpia probaba que `--grammar-file` fue **aceptada**. No que
+> restringiera nada — el prompt real le pide un objeto al modelo, y un modelo que
+> da un objeto sólo hizo lo que le dijeron. Cuatro gamas del decreto se apoyaban
+> en no notar la diferencia.
+>
+> `thalyx agent model grammar-check` pide **la única palabra que la gramática no
+> puede emitir**, dos veces, con la bandera y sin ella, sin ninguna otra
+> diferencia entre las dos corridas. Tres resultados:
+>
+> | Resultado | Qué significa |
+> |---|---|
+> | `PROVEN` | Restringido no pudo decirla; suelto sí. Sólo la gramática explica eso |
+> | `FAILED` | La dijo con la gramática puesta. No se está aplicando |
+> | `NOT PROVEN` | Las dos ramas dieron propuesta: el sondeo no midió nada, y eso **no es pasar** |
+>
+> Etapa nueva en `verify.sh`, y regla nueva en [[Estrategia-de-Pruebas]]: probar
+> que algo restringe necesita un enunciado cuya respuesta sin la restricción sea
+> distinta.
+>
+> ### Lo siguiente que corre Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx agent model grammar-check     # dos inferencias
+> thalyx agent bench                   # las gamas, minutos
+> ```
+>
+> `CLAUDE.md` ya dice siete veces en vez de seis, con esta causa anotada.
+>
 > ## La primera inferencia real completó, y Thalyx rechazó una respuesta correcta — 2026-08-08
 >
 > **Éste es el estado actual.** Los dos bloques de abajo son la historia.
