@@ -1239,6 +1239,84 @@ siguió en cero.
 
 Y sigue sin tocarse el prompt.
 
+### Hipótesis con mecanismo: la gramática obliga a comprometerse antes de poder declinar
+
+Buscando por qué la abstención no se mueve con el tamaño, la respuesta más
+probable no está en los modelos. Está en la primera línea de la gramática:
+
+```
+root      ::= "{" ws "\"operation\"" ws ":" ws operation ws "," ws "\"targets\"" …
+operation ::= "\"install_module\""
+```
+
+`ProposedOperation::ALL` tiene **exactamente un elemento**. La gramática no le
+ofrece al modelo ninguna alternativa en el primer campo, y el orden de los campos
+está fijo. Es decir:
+
+> **Lo primero que el modelo escribe, en cada inferencia de cada caso, es
+> `"install_module"` — obligado.** Sólo después llega a `targets`, donde
+> abstenerse significa emitir `[]` y contradecir lo que la gramática ya le hizo
+> decir.
+
+Un modelo autorregresivo condiciona sobre su propia salida. Para cuando llega a
+elegir objetivos, ya se dijo a sí mismo que esto es una instalación.
+
+Los casos 6, 7 y 8 son los que lo enseñan mejor, porque **no requieren
+razonamiento**: `instala algo bueno`, `necesito algo para editar video`. No hay
+ningún módulo nombrado en el transcript. No hace falta entender la negación ni
+distinguir una pregunta de una orden — basta con notar que no hay nada que
+instalar. Las tres gamas inventaron:
+
+```
+org.openjdk.jmh        org.web3j.video       com.videolan.vlc
+com.example.module1    com.adobe.photoshop   org.thalibos.thingy.thingy1
+```
+
+Nombres de paquetes memorizados del entrenamiento. Obligado a decir
+`install_module` y luego a nombrar algo, el modelo fue a buscar a su memoria.
+
+Y hay una ironía que vale registrar. El comentario de la prueba
+`a_model_that_found_nothing_has_a_way_to_say_so` describe el defecto que vino a
+arreglar:
+
+> *«una gramática que exige al menos un id vuelve inexpresable la abstención, así
+> que toda frase ambigua vuelve como una invención confiada — y se culpa a la
+> gama por una decisión que la gramática le quitó».*
+
+Eso es **exactamente lo que se está observando**, y llevábamos seis corridas
+culpando a las gamas. El arreglo hizo expresable la abstención y la dejó
+alcanzable sólo después de un compromiso forzado. **Fue a la mitad.**
+
+**Esto es una hipótesis, no una causa probada.** Compite con otras: que la
+instrucción de abstención del prompt pese poco, que Qwen2.5-Instruct esté ajustado
+para complacer, o que la negación sea comprensión y no estructura —y los casos 9,
+16, 17 y 18 sí son de negación o de pregunta—. Lo que la distingue es que
+explica por qué el resultado **no se mueve con el tamaño**, y las otras no.
+
+#### Cómo se prueba, sin cambiar nada de Thalyx
+
+Ahora se puede, y por dos cosas que se construyeron esta semana: los prompts
+están guardados y el sistema es determinista.
+
+```sh
+cd "$(dirname "$(grep -rl 'instala algo bueno' ~/evidencia/ligera-3/*/prompt.txt)")"
+sed 's/ --grammar-file [^ ]*//' command | sh
+```
+
+El mismo prompt exacto, con y sin gramática — la forma del sondeo de gramática,
+un solo flag de diferencia. Si sin la gramática el modelo dice en prosa que no
+hay nada que instalar, y con ella inventa `org.openjdk.jmh`, **la gramática es lo
+que le quita la decisión**. Si sin gramática también inventa, la hipótesis se cae
+y el problema es del prompt o del modelo.
+
+Tres casos, tres lecturas a ojo, cero código. Y como la salida no será una
+propuesta, la lee una persona.
+
+Si resultara confirmada, el arreglo tiene forma conocida —una operación que
+signifique «nada que hacer», elegible en el primer campo— y **cambia la gramática,
+el enum y el contrato**, así que rompe la comparabilidad con las seis corridas de
+línea base. No se toca sin antes/después.
+
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer
 - [[Debate-Agente-Fine-Tuning]] — por qué el fine-tuning no es de Fase 1
