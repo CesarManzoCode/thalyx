@@ -2210,6 +2210,52 @@ rinde**, gasta todo el presupuesto buscando una manera legal de decirlo. El tope
 de tokens es lo único que lo termina. No es un defecto —el tope existe para esto—
 pero conviene saber que la fuga tiene esa forma y no la de una negativa.
 
+## Regla derivada: un delimitador que el sistema medido puede escribir no delimita
+
+Encontrada el 2026-08-08 **en una corrida que pasó**. `grammar-check` salió
+`PROVEN`, y el brazo de control traía esto:
+
+```
+without it           BANANA <<<TH
+```
+
+El modelo dijo la palabra y **empezó a reproducir el marcador que acababa de leer
+al final del prompt**. Lo cortó el tope de tokens, no una decisión suya.
+
+El marcador es aleatorio por invocación, y esa aleatoriedad estaba razonada
+contra un adversario: un texto ajeno no puede contener un marcador que tendría
+que adivinar. Correcto, y **no cubría este caso**, porque el modelo no lo adivina:
+lo tiene delante.
+
+> **Un delimitador que el sistema medido puede escribir no delimita.** Ser
+> imposible de *adivinar* no es ser imposible de *copiar*, y todo lo que se le
+> pone al modelo en el prompt es algo que el modelo puede repetir. El ancla tiene
+> que ser algo que sólo el instrumento posee, o algo tan grande que reproducirlo
+> sea reproducir el instrumento entero.
+
+`answer_in` tomaba la **última** aparición del marcador, así que una copia
+completa habría hecho que la respuesta fuera lo que viniera después de la copia
+del modelo. Ahora se ancla en el prompt repetido entero —que la herramienta
+imprime literal y el modelo no puede falsificar sin emitirlo completo— y el
+marcador solo queda de respaldo, tomando la **primera** aparición: el prompt lo
+contiene exactamente una vez, y lo que venga después es del modelo.
+
+La gramática tampoco lo impedía: `RANGE_CHARS` contiene `<`, `>`, `-` y los
+dígitos hexadecimales, así que un modelo restringido puede deletrear un marcador
+dentro de un campo `constraint`. No es un ataque —sigue haciendo falta adivinar—
+pero es corrupción accidental con entradas normales, que es peor en un sentido:
+no necesita que nadie lo intente.
+
+### Lo que lo encontró fue mirar una prueba que pasó
+
+Nada falló. La comprobación dijo `PROVEN` y tenía razón. El defecto estaba en la
+evidencia que imprimió al lado, y sólo porque la imprimía:
+
+> **Una corrida que pasa también trae datos.** Leer únicamente el veredicto de
+> las que fallan deja sin abrir justamente las salidas que nadie va a volver a
+> mirar. Es la otra mitad de la regla de enseñar la evidencia: enseñarla no sirve
+> si sólo se lee cuando el veredicto ya es malo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
