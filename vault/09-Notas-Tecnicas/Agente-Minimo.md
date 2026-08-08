@@ -65,9 +65,19 @@ de máquina: hay RAM y disco de sobra.
 | Ensamblado del contrato y procedencia | Contenedor |
 | Que un modelo hostil no logre falsificar el origen | Contenedor, con el falso adversario |
 | Enunciado → contrato → resolución → instalación | Contenedor, con bundles firmados de verdad |
-| Que la gramática GBNF sea válida y `llama.cpp` la acepte | **Su máquina** |
+| Que la gramática y el parser digan lo mismo | Contenedor — se comparan carácter por carácter |
+| Que la respuesta se recorte del proceso correctamente | Contenedor, con procesos sustitutos |
+| Que el plazo mate un proceso colgado, y el desborde | Contenedor, con procesos sustitutos |
+| Que `llama.cpp` acepte las banderas y la gramática | **Su máquina** |
 | Acierto, latencia y RAM por gama | **Su máquina** |
 | El flujo completo con inferencia real | **Su máquina** |
+
+> **Revisión del 2026-08-08.** Las tres filas del medio son nuevas: antes el
+> camino real no existía y todo lo que lo rodea caía del lado de «su máquina» por
+> no tener con qué separarlo. Ahora sí se separa, y lo que queda ahí es más chico
+> y está dicho con nombre — **si `llama.cpp` rechaza una bandera, lo dice y sale
+> distinto de cero**, así que esa fila es una afirmación comprobable y no una
+> zona gris. Ver [[Gamas-de-Modelo]].
 
 ### El gancho que existe por la regla 4
 

@@ -5,6 +5,7 @@
 //! Everything the agent will be able to do, a human can do here first.
 
 mod agent;
+mod agent_model;
 mod dev;
 mod enforce;
 mod graph;

@@ -27,28 +27,49 @@
 //!    provenance fields and rejects them if offered; the assembler writes the
 //!    provenance from the channel each piece of text arrived on.
 //!
-//! ## What is not here
+//! ## The three implementations of [`Model`], and what each one is for
 //!
-//! The real [`Model`] implementation, which invokes `llama.cpp` as a process.
-//! The development container has neither `llama.cpp` nor a route to the
-//! weights, so writing it here would stack a second unverified piece on the
-//! first — see the table in `Agente-Minimo.md` for which claims need his
-//! machine. The only implementation in this crate is [`HostileModel`], and it
-//! exists to fail, not to work.
+//! | | What it is | Where it can run |
+//! |---|---|---|
+//! | [`UnconfiguredModel`] | No model at all, said out loud | Anywhere |
+//! | [`HostileModel`] | A model that misbehaves on purpose | Anywhere |
+//! | [`llama::LlamaModel`] | llama.cpp as a process | A machine with weights |
+//!
+//! The third is the one the decree describes and **the only one that has never
+//! run**: the development container has neither llama.cpp nor a route to the
+//! weights. Everything around it — the grammar, the prompt, the marker, the
+//! deadline — is exercised here against stand-in processes; what is left for his
+//! machine is whether that build of llama.cpp accepts the flags, and what each
+//! tier actually gets right. `dev/verify.sh` says so instead of staying quiet,
+//! and `THALYX_REQUIRE_AGENT_TESTS=1` turns the silence into a failure.
+//!
+//! The first is not a stub standing in for the third. A Thalyx with no model is
+//! a Thalyx a human can still use for everything — that is
+//! `vault/01-Filosofia/Principio-Doble-Ruta.md` being load-bearing rather than
+//! decorative.
 
 pub mod assemble;
 pub mod attribution;
+pub mod config;
+pub mod grammar;
+pub mod llama;
 pub mod model;
+pub mod prompt;
 pub mod proposal;
 pub mod recollection;
 pub mod router;
+pub mod tier;
 pub mod transcript;
 
 pub use assemble::{ForeignText, Path};
 pub use attribution::AttributionError;
+pub use config::{ConfigError, Settings};
+pub use llama::{Invocation, LlamaError, LlamaModel, Run};
 pub use model::{HostileModel, Misbehaviour, Model, ModelError, UnconfiguredModel};
+pub use prompt::Prompt;
 pub use proposal::{Proposal, ProposalError, ProposedOperation};
 pub use router::Route;
+pub use tier::{Estimate, Tier};
 pub use transcript::{Channel, Segment, Transcript};
 
 use thalyx_contract::{Caller, Contract};

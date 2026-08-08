@@ -152,6 +152,60 @@ mitad de las veces; en la media, casi nunca". Eso es accionable. "72%" no.
   familia la supera *en las cuatro gamas a la vez*, se cambia entera — nunca
   una gama suelta, porque eso rompería la comparabilidad que motiva el decreto.
 
+## Revisión del 2026-08-08 — construido, y tres cosas que el decreto no anticipó
+
+**El camino real existe**: `crates/thalyx-agent/src/llama.rs` invoca `llama.cpp`
+como proceso, con la gramática de `grammar.rs` y el prompt de `prompt.rs`.
+`thalyx agent model use <gama> --weights <archivo>` elige la gama, `thalyx agent
+grammar` imprime la gramática, y `thalyx agent bench` es el banco de esta nota.
+
+**Nada de eso ha corrido contra `llama.cpp`.** El contenedor de desarrollo no lo
+tiene ni alcanza los pesos. Lo que sí corrió aquí es todo lo que rodea a la
+inferencia, contra procesos sustitutos. Ver [[Punto-Actual]].
+
+### 1. Restringir la salida quitó la abstención, que es lo que el banco mide
+
+La primera gramática pedía **al menos un id**. Eso hace imposible un contrato mal
+formado —lo que esta nota promete— y hacía imposible *decir que no se encontró
+ninguno*. Un enunciado ambiguo no tenía respuesta legal salvo inventar, así que
+las cuatro gamas habrían sacado cero en abstención y la lectura obvia habría sido
+«los modelos chicos inventan».
+
+**Corregido**: `targets` puede venir vacío, y eso aterriza en el
+*«the request names nothing to act on»* que el agente ya tenía. Y el prompt lo
+dice, porque una respuesta legal que nadie menciona es una que el modelo no usa.
+Regla nueva en [[Estrategia-de-Pruebas]].
+
+### 2. El decreto pide reproducir a mano, y eso costó una decisión de formato
+
+*«La misma inferencia se puede repetir en una terminal con el mismo prompt, la
+misma gramática y la misma semilla»* — así que la semilla es fija, la gramática
+se imprime con un comando, y el comando exacto se puede imprimir.
+
+Pero leer la salida de `llama-cli` choca con la regla 6 de `CLAUDE.md`: **un
+parser de la salida de otra herramienta necesita una muestra real capturada**, y
+aquí no hay ninguna ni se puede conseguir. La solución fue **no parsear el
+formato**: el prompt termina en un marcador aleatorio por invocación, y la
+respuesta es lo que sigue a su última aparición. Eso funciona si la herramienta
+repite el prompt, si no lo repite, si le pone banderas o si le agrega tiempos —
+los casos difieren en lo que rodea al marcador y ninguno difiere en dónde está.
+
+Aleatorio y no fijo **porque el texto ajeno va dentro del prompt**: un marcador
+fijo es una cadena que un README puede contener, y un README que la contuviera
+estaría eligiendo dónde empieza la respuesta.
+
+Lo que queda sin comprobar es más chico y tiene nombre: **que ese `llama.cpp`
+acepte las banderas**. Por eso las banderas que cambian entre versiones viven en
+el archivo de configuración y no en el código.
+
+### 3. El tamaño medido tiene dónde vivir, y no es esta tabla
+
+Esta nota dice que los tamaños son estimados hasta que el banco los mida. En el
+código el estimado es de un tipo que se imprime con `~`, para que no se pueda
+leer como medición; y `thalyx agent model use` **mide el archivo** y escribe los
+bytes reales en la configuración. La tabla de arriba se corrige desde ahí cuando
+haya una corrida, no desde una página de descarga.
+
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer
 - [[Debate-Agente-Fine-Tuning]] — por qué el fine-tuning no es de Fase 1
