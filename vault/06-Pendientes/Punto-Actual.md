@@ -14,9 +14,67 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Cinco corridas, y el banco es más estable de lo que parecía — 2026-08-08
+> ## El instrumento para la pregunta de la abstención está listo — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La abstención sale **0 de 46** en tres tamaños de modelo y seis corridas, y un
+> resultado que no se mueve cuando la única variable se mueve habla de lo que
+> esas corridas **comparten**. La sospecha tiene mecanismo:
+> `operation ::= "\"install_module\""` tiene **una sola alternativa**, y el orden
+> de los campos está fijo, así que lo primero que el modelo escribe en cada
+> inferencia es `install_module`, obligado; abstenerse exige contradecirlo
+> después. Detalle en [[Gamas-de-Modelo]].
+>
+> Se construyó `thalyx agent grammar-effect` para contestarlo. **Nada del prompt,
+> la gramática ni las gamas fue tocado.**
+>
+> ### Los comandos, en orden
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+>
+> # La gama media primero: es la que más entiende, así que su brazo libre es
+> # el que mejor puede sostener el control.
+> thalyx agent model use media --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
+> thalyx agent grammar-effect --keep-prompt ~/evidencia/efecto-media 2>&1 | tee efecto-media.log
+>
+> thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+> thalyx agent grammar-effect --keep-prompt ~/evidencia/efecto-ligera 2>&1 | tee efecto-ligera.log
+> ```
+>
+> Cuarenta inferencias por gama: unos **4–5 minutos** la media, unos **3** la
+> ligera. Imprime cada caso al terminarlo, así que no hay silencios largos.
+>
+> ### Qué puede contestar, y las tres son respuestas
+>
+> | Veredicto | Qué significa |
+> |---|---|
+> | `THE GRAMMAR TAKES THE DECISION` | Con gramática inventó, sin ella nunca — y aun así encontró el módulo correcto donde lo había. El cero del banco no es el modelo negándose a declinar, es Thalyx obligándolo a decir `install_module` antes de poder |
+> | `IT INVENTS EITHER WAY` | Quitar la gramática no lo detuvo. **La hipótesis queda refutada** y lo que resta sospechar es el prompt o el modelo |
+> | `NOT PROVEN` (sale distinto de cero) | Sin gramática el modelo no encontró el módulo correcto ni donde sí lo había, así que su silencio en los casos de abstención no es una decisión. **No es evidencia de nada**, y el propio comando lo dice |
+>
+> El tercero es el que hace honesto al experimento: si el control no aguanta, no
+> hay veredicto. Un sondeo que no puede fallar no es un sondeo.
+>
+> ### Dos defectos que aparecieron construyéndolo
+>
+> Los dos empujaban hacia declarar culpable a la gramática, que es la dirección
+> en la que uno quiere creer:
+>
+> 1. **El escáner de ids era ciego al JSON.** El brazo restringido siempre es
+>    JSON, así que una respuesta llena de invenciones se habría contado como
+>    silencio. Lo encontró una prueba.
+> 2. **Los dos brazos se pisaban el `command` guardado** —comparten marcador, así
+>    que compartían directorio— y sobrevivía la línea sin `--grammar-file`. **Ese
+>    ya existía en `grammar-check`** desde que se construyó `--keep-prompt`.
+>    Corregido, con regresión comprobada fallando contra el nombre anterior.
+>
+> 891 pruebas, `clippy` limpio, `cargo fmt` aplicado.
+>
+> ## Cinco corridas, y el banco es más estable de lo que parecía — 2026-08-08
+>
+> Cómo se llegó a la pregunta de arriba.
 >
 > Tres corridas de la gama ligera y dos de la media, con `--keep-prompt`. Esto
 > **corrige la lectura del bloque de abajo**, que decía que las cifras de

@@ -512,6 +512,36 @@ impl LlamaModel {
     /// Two runs of the *same* prompt so that `--grammar-file` is the only thing
     /// that differs between them. A check whose two arms differ in two things
     /// cannot say which one moved the result.
+    /// Answer one transcript twice, with the grammar and without it.
+    ///
+    /// For [`crate::grammar_effect`], which asks whether the grammar is what
+    /// stops this model from declining. The two arms share **one rendered
+    /// prompt**, marker and all, so they differ in exactly one flag — a second
+    /// render would carry a new marker and make them two different questions.
+    ///
+    /// This is the only way out of this crate to an unconstrained answer, and
+    /// it is deliberately paired: `Gamas-de-Modelo.md` decrees that every
+    /// inference runs grammar-constrained, so a method that handed back a free
+    /// answer on its own would be that decree with an opt-out. Nothing here can
+    /// become a [`crate::Proposal`] — both arms come back as text.
+    pub fn with_and_without_grammar(
+        &self,
+        transcript: &Transcript,
+    ) -> (Result<String, LlamaError>, Result<String, LlamaError>) {
+        let prompt = Prompt::render(transcript);
+
+        // Each arm's failure is carried out on its own. A single `Result` would
+        // lose the arm that worked, and which of the two failed is most of the
+        // diagnosis: an unconstrained arm that runs away is a different fact
+        // from a constrained one that does.
+        (
+            self.complete(&prompt, Constrained::Yes)
+                .map(|run| run.answer),
+            self.complete(&prompt, Constrained::No)
+                .map(|run| run.answer),
+        )
+    }
+
     pub fn grammar_check(&self) -> Result<GrammarCheck, LlamaError> {
         let probe = Prompt::probe();
 
@@ -611,10 +641,25 @@ impl LlamaModel {
         // Named after the marker, which is unique per invocation: a bench of
         // twenty cases leaves twenty directories instead of overwriting one,
         // and the name is a string the run's own output already shows.
+        //
+        // The arm is in the name because the marker is not enough. Both probes
+        // — `grammar_check` and `with_and_without_grammar` — run *one* rendered
+        // prompt twice on purpose, so the two arms share a marker; without this
+        // suffix the free arm overwrote the constrained arm's `command`, and
+        // what survived was a command line with no `--grammar-file` in it. The
+        // saved evidence for the arm that mattered would have described the
+        // other one.
         let named: String = prompt
             .marker()
             .chars()
             .filter(char::is_ascii_alphanumeric)
+            .chain(
+                match constrained {
+                    Constrained::Yes => "-with-grammar",
+                    Constrained::No => "-free",
+                }
+                .chars(),
+            )
             .collect();
         let scratch = Scratch::open(self.invocation.keep_prompt.as_deref(), &named)?;
         let prompt_file = scratch.path().join("prompt.txt");
@@ -1500,10 +1545,51 @@ esac"#,
         let prompt = std::fs::read_to_string(dirs[0].join("prompt.txt")).unwrap();
         let command = std::fs::read_to_string(dirs[0].join("command")).unwrap();
         assert!(prompt.contains("<<<THALYX-"), "no marker in {prompt:?}");
+        assert!(
+            dirs[0].to_string_lossy().ends_with("-with-grammar"),
+            "the arm is not in the name: {dirs:?}"
+        );
         assert!(dirs[0].join("proposal.gbnf").exists());
         assert!(
             command.contains("--grammar-file") && command.contains("-f "),
             "the command does not name what it ran: {command:?}"
+        );
+    }
+
+    #[test]
+    fn the_two_arms_of_a_probe_do_not_overwrite_each_other() {
+        // Both probes run one rendered prompt twice, so the two arms share a
+        // marker. Named by the marker alone they shared a directory, and the
+        // free arm's `command` — the one with no --grammar-file — was what
+        // survived. The evidence for the constrained arm would have been a
+        // command line describing the other arm.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(scratch.path(), r#"cat "$4"; printf '%s' 'BANANA'"#);
+        let kept = scratch.path().join("kept");
+
+        let mut invocation = Invocation::new(&binary, &weights);
+        invocation.keep_prompt = Some(kept.clone());
+        let _ = LlamaModel::new(invocation).grammar_check();
+
+        let mut names: Vec<String> = std::fs::read_dir(&kept)
+            .expect("the kept directory exists")
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "the two arms shared a directory: {names:?}");
+
+        let commands: Vec<String> = names
+            .iter()
+            .map(|name| std::fs::read_to_string(kept.join(name).join("command")).unwrap())
+            .collect();
+        assert!(
+            commands.iter().any(|c| c.contains("--grammar-file")),
+            "no arm kept the constrained command: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|c| !c.contains("--grammar-file")),
+            "no arm kept the free command: {commands:?}"
         );
     }
 
