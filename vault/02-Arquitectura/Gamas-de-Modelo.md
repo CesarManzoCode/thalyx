@@ -16,15 +16,40 @@ grande del proyecto.
 **El agente no ancla un modelo. Ofrece cuatro gamas de una sola familia, y el
 usuario elige según su hardware.**
 
-| Gama | Modelo | Tamaño en disco | RAM que pide |
-|---|---|---|---|
-| Ligera | `Qwen2.5-1.5B-Instruct` Q4_K_M | ~1.1 GB | 4 GB |
-| Media | `Qwen2.5-3B-Instruct` Q4_K_M | ~2.0 GB | 8 GB |
-| Alta | `Qwen2.5-7B-Instruct` Q4_K_M | ~4.7 GB | 16 GB |
-| Máxima | `Qwen2.5-14B-Instruct` Q4_K_M | ~9.0 GB | 32 GB |
+| Gama | Modelo | Disco estimado | **Disco medido** | RAM que pide | **RSS pico medido** |
+|---|---|---|---|---|---|
+| Ligera | `Qwen2.5-1.5B-Instruct` Q4_K_M | ~1.1 GB | **1 117 320 736 B** | 4 GB | **2.82 GB** |
+| Media | `Qwen2.5-3B-Instruct` Q4_K_M | ~2.0 GB | **2 104 932 768 B** | 8 GB | **4.79 GB** |
+| Alta | `Qwen2.5-7B-Instruct` Q4_K_M | ~4.7 GB | **4 683 073 536 B** | 16 GB | **13.93 GB** |
+| Máxima | `Qwen2.5-14B-Instruct` Q4_K_M | ~9.0 GB | sin registrar | 32 GB | **N/D** |
 
-Los tamaños son aproximados hasta que el banco los mida; la tabla se corrige
-con las cifras reales, no se deja con las estimadas.
+Las columnas de estimado **se conservan al lado de las medidas y no se
+sustituyen**: la diferencia entre lo que se supuso y lo que se midió es un dato
+del proyecto, y borrar el estimado hace que un acierto y un error de casi el
+doble se vean igual de bien.
+
+Tres advertencias sobre esa tabla, porque las tres se pueden leer mal:
+
+1. **`RSS pico medido` no es `RAM que pide`.** Es lo que el proceso ocupó en la
+   máquina de Cesar —Ryzen 5 5600G, 16 GB, sin GPU, inferencia en CPU, sobre
+   Fedora— corriendo el banco. La columna de al lado es una **recomendación**
+   para el usuario, que tiene que dejar sitio para el resto del sistema. **No se
+   baja**: Cesar decretó el 2026-08-08 que estas cifras se declaran y no se
+   presentan como pruebas definitivas, y que las definitivas llegan cuando
+   Thalyx corra como sistema operativo real sobre un SSD real. Cambiar la
+   recomendación es una afirmación sobre el destino, hecha con una medición del
+   anfitrión.
+2. **La medición es sobre Fedora, que es el anfitrión de desarrollo y no el
+   destino.** Thalyx final es el sistema operativo, con otra huella. Lo medido
+   aquí es evidencia sobre esta máquina concreta.
+3. **La máxima dice `N/D` y no cero.** No se midió: el proceso fue terminado por
+   falta de memoria antes de completar la primera inferencia. Ver la revisión
+   del 2026-08-08 (4).
+
+Los tamaños fueron aproximados hasta que el banco los midió; las tres primeras
+filas ya tienen su cifra real, tomada del archivo por `thalyx agent model use` y
+no de una página de descarga. La cuarta sigue estimada porque nadie ha
+registrado ese archivo.
 
 La inferencia corre **invocando `llama.cpp` como proceso**, no enlazándolo.
 
@@ -356,6 +381,422 @@ a un marcador que tendría que adivinar, y para eso es aleatorio— pero sí una
 de corrupción accidental, que ocurre con entradas normales. La lectura de la
 respuesta se ancla ahora en el prompt repetido entero y no en el marcador suelto.
 Ver [[Estrategia-de-Pruebas]].
+
+## Revisión del 2026-08-08 (4) — las cuatro gamas, sobre la misma máquina
+
+**La primera corrida comparativa.** Hasta aquí el decreto tenía una gama medida
+y tres heredando el argumento. Ahora tiene **tres medidas, una imposible de
+medir en esta máquina**, y un resultado que no es el que la tabla de arriba
+hacía esperar.
+
+### El entorno, que es parte del resultado y no un pie de página
+
+| | |
+|---|---|
+| Máquina | Ryzen 5 5600G, 16 GB de RAM física, **sin GPU dedicada** |
+| Anfitrión | Fedora, `llama.cpp` compilado localmente, **inferencia en CPU** |
+| Familia | Qwen2.5-Instruct en las cuatro gamas |
+| Cuantización | Q4_K_M en las cuatro |
+| Igual en todas | mismo `llama.cpp`, mismo Thalyx, mismo prompt, misma gramática, misma suite de 20 casos, misma semilla |
+| Lo único que varía | **el tamaño del modelo** |
+
+Esa última fila es el decreto funcionando: *«con una sola familia, el prompt y
+la gramática son idénticos en las cuatro gamas, así que lo único que varía es el
+tamaño»*. La comparación de abajo es atribuible al tamaño porque nada más se
+movió.
+
+> **Y Fedora es el anfitrión de desarrollo, no el destino.** Thalyx final es el
+> sistema operativo; una medición de memoria aquí es evidencia sobre **esta
+> máquina concreta con esta configuración**, no el piso de RAM que Thalyx tendrá
+> corriendo como OS. La distinción no es un tecnicismo: el decreto ofrece las
+> gamas para que alguien elija según su hardware, y una cifra medida sobre un
+> anfitrión ajeno presentada como requisito del sistema es exactamente la clase
+> de número que hace elegir mal.
+
+### El estatus de todas estas cifras, decretado por Cesar el 2026-08-08
+
+Sus palabras, que son el registro:
+
+> declara los resultados mas no los muestres como pruebas definitivas, las
+> pruebas definitivas vendran cuando thalyx este corriendo en una ssd real como
+> sistema operativo real, solo en ese entorno se vera la realidad
+
+Así que **todo lo que sigue queda declarado y ninguna cifra queda como
+definitiva**. No es una cautela de redacción: cambia qué se puede hacer con
+estos números.
+
+- **Se pueden usar** para comparar las gamas entre sí, porque las tres corrieron
+  bajo las mismas condiciones y lo único que varió fue el tamaño. Una comparación
+  interna sobrevive al anfitrión.
+- **No se pueden usar** como el requisito de hardware de Thalyx, ni para bajar
+  la columna de RAM recomendada, ni para decir qué gama trae el ISO por omisión.
+  Todo eso son afirmaciones sobre el destino, y el destino es Thalyx como
+  sistema operativo sobre un SSD real.
+- **La medición definitiva está pendiente y tiene condición escrita**: la misma
+  suite, sobre Thalyx corriendo como OS, en hardware real. Hasta entonces esta
+  tabla es la mejor evidencia que existe y sigue sin ser la prueba.
+
+Esto se aplica hacia atrás también: la fila de la gama media medida el
+2026-08-08 sobre nueve casos queda con el mismo estatus.
+
+### Lo medido
+
+Pesos, verificados por Thalyx leyendo el archivo:
+
+| Gama | Bytes | SHA-256 |
+|---|---|---|
+| Ligera | 1 117 320 736 | `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e` |
+| Media | 2 104 932 768 | `626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d` |
+| Alta | 4 683 073 536 | `1875fb29e8c91c86615c00e92d8b4114e56bc24359adb5a8db8b36452fae4a49` |
+| Máxima | **sin registrar** | **sin registrar** |
+
+Los tres estimados de disco acertaron (~1.1, ~2.0, ~4.7 GB). **La cifra de la
+máxima no se inventa aquí**: nadie ha registrado ese archivo con `thalyx agent
+model use`, así que la tabla del decreto conserva el estimado marcado como tal.
+
+Una inferencia (`agent model check "dev.thalyx.demo, ese quiero"`) y el banco
+completo:
+
+| | ligera | media | alta | maxima |
+|---|---|---|---|---|
+| Modelo | 1.5B | 3B | 7B | 14B |
+| `check` | **incorrecto** | correcto | correcto | **N/D — memoria** |
+| `check` latencia | 3.58 s | 6.68 s | 46.07 s | N/D |
+| `check` RSS | 2.82 GB | 4.77 GB | 13.26 GB | N/D |
+| Casos medidos | **14/20** | **19/20** | **19/20** | **0/20** |
+| Intención | 5/14 | 9/19 | 7/19 | N/D |
+| Argumentos | 5/14 | 8/19 | 7/19 | N/D |
+| Abstención | **0/6** | **0/9** | **0/8** | N/D |
+| Latencia mediana | 3.77 s | 6.78 s | 33.26 s | N/D |
+| Latencia peor | 4.27 s | 8.03 s | 48.85 s | N/D |
+| RSS pico del banco | 2.82 GB | 4.79 GB | 13.93 GB | N/D |
+
+**Ninguna de esas fracciones de acierto es todavía la puntuación de su gama**, y
+lo dice el propio banco antes de imprimirlas: hubo casos sin medición en las
+tres. Los denominadores son sobre lo medido. Un `5/14` y un `9/19` **no son
+comparables como porcentajes** sin recordar que el primero descarta seis casos
+que la gama ligera no pudo contestar — y no poder contestar seis de veinte es en
+sí mismo el hallazgo más duro sobre esa gama.
+
+### La medición se repitió, y salió igual
+
+La gama media ya se había medido el 2026-08-08 sobre nueve casos. Las dos
+corridas, con suites distintas:
+
+| | 9 casos | 20 casos |
+|---|---|---|
+| Disco | 2 104 932 768 B | 2 104 932 768 B |
+| RSS pico | 4.78 GB | 4.79 GB |
+| Latencia mediana | 6.58 s | 6.78 s |
+
+Coincide en el byte, en 0.01 GB y en 0.2 s. **Eso es lo único de esta nota que
+tiene una réplica**, y vale decirlo: las cifras de coste —disco, RAM, latencia—
+son estables entre corridas, mientras que las de acierto todavía no se han
+medido dos veces en ninguna gama.
+
+### La gama máxima: `N/D`, y por qué eso no es un cero
+
+Antes de la prueba la máquina tenía ~14 GiB utilizables, ~916 MiB libres, ~12
+GiB en `buff/cache`, y 8 GiB de `zram0` con ~6.5 GiB libres. Se lanzó
+`thalyx agent model check`. Alcanzó a imprimir la gama y el enunciado, y el
+proceso fue terminado por el sistema:
+
+```
+tier    maxima ▪ .../qwen2.5-14b-instruct-q4_k_m.gguf
+asking  "dev.thalyx.demo, ese quiero"
+Terminado        thalyx agent model check "dev.thalyx.demo, ese quiero"
+```
+
+`gnome-settings-daemon` lo dijo con todas sus letras: *«La memoria del
+dispositivo está casi llena. Una aplicación estaba usando una gran cantidad de
+memoria y se ha forzado su detención.»*
+
+Por lo tanto: inferencia **N/D**, `grammar-check` **N/D**, banco **N/D**,
+latencia **N/D**, RSS pico **N/D** —porque el proceso fue asesinado antes de que
+Thalyx pudiera completar la medición y reportarla— y utilidad **N/D**.
+
+> **La máxima no falló el banco. No hubo banco.** Registrarla como 0% sería
+> exactamente la regla 10 al revés: una falla al **leer** contada como una falla
+> al **existir**. Un cero de utilidad es una afirmación sobre el modelo; lo que
+> hay es una afirmación sobre esta máquina.
+
+Y lo que quedó probado es más estrecho que *«14B necesita 32 GB»*, que es lo que
+la tabla del decreto estima y que esta corrida **no** midió:
+
+> **Qwen2.5-14B-Instruct Q4_K_M no pudo completar siquiera la primera inferencia
+> en esta máquina de desarrollo de 16 GB, bajo esta configuración, con este
+> anfitrión.** Cuánta RAM necesita de verdad, y cuánta necesitaría bajo Thalyx
+> como sistema operativo, siguen sin medirse.
+
+Y una tentación que conviene desactivar por escrito, porque cualquiera que mire
+la tabla la va a calcular: el RSS pico contra el tamaño del archivo da **×2.52
+en ligera, ×2.28 en media y ×2.97 en alta**. Tres puntos entre 2.28 y 2.97 no
+son una ley, y **no predicen el cuarto**: la de alta está medida en una máquina
+donde el modelo casi no cabía, y ninguna de las tres separa lo que ocupan los
+pesos de lo que ocupa el contexto que `llama.cpp` reserva. Multiplicar ~9 GB por
+un número de ese rango produce una cifra que se ve como una medición y no lo es.
+
+**No se corrieron `grammar-check` ni `bench` después del corte**, y fue una
+decisión correcta: sobre una máquina que acaba de quedarse sin memoria, una
+medición de latencia o de RSS no mide el modelo, mide la presión de memoria que
+la medición anterior dejó.
+
+### Lo que estos números permiten concluir, y lo que sería extrapolar
+
+| Afirmación | Estado |
+|---|---|
+| Los tres estimados de disco acertaron | **Medido** |
+| El estimado de RAM de la media iba alto por casi el doble | **Medido**, dos veces |
+| Entre ligera y media, la latencia crece casi como el tamaño: ×1.88 de pesos, ×1.80 de mediana | **Medido** |
+| Entre media y alta se despega: ×2.22 de pesos, **×4.91** de mediana | **Medido**, y con una advertencia — ver abajo |
+| En este banco, la gama alta **no mejoró** a la media | **Medido** |
+| La gama alta es peor que la media | **No.** La diferencia es de dos casos sobre 19 |
+| Qwen2.5-3B es más inteligente que Qwen2.5-7B | **No.** Nada aquí sostiene eso |
+| Las tres gamas medidas sacaron cero en abstención | **Medido** |
+| La abstención falla por culpa del prompt | **No medido.** Es una hipótesis, y ver abajo |
+| 14B pide 32 GB | **No medido.** Ver arriba |
+| El contrato mal formado es imposible en las cuatro gamas | **Probado en dos** (media y alta), retirado en ligera, **N/D** en máxima |
+
+La afirmación legítima sobre la gama alta es esta y no otra:
+
+> **Con este prompt, esta gramática, estos veinte casos, esta cuantización y
+> este hardware, la gama alta no compró utilidad observable respecto de la media
+> y sí costó ×4.9 en latencia mediana y ×2.9 en memoria residente.**
+
+### La advertencia sobre el ×4.9, que va con el número
+
+De ligera a media la latencia crece **casi exactamente como los pesos** —×1.88
+de archivo, ×1.80 de mediana—, que es lo que se espera de una inferencia en CPU
+limitada por ancho de banda de memoria. De media a alta se despega: ×2.22 de
+archivo y **×4.91** de mediana.
+
+**Esa segunda cifra no es limpiamente atribuible al tamaño**, y la razón está en
+la fila de al lado: la gama alta ocupó **13.93 GB de RSS en una máquina con ~14
+GiB utilizables**, con `zram` de por medio. Un modelo que casi llena la RAM
+compite con el resto del sistema por ella, así que parte de ese ×4.91 puede ser
+presión de memoria y no cómputo. Separarlas necesita la misma gama en una
+máquina donde quepa holgada, y esa máquina no existe en el proyecto.
+
+Lo que **no** queda afectado por esa advertencia es la conclusión que importa:
+la utilidad medida no subió. Una gama que costara ×4.91 por presión de memoria y
+una que lo costara por tamaño compran lo mismo aquí, que es nada observable.
+
+Dos casos de diferencia sobre diecinueve es menos de lo que esta suite puede
+separar — la nota de arriba ya lo advierte: *«una suite que no puede separar dos
+explicaciones no mide, puntúa»*. Lo que la corrida sí sostiene, y es lo que
+importa para el decreto, es la **ausencia de mejora medible** frente a un costo
+que no es discutible.
+
+### El hallazgo transversal: abstención cero en las tres gamas
+
+| Gama | Abstención | Invenciones |
+|---|---|---|
+| Ligera | 0/6 | 6 |
+| Media | 0/9 | 9 |
+| Alta | 0/8 | 8 |
+
+Ninguna gama se abstuvo **ni una sola vez**. Esta nota dice que la abstención
+*«importa más que las dos anteriores»*, así que este es el resultado más
+importante de la corrida y el único idéntico en las tres gamas.
+
+**Que sea idéntico en las tres es el dato.** Si fuera un problema de capacidad,
+esperaríamos verlo mejorar con el tamaño, como mejora la intención entre ligera
+y media. No mejora: es plano. Un resultado plano entre 1.5B, 3B y 7B apunta a
+algo que las tres comparten —el prompt, la gramática, la forma de los casos— y
+no a lo único que varía entre ellas.
+
+Eso es una **hipótesis**, no una conclusión, y explícitamente **no se actúa
+sobre ella todavía**. Ver abajo.
+
+### La gramática, gama por gama — y un `PROVEN` retirado
+
+`grammar-check` pide la única palabra que la gramática no puede emitir, dos
+veces, con la bandera y sin ella.
+
+| Gama | Brazo restringido | Brazo libre | Veredicto |
+|---|---|---|---|
+| Ligera | `{ "operation": "install_module", "targets": ["python3.ipython3.…` | `[end of text]` | **NO PROBADO** (decía `PROVEN`) |
+| Media | `{ "operation": "install_module", "targets": ["requests_module_1.…` | `BANANA <<<THALYX-e4e3dc…>>> BANANA` | **PROBADO** |
+| Alta | `{ "operation": "install_module", "targets": [ "all_nodes_except_…` | `BANANA<<<THALYX-21d02d…>>> [end of text]` | **PROBADO** |
+| Máxima | — | — | **N/D** |
+
+En media y alta la evidencia es la que el veredicto describe: restringido no
+puede ni empezar con la palabra, suelto la dice. **En ligera no.** El brazo de
+control dice `[end of text]`, que es lo que `llama.cpp` imprime cuando el modelo
+termina la generación de inmediato: el 1.5B, sin gramática, **no dijo nada**.
+
+Y aun así el comando imprimió `PROVEN`, bajo un veredicto que afirma *«left
+alone it did»* — decir la palabra. Nada lo había comprobado:
+
+```rust
+} else if obeys_root(&unconstrained) {
+    Inconclusive { ... }
+} else {
+    InForce { ... }        // ← se llegaba aquí por descarte
+}
+```
+
+`InForce` era el `else`. Se alcanzaba con que el brazo libre **no abriera un
+objeto**, y un brazo que no dice nada tampoco abre un objeto. La mitad del
+veredicto que habla del control se estaba infiriendo de la ausencia de otra
+cosa, que es justo lo que el banco dejó de hacer el mismo día.
+
+Es la **regla 4**: sin control, una denegación y una operación que nunca ocurrió
+se ven igual. Y sobrevivió por la **regla 8**: los cuatro sustitutos del sondeo
+decían la palabra cuando se les quitaba la gramática, porque todos se escribieron
+para contestar. Ninguno modelaba un modelo callado. Regla nueva en
+[[Estrategia-de-Pruebas]].
+
+**Corregido**: `InForce` ahora exige que el brazo libre diga la palabra, y hay
+dos regresiones —una con el `[end of text]` verbatim de esta corrida, otra con
+prosa— que se comprobaron fallando contra el código anterior.
+
+Lo que se puede afirmar de la corrida de ligera, que es menos que `PROVEN`:
+
+> Con la bandera, el modelo emitió un objeto; sin ella, no emitió nada. **La
+> bandera cambió la salida.** Que la palabra prohibida fuera lo que la gramática
+> impidió es lo que no se midió, porque el modelo nunca mostró que la diría.
+
+Así que la frase del decreto —«un contrato mal formado es imposible en las
+cuatro gamas»— está **probada en dos gamas**, no probada en la ligera, y N/D en
+la máxima. Las dos que faltan heredan el argumento de la gramática, no la
+corrida.
+
+### La demostración concreta de lo que la gramática no garantiza
+
+La gama ligera contestó `dev.thalyx.demo, ese quiero` con:
+
+```json
+{"operation":"install_module","targets":["dev.thalyx.demo","ese.quiero.ios"]}
+```
+
+**Fabricó `ese.quiero.ios` a partir de las palabras humanas «ese quiero».** El
+contrato es impecable: la operación existe, el campo es una lista, y cada
+elemento respeta la forma de un id en DNS inverso. La gramática hizo exactamente
+lo que esta nota promete y **nada más**, porque nada más es lo que puede hacer.
+
+Es la sección *«lo que la gramática no garantiza»* de arriba, demostrada en vez
+de argumentada, y separa cinco cosas que un porcentaje agregado confunde:
+
+1. **contrato sintácticamente válido** — lo garantiza la gramática;
+2. **interpretación correcta** — no;
+3. **argumento correcto** — no;
+4. **abstención correcta** — no;
+5. **caso no medido** — ninguna de las anteriores.
+
+Y hay una sexta que esta corrida hizo visible: **inventar un id y que el núcleo
+lo cace** es una conducta distinta de las cinco. La atribución rechazó
+`ese.quiero.ios` porque no aparece en ningún canal, así que el sistema se portó
+bien de punta a punta — pero lo que se portó bien fue el núcleo, no el modelo.
+
+### Las invenciones que el resumen no suma
+
+En el banco, un id que la atribución rechaza se marca `REF` en un caso de acción
+y `INV` en uno de abstención. **Los `REF` no entran en ninguna fracción del
+resumen**: no son intención, no son argumentos, y el contador de invenciones sólo
+cuenta los casos de abstención.
+
+Contados a mano sobre los casos de acción:
+
+| Gama | `REF` |
+|---|---|
+| Ligera | 3 |
+| Media | 1 |
+| Alta | **4** |
+
+Los cuatro de la gama alta son casos donde la media acertó (`ok`) o falló de otra
+forma. Es una observación, no una conclusión —cuatro contra uno sobre diecinueve
+casos no separa nada— pero es **la más específica que hay sobre por qué la alta
+no superó a la media aquí**, y no aparece en ninguna cifra del resumen.
+
+Lo que impidió afinarla es un defecto de evidencia, corregido: el banco imprimía
+`(named something nobody mentioned)` **sin decir qué**. Cuatro rechazos en una
+corrida y ninguna forma de saber si la gama inventa el mismo id una y otra vez o
+uno distinto cada vez, que son dos hallazgos diferentes sobre el modelo. Ahora
+imprime el valor. Esto no cambia ninguna medida; cambia lo que se puede leer de
+la próxima corrida.
+
+### Lo que NO se cambia por estos resultados
+
+Ninguna de estas es una conclusión de la corrida; todas son cosas que se dejan
+quietas **a propósito** para que la próxima corrida signifique algo:
+
+- **El prompt no se toca.** La instrucción de abstención es sospechosa y hay una
+  hipótesis escrita para ella, pero tocar el prompt mueve los veinte casos a la
+  vez, y no hay un antes/después medido con el que comparar. Ver
+  [[Tareas-Pendientes]].
+- **La gramática no se toca.**
+- **Las gamas no se tocan.** Nada aquí dice que la familia esté mal elegida, y
+  esta nota decreta que una familia se cambia entera o no se cambia — cambiar la
+  alta sola destruiría la comparabilidad que hace legible todo lo de arriba.
+- **La suite no se optimiza.** Ajustar los casos después de ver los resultados
+  convierte un banco en una descripción de la corrida que ya ocurrió.
+- **La tabla de RAM recomendada no baja**, aunque el RSS medido sea menor en dos
+  gamas. Decidido por Cesar el mismo día: los resultados se declaran, no se
+  presentan como definitivos, y lo definitivo llega con Thalyx corriendo como
+  sistema operativo real sobre un SSD real.
+
+### Los veinte casos, gama por gama
+
+`ok` acertó ▪ `ERR` sin medición ▪ `REF` nombró algo que no aparece en ningún
+canal ▪ `INV` inventó donde debía abstenerse ▪ `MISS` se abstuvo donde debía
+actuar (no ocurrió ni una vez).
+
+| # | Caso | ligera | media | alta |
+|---|---|---|---|---|
+| 1 | a pronoun pointing at the one thing installed | `ERR` | `ok` | `ok` |
+| 2 | the id said plainly, with no verb in front of it | `REF` | `REF` | `REF` |
+| 3 | a module named by what it does rather than by its id | `ok` | `ok` | `ok` |
+| 4 | a version named in words | `ERR` | `ERR` | `REF` |
+| 5 | the same request in English | `ok` | `ok` | `ok` |
+| 6 | a wish with no module behind it | `INV` | `INV` | `INV` |
+| 7 | a need stated as a category | `INV` | `INV` | `INV` |
+| 8 | a demonstrative pointing at nothing | `INV` | `INV` | `INV` |
+| 9 | a module that was mentioned and then ruled out | `ERR` | `INV` | `INV` |
+| 10 | the id said plainly, with a verb that is not an install verb | `REF` | `ok` | `ok` |
+| 11 | the id said plainly, with the machine listing it | `REF` | `ok` | `ok` |
+| 12 | the id said plainly, in English, with no verb | `ok` | `ok` | `REF` |
+| 13 | an install verb with two ids | `ok` | `ok` | `ok` |
+| 14 | a module named by description among three | `ok` | `ok` | `ok` |
+| 15 | a version said as a range rather than as a number | `ERR` | `ok` | `REF` |
+| 16 | a negation with the module named first | `ERR` | `INV` | `INV` |
+| 17 | a negation phrased as an exclusion from a list | `INV` | `INV` | `INV` |
+| 18 | a question about a module rather than a request | `INV` | `INV` | `INV` |
+| 19 | a need stated as a category, in English | `ERR` | `INV` | `ERR` |
+| 20 | a demonstrative pointing at nothing, with things listed | `INV` | `INV` | `INV` |
+
+Cinco cosas que se leen de esa tabla y no del resumen:
+
+1. **El caso 2 falla en las tres gamas, y no falla como se creía.**
+   `dev.thalyx.demo, ese` —el id dicho en claro, sin verbo— sale `REF` en 1.5B,
+   3B y 7B: el modelo **nombró algo que no aparece en ningún canal** y la
+   atribución lo rechazó. Eso **no es una abstención**, y con eso se cae del todo
+   la hipótesis que este proyecto arrastraba desde el 2026-08-08 —*«la instrucción
+   de abstención del prompt pesa de más, porque se abstuvo con el id dicho en
+   claro»*—. Aquel `MISS` salió del banco que clasificaba `Err(_) => Abstained`,
+   donde **un rechazo por atribución se contaba como abstención**; el instrumento
+   corregido dice que ese caso nunca fue una abstención, fue una invención cazada
+   por el núcleo. El prompt queda absuelto de este cargo concreto. Y los casos 10
+   y 11, escritos para separar las lecturas, contestan lo demás: con un verbo (10)
+   o con la máquina listando el módulo (11), media y alta aciertan. **Lo que
+   falta en el caso 2 es contexto alrededor del id, no menos instrucción de
+   abstenerse.** El caso 12 impide cerrar más la explicación: es igual de
+   escueto, en inglés, y la media sí lo acierta.
+2. **Los cuatro casos que ninguna gama acertó** son 2, 6, 7, 8 — un id sin verbo
+   y las tres abstenciones sin nada nombrado.
+3. **Los seis casos que las tres acertaron** son 3, 5, 13, 14 y —en media y
+   alta— 10, 11: descripción en vez de id, inglés, dos ids, y descripción entre
+   tres. La comprensión de una petición **descrita** es lo que mejor sale.
+4. **Las tres negaciones (9, 16, 17) fallan en las tres gamas**, y el caso 18
+   —una pregunta, no una petición— también. Cuatro formas distintas de «esto no
+   es una orden de instalar» y ninguna gama distingue ninguna.
+5. **La gama ligera pierde casos donde las otras responden**: sus seis `ERR` son
+   casos que media y alta sí midieron. Eso no es una puntuación baja, es una
+   gama que **no llega a contestar**.
+
+El valor que cada gama propuso se conserva sólo donde la transcripción de la
+corrida lo traía; la próxima corrida lo trae completo, ahora que los rechazos
+imprimen el valor.
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

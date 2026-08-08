@@ -139,7 +139,7 @@ Tres de las cuatro primitivas —la cuarta, el [[Scheduler-Predictivo]], es de F
 | uid por módulo | ✅ Decretado e implementado |
 | Montajes idmapped para rutas concedidas | ✅ Implementados y verificados |
 | Sockets `AF_UNIX` | ✅ Decretado: fuera, reversible |
-| Gamas del modelo del agente | ✅ Decretadas; faltan las cifras medidas |
+| Gamas del modelo del agente | ✅ Decretadas; **3 de 4 medidas** el 2026-08-08. La máxima no cabe en la máquina de verificación |
 | **API interna de módulos** | ❌ **Decretada desde el 31 de julio, sin una línea** |
 | Cargar `thalyx-lsm` sin `bpftool` | ❌ El hueco que deja la imagen de un solo programa |
 | Métricas de benchmark de Fase 2 | ⚠️ Abierto |

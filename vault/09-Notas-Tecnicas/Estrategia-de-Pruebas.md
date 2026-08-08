@@ -2321,6 +2321,93 @@ reclame una exención que no necesita — porque **una exención que nadie revis
 una exención que todos los casos acaban teniendo**, y entonces la comprobación
 desapareció sin que nadie la borrara.
 
+## Regla derivada: un veredicto al que se llega por descarte afirma su otra mitad sin haberla medido
+
+Encontrada el 2026-08-08, corriendo `grammar-check` contra la gama ligera por
+primera vez. El comando dijo `PROVEN` y su propia evidencia decía otra cosa:
+
+```
+with the grammar     { "operation": "install_module", "targets": ["python3.ipython3.…
+without it           [end of text]
+
+PROVEN: told to say one word, constrained it could not even begin
+with it, and left alone it did.
+```
+
+*«Left alone it did»* — dijo la palabra. **El brazo libre no dijo nada.**
+`[end of text]` es lo que imprime `llama.cpp` cuando el modelo termina la
+generación de inmediato, así que el 1.5B, sin gramática, se quedó callado.
+
+El veredicto tiene dos mitades y el código sólo comprobaba una:
+
+```rust
+} else if obeys_root(&unconstrained) {
+    Inconclusive { ... }          // ambos abren objeto: no se distinguen
+} else {
+    InForce { ... }               // ← por descarte
+}
+```
+
+`InForce` era el `else`. Se llegaba ahí con que el brazo libre **no abriera un
+objeto**, y un brazo que no dice nada tampoco abre uno. La frase «y suelto sí la
+dijo» no la comprobaba nadie.
+
+> **Un veredicto que afirma dos cosas necesita dos comprobaciones.** Cuando una
+> de ellas es la rama de control, ponerla en el `else` la convierte en «no pasó
+> ninguna de las otras cosas que se me ocurrieron», que es una afirmación sobre
+> la imaginación de quien escribió las ramas y no sobre lo medido.
+
+Es la **regla 4** de esta nota —toda prueba de denegación necesita línea base y
+control— aplicada al veredicto en vez de al experimento: el control estaba
+corriendo, se estaba imprimiendo, y no se estaba **leyendo**.
+
+### Por qué ninguna prueba lo vio, y es la regla 8 por tercera vez
+
+Los sustitutos del sondeo eran cuatro y estaban bien escritos: uno decía la
+palabra siempre, otro sólo sin la bandera, otro emitía un objeto en las dos
+ramas, otro se truncaba a media cadena. **Los cuatro contestaban algo.** Ninguno
+modelaba un modelo que se calla, porque un falso se escribe para producir la
+salida que uno está pensando, y nadie estaba pensando en el silencio.
+
+> **Un falso modela el eje en el que se le escribió variación.** Aquí el eje era
+> *qué dice*, y el que faltaba era *si dice*. Es la tercera vez: los siete
+> sustitutos de `llama-cli` variaban el formato de salida y todos honraban el
+> contrato de una pasada; las nueve fixtures del parser terminaban donde el
+> parser esperaba.
+
+La regresión que quedó usa el `[end of text]` **verbatim de la corrida real**,
+no una cadena vacía inventada, y se comprobó fallando contra el código anterior.
+Y su control —un brazo libre que contesta prosa— existe para que la corrección
+no sea «rechazar los brazos vacíos» sino «exigir la palabra».
+
+### Lo que sí se podía afirmar, que era menos
+
+Con la bandera hubo objeto; sin ella no hubo nada. **La bandera cambió la
+salida.** Que lo que la gramática impidió fuera *la palabra* es lo que no se
+midió, porque el modelo nunca mostró que la diría — y ésa es exactamente la
+diferencia entre `PROVEN` y `NOT PROVEN` en un sondeo cuyo propósito es separar
+una bandera aceptada de una gramática aplicada.
+
+### Y el banco escondía el valor que rechazaba
+
+Del mismo día y de la misma corrida, en otro instrumento. El banco imprimía un
+rechazo por atribución así:
+
+```
+REF  the id said plainly, with no verb in front of it → (named something nobody mentioned)
+```
+
+**Sin decir qué.** Es la conducta más peligrosa que el banco busca —el modelo
+nombrando un id que no existe en ningún canal— y era la única línea del reporte
+con su evidencia retirada. Una gama sacó cuatro de esos en una corrida, y no hay
+forma de saber desde la salida si inventó cuatro veces el mismo id o cuatro
+distintos, que son dos hallazgos diferentes sobre el modelo.
+
+La regla ya existía en esta nota desde el 2026-08-08 —*«una comprobación que
+señala a un culpable tiene que enseñar la evidencia que juzgó»*— y esta es la
+segunda vez que se paga por no aplicarla. Corregido: el rechazo viaja con el
+valor.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

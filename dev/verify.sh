@@ -1174,16 +1174,22 @@ if [ "$HAVE_LLAMA" = 1 ] && [ "$HAVE_WEIGHTS" = 1 ]; then
     # for a word the grammar cannot emit, with the flag and without.
     #
     # Three outcomes, and the third is why this is a stage of its own: if the
-    # model answers with a proposal in BOTH arms, the probe saw nothing, and
-    # that is NOT PROVEN rather than a pass. `agent model grammar-check` exits
-    # non-zero for it, so the two failure directions are told apart by reading
-    # the log rather than by the exit code alone.
+    # probe cannot tell the two arms apart it saw nothing, and that is NOT
+    # PROVEN rather than a pass. `agent model grammar-check` exits non-zero for
+    # it, so the two failure directions are told apart by reading the log rather
+    # than by the exit code alone.
+    #
+    # The line below does not name which way it was inconclusive, because there
+    # are several and this stage measured none of them — a proposal in both
+    # arms, or a free arm that never said the forbidden word, which is what the
+    # 1.5B did on 2026-08-08 by ending generation at once. The command prints
+    # which one it was, and the log goes out underneath.
     if THALYX_ROOT="$MSTORE" "$THALYX" agent model grammar-check \
             > "$WORK/model-grammar.log" 2>&1; then
         proven "--grammar-file constrains the decoding, not merely accepted as a flag"
         grep -E "with the grammar|without it" "$WORK/model-grammar.log" | sed 's/^/     /'
     elif grep -q "NOT PROVEN" "$WORK/model-grammar.log"; then
-        unproven "this model answers with a proposal either way, so the probe cannot see the grammar work"
+        unproven "the probe could not tell its two arms apart on this model; the log says how"
         sed 's/^/     /' "$WORK/model-grammar.log"
     else
         failed "the grammar is not constraining the model; see $WORK/model-grammar.log"

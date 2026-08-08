@@ -549,7 +549,14 @@ enum Outcome {
     /// Never abstention. The model did invent; what stopped it was the
     /// attribution rule and not the model's judgement, and a bench that could
     /// not tell those apart would report the defence as if it were the virtue.
-    Refused,
+    ///
+    /// It carries **what** was invented. The first version printed only "named
+    /// something nobody mentioned", so the single most dangerous behaviour this
+    /// bench looks for was the one line with its evidence withheld — and a run
+    /// that produced four of them across a suite left nothing to compare them
+    /// by. The vault's rule is older than this file: a check that points at a
+    /// culprit has to show the evidence it judged.
+    Refused(String),
     /// No measurement at all — the model, the parser or the contract failed.
     Failed(String),
 }
@@ -569,7 +576,11 @@ impl Outcome {
                 None => Outcome::Abstained,
             },
             Err(AgentError::NothingToDo) => Outcome::Abstained,
-            Err(AgentError::Attribution(_)) => Outcome::Refused,
+            // Both attribution failures are the model naming something it could
+            // not have been told, and both say which value it was. An empty
+            // value is not "no value": it is the model proposing a target that
+            // is the empty string, which every text contains.
+            Err(AgentError::Attribution(error)) => Outcome::Refused(error.to_string()),
             Err(error) => Outcome::Failed(error.to_string()),
         }
     }
@@ -583,8 +594,8 @@ impl Outcome {
             (Outcome::Right, false) => "ok  ",
             (Outcome::Right | Outcome::Wrong(_), true) => "INV ",
             (Outcome::Wrong(_), false) => "WRNG",
-            (Outcome::Refused, true) => "INV ",
-            (Outcome::Refused, false) => "REF ",
+            (Outcome::Refused(_), true) => "INV ",
+            (Outcome::Refused(_), false) => "REF ",
         }
     }
 
@@ -712,7 +723,7 @@ pub fn bench(store: &Store, cases: Option<&Path>, request_id: &str) -> Fallible 
             Outcome::Right => case.expect.clone(),
             Outcome::Wrong(target) => target.clone(),
             Outcome::Abstained => "(abstained)".to_string(),
-            Outcome::Refused => "(named something nobody mentioned)".to_string(),
+            Outcome::Refused(why) => format!("REFUSED: {}", truncate(why, 90)),
             Outcome::Failed(why) => format!("NO MEASUREMENT: {}", truncate(why, 90)),
         };
         println!("  {mark} {:<50} → {said}", truncate(&case.name, 50));
@@ -833,7 +844,7 @@ mod tests {
             "dev.thalyx.demo",
         );
 
-        assert_eq!(outcome, Outcome::Refused);
+        assert!(matches!(outcome, Outcome::Refused(_)), "got {outcome:?}");
         assert!(
             outcome.measured(),
             "a refusal is a real answer about the model, not a missing one"
@@ -842,6 +853,18 @@ mod tests {
             outcome.mark(true),
             "INV ",
             "an invention the core caught is still an invention"
+        );
+
+        // And it carries what was invented. A whole run of these printed as
+        // "named something nobody mentioned" tells nobody whether the tier is
+        // inventing one id repeatedly or a different one every time, and those
+        // are different findings about the model.
+        let Outcome::Refused(why) = &outcome else {
+            unreachable!()
+        };
+        assert!(
+            why.contains("dev.evil.module"),
+            "the refusal hid the value it refused: {why}"
         );
     }
 
