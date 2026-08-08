@@ -62,7 +62,13 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
-| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Sin modelo real; enunciado → contrato → instalación, probado de punta a punta |
+| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Enunciado → contrato → instalación, probado de punta a punta |
+| Las cuatro gamas | `crates/thalyx-agent/tier.rs` | Los tamaños son de un tipo que se imprime con `~`, para que un estimado no se lea como medición |
+| Gramática GBNF de la propuesta | `crates/thalyx-agent/grammar.rs` | Generada desde la forma que tiene que respetar; las clases de caracteres se comparan contra el escáner de ids, carácter por carácter |
+| El prompt y el marcador | `crates/thalyx-agent/prompt.rs` | Aleatorio por invocación, así que la respuesta se localiza sin parsear el formato de `llama.cpp` |
+| `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Plazo, tope de salida y muestreo de `VmHWM`. **Nunca ha corrido contra `llama.cpp`** — sólo contra procesos sustitutos |
+| La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |
+| `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Ninguna gama se ha medido** |
 | Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Escribe y **lee**; lo no confirmable se muestra y no se usa |
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |

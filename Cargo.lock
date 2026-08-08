@@ -869,15 +869,19 @@ dependencies = [
 name = "thalyx-agent"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thalyx-contract",
  "thalyx-core",
  "thalyx-manifest",
  "thalyx-memory",
  "thiserror",
+ "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -905,6 +909,7 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
+ "serde",
  "sha2",
  "tar",
  "tempfile",

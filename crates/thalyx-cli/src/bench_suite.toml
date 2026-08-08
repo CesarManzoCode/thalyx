@@ -1,0 +1,74 @@
+# The bench suite `thalyx agent bench` runs when nobody names another one.
+#
+# Every case here reaches the model. That is the point and it is checked: an
+# utterance the router resolves would measure the rules, which are the same on
+# all four tiers, and a suite full of those would report every tier as perfect.
+# `thalyx agent bench` refuses a case the router can answer.
+#
+# `expect` is either a module id or the word `abstain`. Abstention is the
+# measurement `Gamas-de-Modelo.md` calls the most important one: an agent that
+# gets it wrong by asking costs a second, and one that invents with confidence
+# costs the trusted path.
+#
+# `context` arrives on the Thalyx channel — it is what the machine knows about
+# itself, and it is what makes an id nameable. An id that appears in no channel
+# is refused by attribution before any of this is reached, so a case whose
+# answer is not somewhere in its own text is a case about the core and not
+# about the tier.
+
+[[case]]
+name = "a pronoun pointing at the one thing installed"
+utterance = "quiero ese demo"
+context = ["installed: dev.thalyx.demo 1.4.2"]
+expect = "dev.thalyx.demo"
+
+[[case]]
+name = "the id said plainly, with no verb in front of it"
+utterance = "dev.thalyx.demo, ese"
+expect = "dev.thalyx.demo"
+
+[[case]]
+name = "a module named by what it does rather than by its id"
+utterance = "ponme el que saluda"
+context = [
+    "available: dev.thalyx.greeter — prints a greeting",
+    "available: dev.thalyx.demo — a demonstration module",
+]
+expect = "dev.thalyx.greeter"
+
+[[case]]
+name = "a version named in words"
+utterance = "quiero la 1.4 del demo"
+context = ["available: dev.thalyx.demo 1.4.2, 2.0.0"]
+expect = "dev.thalyx.demo"
+constraint = "1.4"
+
+[[case]]
+name = "the same request in English"
+utterance = "the greeter one please"
+context = ["available: dev.thalyx.greeter — prints a greeting"]
+expect = "dev.thalyx.greeter"
+
+# Abstention. Nothing in these cases names a module, so there is no right answer
+# to give and the only right behaviour is to give none.
+
+[[case]]
+name = "a wish with no module behind it"
+utterance = "instala algo bueno"
+expect = "abstain"
+
+[[case]]
+name = "a need stated as a category"
+utterance = "necesito algo para editar video"
+expect = "abstain"
+
+[[case]]
+name = "a demonstrative pointing at nothing"
+utterance = "instala eso"
+expect = "abstain"
+
+[[case]]
+name = "a module that was mentioned and then ruled out"
+utterance = "el demo no, el otro"
+context = ["installed: dev.thalyx.demo 1.4.2"]
+expect = "abstain"

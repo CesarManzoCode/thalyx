@@ -1933,6 +1933,50 @@ comparaciones:
 
 Por eso las dos afirmaciones nuevas viven en `init.rs` y no en el `Makefile`.
 
+## Regla derivada: una restricción sobre la salida también restringe lo que se puede medir
+
+Encontrada el 2026-08-08 escribiendo el banco de las gamas, **antes de que
+ninguna de las dos cosas hubiera corrido**.
+
+La gramática GBNF que restringe al modelo pedía **al menos un id de módulo** en
+`targets`. Eso hace imposible un contrato mal formado, que es lo que
+[[Gamas-de-Modelo]] promete. Y hacía imposible otra cosa que nadie buscó:
+**abstenerse.**
+
+`Gamas-de-Modelo` dice que la abstención es la medición que más importa —
+*«un agente que se equivoca pidiendo confirmación cuesta un segundo, y uno que
+inventa con confianza cuesta el camino confiable entero»*. Con esa gramática, un
+enunciado ambiguo no tenía ninguna respuesta válida que dijera *«no encontré
+ninguno»*, así que la única salida gramatical era inventar. El banco habría
+reportado **0 de 4 en abstención en las cuatro gamas**, y la lectura obvia habría
+sido «los modelos chicos inventan» — cuando lo que pasaba es que **ninguna gama
+tenía cómo no inventar**.
+
+> **Una gramática que fija qué se puede decir fija también qué se puede
+> declinar.** El repertorio de respuestas legales es el repertorio de conductas
+> observables, así que una conducta que la gramática no contempla no se mide como
+> ausente: se mide como su contraria, y la culpa cae sobre el modelo.
+
+Dos cosas que hacen esto peor que un error normal:
+
+1. **No falla nada.** Todo compila, todo parsea, el banco corre y devuelve una
+   tabla de números plausibles. Es de la familia de *lo que el anfitrión hacía
+   gratis*: nada falta, nada se rompe, el número está mal.
+2. **La corrección estaba a la mano y sin nombre.** `AgentError::NothingToDo`
+   —*«the request names nothing to act on»*— ya existía y ya era la respuesta
+   correcta; lo que faltaba era una forma de llegar a ella desde el modelo. Una
+   lista vacía la alcanza.
+
+Y la mitad que casi se olvida: **la gramática permitiéndolo no basta, el prompt
+tiene que decirlo.** Una respuesta legal que nadie menciona es una que el modelo
+no usa, y la gama quedaría medida sobre una decisión que nunca se le ofreció. Las
+dos mitades se conceden juntas o no se concede ninguna — hay una prueba por cada
+una.
+
+La pregunta que encuentra esta clase de defecto no es *«¿la gramática acepta
+respuestas correctas?»* sino **«¿qué respuestas hace imposibles, y alguna de
+ellas era una conducta que quiero medir?»**.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

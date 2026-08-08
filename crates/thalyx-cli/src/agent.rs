@@ -7,15 +7,33 @@
 //! Neither of them is a shortcut around the human. See
 //! `vault/09-Notas-Tecnicas/Agente-Minimo.md`.
 
+use crate::agent_model::{self, ModelCommand};
 use crate::render;
 use clap::Subcommand;
 use std::path::PathBuf;
 use thalyx_agent::recollection::Context;
-use thalyx_agent::{ForeignText, Path as AgentPath, Segment, Transcript, UnconfiguredModel};
+use thalyx_agent::{ForeignText, Model, Path as AgentPath, Segment, Transcript, UnconfiguredModel};
 use thalyx_contract::Caller;
 use thalyx_core::Store;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+/// The model to reason with, whatever the machine has.
+///
+/// A machine with no model configured gets [`UnconfiguredModel`], which says so
+/// and resolves nothing — and everything the rules cover keeps working, which is
+/// `Principio-Doble-Ruta.md` being the thing that makes a missing model
+/// survivable rather than fatal.
+///
+/// Boxed because the two are different types and the caller does not care which
+/// one it got. Which one it was is visible in the output either way: the
+/// unconfigured one produces an error naming itself.
+fn model_for(store: &Store) -> Result<Box<dyn Model>, Box<dyn std::error::Error>> {
+    match agent_model::configured(store)? {
+        Some(settings) => Ok(Box::new(settings.model()?)),
+        None => Ok(Box::new(UnconfiguredModel)),
+    }
+}
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
@@ -49,6 +67,23 @@ pub enum AgentCommand {
     Recall {
         /// The task name it was recorded under
         task: String,
+    },
+
+    /// Choose which of the four tiers this machine runs, and check it
+    #[command(subcommand)]
+    Model(ModelCommand),
+
+    /// Print the GBNF grammar every inference is constrained by
+    ///
+    /// So that the same inference can be repeated in a terminal with
+    /// `--grammar-file` and no Thalyx in the way.
+    Grammar,
+
+    /// Measure the configured tier: intent, arguments, abstention, latency, RAM
+    Bench {
+        /// A suite of cases. Without one, the suite built into Thalyx is used.
+        #[arg(long)]
+        cases: Option<PathBuf>,
     },
 
     /// Turn a sentence into a contract and carry it out
@@ -99,6 +134,15 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
         ),
 
         AgentCommand::Recall { task } => recall(store, &task, ""),
+
+        AgentCommand::Model(command) => agent_model::model(store, command),
+
+        AgentCommand::Grammar => {
+            print!("{}", thalyx_agent::grammar::gbnf());
+            Ok(())
+        }
+
+        AgentCommand::Bench { cases } => agent_model::bench(store, cases.as_deref(), request_id),
 
         AgentCommand::Do {
             utterance,
@@ -260,7 +304,8 @@ fn plan(store: &Store, planning: Planning<'_>) -> Fallible {
         );
     }
     let transcript = transcript(context, utterance, foreign);
-    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
+    let model = model_for(store)?;
+    let plan = thalyx_agent::plan(&transcript, model.as_ref(), policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));
     if policy == ForeignText::MayActThisTask {
@@ -326,7 +371,8 @@ fn act(store: &Store, doing: Doing<'_>) -> Fallible {
         None => Context::default(),
     };
     let transcript = transcript(context, utterance, foreign);
-    let plan = thalyx_agent::plan(&transcript, &UnconfiguredModel, policy, caller(request_id))?;
+    let model = model_for(store)?;
+    let plan = thalyx_agent::plan(&transcript, model.as_ref(), policy, caller(request_id))?;
 
     println!("understood by: {}", describe_path(plan.path));
 

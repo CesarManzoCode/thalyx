@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-07
+fecha-actualizacion: 2026-08-08
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,6 +14,124 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El agente tiene modelo: `llama.cpp` como proceso, las cuatro gamas y el banco — 2026-08-08
+>
+> **La Fase 1 quedó cerrada al 100% y Cesar zanjó también el encuadre de lo que
+> sobró**: no es deuda de ninguna fase. Sus palabras, que son el registro:
+>
+> > no quedó nada de la fase 1, esas cosas que quedaron no pertenecen a ninguna
+> > fase real debido a que ninguna bloquea nada, son solo cosas del proyecto que
+> > se arreglarán cuando se necesiten arreglar
+>
+> Eligió seguir con **el modelo del agente**, que era el único `NOT PROVEN` de
+> una corrida verde de `verify.sh` y el decreto más grande sin construir.
+>
+> ### Lo que había, y por qué era el hueco más grande del proyecto
+>
+> `crates/thalyx-agent/src/model.rs` tenía **dos** implementaciones de `Model`: el
+> falso hostil y `UnconfiguredModel`, que contesta *«no model is configured»*. O
+> sea que en un sistema operativo donde la IA es ciudadana de primera clase, la
+> IA no existía. [[Gamas-de-Modelo]] estaba decretado desde el 2026-08-03 y nadie
+> lo había implementado.
+>
+> ### Lo que se construyó
+>
+> ```
+> thalyx agent model show                         las cuatro gamas, y cuál está puesta
+> thalyx agent model use media --weights <gguf>   elige una, y mide el archivo
+> thalyx agent model check "<frase>"              una inferencia, con lo que costó
+> thalyx agent grammar                            la gramática, para repetirlo a mano
+> thalyx agent bench                              el banco que pide el decreto
+> ```
+>
+> `agent plan` y `agent do` usan la gama configurada; sin ninguna configurada,
+> siguen exactamente como estaban. Eso último no es cortesía: **una máquina sin
+> modelo es una máquina que se puede usar entera**, que es el
+> [[Principio-Doble-Ruta]] siendo lo que hace sobrevivible la ausencia del modelo
+> en vez de fatal.
+>
+> ### El defecto que apareció escribiendo el banco, sin correr nada
+>
+> **La gramática hacía imposible abstenerse.** Pedía al menos un id de módulo, lo
+> cual vuelve imposible un contrato mal formado —que es lo que el decreto
+> promete— y de paso volvía imposible decir *«no encontré ninguno»*.
+>
+> [[Gamas-de-Modelo]] dice que la abstención es **la medición que más importa**.
+> Con esa gramática, un enunciado ambiguo no tenía respuesta legal salvo inventar:
+> el banco habría sacado **0 de 4 en abstención en las cuatro gamas**, y la
+> lectura obvia habría sido «los modelos chicos inventan» cuando lo que pasaba es
+> que ninguna gama tenía cómo no inventar.
+>
+> Y no falla nada: todo compila, todo parsea, el banco corre y devuelve números
+> plausibles. Regla nueva en [[Estrategia-de-Pruebas]]: **una gramática que fija
+> qué se puede decir fija también qué se puede declinar**, y la pregunta que lo
+> encuentra no es *«¿acepta las respuestas correctas?»* sino *«¿qué respuestas
+> hace imposibles, y alguna era una conducta que quiero medir?»*.
+>
+> La corrección estaba a la mano y sin nombre: `AgentError::NothingToDo` ya
+> existía y ya era la respuesta correcta. Una lista vacía la alcanza. **Y el
+> prompt tiene que decirlo** — una respuesta legal que nadie menciona es una que
+> el modelo no usa, y la gama quedaría medida sobre una decisión que nunca se le
+> ofreció.
+>
+> ### La regla 6 obligaba a no parsear la salida de `llama.cpp`
+>
+> Un parser de la salida de otra herramienta necesita **una muestra real
+> capturada**, y aquí no hay ninguna ni se puede conseguir. Así que no se parsea
+> el formato: el prompt termina en un **marcador aleatorio por invocación** y la
+> respuesta es lo que sigue a su última aparición. Sirve si la herramienta repite
+> el prompt, si no lo repite, si le pone banderas o si le agrega tiempos.
+>
+> Aleatorio y no fijo **porque el texto ajeno va dentro del prompt**: un marcador
+> fijo es una cadena que un README puede contener, y un README que la contuviera
+> estaría eligiendo dónde empieza la respuesta.
+>
+> Lo que queda sin comprobar es más chico y tiene nombre: **que ese `llama.cpp`
+> acepte las banderas**. Por eso las que cambian entre versiones viven en el
+> archivo de configuración, no en el código — si una se rechaza, se arregla
+> editando una línea y `llama.cpp` sale distinto de cero diciendo cuál.
+>
+> ### Y un defecto que sólo apareció corriéndolo
+>
+> `peak rss 0.00 GB`. La unidad estaba fija en GB, así que una medición real de
+> dos megabytes se imprimía igual que *«no se pudo medir»* — las dos cosas que
+> esa función existe para mantener separadas. Encontrado corriéndolo, no
+> leyéndolo, que es la regla 1 otra vez.
+>
+> ### Lo que NO se hizo, y es lo importante de esta entrada
+>
+> **Nada de esto ha corrido contra `llama.cpp`.** El contenedor no lo tiene y no
+> alcanza los pesos. Lo que sí corrió aquí, contra procesos sustitutos: que la
+> respuesta se recorta bien del proceso, que un proceso colgado se mata, que 200
+> kB de salida se cortan, que las banderas rechazadas salen con su texto de
+> `stderr` íntegro, y el banco entero de nueve casos.
+>
+> `verify.sh` tiene etapa nueva. Con `THALYX_AGENT_WEIGHTS` apuntando a un GGUF
+> corre lo real —incluida la inyección **con un modelo que no es falso de nada**,
+> y su control— y sin eso dice `NOT PROVEN` nombrando cuál de las dos mitades
+> falta, el binario o los pesos.
+>
+> ### Lo que falta, y es tuyo
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+>
+> # baja un GGUF de Qwen2.5-3B-Instruct-Q4_K_M (~2 GB) donde quieras
+> thalyx agent model use media --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
+> thalyx agent model check "dev.thalyx.demo, ese quiero"
+> ```
+>
+> Ese `check` responde de una vez las dos cosas que aquí no se pueden responder.
+> Si sale, `thalyx agent bench` da la primera tabla de acierto por gama que ha
+> existido. Y `sudo ./dev/verify.sh` con `THALYX_AGENT_WEIGHTS` puesto corre la
+> etapa entera.
+>
+> **Lo primero que puede fallar es una bandera**, y está bien: sale con su
+> mensaje, y se arregla en
+> `<store>/state/agent-model.toml`, campo `extra_args`.
+>
+> **847 pruebas pasan** (802 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## Los 40 segundos de arranque eran un puerto serie a 9600 baudios — 2026-08-07
 >
 > **`nucleo lento` corrió en hierro y contestó al primer intento.** La memoria USB

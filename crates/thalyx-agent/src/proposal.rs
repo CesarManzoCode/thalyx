@@ -33,6 +33,28 @@ pub enum ProposedOperation {
     InstallModule,
 }
 
+impl ProposedOperation {
+    /// The spelling this operation has on the wire.
+    ///
+    /// Exists so that [`crate::grammar`] can be built from it rather than
+    /// repeating the literal. Two places holding the same judgement is how a
+    /// grammar comes to permit a word the parser rejects, and a model
+    /// constrained to say something unparseable fails on every utterance while
+    /// looking, from the outside, like a model that is simply bad.
+    ///
+    /// The match is exhaustive on purpose: a variant added to the enum stops
+    /// this compiling, which is the only guard that does not rely on somebody
+    /// remembering.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ProposedOperation::InstallModule => "install_module",
+        }
+    }
+
+    /// Every operation the minimal agent can propose.
+    pub const ALL: [ProposedOperation; 1] = [ProposedOperation::InstallModule];
+}
+
 /// A model's suggestion, before anything has been decided about it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
