@@ -68,7 +68,8 @@ de máquina: hay RAM y disco de sobra.
 | Que la gramática y el parser digan lo mismo | Contenedor — se comparan carácter por carácter |
 | Que la respuesta se recorte del proceso correctamente | Contenedor, con procesos sustitutos |
 | Que el plazo mate un proceso colgado, y el desborde | Contenedor, con procesos sustitutos |
-| Que `llama.cpp` acepte las banderas y la gramática | **Su máquina** |
+| Que una herramienta que abre sesión en vez de completar se detecte | Contenedor, con un sustituto del `llama-cli` interactivo |
+| Que `llama-completion` acepte las banderas y la gramática | **Su máquina** |
 | Acierto, latencia y RAM por gama | **Su máquina** |
 | El flujo completo con inferencia real | **Su máquina** |
 

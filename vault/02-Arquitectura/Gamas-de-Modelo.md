@@ -206,6 +206,41 @@ leer como medición; y `thalyx agent model use` **mide el archivo** y escribe lo
 bytes reales en la configuración. La tabla de arriba se corrige desde ahí cuando
 haya una corrida, no desde una página de descarga.
 
+## Revisión del 2026-08-08 (2) — «`llama.cpp` como proceso» no nombra un proceso
+
+**La primera corrida contra un `llama.cpp` de verdad** (`b1-3653e6d`, Qwen2.5-3B,
+en la Fedora de Cesar) falló, y lo que falló fue una suposición de este decreto.
+
+Esta nota dice *«la inferencia corre invocando `llama.cpp` como proceso»*. El
+código lo leyó como **`llama-cli`**, que era el nombre correcto cuando se escribió
+el decreto. Ya no lo es: `llama.cpp` **partió sus herramientas**.
+
+| Binario | Qué es hoy |
+|---|---|
+| `llama-cli` | Frontend de **chat interactivo**, sobre el servidor. Regenerar, deshacer, `/exit`, `/regen`, `/clear` |
+| `llama-completion` | El completado de **una sola pasada**, con `-f`, `--grammar-file`, `-n`, `--seed` y `--temp` sin cambios |
+
+Con `-f`, el `llama-cli` nuevo **abre una sesión sobre el archivo en vez de
+completarlo**, y sale con cero. No falla: contesta otra cosa.
+
+### Lo que el decreto tiene que decir, y no decía
+
+> **Lo que se invoca no es «`llama.cpp`», es un contrato**: recibe un prompt,
+> aplica una gramática, imprime un completado y termina. El binario que lo cumple
+> hoy es `llama-completion`. Nombrar un binario en vez del contrato es lo que
+> permitió que el proyecto de arriba renombrara una pieza de Thalyx sin que
+> Thalyx se enterara.
+
+El contrato ahora **se comprueba en cada corrida** en vez de suponerse, y las tres
+formas de incumplirlo tienen mensajes distintos. Ver [[Estrategia-de-Pruebas]],
+donde queda la regla que esto enseñó: un sustituto modela el eje en el que se le
+escribió variación, y los siete de aquí variaban el formato y contestaban todos.
+
+**Nada de esto contradice el decreto** —sigue siendo un proceso externo, sin
+enlazar, reproducible a mano— y el costo secundario que ya advertía se hizo
+visible: una herramienta ajena que cambia de identidad es exactamente el riesgo
+que se acepta al no enlazarla, y se paga con una comprobación, no con un enlace.
+
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer
 - [[Debate-Agente-Fine-Tuning]] — por qué el fine-tuning no es de Fase 1

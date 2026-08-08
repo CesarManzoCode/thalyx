@@ -9,24 +9,41 @@
 //!
 //! So this does not parse llama.cpp's output format. The prompt ends with a
 //! [`Prompt::marker`] that is random per invocation, and the answer is whatever
-//! follows its **last** occurrence. That works whether the tool echoes the
-//! prompt before the completion, prints only the completion, wraps either in
-//! banners, or appends timing lines — the cases differ in what surrounds the
-//! marker and none of them differ in where it is. What is left unverified is
-//! narrower and it is named in `verify.sh`: that this build of llama.cpp accepts
-//! the flags it is given.
+//! follows its **last** occurrence. That works whether the tool prints the
+//! prompt and then the completion, wraps either in banners, or appends timing
+//! lines — those cases differ in what surrounds the marker and not in where it
+//! is.
 //!
 //! Random rather than fixed because foreign text is *in* the prompt. A fixed
 //! marker is a string a fetched README can contain, and a README that contains
 //! it would be choosing where the answer starts.
 //!
+//! ## The marker is proof that the prompt was read, and not only a locator
+//!
+//! Revised 2026-08-08, after the first run against a real llama.cpp.
+//!
+//! It used to fall back to "the marker is absent, so take all of stdout",
+//! justified by the tool perhaps not echoing the prompt. That fallback had a
+//! second cause nobody listed: **the tool never consumed the prompt as a
+//! completion at all.** llama.cpp's `llama-cli` is now an interactive chat
+//! frontend, and it answers `-f` by opening a session rather than by completing
+//! the file. The marker was absent, the fallback handed its banner over as
+//! though it were an answer, and the failure came back as *the model said
+//! something that does not parse* — blaming the model for a tool that had not
+//! been asked the question.
+//!
+//! So [`Prompt::answer_in`] returns [`None`] instead, and the caller reports
+//! that as a broken contract. The one flag that made the marker optional —
+//! `--no-display-prompt` — is no longer passed, because suppressing the echo
+//! destroys the only evidence that the prompt was ever read. A one-shot
+//! completion always shows the marker; anything that does not, did not complete
+//! our prompt.
+//!
 //! ## Why the instructions contain no brace
 //!
-//! When the marker is absent the whole of stdout is taken as the answer, and
-//! that case only arises when the tool did not echo the prompt — so the prompt's
-//! own text is not in the stream to be confused for an answer. The
-//! no-brace rule costs one paragraph of prose and removes the need to reason
-//! about that at all. It is asserted below rather than left as an intention.
+//! Cheap, and it keeps the prompt's own text from ever resembling an answer to
+//! a reader debugging a transcript by eye. Asserted below rather than left as
+//! an intention.
 //!
 //! ## What the channel tags are, and what they are not
 //!
@@ -68,12 +85,13 @@ impl Prompt {
 
     /// The part of a tool's output that is the model's answer.
     ///
-    /// See the module docs: this is a position, not a format.
-    pub fn answer_in<'a>(&self, output: &'a str) -> &'a str {
-        match output.rfind(&self.marker) {
-            Some(at) => &output[at + self.marker.len()..],
-            None => output,
-        }
+    /// [`None`] means the marker never appeared, which means the tool never put
+    /// our prompt through a completion — see the module docs. It is not a
+    /// missing answer, it is a missing *question*, and the two send whoever
+    /// reads the message to opposite places.
+    pub fn answer_in<'a>(&self, output: &'a str) -> Option<&'a str> {
+        let at = output.rfind(&self.marker)?;
+        Some(&output[at + self.marker.len()..])
     }
 }
 
@@ -177,26 +195,40 @@ mod tests {
         let rendered = Prompt::render(&transcript());
         let marker = rendered.marker().to_string();
 
-        // Three shapes a tool might produce. None of them is a claim about what
-        // llama.cpp does; the point is that the answer is in the same place in
-        // all three.
+        // Two shapes a completion tool might produce. Neither is a claim about
+        // what llama.cpp prints; the point is that the answer is in the same
+        // place in both.
         let echoed = format!("{}{}", rendered.text(), r#"{"operation": "x"}"#);
-        let bare = r#"{"operation": "x"}"#.to_string();
         let noisy = format!(
             "llama_model_loader: loaded\n{}{}\n[end of text]\nllama_perf: 12ms\n",
             rendered.text(),
             r#"{"operation": "x"}"#
         );
 
-        assert_eq!(rendered.answer_in(&echoed).trim(), r#"{"operation": "x"}"#);
-        assert_eq!(rendered.answer_in(&bare).trim(), r#"{"operation": "x"}"#);
-        assert!(
-            rendered
-                .answer_in(&noisy)
-                .trim()
-                .starts_with(r#"{"operation""#)
+        assert_eq!(
+            rendered.answer_in(&echoed).unwrap().trim(),
+            r#"{"operation": "x"}"#
         );
-        assert!(!rendered.answer_in(&noisy).contains(&marker));
+        let from_noisy = rendered.answer_in(&noisy).unwrap();
+        assert!(from_noisy.trim().starts_with(r#"{"operation""#));
+        assert!(!from_noisy.contains(&marker));
+    }
+
+    #[test]
+    fn output_without_the_marker_is_a_missing_question_and_not_a_missing_answer() {
+        // The defect this replaced. Taking all of stdout when the marker was
+        // absent turned "this tool never read our prompt" into "the model said
+        // something unparseable", and the real llama-cli — now an interactive
+        // chat frontend — hits exactly that path: it answers `-f` by opening a
+        // session, prints its banner, and never completes the file.
+        let rendered = Prompt::render(&transcript());
+        let banner = "Available commands:\n  /exit\n  /regen\n  /clear\n> ";
+
+        assert_eq!(
+            rendered.answer_in(banner),
+            None,
+            "a banner from a tool that never read the prompt was accepted as an answer"
+        );
     }
 
     #[test]
@@ -220,7 +252,7 @@ mod tests {
 
         let output = format!("{}{}", rendered.text(), r#"{"operation": "real"}"#);
         assert_eq!(
-            rendered.answer_in(&output).trim(),
+            rendered.answer_in(&output).unwrap().trim(),
             r#"{"operation": "real"}"#,
             "a marker from somewhere else moved where the answer was read from"
         );
