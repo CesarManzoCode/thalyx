@@ -66,7 +66,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Las cuatro gamas | `crates/thalyx-agent/tier.rs` | Los tamaños son de un tipo que se imprime con `~`, para que un estimado no se lea como medición |
 | Gramática GBNF de la propuesta | `crates/thalyx-agent/grammar.rs` | Generada desde la forma que tiene que respetar; las clases de caracteres se comparan contra el escáner de ids, carácter por carácter |
 | El prompt y el marcador | `crates/thalyx-agent/prompt.rs` | Aleatorio por invocación, así que la respuesta se localiza sin parsear el formato de `llama.cpp` |
-| `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Plazo, tope de salida y muestreo de `VmHWM`. **Nunca ha corrido contra `llama.cpp`** — sólo contra procesos sustitutos |
+| `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Arrancado una vez por un `llama.cpp` real; **ninguna inferencia ha terminado** |
 | La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |
 | `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Ninguna gama se ha medido** |
 | Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Escribe y **lee**; lo no confirmable se muestra y no se usa |

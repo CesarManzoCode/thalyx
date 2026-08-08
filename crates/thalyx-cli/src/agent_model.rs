@@ -68,7 +68,11 @@ pub enum ModelCommand {
         #[arg(long)]
         weights: PathBuf,
         /// The llama.cpp binary. A bare name is looked up on PATH.
-        #[arg(long, default_value = "llama-cli")]
+        ///
+        /// `llama-completion`, not `llama-cli`: since llama.cpp split its
+        /// tools, `llama-cli` is the interactive chat frontend and answers a
+        /// prompt file by opening a session on it.
+        #[arg(long, default_value = thalyx_agent::llama::COMPLETION_BINARY)]
         binary: PathBuf,
     },
 
@@ -143,6 +147,14 @@ fn show(store: &Store) -> Fallible {
                 },
                 Err(error) => println!("  NOT READY: {error}"),
             }
+            // A store configured before 2026-08-08 names the interactive tool,
+            // because that was the default. Saying so here means it is found by
+            // looking rather than by an inference failing in a way that reads
+            // like the model's fault.
+            if let Some(warning) = wrong_tool_warning(&settings.binary) {
+                println!();
+                println!("{warning}");
+            }
         }
     }
     Ok(())
@@ -174,13 +186,71 @@ fn choose(store: &Store, tier: &str, weights: &Path, binary: &Path) -> Fallible 
     // on top of.
     match settings.model()?.preflight() {
         Ok(()) => {
+            if let Some(warning) = wrong_tool_warning(&settings.binary) {
+                println!("{warning}");
+                println!();
+            }
             println!("`thalyx agent model check` runs one inference against it.");
         }
         Err(error) => {
             println!("Recorded, but not usable yet: {error}");
+            if let Some(hint) = missing_completion_tool_hint(&settings.binary) {
+                println!();
+                println!("{hint}");
+            }
         }
     }
     Ok(())
+}
+
+/// Whether a configured binary is llama.cpp's interactive frontend.
+///
+/// Said at the moment of configuring rather than left for the first inference,
+/// because the failure it produces is a clean exit with a banner — the shape of
+/// mistake somebody spends an evening blaming on the model. The check is on the
+/// file name because that is all that is knowable without running it, and it is
+/// a warning rather than a refusal: somebody may have a build where that name
+/// is the completion tool, and `run` checks the contract itself either way.
+fn wrong_tool_warning(binary: &Path) -> Option<String> {
+    let name = binary.file_name()?.to_str()?;
+    if name != thalyx_agent::llama::INTERACTIVE_BINARY {
+        return None;
+    }
+    Some(format!(
+        "WARNING: `{name}` is llama.cpp's interactive chat frontend since the\n\
+         tools were split. Handed a prompt file it opens a session on it instead\n\
+         of completing it, and exits cleanly having answered nothing. The\n\
+         one-shot tool is `{}` — re-run this with\n  --binary {}",
+        thalyx_agent::llama::COMPLETION_BINARY,
+        thalyx_agent::llama::COMPLETION_BINARY,
+    ))
+}
+
+/// What to say when the completion tool is absent and the chat one is there.
+///
+/// Naming the thing that *is* installed is the whole value: "not found" on a
+/// machine that visibly has llama.cpp reads as Thalyx being wrong about the
+/// path, and sends somebody looking for a typo that is not there.
+fn missing_completion_tool_hint(binary: &Path) -> Option<String> {
+    let name = binary.file_name()?.to_str()?;
+    if name != thalyx_agent::llama::COMPLETION_BINARY {
+        return None;
+    }
+    let interactive = thalyx_agent::llama::INTERACTIVE_BINARY;
+    if !on_path(interactive) {
+        return None;
+    }
+    Some(format!(
+        "`{interactive}` IS installed, and it is not a substitute: it is the\n\
+         interactive chat frontend. `{name}` is built from the same tree —\n\
+         `cmake --build build --target {name}` — and is the tool that completes\n\
+         a prompt once and exits."
+    ))
+}
+
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
 }
 
 fn forget(store: &Store) -> Fallible {

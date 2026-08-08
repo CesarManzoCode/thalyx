@@ -1977,6 +1977,77 @@ La pregunta que encuentra esta clase de defecto no es *«¿la gramática acepta
 respuestas correctas?»* sino **«¿qué respuestas hace imposibles, y alguna de
 ellas era una conducta que quiero medir?»**.
 
+## Regla derivada: un sustituto fiel al formato puede ser infiel al contrato
+
+Encontrada el 2026-08-08, la **primera vez que la integración del agente tocó un
+`llama.cpp` de verdad**. Es la sexta vez que algo de fuera hacía un trabajo que
+nadie había escrito, y la primera en que lo que cambió fue *qué programa es*.
+
+`llama.cpp` partió sus herramientas: **`llama-cli` ya no es la herramienta de
+completado, es un frontend de chat interactivo** construido sobre el servidor, y
+el completado de una sola pasada vive en **`llama-completion`**. Thalyx pedía
+`llama-cli`. Con un archivo de prompt en `-f`, el `llama-cli` nuevo **abre una
+sesión sobre el archivo en vez de completarlo**: carga los pesos, imprime su
+banner y sus comandos (`/exit`, `/regen`, `/clear`), lee fin de entrada del
+`stdin` cerrado y **sale con cero**.
+
+O sea que la herramienta equivocada se ve igual que una herramienta que funciona
+y dio una mala respuesta.
+
+### Por qué las pruebas de aquí no lo vieron, y es lo importante
+
+Había siete pruebas contra procesos sustitutos, y estaban bien escritas: cubrían
+que la respuesta se recorta del proceso, que un proceso colgado se mata, que 200
+kB se cortan, que una bandera rechazada saca su `stderr` íntegro. **Todos esos
+sustitutos honraban el contrato de una pasada, porque todos estaban escritos para
+contestar.**
+
+La regla 8 dice que un falso tiene que modelar la propiedad bajo prueba. Yo modelé
+el **formato de salida** —qué imprime la herramienta y en qué orden— y el eje que
+importaba era otro:
+
+> **Un sustituto modela el eje en el que se le escribió variación.** Uno escrito
+> para producir salidas distintas prueba el parser y deja el contrato de
+> ejecución sin tocar, porque «contestar» es la única conducta que todas sus
+> variantes comparten. La pregunta que lo encuentra no es *«¿qué puede imprimir
+> esta herramienta?»* sino **«¿qué puede hacer esta herramienta que no sea
+> contestar?»**.
+
+### Y el error se disfrazó en el sitio exacto donde había un respaldo
+
+`answer_in` recortaba la respuesta después de un marcador aleatorio, y si el
+marcador **no estaba**, devolvía toda la salida. Ese respaldo estaba justificado
+por una causa —que la herramienta no repitiera el prompt— y tenía una segunda
+que nadie enumeró: **que la herramienta nunca leyera el prompt.**
+
+Así que el banner del chat entró como si fuera una respuesta, `Proposal::parse`
+falló, y el mensaje dijo *«el modelo contestó algo que no parsea»*. **Culpó a
+Qwen de una pregunta que nunca se le hizo.** Es la regla 10 otra vez —una falla
+al leer no es una falla al existir— y esta vez el que confundió las dos era el
+respaldo:
+
+> **Un respaldo que cubre una causa cubre en silencio todas las que producen la
+> misma señal.** Enumerar por qué se llega a la rama de respaldo es parte de
+> escribirla; si sólo hay una causa en la cabeza de quien la escribe, la rama
+> convierte a las demás en esa.
+
+### La corrección, que no es cambiar un nombre
+
+Cambiar el binario por omisión a `llama-completion` arregla *este* caso. Lo que
+arregla la clase es que **el contrato se comprueba en vez de suponerse**:
+
+- Se dejó de pasar `--no-display-prompt`. El eco del prompt lleva el marcador, y
+  el marcador es la **prueba positiva de que el prompt se leyó**. Suprimirlo
+  borraba la única evidencia.
+- Marcador ausente ⇒ `NotOneShot`: la herramienta no completó el prompt. No es
+  una respuesta que falta, es una **pregunta** que falta.
+- Marcador presente y respuesta que no parsea ⇒ `GrammarNotInForce`. No es
+  heurística: un completado restringido por gramática **no puede** producir prosa,
+  así que la prosa demuestra que la gramática no se aplicó.
+
+Ninguna de las tres olfatea la prosa de otra herramienta, que sería la regla 6
+otra vez.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

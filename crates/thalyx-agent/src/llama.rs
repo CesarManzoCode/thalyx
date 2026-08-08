@@ -15,28 +15,59 @@
 //!   makes that boundary one the operating system enforces rather than one the
 //!   design asserts.
 //!
-//! ## What has never run
+//! ## What has run, and what still has not — 2026-08-08
 //!
-//! All of it. The development container has no llama.cpp and no route to the
-//! weights, so nothing in this file has been executed against the real tool —
-//! only against the harness in `dev/verify.sh`, on his machine. That is stated
-//! here rather than in a commit message because the next person to read this
-//! deserves to know which claims are load-bearing.
+//! This file has been **started** by a real llama.cpp once: Cesar ran it on
+//! Fedora against `llama.cpp b1-3653e6d` and Qwen2.5-3B-Instruct-Q4_K_M. The
+//! process spawned, the weights loaded, and the contract was not honoured — see
+//! the section below. So what is now known is that spawning, argument passing
+//! and the failure path work against the real tool.
+//!
+//! **No inference has ever completed.** Nothing here has produced a proposal
+//! from real weights, so the grammar being accepted by llama.cpp, the answer
+//! landing after the marker, and the tier's accuracy are all still unproven.
+//! The container has neither llama.cpp nor a route to the weights, so this is
+//! not something the workspace tests can close. `dev/verify.sh` says so.
+//!
+//! ## Which binary, and why it is not `llama-cli` — revised 2026-08-08
+//!
+//! It was `llama-cli`, and the first run against a real llama.cpp
+//! (`b1-3653e6d`, Qwen2.5-3B) showed why that is wrong. llama.cpp has split its
+//! tools: `llama-cli` is now an **interactive chat frontend** built on the
+//! server, with conversation control — regenerate, roll back, `/exit`, `/regen`,
+//! `/clear` — and the old one-shot completion tool lives on as
+//! **`llama-completion`**, which is what this file wants and what carries `-f`,
+//! `--grammar-file`, `-n`, `--seed` and `--temp` unchanged.
+//!
+//! Handed `-f`, the new `llama-cli` opens a session on the file instead of
+//! completing it. It does not fail: it loads the weights, prints a banner, takes
+//! the closed stdin as end of input and exits cleanly. So the wrong tool looks
+//! like a working tool that gave a bad answer.
+//!
+//! That is why [`LlamaError::NotOneShot`] exists. The contract this file needs
+//! is not "a program called llama-something" — it is **feed a prompt, apply a
+//! grammar, print a completion, exit** — and the contract is now checked rather
+//! than assumed. See [`LlamaModel::run`].
 //!
 //! ## The version-dependent part, kept where it can be edited
 //!
 //! Flags come and go between llama.cpp releases. The ones this file passes
 //! itself — `-m`, `-f`, `-n`, `--seed`, `--temp`, `--grammar-file` — have been
-//! stable for a long time. The ones that have not are in
+//! stable across the split. The ones that have not are in
 //! [`Invocation::extra_args`], which lives in the config file rather than in
 //! this source, so a build that rejects one is fixed by editing a line instead
 //! of by rebuilding Thalyx. If llama.cpp refuses a flag it says so on stderr,
 //! and [`LlamaError::Exited`] carries that text out verbatim.
 //!
-//! Stdin is closed rather than being given a flag. Recent llama-cli versions
-//! drop into an interactive chat when they think they are talking to a person,
-//! and a closed stdin ends that at once — a hang is the one failure that looks
-//! like nothing at all.
+//! `--no-display-prompt` used to be among them and has been **removed on
+//! purpose**: the echoed prompt carries the marker that proves the prompt was
+//! read at all, and suppressing it destroys the evidence the contract check
+//! depends on. See `prompt.rs`.
+//!
+//! Stdin is closed rather than being given a flag. A tool that wants to chat
+//! reads end-of-input at once and stops, so the failure is a quick wrong answer
+//! rather than a hang — and a hang is the one failure that looks like nothing at
+//! all.
 
 use crate::model::{Model, ModelError};
 use crate::prompt::Prompt;
@@ -82,6 +113,34 @@ pub enum LlamaError {
     #[error("llama.cpp produced more than {MAX_OUTPUT_BYTES} bytes and was stopped")]
     Runaway,
 
+    #[error(
+        "{} ran and exited cleanly, but never put the prompt through a \
+         completion: what it printed does not contain the prompt at all.\n\
+         \n\
+         This is what llama.cpp's `llama-cli` does since the tools were split — \
+         it is an interactive chat frontend now, and it answers `-f` by opening \
+         a session on the file rather than completing it. The one-shot tool is \
+         `llama-completion`.\n\
+         \n\
+         Point Thalyx at it:\n    \
+         thalyx agent model use <tier> --weights <file> --binary llama-completion\n\
+         \n\
+         The first 400 bytes of what it printed instead:\n{sample}",
+        .binary.display()
+    )]
+    NotOneShot { binary: PathBuf, sample: String },
+
+    #[error(
+        "{} completed the prompt, but the answer is not a proposal, which means \
+         --grammar-file was not in force. A grammar-constrained completion \
+         cannot produce anything else — so this is the tool ignoring the \
+         grammar, not the model answering badly.\n\
+         \n\
+         It answered:\n{answer}",
+        .binary.display()
+    )]
+    GrammarNotInForce { binary: PathBuf, answer: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -110,13 +169,24 @@ pub struct Invocation {
     pub timeout: Duration,
 }
 
+/// The llama.cpp tool that honours the one-shot completion contract.
+///
+/// Not `llama-cli`, which is the interactive chat frontend since the tools were
+/// split. See the module docs.
+pub const COMPLETION_BINARY: &str = "llama-completion";
+
+/// The tool it used to be, kept by name so the failure can say so.
+pub const INTERACTIVE_BINARY: &str = "llama-cli";
+
 impl Invocation {
-    /// The defaults, which are the flags that have been stable the longest.
+    /// The defaults, which are the flags that have been stable across the split.
     pub fn new(binary: impl Into<PathBuf>, weights: impl Into<PathBuf>) -> Invocation {
         Invocation {
             binary: binary.into(),
             weights: weights.into(),
-            extra_args: vec!["-no-cnv".to_string(), "--no-display-prompt".to_string()],
+            // `--no-display-prompt` is deliberately not here. See the module
+            // docs: the echo carries the proof that the prompt was read.
+            extra_args: vec!["-no-cnv".to_string()],
             predict: 256,
             seed: 1,
             timeout: Duration::from_secs(180),
@@ -231,8 +301,36 @@ impl LlamaModel {
         }
 
         let text = String::from_utf8_lossy(&out).into_owned();
+
+        // The contract, checked in two steps rather than assumed. Both of these
+        // used to end up at `Proposal::parse` as "the model said something
+        // unparseable", which names the wrong culprit — and named it wrongly
+        // for the one failure a real llama.cpp actually produced.
+        //
+        // 1. The marker is gone, so the prompt was never completed. That is a
+        //    tool which does not do this job, not an answer that came out bad.
+        let Some(answer) = prompt.answer_in(&text) else {
+            return Err(LlamaError::NotOneShot {
+                binary: self.invocation.binary.clone(),
+                sample: sample_of(&text),
+            });
+        };
+        let answer = answer.trim().to_string();
+
+        // 2. The prompt was completed and the result is not a proposal. A
+        //    grammar-constrained completion *cannot* produce anything else, so
+        //    this is the grammar not being applied. Silence is left alone: a
+        //    tool that completed to nothing is a different event again, and
+        //    `Proposal::parse` already has a word for it.
+        if !answer.is_empty() && crate::proposal::Proposal::parse(&answer).is_err() {
+            return Err(LlamaError::GrammarNotInForce {
+                binary: self.invocation.binary.clone(),
+                answer: sample_of(&answer),
+            });
+        }
+
         Ok(Run {
-            answer: prompt.answer_in(&text).trim().to_string(),
+            answer,
             latency: started.elapsed(),
             peak_rss: match peak.load(Ordering::Relaxed) {
                 0 => None,
@@ -364,6 +462,20 @@ fn read_vm_hwm(status: &Path) -> Option<u64> {
     Some(kib * 1024)
 }
 
+/// Enough of an output to recognise it, without pasting a whole session.
+///
+/// Bounded because the failure it appears in is one where the tool printed a
+/// banner, and a banner in an error message that scrolls the diagnosis off the
+/// screen is a diagnosis nobody reads.
+fn sample_of(text: &str) -> String {
+    const AT: usize = 400;
+    let trimmed = text.trim();
+    match trimmed.char_indices().nth(AT) {
+        Some((at, _)) => format!("{}…", &trimmed[..at]),
+        None => trimmed.to_string(),
+    }
+}
+
 /// Whether a binary name or path names something that can be executed.
 ///
 /// A bare name is searched for on `PATH` the same way the shell would, because
@@ -465,23 +577,123 @@ mod tests {
         assert_eq!(proposal.targets, ["dev.thalyx.demo"]);
     }
 
+    /// A stand-in for the *interactive* llama.cpp frontend.
+    ///
+    /// This is the regression test for what a real llama.cpp did on 2026-08-08.
+    /// Handed `-f`, the new `llama-cli` opens a session on the file rather than
+    /// completing it: it loads, prints a banner and its slash commands, reads
+    /// end-of-input from the closed stdin and exits **zero**. Nothing errors.
+    ///
+    /// It is deliberately not a copy of llama.cpp's banner — rule 6, and this is
+    /// not a claim about that text. The only property it models is the one that
+    /// matters: **cleanly exiting without ever completing the prompt.**
+    fn interactive_stand_in(dir: &Path) -> PathBuf {
+        stand_in(
+            dir,
+            "echo 'main: interactive mode; type /help for commands'\n\
+             echo 'Available commands: /exit /regen /clear'\n\
+             echo '> '\n\
+             exit 0",
+        )
+    }
+
     #[test]
-    fn a_program_that_prints_nothing_is_a_failure_and_not_an_empty_answer() {
-        // llama.cpp ran, exited cleanly, and said nothing. That has to reach
-        // `Proposal::parse` as emptiness rather than as a proposal with fields
-        // missing — silence and a bad answer are different events.
+    fn a_tool_that_opens_a_session_instead_of_completing_is_named_as_the_problem() {
+        // The defect Cesar hit on iron. It used to arrive as "the model said
+        // something that does not parse", which sends whoever reads it to look
+        // at Qwen — and the model had never been asked anything.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = interactive_stand_in(scratch.path());
+
+        let error = LlamaModel::new(Invocation::new(&binary, &weights))
+            .run(&transcript())
+            .expect_err("a chat session is not a completion");
+
+        let LlamaError::NotOneShot { sample, .. } = &error else {
+            panic!("a tool that never completed the prompt was reported as {error}");
+        };
+        assert!(
+            sample.contains("/regen"),
+            "the diagnosis does not show what it got instead: {sample:?}"
+        );
+        assert!(
+            error.to_string().contains(COMPLETION_BINARY),
+            "the error does not name the tool that would work: {error}"
+        );
+    }
+
+    #[test]
+    fn a_program_that_prints_nothing_at_all_never_read_the_prompt() {
+        // Distinct from the test below, and the distinction is the point: a
+        // tool that printed nothing cannot have echoed the prompt, so it did
+        // not complete it. That is a broken contract, not a quiet model.
         let scratch = tempfile::tempdir().unwrap();
         let weights = weights(scratch.path());
         let binary = stand_in(scratch.path(), "exit 0");
 
+        let error = LlamaModel::new(Invocation::new(&binary, &weights))
+            .run(&transcript())
+            .expect_err("no output means no completion");
+        assert!(
+            matches!(error, LlamaError::NotOneShot { .. }),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    fn a_model_that_completed_to_nothing_is_an_empty_answer_and_not_a_broken_tool() {
+        // The control for the two above. Without it, a contract check that
+        // rejected everything would pass them both and Thalyx would have
+        // stopped being able to run any model at all.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(scratch.path(), r#"cat "$4""#);
+
         let run = LlamaModel::new(Invocation::new(&binary, &weights))
             .run(&transcript())
-            .expect("the stand-in exits cleanly");
+            .expect("the prompt was read; the completion was empty");
 
         assert_eq!(run.answer, "");
         assert_eq!(
             crate::proposal::Proposal::parse(&run.answer),
             Err(crate::proposal::ProposalError::Empty)
+        );
+    }
+
+    #[test]
+    fn a_completion_that_is_prose_means_the_grammar_was_not_applied() {
+        // A grammar-constrained completion cannot produce prose. So prose after
+        // the marker is the tool ignoring --grammar-file, and saying "the model
+        // answered badly" would again blame the wrong side.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' 'Sure! I can help you install that module.'"#,
+        );
+
+        let error = LlamaModel::new(Invocation::new(&binary, &weights))
+            .run(&transcript())
+            .expect_err("prose is not a proposal and not the model's fault");
+        assert!(
+            matches!(error, LlamaError::GrammarNotInForce { .. }),
+            "got {error}"
+        );
+    }
+
+    #[test]
+    fn the_flag_that_would_hide_the_evidence_is_not_passed() {
+        // `--no-display-prompt` suppresses the echo, and the echo is the only
+        // proof that the prompt was read. With it, the tool that opens a
+        // session and the tool that completes silently are the same bytes.
+        let invocation = Invocation::new(COMPLETION_BINARY, "/models/qwen.gguf");
+        assert!(
+            !invocation
+                .extra_args
+                .iter()
+                .any(|a| a == "--no-display-prompt"),
+            "the contract check has been disarmed by a default flag"
         );
     }
 
@@ -556,11 +768,11 @@ mod tests {
         // It exists so a strange answer can be reproduced in a terminal. A
         // printed command missing the grammar would reproduce a different
         // inference and prove the wrong thing innocent.
-        let invocation = Invocation::new("llama-cli", "/models/qwen.gguf");
+        let invocation = Invocation::new(COMPLETION_BINARY, "/models/qwen.gguf");
         let line = invocation.command_line(Path::new("/tmp/p.txt"), Path::new("/tmp/g.gbnf"));
 
         for expected in [
-            "llama-cli",
+            COMPLETION_BINARY,
             "-m /models/qwen.gguf",
             "-f /tmp/p.txt",
             "--grammar-file /tmp/g.gbnf",

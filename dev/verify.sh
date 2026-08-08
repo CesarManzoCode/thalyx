@@ -1129,7 +1129,7 @@ fi
 # on what is *acceptable* is proven by the parser tests in the workspace, which
 # run everywhere.
 
-MODEL_BINARY="${THALYX_AGENT_BINARY:-llama-cli}"
+MODEL_BINARY="${THALYX_AGENT_BINARY:-llama-completion}"
 MODEL_TIER="${THALYX_AGENT_TIER:-media}"
 MSTORE="$WORK/agent-model-store"
 

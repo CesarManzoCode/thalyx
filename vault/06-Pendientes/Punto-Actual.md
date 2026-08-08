@@ -14,6 +14,107 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El primer `llama.cpp` de verdad: Thalyx pedía el binario que dejó de ser el correcto — 2026-08-08
+>
+> **El bloque de abajo es el que construyó esto; éste es el que dice dónde está.**
+> Cesar lo corrió en su Fedora contra `llama.cpp b1-3653e6d` y
+> `Qwen2.5-3B-Instruct-Q4_K_M`, y falló al primer intento — que es exactamente
+> para lo que sirve correrlo.
+>
+> ### Qué pasó
+>
+> `thalyx agent model check` arrancó `llama-cli`, los pesos cargaron, y entonces
+> `llama-cli` **abrió su interfaz conversacional**: sus comandos (`/exit`,
+> `/regen`, `/clear`) y el prompt `>`, en vez de completar y terminar.
+>
+> **No era el GGUF, ni el modelo, ni su máquina.** `llama.cpp` partió sus
+> herramientas:
+>
+> | Binario | Qué es hoy |
+> |---|---|
+> | `llama-cli` | Frontend de **chat interactivo**, sobre el servidor |
+> | `llama-completion` | El completado de **una sola pasada**, con `-f`, `--grammar-file`, `-n`, `--seed` y `--temp` sin cambios |
+>
+> Con `-f`, el `llama-cli` nuevo abre una sesión sobre el archivo en vez de
+> completarlo. Carga, imprime su banner, lee fin de entrada del `stdin` cerrado y
+> **sale con cero**. La herramienta equivocada se ve igual que una que funciona y
+> dio una mala respuesta.
+>
+> ### Por qué las pruebas de aquí no lo vieron
+>
+> Había siete sustitutos y estaban bien escritos: cubrían el recorte de la
+> respuesta, el plazo, el desborde, la bandera rechazada. **Todos honraban el
+> contrato de una pasada, porque todos estaban escritos para contestar.** Modelé
+> el eje del *formato de salida* y el que importaba era el *contrato de
+> ejecución*. Regla nueva en [[Estrategia-de-Pruebas]]: la pregunta no es *«¿qué
+> puede imprimir esta herramienta?»* sino **«¿qué puede hacer que no sea
+> contestar?»**.
+>
+> ### Y el error se disfrazó justo donde había un respaldo
+>
+> `answer_in` recortaba después del marcador aleatorio y, **si el marcador no
+> estaba, devolvía toda la salida**. Ese respaldo se escribió por una causa —que
+> la herramienta no repitiera el prompt— y tenía una segunda que nadie enumeró:
+> que la herramienta **nunca leyera el prompt**. Así que el banner del chat entró
+> como respuesta, el parser falló, y el mensaje dijo *«el modelo contestó algo que
+> no parsea»*: **le echó la culpa a Qwen de una pregunta que nunca se le hizo.**
+>
+> Segunda regla del mismo hallazgo: un respaldo que cubre una causa cubre en
+> silencio todas las que producen la misma señal.
+>
+> ### Lo que se corrigió, y no es cambiar un nombre
+>
+> El binario por omisión es `llama-completion`, sí. Pero lo que arregla la clase
+> es que **el contrato se comprueba en vez de suponerse**:
+>
+> - **Se dejó de pasar `--no-display-prompt`.** El eco del prompt lleva el
+>   marcador, y el marcador es la prueba positiva de que el prompt se leyó.
+>   Suprimirlo borraba la única evidencia — la bandera que hacía cómoda la salida
+>   era la que desarmaba la comprobación.
+> - **Marcador ausente** → `NotOneShot`, que nombra a `llama-completion` y enseña
+>   los primeros 400 bytes de lo que salió en su lugar. No es una respuesta que
+>   falta, es una **pregunta** que falta.
+> - **Marcador presente y respuesta que no parsea** → `GrammarNotInForce`. No es
+>   heurística: un completado restringido por gramática **no puede** producir
+>   prosa, así que la prosa demuestra que la gramática no se aplicó.
+> - **Y se avisa antes de la primera inferencia**: configurar `llama-cli` saca la
+>   advertencia al momento de configurarlo, y `agent model show` la repite — así
+>   un store configurado ayer se arregla al revisarlo y no esperando a que falle.
+>
+> Ninguna de las tres olfatea la prosa de otra herramienta, que sería la regla 6
+> otra vez.
+>
+> ### Qué quedó probado aquí y qué no
+>
+> **Probado en este contenedor**, con un sustituto que reproduce la conducta del
+> `llama-cli` nuevo —carga, banner, comandos, sale con cero sin completar—: que
+> eso produce `NotOneShot` y no un fallo de parseo; que una salida vacía es
+> contrato roto y no un modelo callado; que un prompt leído con completado vacío
+> **sí** es un modelo callado (el control, sin el cual una comprobación que
+> rechaza todo pasaría); que la prosa produce `GrammarNotInForce`; y que la
+> bandera que desarmaba la comprobación no vuelve por omisión.
+>
+> **Sigue sin probarse, y lo tiene que cerrar su máquina**: que `llama-completion`
+> acepte estas banderas, que tome la gramática, y que la respuesta caiga después
+> del marcador. **Ninguna inferencia ha terminado nunca contra pesos reales.**
+>
+> ### Lo que falta, y es tuyo
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+>
+> # si no está construido, sale del mismo árbol de llama.cpp:
+> #   cmake --build build --target llama-completion
+>
+> thalyx agent model use media --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
+> thalyx agent model check "dev.thalyx.demo, ese quiero"
+> ```
+>
+> Ya no hace falta pasar `--binary`: el valor por omisión es el correcto. Si sale,
+> `thalyx agent bench` da la primera tabla de acierto por gama.
+>
+> **852 pruebas pasan** (847 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
 > ## El agente tiene modelo: `llama.cpp` como proceso, las cuatro gamas y el banco — 2026-08-08
 >
 > **La Fase 1 quedó cerrada al 100% y Cesar zanjó también el encuadre de lo que
