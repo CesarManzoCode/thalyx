@@ -251,6 +251,20 @@ mod tests {
     }
 
     #[test]
+    fn the_grammar_admits_the_line_breaks_a_real_model_actually_used() {
+        // Qwen2.5-3B pretty-printed its answer on the first run that reached
+        // one: newline, two spaces, one field per line. That is legal only
+        // because `ws` contains the newline. Tightening it to `[ \t]*` would
+        // make the answer a real model gives unreachable, while every
+        // hand-written fixture in this workspace — all of them single-line —
+        // carried on passing.
+        assert!(
+            gbnf().contains(r"ws         ::= [ \t\n]*"),
+            "the whitespace rule no longer admits the shape a real model emits"
+        );
+    }
+
+    #[test]
     fn a_two_segment_id_cannot_be_expressed() {
         // The grammar demands three segments before the optional ones, which is
         // what the scanner demands. Stated as a test because the rule lives in

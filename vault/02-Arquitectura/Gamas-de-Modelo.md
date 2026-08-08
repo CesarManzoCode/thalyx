@@ -241,6 +241,33 @@ enlazar, reproducible a mano— y el costo secundario que ya advertía se hizo
 visible: una herramienta ajena que cambia de identidad es exactamente el riesgo
 que se acepta al no enlazarla, y se paga con una comprobación, no con un enlace.
 
+## Revisión del 2026-08-08 (3) — la primera inferencia real, y qué quedó probado de verdad
+
+Con `llama-completion`, **la corrida siguiente completó**: `b1-3653e6d`,
+Qwen2.5-3B-Instruct-Q4_K_M, en la Fedora de Cesar. El modelo emitió el objeto que
+describe la gramática. Thalyx lo rechazó por un defecto propio —el límite de la
+respuesta estaba definido sólo por un lado, ver [[Estrategia-de-Pruebas]]— y una
+vez corregido, la propuesta pasa.
+
+Lo que hay que anotar aquí es **qué queda probado y qué no**, porque el decreto
+apoya cuatro gamas sobre esta pieza:
+
+| Afirmación | Estado |
+|---|---|
+| Las banderas que Thalyx pasa las acepta esta compilación | **Probado** — `llama.cpp` sale distinto de cero ante una bandera que no conoce |
+| Los pesos cargan y el prompt vuelve con el marcador intacto | **Probado** |
+| Vuelve una propuesta bien formada, dentro del plazo | **Probado**, una gama, un enunciado |
+| **`--grammar-file` es lo que restringió esa respuesta** | **No probado** |
+| Los números por gama del banco | **No probado**, ninguna gama medida |
+
+La cuarta fila es la que importa y es fácil de dar por buena: un modelo de 3B al
+que se le pide JSON puede producir JSON por su cuenta, así que **una bandera
+aceptada y una gramática aplicada se ven exactamente igual desde aquí**.
+Separarlas necesita un enunciado que el modelo contestaría con prosa si lo
+dejaran. Hasta que exista esa comprobación, la frase de este decreto —«un
+contrato malformado es imposible en las cuatro gamas»— está sostenida por las
+pruebas del parser, que corren en todas partes, y no por ninguna corrida real.
+
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer
 - [[Debate-Agente-Fine-Tuning]] — por qué el fine-tuning no es de Fase 1
