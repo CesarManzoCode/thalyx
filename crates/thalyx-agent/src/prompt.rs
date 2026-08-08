@@ -9,10 +9,13 @@
 //!
 //! So this does not parse llama.cpp's output format. The prompt ends with a
 //! [`Prompt::marker`] that is random per invocation, and the answer is whatever
-//! follows its **last** occurrence. That works whether the tool prints the
-//! prompt and then the completion, wraps either in banners, or appends timing
-//! lines — those cases differ in what surrounds the marker and not in where it
-//! is.
+//! follows the echoed prompt. That works whether the tool prints the prompt and
+//! then the completion, wraps either in banners, or appends timing lines —
+//! those cases differ in what surrounds the prompt and not in where it is.
+//!
+//! It anchors on the whole echoed prompt rather than on the marker alone
+//! because a model reproduces what it has just read; see [`Prompt::answer_in`]
+//! for the run where one started to.
 //!
 //! Random rather than fixed because foreign text is *in* the prompt. A fixed
 //! marker is a string a fetched README can contain, and a README that contains
@@ -123,8 +126,40 @@ impl Prompt {
     /// our prompt through a completion — see the module docs. It is not a
     /// missing answer, it is a missing *question*, and the two send whoever
     /// reads the message to opposite places.
+    ///
+    /// ## Why this anchors on the whole prompt and not on the marker
+    ///
+    /// Revised 2026-08-08, watching a real Qwen answer the grammar probe:
+    ///
+    /// ```text
+    /// without it           BANANA <<<TH
+    /// ```
+    ///
+    /// It said the word and then **started reproducing the marker it had just
+    /// read**, which the token cap cut short. Nothing stops it finishing. This
+    /// used to take the marker's *last* occurrence, so a model that copied the
+    /// marker whole would have had its own copy treated as the end of the
+    /// question — and the answer would have been whatever trailed it.
+    ///
+    /// The grammar does not prevent it either: `RANGE_CHARS` contains `<`, `>`,
+    /// `-` and the hex digits, so a constrained model can spell a marker inside
+    /// a `constraint` string.
+    ///
+    /// Not an attack — foreign text cannot aim at a marker it has to guess, and
+    /// that is what the randomness is for. This is accidental, which is worse in
+    /// one way: it happens on ordinary input, to nobody's surprise but ours.
+    ///
+    /// So the anchor is the echoed prompt itself, which the tool prints
+    /// verbatim and the model cannot forge without emitting the whole thing.
+    /// The marker alone remains the fallback for a tool that echoes the prompt
+    /// with the whitespace touched — and that fallback takes the **first**
+    /// occurrence, because the prompt contains the marker exactly once and
+    /// anything later belongs to the model.
     pub fn answer_in<'a>(&self, output: &'a str) -> Option<&'a str> {
-        let at = output.rfind(&self.marker)?;
+        if let Some(at) = output.find(&self.text) {
+            return Some(&output[at + self.text.len()..]);
+        }
+        let at = output.find(&self.marker)?;
         Some(&output[at + self.marker.len()..])
     }
 }
@@ -225,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_is_what_follows_the_last_marker() {
+    fn the_answer_is_what_follows_the_echoed_prompt() {
         let rendered = Prompt::render(&transcript());
         let marker = rendered.marker().to_string();
 
@@ -263,6 +298,35 @@ mod tests {
             None,
             "a banner from a tool that never read the prompt was accepted as an answer"
         );
+    }
+
+    #[test]
+    fn a_model_that_copies_the_marker_back_cannot_move_where_its_answer_starts() {
+        // Watched happening on real weights: asked for one word, Qwen said it
+        // and then began repeating the marker it had just read — `BANANA <<<TH`
+        // — with only the token cap stopping it.
+        //
+        // Taking the marker's last occurrence would have read the model's own
+        // copy as the end of the question, so the answer became whatever came
+        // after it. The prompt is the anchor now, and a model would have to
+        // reproduce the whole thing to move it.
+        let rendered = Prompt::render(&transcript());
+        let marker = rendered.marker().to_string();
+
+        let output = format!(
+            "{}{}{}{}",
+            rendered.text(),
+            r#"{"operation": "install_module", "targets": ["dev.thalyx.demo"], "constraint": ""#,
+            marker,
+            r#""}"#
+        );
+
+        let proposal = crate::proposal::Proposal::parse(
+            crate::proposal::Proposal::completion_in(rendered.answer_in(&output).unwrap()).unwrap(),
+        )
+        .expect("the model's copy of the marker swallowed the answer");
+        assert_eq!(proposal.targets, ["dev.thalyx.demo"]);
+        assert_eq!(proposal.constraint.as_deref(), Some(marker.as_str()));
     }
 
     #[test]

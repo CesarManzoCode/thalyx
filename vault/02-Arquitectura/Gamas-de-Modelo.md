@@ -257,8 +257,8 @@ apoya cuatro gamas sobre esta pieza:
 | Las banderas que Thalyx pasa las acepta esta compilación | **Probado** — `llama.cpp` sale distinto de cero ante una bandera que no conoce |
 | Los pesos cargan y el prompt vuelve con el marcador intacto | **Probado** |
 | Vuelve una propuesta bien formada, dentro del plazo | **Probado**, una gama, un enunciado |
-| **`--grammar-file` es lo que restringió esa respuesta** | Comprobación construida; **falta correrla** |
-| Los números por gama del banco | **No probado**, ninguna gama medida |
+| **`--grammar-file` es lo que restringió esa respuesta** | **Probado** el 2026-08-08 |
+| Los números por gama del banco | **Una de cuatro gamas medida** |
 
 La cuarta fila es la que importa y era fácil de dar por buena: un modelo de 3B al
 que se le pide JSON puede producir JSON por su cuenta, así que **una bandera
@@ -318,6 +318,32 @@ Vale la pena anotarlo aquí porque confirma en concreto lo que esta nota decía 
 abstracto —que la gramática no acota la longitud de un id—: **un modelo
 restringido al que se le pide algo ilegal no se rinde, gasta todo el presupuesto
 buscando cómo decirlo legalmente.** El tope de tokens es lo único que lo termina.
+
+Corregida la comprobación, salió **`PROVEN`**:
+
+```
+with the grammar     { "operation": "install_module", "targets": [ "python3.abc_1.abc", "nump…
+without it           BANANA <<<TH
+```
+
+Restringido no pudo ni empezar con la palabra; suelto la dijo. Con eso, la frase
+de este decreto —«un contrato malformado es imposible en las cuatro gamas»— deja
+de apoyarse sólo en las pruebas del parser. **En una gama.** Las otras tres
+heredan el argumento pero no la corrida.
+
+### Y el marcador se le pega al modelo
+
+El brazo suelto dice `BANANA <<<TH`: dijo la palabra y **empezó a reproducir el
+marcador que acababa de leer**, y sólo lo cortó el tope de tokens. Es lo que hace
+un modelo con lo que tiene delante.
+
+Importa porque `RANGE_CHARS` contiene `<`, `>`, `-` y los dígitos hexadecimales,
+así que un modelo **con la gramática puesta** también puede deletrear un marcador
+dentro de un campo `constraint`. No es un ataque —un texto ajeno no puede apuntar
+a un marcador que tendría que adivinar, y para eso es aleatorio— pero sí una vía
+de corrupción accidental, que ocurre con entradas normales. La lectura de la
+respuesta se ancla ahora en el prompt repetido entero y no en el marcador suelto.
+Ver [[Estrategia-de-Pruebas]].
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

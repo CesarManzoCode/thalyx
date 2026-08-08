@@ -14,6 +14,52 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La gramática restringe de verdad, probado en hierro — 2026-08-08
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ```
+> thalyx agent model grammar-check
+> with the grammar     { "operation": "install_module", "targets": [ "python3.abc_1.abc", …
+> without it           BANANA <<<TH
+> PROVEN
+> ```
+>
+> Restringido no pudo ni empezar con la palabra prohibida; suelto la dijo. Con
+> eso, la frase de [[Gamas-de-Modelo]] —«un contrato malformado es imposible en
+> las cuatro gamas»— deja de apoyarse sólo en las pruebas del parser. **En una
+> gama**; las otras tres heredan el argumento y no la corrida.
+>
+> ### El defecto que traía esa corrida que pasó
+>
+> `BANANA <<<TH`: el modelo dijo la palabra y **empezó a reproducir el marcador
+> que acababa de leer**. Sólo lo cortó el tope de tokens.
+>
+> El marcador es aleatorio por invocación, y eso estaba razonado contra un
+> adversario —un texto ajeno no puede adivinarlo—. No cubría esto: el modelo no lo
+> adivina, lo tiene delante.
+>
+> > **Un delimitador que el sistema medido puede escribir no delimita.** Ser
+> > imposible de adivinar no es ser imposible de copiar.
+>
+> `answer_in` tomaba la **última** aparición del marcador, así que una copia
+> completa habría movido dónde empieza la respuesta. Ahora se ancla en el prompt
+> repetido entero, y el marcador solo queda de respaldo tomando la primera.
+> `RANGE_CHARS` contiene `<`, `>` y `-`, así que esto llegaba también al camino
+> restringido, dentro de un campo `constraint`.
+>
+> **Nada falló para encontrarlo.** El veredicto era correcto; el defecto estaba en
+> la evidencia impresa al lado, y sólo porque se imprimía. Regla nueva en
+> [[Estrategia-de-Pruebas]]: una corrida que pasa también trae datos.
+>
+> ### Lo que queda abierto
+>
+> - Las otras tres gamas, que son otros tres GGUF.
+> - La instrucción de abstención pesa de más: se abstuvo con el id dicho en claro.
+> - Actuó sobre un módulo mencionado y luego descartado. Comprensión, no gramática.
+>
+> Ver [[Tareas-Pendientes]].
+>
 > ## El agente corre entero contra hierro real, con el primer banco medido — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
