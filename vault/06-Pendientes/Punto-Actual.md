@@ -97,6 +97,23 @@ tags: [continuidad, punto-actual, sesiones]
 > `MISS` que la originó venía del banco que contaba `Err(_) => Abstained`, donde
 > un rechazo por atribución se veía como abstención correcta.
 >
+> ### El estatus que Cesar le puso a todas estas cifras
+>
+> Preguntado si la columna de RAM recomendada baja ahora que el RSS medido salió
+> menor, decretó que no, y con un alcance más amplio que la pregunta:
+>
+> > declara los resultados mas no los muestres como pruebas definitivas, las
+> > pruebas definitivas vendran cuando thalyx este corriendo en una ssd real como
+> > sistema operativo real, solo en ese entorno se vera la realidad
+>
+> Así que **todo lo de arriba queda declarado y nada queda como definitivo**.
+> Sirve para comparar las gamas entre sí, porque las tres corrieron bajo las
+> mismas condiciones; **no** sirve para fijar el requisito de hardware de Thalyx,
+> ni para bajar la columna de RAM, ni para decidir qué gama trae el ISO. Eso son
+> afirmaciones sobre el destino, y el destino es Thalyx como sistema operativo
+> sobre un SSD real. Queda como pendiente con condición escrita en
+> [[Tareas-Pendientes]].
+>
 > ### Qué se cambió, y qué no
 >
 > Cambiado, y las dos cosas son evidencia y no puntuación:
@@ -110,16 +127,29 @@ tags: [continuidad, punto-actual, sesiones]
 > columna de RAM recomendada. Cambiar cualquiera de ellos como reacción a estos
 > resultados haría que la próxima corrida no se pudiera comparar con ésta.
 >
-> ### Lo que corre Cesar
+> ### Lo que corre Cesar, y es el experimento que eligió
+>
+> **Repetir la gama ligera guardando la salida entera.** Seis de veinte casos no
+> dieron medición y el banco **sí imprime la razón de cada uno** —plazo agotado,
+> truncamiento, gramática no aplicada, `llama.cpp` cayéndose son fallos
+> distintos, y mandan a lugares opuestos— pero esa columna no llegó a la bóveda
+> en la transcripción. Es una corrida, sin cambiar nada, y hasta tenerla `5/14`
+> no es la puntuación de esa gama ni se sabe qué le pasa.
 >
 > ```
 > git pull && cargo install --path crates/thalyx-cli
 > thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
-> thalyx agent model grammar-check     # ahora debe salir NOT PROVEN en ligera
+> thalyx agent model grammar-check 2>&1 | tee ligera-grammar.log
+> thalyx agent bench              2>&1 | tee ligera-bench.log
 > ```
 >
-> `NOT PROVEN` es el resultado correcto ahí y **sale distinto de cero**: no es
-> que la gramática falle, es que ese modelo no contesta el sondeo.
+> Dos cosas que esperar y que **no** son fallos:
+>
+> - `grammar-check` debe salir **`NOT PROVEN`** y **distinto de cero**. Es el
+>   resultado correcto: no es que la gramática falle, es que ese modelo contesta
+>   el sondeo callándose y entonces no hay control. Si sale `PROVEN`, la
+>   corrección no llegó.
+> - El banco vuelve a perder casos. Lo que se busca es **qué dice cada `ERR`**.
 >
 > **872 pruebas pasan** (870 antes), `clippy` limpio, `cargo fmt` aplicado.
 >

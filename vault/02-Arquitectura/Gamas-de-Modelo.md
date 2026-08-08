@@ -33,8 +33,12 @@ Tres advertencias sobre esa tabla, porque las tres se pueden leer mal:
 1. **`RSS pico medido` no es `RAM que pide`.** Es lo que el proceso ocupó en la
    máquina de Cesar —Ryzen 5 5600G, 16 GB, sin GPU, inferencia en CPU, sobre
    Fedora— corriendo el banco. La columna de al lado es una **recomendación**
-   para el usuario, que tiene que dejar sitio para el resto del sistema. Bajarla
-   porque el RSS salió menor es decisión de Cesar y todavía no está tomada.
+   para el usuario, que tiene que dejar sitio para el resto del sistema. **No se
+   baja**: Cesar decretó el 2026-08-08 que estas cifras se declaran y no se
+   presentan como pruebas definitivas, y que las definitivas llegan cuando
+   Thalyx corra como sistema operativo real sobre un SSD real. Cambiar la
+   recomendación es una afirmación sobre el destino, hecha con una medición del
+   anfitrión.
 2. **La medición es sobre Fedora, que es el anfitrión de desarrollo y no el
    destino.** Thalyx final es el sistema operativo, con otra huella. Lo medido
    aquí es evidencia sobre esta máquina concreta.
@@ -409,6 +413,32 @@ movió.
 > anfitrión ajeno presentada como requisito del sistema es exactamente la clase
 > de número que hace elegir mal.
 
+### El estatus de todas estas cifras, decretado por Cesar el 2026-08-08
+
+Sus palabras, que son el registro:
+
+> declara los resultados mas no los muestres como pruebas definitivas, las
+> pruebas definitivas vendran cuando thalyx este corriendo en una ssd real como
+> sistema operativo real, solo en ese entorno se vera la realidad
+
+Así que **todo lo que sigue queda declarado y ninguna cifra queda como
+definitiva**. No es una cautela de redacción: cambia qué se puede hacer con
+estos números.
+
+- **Se pueden usar** para comparar las gamas entre sí, porque las tres corrieron
+  bajo las mismas condiciones y lo único que varió fue el tamaño. Una comparación
+  interna sobrevive al anfitrión.
+- **No se pueden usar** como el requisito de hardware de Thalyx, ni para bajar
+  la columna de RAM recomendada, ni para decir qué gama trae el ISO por omisión.
+  Todo eso son afirmaciones sobre el destino, y el destino es Thalyx como
+  sistema operativo sobre un SSD real.
+- **La medición definitiva está pendiente y tiene condición escrita**: la misma
+  suite, sobre Thalyx corriendo como OS, en hardware real. Hasta entonces esta
+  tabla es la mejor evidencia que existe y sigue sin ser la prueba.
+
+Esto se aplica hacia atrás también: la fila de la gama media medida el
+2026-08-08 sobre nueve casos queda con el mismo estatus.
+
 ### Lo medido
 
 Pesos, verificados por Thalyx leyendo el archivo:
@@ -702,7 +732,9 @@ quietas **a propósito** para que la próxima corrida signifique algo:
 - **La suite no se optimiza.** Ajustar los casos después de ver los resultados
   convierte un banco en una descripción de la corrida que ya ocurrió.
 - **La tabla de RAM recomendada no baja**, aunque el RSS medido sea menor en dos
-  gamas. Es una recomendación para el usuario y su cambio es decisión de Cesar.
+  gamas. Decidido por Cesar el mismo día: los resultados se declaran, no se
+  presentan como definitivos, y lo definitivo llega con Thalyx corriendo como
+  sistema operativo real sobre un SSD real.
 
 ### Los veinte casos, gama por gama
 
