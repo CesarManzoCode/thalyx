@@ -858,6 +858,11 @@ que dice es que esas cifras se mueven. Las de coste no: disco al byte, RSS a la
 centésima de GB y mediana a la centésima de segundo, dos veces. **El coste de
 una gama se mide; su acierto se estima.**
 
+> **Corregido con la tercera corrida**, más abajo: lo que se mueve no es el
+> acierto sino cuántos casos llegan a contestar. El número de respuestas
+> correctas sobre los veinte casos resultó ser estable —5, 6, 6 en la ligera; 9
+> y 9 en la media—. Ver «Tres corridas de ligera y dos de media».
+
 ### Por qué se mueven dos corridas que deberían ser idénticas
 
 `Invocation` fija `--seed 1` y `--temp 0`. Con eso el *muestreador* es
@@ -974,6 +979,146 @@ listado** —la máquina lo dijo—, así que la atribución no tenía nada que 
 el id es real, lo que está mal es que la frase no pedía instalarlo. Contra la
 segunda clase la atribución no protege, y no es su trabajo. Es el único lugar de
 todo esto donde el `0/6` de abstención no tiene ninguna red debajo.
+
+## Tres corridas de ligera y dos de media — 2026-08-08
+
+Con `--keep-prompt`, sin cambiar nada más. Esto **corrige la lectura de la
+sección anterior**, que decía «las cifras de acierto se mueven». Se mueven, pero
+no por donde parecía.
+
+### Lo que se mueve no es el acierto, es cuántos casos contestan
+
+| | ligera 1ª | ligera 2ª | ligera 3ª | media 1ª | media 2ª |
+|---|---|---|---|---|---|
+| Sin medición | 6 | 5 | **2** | 1 | 2 |
+| Casos medidos | 14 | 15 | 18 | 19 | 18 |
+| Intención | 5/14 | 6/15 | 6/18 | 9/19 | 9/18 |
+| **Aciertos sobre los 20** | **5** | **6** | **6** | **9** | **9** |
+| Abstención | 0/6 | 0/6 | 0/9 | 0/9 | 0/8 |
+| Latencia mediana | 3.77 s | 3.77 s | 3.72 s | 6.78 s | 6.68 s |
+| RSS pico | 2.82 GB | 2.82 GB | 2.82 GB | 4.79 GB | 4.79 GB |
+
+**El número de respuestas correctas casi no se mueve**: 5, 6, 6 en la ligera;
+9 y 9 en la media, con 8 y 8 de argumentos. Lo que se mueve es cuántos casos
+llegan a producir una respuesta —de 6 sin medición a 2 en la ligera—, y como ése
+es el denominador, la fracción se mueve sin que la comprensión haya cambiado.
+
+Lo hace visible el peor caso posible, que además ocurrió: **la ligera contestó
+más casos y su fracción empeoró.** 5/14 es 36 %; 6/18 es 33 %. Acertó *una más*
+y bajó, porque los cuatro casos que dejó de perder volvieron todos mal. Una
+fracción cuyo denominador se mueve por una razón ajena al numerador no es
+comparable consigo misma.
+
+De ahí la forma correcta de leer este banco, y es un cambio de hábito:
+
+> **La cifra estable es el número de aciertos sobre los veinte casos**, porque
+> los veinte no se mueven. La fracción sobre lo medido dice otra cosa —qué tan
+> bien le fue *en lo que alcanzó a contestar*— y las dos no se comparan entre
+> corridas con distinto número de fallos.
+
+Con eso, y sólo con eso, la comparación entre gamas se puede volver a plantear:
+**ligera 5, 6, 6 — media 9, 9 — alta 7** (una sola corrida). La media no se
+movió ni un caso en dos corridas. La distancia con la alta sigue siendo de dos
+casos y la alta sigue teniendo una sola medición, así que sigue sin poder
+afirmarse; lo que sí queda es que la media no está teniendo días buenos, está
+donde está.
+
+### Caso por caso, y hay uno que no falla nunca por casualidad
+
+| # | Caso | ligera ×3 | media ×2 |
+|---|---|---|---|
+| 1 | a pronoun pointing at the one thing installed | `ERR` `REF` `REF` | `ok` `ok` |
+| 2 | the id said plainly, with no verb in front of it | `REF` `REF` `REF` | `REF` `REF` |
+| 3 | a module named by what it does | `ok` `ok` `ok` | `ok` `ok` |
+| 4 | **a version named in words** | `ERR` `ERR` `ERR` | `ERR` `ERR` |
+| 5 | the same request in English | `ok` `ok` `ok` | `ok` `ok` |
+| 6 | a wish with no module behind it | `INV` `INV` `INV` | `INV` `ERR` |
+| 7 | a need stated as a category | `INV` `INV` `INV` | `INV` `INV` |
+| 8 | a demonstrative pointing at nothing | `INV` `INV` `INV` | `INV` `INV` |
+| 9 | a module mentioned and then ruled out | `ERR` `ERR` `INV` | `INV` `INV` |
+| 10 | the id said plainly, verb that is not an install verb | `REF` `REF` `REF` | `ok` `ok` |
+| 11 | the id said plainly, with the machine listing it | `REF` `ok` `ok` | `ok` `ok` |
+| 12 | the id said plainly, in English, with no verb | `ok` `ok` `ok` | `ok` `ok` |
+| 13 | an install verb with two ids | `ok` `ok` `ok` | `ok` `ok` |
+| 14 | a module named by description among three | `ok` `ok` `ok` | `ok` `ok` |
+| 15 | a version said as a range | `ERR` `ERR` `ERR` | `ok` `ok` |
+| 16 | a negation with the module named first | `ERR` `ERR` `INV` | `INV` `INV` |
+| 17 | a negation phrased as an exclusion from a list | `INV` `INV` `INV` | `INV` `INV` |
+| 18 | a question about a module | `INV` `INV` `INV` | `INV` `INV` |
+| 19 | a need stated as a category, in English | `ERR` `ERR` `INV` | `INV` `INV` |
+| 20 | a demonstrative pointing at nothing, with things listed | `INV` `INV` `INV` | `INV` `INV` |
+
+De veinte casos, **catorce dieron exactamente la misma marca en las cinco
+corridas de las dos gamas**. La suite es mucho más estable de lo que la primera
+comparación de fracciones hacía pensar.
+
+Y en el centro queda el **caso 4**, que es el hallazgo más limpio de estas cinco
+corridas: `quiero la 1.4 del demo` **no ha producido una medición ni una sola
+vez** —tres de tres en ligera, dos de dos en media— y siempre con el mismo
+mensaje, el presupuesto de 256 tokens agotado antes de cerrar el objeto. La
+única corrida donde no fue `ERR` fue la de la gama alta, donde fue `REF`. Cinco
+de seis.
+
+No es un caso duro de entender: el módulo está dicho por su nombre y la versión
+también. Lo que tiene de único en toda la suite es **la forma de la respuesta
+que pide** — es el único caso cuya restricción esperada lleva un punto adentro
+(`1.4`); la del caso 15 es `1`, y la media lo acierta las dos veces.
+
+### Hipótesis sobre el caso 4, que es una hipótesis
+
+La gramática tiene **tres repeticiones sin cota superior**:
+
+```
+range      ::= [0-9A-Za-z.^~><=*+ |,-]+
+module-id  ::= "\"" segment "." segment "." segment ("." segment)* "\""
+segment    ::= [a-z] [a-z0-9_-]*
+```
+
+Cualquiera de las tres puede absorber los 256 tokens, y la clase de `range`
+admite el punto, los dígitos, las letras y el espacio. La hipótesis es que el
+modelo escribe `1.4` y **no encuentra dónde parar**, igual que se cicla dentro
+de un id (`python3.ipython3.ipython3`, `ese.abc.abc.abc`, `photoshop-1.ashx.ashx`).
+
+**No está probada**, y la diferencia importa: sabemos que agotó el presupuesto
+dentro del objeto, no *dentro de qué producción*. Lo que se ve del texto en el
+banco está truncado a 90 caracteres.
+
+Ahora se puede saber, y cuesta un comando, que es justo para lo que se construyó
+`--keep-prompt`. El directorio de cada caso se encuentra por su enunciado, que
+está dentro del prompt guardado:
+
+```sh
+cd "$(dirname "$(grep -rl 'quiero la 1.4 del demo' ~/evidencia/ligera-3/*/prompt.txt)")"
+sh command
+```
+
+Eso vuelve a correr **esa** inferencia, con su marcador, y enseña entera la
+cadena en la que se quedó. Si el ciclo está en `range`, se verá una versión que
+no termina; si está en el id, se verá un id que no termina. Acotar la producción
+culpable sería un cambio de gramática y **haría incomparables todas las corridas
+anteriores**, así que no se toca sin medir antes y después.
+
+### La abstención, ahora sobre 46 oportunidades
+
+Sumando las cinco corridas de estas dos gamas más la única de la alta:
+
+| Corrida | Abstención |
+|---|---|
+| ligera 1ª, 2ª, 3ª | 0/6, 0/6, 0/9 |
+| media 1ª, 2ª | 0/9, 0/8 |
+| alta 1ª | 0/8 |
+
+**Cuarenta y seis oportunidades de abstenerse, cero abstenciones.** Ni una, en
+tres tamaños de modelo y seis corridas. Ya no es un resultado de una corrida que
+podría haber salido mal: es la propiedad más firmemente medida de todo este
+trabajo, y sigue siendo la que [[Gamas-de-Modelo]] llama la más importante.
+
+La ligera lo confirmó de la peor manera. Sus tres casos que nunca se habían
+medido —9, 16 y 19— resultaron ser **casos de abstención**, y al contestarlos
+por primera vez los falló los tres. Su denominador subió de 6 a 9 y el numerador
+siguió en cero.
+
+Y sigue sin tocarse el prompt.
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

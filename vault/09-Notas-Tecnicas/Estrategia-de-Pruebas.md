@@ -2457,14 +2457,39 @@ no hacía nada por nadie.
 
 La corrección no fue borrarla: `--keep-prompt` es su primera llamada de verdad.
 
+### Corregido un día después: una fracción cuyo denominador se mueve
+
+La primera lectura de esto fue «las cifras de acierto se mueven», y una tercera
+corrida la corrigió. Lo que se mueve es **cuántos casos llegan a producir una
+respuesta**, que es el denominador. El numerador —cuántas respuestas fueron
+correctas— casi no se movió: 5, 6, 6 en una gama, 9 y 9 en otra.
+
+El caso que lo enseña ocurrió: una gama contestó cuatro casos más que la vez
+anterior, acertó uno más, **y su fracción bajó** de 5/14 a 6/18. Mejor
+desempeño, peor número.
+
+> Una fracción cuyo denominador se mueve por una causa ajena al numerador **no
+> es comparable consigo misma entre corridas**. Antes de comparar dos, hay que
+> preguntar si las dos dividen entre lo mismo.
+
+La forma estable de reportar esto era la que tenía el denominador fijo —aciertos
+sobre los veinte casos de la suite— y no estaba impresa por ningún lado, porque
+el banco reporta sobre lo medido, que es lo honesto para *una* corrida y lo
+engañoso para dos. Las dos cifras dicen cosas distintas y ambas hacen falta.
+
 ### Y la consecuencia sobre lo que ya estaba medido
 
 Nada de lo medido se retira: los costes —disco, RSS, latencia mediana—
 replicaron al byte y a la centésima. Lo que cambia es cuánto pesa una fracción
-de acierto. Una gama se movió un caso consigo misma; la distancia entre la gama
-media y la alta era de dos. **Una diferencia del tamaño del ruido del
-instrumento no es una diferencia**, y hasta esta corrida no había forma de saber
-cuál era ese tamaño, porque ninguna cifra de acierto se había medido dos veces.
+de acierto, y **una diferencia del tamaño del ruido del instrumento no es una
+diferencia**. Hasta estas corridas no había forma de saber cuál era ese tamaño,
+porque ninguna cifra de acierto se había medido dos veces.
+
+Con cinco corridas ya se sabe, y es más chico de lo que parecía: los aciertos se
+mueven ±1 sobre veinte casos, y catorce de los veinte dieron **exactamente la
+misma marca en las cinco**. La distancia de dos casos entre la gama media y la
+alta ya no cae dentro del ruido; lo que le falta a esa comparación es que la
+alta tenga una segunda corrida, no que el instrumento sea impreciso.
 
 Una suite corrida una vez no da una barra de error. Da un punto.
 
