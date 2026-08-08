@@ -58,6 +58,12 @@
 use crate::proposal::ProposedOperation;
 use crate::transcript::{Channel, Transcript};
 
+/// What [`Prompt::probe`] asks for, chosen because the grammar cannot say it.
+///
+/// `root` starts at `{`, so no constrained decode can put this at the front of
+/// a completion — whatever the model would rather do.
+pub const PROBE_WORD: &str = "BANANA";
+
 /// A rendered prompt and the marker that ends it.
 #[derive(Debug, Clone)]
 pub struct Prompt {
@@ -81,6 +87,34 @@ impl Prompt {
 
     pub fn marker(&self) -> &str {
         &self.marker
+    }
+
+    /// The prompt that tells an applied grammar from a flag merely accepted.
+    ///
+    /// llama.cpp exits non-zero on a flag it does not know, so a clean run
+    /// proves `--grammar-file` was *accepted*. It does not prove the grammar
+    /// **constrained** anything: [`Prompt::render`] asks the model for an
+    /// object, and a model that produces one has only done as it was told. A 3B
+    /// asked for JSON gives JSON unaided, so the two look identical.
+    ///
+    /// This asks for [`PROBE_WORD`] and nothing else — a string the grammar
+    /// cannot emit, since `root` begins at `{`. Run twice with this same text,
+    /// once with the grammar and once without, the two runs differ in exactly
+    /// one thing, and the answer is not open to interpretation:
+    ///
+    /// - constrained, it says the word ⇒ the grammar is **not** being applied
+    /// - constrained it cannot, unconstrained it does ⇒ the grammar **is**
+    /// - both come back as proposals ⇒ the probe proved nothing, and says so
+    ///   rather than counting as a pass
+    ///
+    /// Bare on purpose. Wrapping it in the real instructions would put "answer
+    /// with an object" back in, which is the confound this exists to remove.
+    pub fn probe() -> Prompt {
+        let marker = format!("<<<THALYX-{}>>>", uuid::Uuid::new_v4().simple());
+        Prompt {
+            text: format!("Reply with exactly this word, and nothing else: {PROBE_WORD}\n{marker}"),
+            marker,
+        }
     }
 
     /// The part of a tool's output that is the model's answer.

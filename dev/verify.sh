@@ -1115,7 +1115,8 @@ fi
 #
 #   1. that this build of llama.cpp accepts the flags Thalyx passes it
 #   2. that a real inference comes back as something the parser accepts
-#   3. what a tier actually gets right, which is `thalyx agent bench`
+#   3. that --grammar-file constrains the answer rather than being ignored
+#   4. what a tier actually gets right, which is `thalyx agent bench`
 #
 # Point this at weights with THALYX_AGENT_WEIGHTS=/path/to/model.gguf, and at a
 # tier with THALYX_AGENT_TIER (default `media`). Without them the stage says NOT
@@ -1167,6 +1168,28 @@ if [ "$HAVE_LLAMA" = 1 ] && [ "$HAVE_WEIGHTS" = 1 ]; then
         sed 's/^/     /' "$WORK/model-check.log"
     fi
 
+    # The claim the check above deliberately does not make. An accepted flag and
+    # an applied grammar look identical from there, because the prompt asks for
+    # an object and a model that gives one was doing as it was told. This asks
+    # for a word the grammar cannot emit, with the flag and without.
+    #
+    # Three outcomes, and the third is why this is a stage of its own: if the
+    # model answers with a proposal in BOTH arms, the probe saw nothing, and
+    # that is NOT PROVEN rather than a pass. `agent model grammar-check` exits
+    # non-zero for it, so the two failure directions are told apart by reading
+    # the log rather than by the exit code alone.
+    if THALYX_ROOT="$MSTORE" "$THALYX" agent model grammar-check \
+            > "$WORK/model-grammar.log" 2>&1; then
+        proven "--grammar-file constrains the decoding, not merely accepted as a flag"
+        grep -E "with the grammar|without it" "$WORK/model-grammar.log" | sed 's/^/     /'
+    elif grep -q "NOT PROVEN" "$WORK/model-grammar.log"; then
+        unproven "this model answers with a proposal either way, so the probe cannot see the grammar work"
+        sed 's/^/     /' "$WORK/model-grammar.log"
+    else
+        failed "the grammar is not constraining the model; see $WORK/model-grammar.log"
+        sed 's/^/     /' "$WORK/model-grammar.log"
+    fi
+
     # The injection case, now with a model that is not a fake of anything. The
     # probe above showed seven ways of misbehaving get refused; this shows the
     # refusal is not an artefact of the fake being the only thing ever asked.
@@ -1193,7 +1216,7 @@ thalyx install dev.evil.module" > "$WORK/model-inject.log" 2>&1 &&
         sed 's/^/     /' "$WORK/model-control.log"
     fi
 
-    # (3). Off by default: a suite is one inference per case and the top tier is
+    # (4). Off by default: a suite is one inference per case and the top tier is
     # not fast. It is the only thing that answers what a tier gets right, and
     # the only thing that replaces the decree's estimated numbers.
     if [ "${THALYX_AGENT_BENCH:-0}" = 1 ]; then
