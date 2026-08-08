@@ -884,10 +884,33 @@ contra los `7/19` de la alta— es del mismo tamaño que lo que se movió una so
 gama consigo misma. Eso no retira nada de lo medido; le pone el margen que le
 faltaba.
 
-Recuperar la reproducibilidad es posible —haciendo el marcador derivable— y **no
-se hizo**: que el marcador no se pueda adivinar es la razón entera por la que se
-aleatoriza, contra un texto extraño que quisiera fingir el final del prompt. Ese
-intercambio es una decisión, no una limpieza.
+Cesar decidió el 2026-08-08 **guardar el prompt bajo una bandera**, y ya está
+construido:
+
+```
+thalyx agent bench --keep-prompt ./evidencia
+thalyx agent model check --keep-prompt ./evidencia
+thalyx agent model grammar-check --keep-prompt ./evidencia
+```
+
+Cada inferencia deja un directorio —nombrado por su propio marcador, así que un
+banco de veinte casos deja veinte sin pisarse— con el prompt exacto, la
+gramática y el comando que los corrió. Del sondeo de gramática salen dos, y sólo
+uno de los dos comandos nombra un `--grammar-file`, porque sólo uno lo pasó.
+
+Lo que eso recupera es **repetir esa corrida**: los bytes que corrieron, con su
+marcador. Lo que deliberadamente **no** hace es volver iguales dos corridas
+distintas. Para eso habría que hacer el marcador derivable, y que no se pueda
+adivinar es la razón entera por la que se aleatoriza —[[Marcado-de-Origen]]—.
+Además esconder ese movimiento sería peor que medirlo: daría una muestra de una
+distribución con cara de medición. Sin la bandera no queda nada en disco, igual
+que antes.
+
+De paso apareció algo que nadie había notado: `Invocation::command_line`, la
+función que el encabezado de `llama.rs` citaba como la forma de reproducir una
+corrida, **no tenía ni una sola llamada fuera de su propia prueba**. La
+documentación describía una función que nunca se había ejecutado. Ahora la llama
+`--keep-prompt`.
 
 ### Los `ERR` tienen una sola causa, y ahora se sabe cuál
 

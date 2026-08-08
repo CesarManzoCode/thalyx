@@ -84,6 +84,14 @@ pub enum AgentCommand {
         /// A suite of cases. Without one, the suite built into Thalyx is used.
         #[arg(long)]
         cases: Option<PathBuf>,
+        /// Leave every case's prompt, grammar and command under this directory
+        ///
+        /// One directory per inference, named after that prompt's marker. A
+        /// twenty-case suite therefore leaves twenty of them, which is the
+        /// point: the marker is new every invocation, so a case that answered
+        /// strangely cannot be rebuilt afterwards from the suite alone.
+        #[arg(long)]
+        keep_prompt: Option<PathBuf>,
     },
 
     /// Turn a sentence into a contract and carry it out
@@ -142,7 +150,9 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
             Ok(())
         }
 
-        AgentCommand::Bench { cases } => agent_model::bench(store, cases.as_deref(), request_id),
+        AgentCommand::Bench { cases, keep_prompt } => {
+            agent_model::bench(store, cases.as_deref(), keep_prompt, request_id)
+        }
 
         AgentCommand::Do {
             utterance,

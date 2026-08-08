@@ -86,6 +86,13 @@ pub enum ModelCommand {
         /// never reached and this checks nothing.
         #[arg(default_value = "dev.thalyx.demo, ese")]
         utterance: String,
+        /// Leave the prompt, the grammar and the command under this directory
+        ///
+        /// The prompt carries a marker that is new on every invocation, so
+        /// re-rendering it afterwards does not rebuild the one that produced a
+        /// strange answer. This keeps the bytes that ran.
+        #[arg(long)]
+        keep_prompt: Option<PathBuf>,
     },
 
     /// Prove the grammar constrains the answer, rather than merely being accepted
@@ -97,7 +104,14 @@ pub enum ModelCommand {
     ///
     /// This asks for a word the grammar cannot emit, twice — with the flag and
     /// without it. Two inferences.
-    GrammarCheck,
+    GrammarCheck {
+        /// Leave both arms' prompts, grammars and commands under this directory
+        ///
+        /// Two inferences, so two directories, each named after the marker of
+        /// the prompt that ran. Only one of the two commands names a grammar.
+        #[arg(long)]
+        keep_prompt: Option<PathBuf>,
+    },
 }
 
 pub fn model(store: &Store, command: ModelCommand) -> Fallible {
@@ -109,8 +123,11 @@ pub fn model(store: &Store, command: ModelCommand) -> Fallible {
             binary,
         } => choose(store, &tier, &weights, &binary),
         ModelCommand::Forget => forget(store),
-        ModelCommand::Check { utterance } => check(store, &utterance),
-        ModelCommand::GrammarCheck => grammar_check(store),
+        ModelCommand::Check {
+            utterance,
+            keep_prompt,
+        } => check(store, &utterance, keep_prompt),
+        ModelCommand::GrammarCheck { keep_prompt } => grammar_check(store, keep_prompt),
     }
 }
 
@@ -278,9 +295,9 @@ fn forget(store: &Store) -> Fallible {
     Ok(())
 }
 
-fn check(store: &Store, utterance: &str) -> Fallible {
+fn check(store: &Store, utterance: &str, keep_prompt: Option<PathBuf>) -> Fallible {
     let settings = configured(store)?.ok_or("no model is configured; `thalyx agent model use`")?;
-    let model = settings.model()?;
+    let model = settings.model()?.keeping_prompt(keep_prompt);
 
     let transcript = Transcript::new().with(Segment::typed(utterance));
     if matches!(
@@ -332,9 +349,9 @@ fn check(store: &Store, utterance: &str) -> Fallible {
 /// an inconclusive result exits non-zero too. A probe that measured nothing is
 /// not a pass — it just means the model would have answered that way regardless,
 /// and `Gamas-de-Modelo.md` rests four tiers on the grammar doing real work.
-fn grammar_check(store: &Store) -> Fallible {
+fn grammar_check(store: &Store, keep_prompt: Option<PathBuf>) -> Fallible {
     let settings = configured(store)?.ok_or("no model is configured; `thalyx agent model use`")?;
-    let model = settings.model()?;
+    let model = settings.model()?.keeping_prompt(keep_prompt);
 
     println!("tier    {} ▪ {}", settings.tier, settings.weights.display());
     println!(
@@ -605,12 +622,17 @@ impl Outcome {
     }
 }
 
-pub fn bench(store: &Store, cases: Option<&Path>, request_id: &str) -> Fallible {
+pub fn bench(
+    store: &Store,
+    cases: Option<&Path>,
+    keep_prompt: Option<PathBuf>,
+    request_id: &str,
+) -> Fallible {
     let settings = configured(store)?.ok_or(
         "no model is configured, so there is nothing to measure. \
          `thalyx agent model use <tier> --weights <file>`",
     )?;
-    let model = settings.model()?;
+    let model = settings.model()?.keeping_prompt(keep_prompt);
     model.preflight()?;
 
     let text = match cases {
