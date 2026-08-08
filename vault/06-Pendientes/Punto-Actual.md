@@ -14,9 +14,118 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El banco contaba todo fallo como abstención correcta — 2026-08-08
+> ## Las cuatro gamas corrieron sobre la misma máquina, y la más grande no cabe — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `check`, `grammar-check` y el banco de 20 casos en **ligera,
+> media y alta**, sobre su Ryzen 5 5600G de 16 GB, sin GPU, en CPU, con la misma
+> familia (Qwen2.5-Instruct), la misma cuantización (Q4_K_M), el mismo
+> `llama.cpp`, el mismo prompt, la misma gramática y la misma suite. **Lo único
+> que varió es el tamaño**, que es lo que hace la comparación atribuible.
+>
+> | | ligera 1.5B | media 3B | alta 7B | maxima 14B |
+> |---|---|---|---|---|
+> | Casos medidos | 14/20 | 19/20 | 19/20 | **0/20** |
+> | Intención | 5/14 | **9/19** | 7/19 | N/D |
+> | Argumentos | 5/14 | **8/19** | 7/19 | N/D |
+> | Abstención | 0/6 | 0/9 | 0/8 | N/D |
+> | Latencia mediana | 3.77 s | 6.78 s | **33.26 s** | N/D |
+> | RSS pico | 2.82 GB | 4.79 GB | **13.93 GB** | N/D |
+>
+> ### Lo más importante, en orden
+>
+> 1. **La gama alta no superó a la media en este banco**, y costó ×4.9 de
+>    latencia y ×2.9 de memoria. La afirmación legítima es estrecha —con *este*
+>    prompt, *esta* gramática, *estos* casos, *esta* cuantización y *este*
+>    hardware— y **no** es «3B es más listo que 7B»: la diferencia es de dos
+>    casos sobre diecinueve, que es menos de lo que esta suite puede separar. Lo
+>    que sí sostiene es la **ausencia de mejora medible** frente a un costo que
+>    no es discutible.
+> 2. **La máxima quedó `N/D`, no en cero.** El proceso fue terminado por falta de
+>    memoria después de imprimir la gama y el enunciado, antes de completar la
+>    primera inferencia. No hubo banco que fallar. Lo probado es que *esta*
+>    máquina de 16 GB con *esta* configuración no la sostiene — **no** que 14B
+>    pida 32 GB, que sigue siendo el estimado del decreto.
+> 3. **Abstención cero en las tres gamas medidas, sin excepción.** Es la medida
+>    que [[Gamas-de-Modelo]] llama la más importante, y es la única que sale
+>    **idéntica** en 1.5B, 3B y 7B. Un resultado plano donde lo único que varía
+>    es el tamaño apunta a lo que las tres comparten, no a lo que las separa. Es
+>    hipótesis, y **no se tocó el prompt**.
+> 4. **`grammar-check` de la gama ligera decía `PROVEN` y no lo estaba.**
+>    Corregido, con dos regresiones. Ver abajo.
+>
+> ### El `PROVEN` retirado, que es el defecto del día
+>
+> ```
+> with the grammar     { "operation": "install_module", "targets": ["python3.ipython3.…
+> without it           [end of text]
+> PROVEN: … constrained it could not even begin with it, and left alone it did.
+> ```
+>
+> *«Left alone it did»* — dijo la palabra prohibida. **No la dijo: no dijo
+> nada.** `[end of text]` es lo que imprime `llama.cpp` cuando el modelo termina
+> la generación de inmediato. En media y alta el brazo libre sí muestra `BANANA`
+> y ahí el veredicto es correcto; en ligera no había control.
+>
+> El veredicto afirma dos cosas y el código comprobaba una: `InForce` era el
+> `else`, así que se alcanzaba con que el brazo libre **no abriera un objeto** —
+> y un brazo callado tampoco abre uno. Regla 4, sobre el veredicto en vez de
+> sobre el experimento. Sobrevivió por la regla 8: los cuatro sustitutos del
+> sondeo decían la palabra al quitarles la gramática, **ninguno modelaba un
+> modelo callado**. Regla nueva en [[Estrategia-de-Pruebas]].
+>
+> Lo que sí se puede afirmar de esa corrida, y es menos: **la bandera cambió la
+> salida** —con ella hubo objeto, sin ella nada—. Que lo que la gramática impidió
+> fuera *la palabra* no se midió. Así que «un contrato mal formado es imposible
+> en las cuatro gamas» está probado en **dos**, no probado en ligera, N/D en
+> máxima.
+>
+> ### La demostración de que la gramática no garantiza el contenido
+>
+> La gama ligera contestó `dev.thalyx.demo, ese quiero` con
+> `["dev.thalyx.demo","ese.quiero.ios"]`. **Fabricó un id a partir de las
+> palabras humanas «ese quiero»**, con la forma perfecta. La gramática hizo lo
+> que promete y nada más; lo que lo detuvo fue la atribución del núcleo. Contrato
+> válido, contenido inventado, en una sola línea de salida.
+>
+> ### Y una pregunta vieja quedó contestada
+>
+> `dev.thalyx.demo, ese` sale `REF` en las tres gamas: el modelo nombró algo que
+> no aparece en ningún canal. **No es una abstención.** Con eso se cae del todo
+> la hipótesis de que la instrucción de abstención del prompt pesa de más — el
+> `MISS` que la originó venía del banco que contaba `Err(_) => Abstained`, donde
+> un rechazo por atribución se veía como abstención correcta.
+>
+> ### Qué se cambió, y qué no
+>
+> Cambiado, y las dos cosas son evidencia y no puntuación:
+>
+> - `grammar_check` exige que el brazo libre **diga la palabra**, con dos
+>   regresiones comprobadas fallando contra el código anterior.
+> - El banco imprime **qué** id rechazó la atribución, en vez de `(named
+>   something nobody mentioned)`.
+>
+> **No cambiado a propósito**: el prompt, la gramática, las gamas, la suite y la
+> columna de RAM recomendada. Cambiar cualquiera de ellos como reacción a estos
+> resultados haría que la próxima corrida no se pudiera comparar con ésta.
+>
+> ### Lo que corre Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+> thalyx agent model grammar-check     # ahora debe salir NOT PROVEN en ligera
+> ```
+>
+> `NOT PROVEN` es el resultado correcto ahí y **sale distinto de cero**: no es
+> que la gramática falle, es que ese modelo no contesta el sondeo.
+>
+> **872 pruebas pasan** (870 antes), `clippy` limpio, `cargo fmt` aplicado.
+>
+> ## El banco contaba todo fallo como abstención correcta — 2026-08-08
+>
+> **El bloque de arriba es más reciente.** Los de abajo son cómo se llegó.
 >
 > Cesar dijo que por ahora no descarga más modelos y que como máximo corre
 > verificaciones, así que el trabajo fue sobre el instrumento. Encontrado

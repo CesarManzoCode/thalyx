@@ -66,9 +66,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Las cuatro gamas | `crates/thalyx-agent/tier.rs` | Los tamaños son de un tipo que se imprime con `~`, para que un estimado no se lea como medición |
 | Gramática GBNF de la propuesta | `crates/thalyx-agent/grammar.rs` | Generada desde la forma que tiene que respetar; las clases de caracteres se comparan contra el escáner de ids, carácter por carácter |
 | El prompt y el marcador | `crates/thalyx-agent/prompt.rs` | Aleatorio por invocación, así que la respuesta se localiza sin parsear el formato de `llama.cpp` |
-| `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Corrido entero contra hierro real. Gama media: 4.78 GB y mediana 6.58 s medidos; las cifras de acierto quedaron retiradas al encontrar que el banco contaba todo error como abstención correcta. Suite de 20 casos. `grammar-check` **probó en hierro** que la gramática restringe (una gama), y `Truncated` distingue presupuesto agotado de regla violada |
+| `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Corrido entero contra hierro real en **tres gamas** (1.5B, 3B, 7B). `grammar-check` probó que la gramática restringe en media y alta; en ligera dijo `PROVEN` **sin control** —el brazo libre no dijo nada— y ahora exige que lo diga. `Truncated` distingue presupuesto agotado de regla violada |
 | La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |
-| `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Ninguna gama se ha medido** |
+| `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Tres gamas medidas el 2026-08-08**; la máxima quedó `N/D` porque el proceso murió por falta de memoria antes de la primera inferencia. Un rechazo por atribución imprime **qué** id fue |
 | Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Escribe y **lee**; lo no confirmable se muestra y no se usa |
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
@@ -122,14 +122,16 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 
 | Pieza | Bloqueante para |
 |---|---|
-| El `Model` real (`llama.cpp` como proceso) | Que el agente sirva de algo |
-| La gramática GBNF | Lo mismo, y no se puede validar sin `llama.cpp` |
-| Banco de las cuatro gamas | Sustituir las cifras estimadas de [[Gamas-de-Modelo]] |
+| La gama máxima, medida | Cerrar la cuarta fila de [[Gamas-de-Modelo]]. Necesita una máquina con más de 16 GB: en la de desarrollo el proceso muere antes de la primera inferencia |
+| Una segunda corrida de acierto en cualquier gama | Saber cuánto se mueven esas cifras entre corridas. Disco, RAM y latencia ya tienen réplica; el acierto no |
+| Los casos sin medición del banco | Ninguna fracción de acierto es todavía la puntuación de su gama: 6 casos en ligera y 1 en media y en alta no produjeron respuesta |
 
-> Al 2026-08-06 esta tabla tiene **una sola causa**: no hay modelo. Todo lo
-> demás que estaba escrito está ejercido en hardware — el cargador de BPF, la
-> imagen con su enforcement puesto, y los seis pasos desde un arranque frío.
-> `proven 104 · not proven 1 · failed 0`.
+> **Actualizado el 2026-08-08.** Esta tabla decía *«el `Model` real»*, *«la
+> gramática GBNF»* y *«el banco de las cuatro gamas»* como no construidos, y las
+> tres estaban construidas y corridas contra hierro desde ese mismo día — es la
+> regla de esta bóveda sobre las afirmaciones de ausencia, que nada rompe cuando
+> dejan de ser ciertas. Lo que queda no es código sin escribir: es **medición
+> que esta máquina no puede producir**.
 
 ### Las advertencias que quedan
 
@@ -156,17 +158,24 @@ el uid de Thalyx. Ver [[Sandbox-Ejecucion]].
 
 **3. `ls -l` se degrada dentro del sandbox.** `socket` está fuera del allowlist a propósito, y NSS quiere un socket unix para resolver nombres de usuario. Es el costo visible de la decisión, no un defecto.
 
-**4. El agente nunca ha visto un modelo.** El router, la atribución y el
-ensamblado están probados contra un falso que se porta mal a propósito, y eso
-cubre lo que el agente hace con lo que el modelo le entrega. Lo que no está
-probado por nada es la otra mitad: que la gramática GBNF sea una que `llama.cpp`
-acepte, y qué acierta cada gama. `verify.sh` lo reporta como `NOT PROVEN` en su
-etapa 10, y `THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver
-[[Agente-Minimo]].
+**4. El agente ya vio un modelo, y tres gamas están medidas.** Esta advertencia
+decía *«el agente nunca ha visto un modelo»*; dejó de ser cierta el 2026-08-08.
+El router, la atribución y el ensamblado siguen probados contra un falso que se
+porta mal a propósito —eso cubre lo que el agente hace con lo que el modelo le
+entrega— y la otra mitad ya corrió contra `llama.cpp` real: las banderas se
+aceptan, la gramática restringe (probado en media y alta), y ligera, media y alta
+tienen cifras de coste y de acierto en [[Gamas-de-Modelo]].
+
+Lo que sigue sin probarse, y ahora se puede nombrar con precisión: la **gama
+máxima**, que no cabe en la máquina de verificación; que la gramática restrinja
+en **ligera**, cuyo modelo no contesta el sondeo; y **cualquier cifra de acierto
+repetida**, porque cada gama se ha medido una sola vez. `verify.sh` sigue
+reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
+`THALYX_REQUIRE_AGENT_TESTS=1` lo convierte en fallo. Ver [[Agente-Minimo]].
 
 ## Pruebas
 
-667 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 39
+872 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

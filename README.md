@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 785 of them**, across unit tests, fault injection
+**Built and covered by tests: 872 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -304,8 +304,10 @@ runs of the exit criterion. `cargo test --workspace` runs all of it.
 v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07 — including the kernel
 mounting a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`. Two
 things failed and both were the harness rather than Thalyx; both are fixed. One
-thing went unproven, and it is a thing that does not exist yet rather than a
-check that could not be made: the agent has no model. The BPF LSM has denied a
+thing went unproven, and at the time it was a thing that did not exist yet
+rather than a check that could not be made: the agent had no model. It has one
+since 2026-08-08, and that stage now runs against real weights when
+`THALYX_AGENT_WEIGHTS` names some. The BPF LSM has denied a
 real network connection to a process that lacked the permission, and only to
 that process.
 
@@ -378,10 +380,21 @@ boot.
   the exit criterion — it was suspended the same day, in favour of the ISO. The
   steps still have to work and are checked on every change; what is suspended
   is *who types them*.
-- **The conversational agent has no model.** The deterministic half is built and
-  works; there is no LLM behind it. The session says *"I have no model loaded"*
-  rather than pretending. Model selection is decreed
-  (`vault/03-Primitivas/Gamas-de-Modelo.md`) and not implemented.
+- **The conversational agent has a model, and three of its four tiers are
+  measured.** `vault/02-Arquitectura/Gamas-de-Modelo.md` decrees four sizes of
+  one family; `thalyx agent model use <tier> --weights <gguf>` selects one and
+  llama.cpp is invoked as a process. On 2026-08-08 the light, medium and high
+  tiers ran the twenty-case bench on one machine — a Ryzen 5 5600G with 16 GB
+  and no GPU. **The largest tier is not measured**: the process was killed for
+  running out of memory before its first inference finished, which is recorded
+  as no measurement rather than as a score of zero. A machine with no model
+  configured still says *"I have no model loaded"* and still does everything the
+  rules can do, which is the double route being real rather than polite.
+- **No tier abstained even once.** Across all three measured tiers, every
+  ambiguous utterance produced a module id instead of a request for
+  clarification. The decree calls abstention the most important measurement, so
+  this is the largest open result in the project — and the grammar does not help
+  with it: it constrains the *shape* of an answer, never its truth.
 - **The predictive scheduler is Phase 2.** It is design, not code.
 - **`thalyx_watch` has never been loaded without `bpftool`.** The BPF loader
   Thalyx carries is proven on the LSM object — it loads it, attaches it, and
