@@ -15,19 +15,28 @@
 //!   makes that boundary one the operating system enforces rather than one the
 //!   design asserts.
 //!
-//! ## What has run, and what still has not — 2026-08-08
+//! ## What has run, and what still has not — revised 2026-08-08
 //!
-//! This file has been **started** by a real llama.cpp once: Cesar ran it on
-//! Fedora against `llama.cpp b1-3653e6d` and Qwen2.5-3B-Instruct-Q4_K_M. The
-//! process spawned, the weights loaded, and the contract was not honoured — see
-//! the section below. So what is now known is that spawning, argument passing
-//! and the failure path work against the real tool.
+//! Two runs on Cesar's Fedora, against `llama.cpp b1-3653e6d` and
+//! Qwen2.5-3B-Instruct-Q4_K_M:
 //!
-//! **No inference has ever completed.** Nothing here has produced a proposal
-//! from real weights, so the grammar being accepted by llama.cpp, the answer
-//! landing after the marker, and the tier's accuracy are all still unproven.
-//! The container has neither llama.cpp nor a route to the weights, so this is
-//! not something the workspace tests can close. `dev/verify.sh` says so.
+//! 1. With `llama-cli`, which no longer completes anything — see the section
+//!    below.
+//! 2. With `llama-completion`, which **loaded the weights and printed a
+//!    well-formed proposal.** Thalyx refused it, because the answer's *end* had
+//!    never been defined; see [`crate::proposal::Proposal::completion_in`].
+//!
+//! **Proven against the real tool:** every flag [`LlamaModel::spawn`] passes is
+//! accepted, the weights load, the prompt is echoed with the marker intact, and
+//! a proposal comes back inside the timeout.
+//!
+//! **Not proven, and worth keeping apart from the above:** that
+//! `--grammar-file` is what constrained that answer. A 3B model asked for JSON
+//! may well produce JSON unaided, so an accepted flag and an applied grammar
+//! look identical from here — telling them apart needs an utterance the model
+//! would answer with prose if it were allowed to. Nor is any per-tier number
+//! proven. The container has neither llama.cpp nor a route to the weights, so
+//! the workspace tests cannot close either. `dev/verify.sh` says so.
 //!
 //! ## Which binary, and why it is not `llama-cli` — revised 2026-08-08
 //!
@@ -131,10 +140,14 @@ pub enum LlamaError {
     NotOneShot { binary: PathBuf, sample: String },
 
     #[error(
-        "{} completed the prompt, but the answer is not a proposal, which means \
-         --grammar-file was not in force. A grammar-constrained completion \
-         cannot produce anything else — so this is the tool ignoring the \
-         grammar, not the model answering badly.\n\
+        "{} completed the prompt, but what follows it is not a proposal, which \
+         means --grammar-file was not in force. A grammar-constrained \
+         completion cannot produce anything else — so this is the tool ignoring \
+         the grammar, not the model answering badly.\n\
+         \n\
+         Thalyx reads the first complete JSON value after the prompt and \
+         ignores whatever the tool prints after it, so a trailing marker such \
+         as `[end of text]` is not what this is.\n\
          \n\
          It answered:\n{answer}",
         .binary.display()
@@ -317,17 +330,31 @@ impl LlamaModel {
         };
         let answer = answer.trim().to_string();
 
-        // 2. The prompt was completed and the result is not a proposal. A
-        //    grammar-constrained completion *cannot* produce anything else, so
-        //    this is the grammar not being applied. Silence is left alone: a
-        //    tool that completed to nothing is a different event again, and
-        //    `Proposal::parse` already has a word for it.
-        if !answer.is_empty() && crate::proposal::Proposal::parse(&answer).is_err() {
-            return Err(LlamaError::GrammarNotInForce {
-                binary: self.invocation.binary.clone(),
-                answer: sample_of(&answer),
-            });
-        }
+        // 2. The prompt was completed, so cut the completion out of what came
+        //    back. The marker said where the answer begins; the grammar says
+        //    where it ends, and llama.cpp prints ` [end of text]` past that
+        //    point. Taking the whole region instead is what turned a correct
+        //    proposal into an accusation — see `Proposal::completion_in`.
+        //
+        //    Silence is left alone: a tool that completed to nothing is a quiet
+        //    model, not a broken tool, and `Proposal::parse` has a word for it.
+        let answer = if answer.is_empty() {
+            String::new()
+        } else {
+            match crate::proposal::Proposal::completion_in(&answer) {
+                Some(completion) if crate::proposal::Proposal::parse(completion).is_ok() => {
+                    completion.to_string()
+                }
+                // A grammar-constrained decode *cannot* produce anything that
+                // is not a proposal, so this is the grammar not being applied.
+                _ => {
+                    return Err(LlamaError::GrammarNotInForce {
+                        binary: self.invocation.binary.clone(),
+                        answer: sample_of(&answer),
+                    });
+                }
+            }
+        };
 
         Ok(Run {
             answer,
@@ -575,6 +602,46 @@ mod tests {
         let proposal = crate::proposal::Proposal::parse(&run.answer)
             .expect("the echoed prompt was not stripped back off");
         assert_eq!(proposal.targets, ["dev.thalyx.demo"]);
+    }
+
+    #[test]
+    fn the_bytes_a_real_llama_cpp_printed_are_read_as_the_proposal_they_are() {
+        // The second defect Cesar hit on iron, and the one that cost the model
+        // its reputation for a day: Qwen answered exactly what the grammar
+        // describes, llama.cpp appended its own ` [end of text]`, and Thalyx
+        // accused the tool of ignoring a grammar it had obeyed.
+        //
+        // The stand-in prints the captured bytes verbatim, which makes this the
+        // first test in this file built on a sample rather than on a guess about
+        // the format. Every earlier stand-in stopped where the parser expected
+        // an answer to stop, because the same person wrote both.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"
+cat <<'CAPTURED'
+{
+  "operation": "install_module",
+  "targets": [
+    "dev.thalyx.demo"
+  ]
+} [end of text]
+CAPTURED"#,
+        );
+
+        let run = LlamaModel::new(Invocation::new(&binary, &weights))
+            .run(&transcript())
+            .expect("a correct proposal, followed by llama.cpp's own suffix");
+
+        let proposal = crate::proposal::Proposal::parse(&run.answer)
+            .expect("the tool's suffix was left on the model's answer");
+        assert_eq!(proposal.targets, ["dev.thalyx.demo"]);
+        assert!(
+            !run.answer.contains("end of text"),
+            "the answer carries text the model did not write: {:?}",
+            run.answer
+        );
     }
 
     /// A stand-in for the *interactive* llama.cpp frontend.

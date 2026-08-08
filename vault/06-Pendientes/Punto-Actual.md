@@ -14,6 +14,63 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La primera inferencia real completó, y Thalyx rechazó una respuesta correcta — 2026-08-08
+>
+> **Éste es el estado actual.** Los dos bloques de abajo son la historia.
+>
+> Con `llama-completion`, la corrida siguiente en la Fedora de Cesar llegó hasta
+> el final: los pesos cargaron y **Qwen2.5-3B emitió exactamente el objeto que
+> describe la gramática**, con saltos de línea y sangría —que es lo que
+> `ws ::= [ \t\n]*` permite—. Thalyx lo rechazó, y con un mensaje que acusaba a la
+> herramienta de ignorar la gramática que acababa de obedecer.
+>
+> ### Qué estaba mal
+>
+> `llama.cpp` imprime ` [end of text]` **detrás** del completado cuando el modelo
+> para en un token de fin de generación (`tools/completion/completion.cpp`, sólo
+> fuera de modo interactivo). `Proposal::parse` era `serde_json::from_str`, que
+> rechaza cualquier byte después del objeto.
+>
+> El marcador aleatorio del prompt decía **dónde empieza** la respuesta. **Nada
+> decía dónde termina.** Un límite definido de un solo lado no es un límite: deja
+> el final en manos de quien imprimió el texto, y ese final cambia entre versiones.
+>
+> ### La corrección
+>
+> `Proposal::completion_in` lee **el primer valor JSON completo** después del
+> marcador. La raíz de la gramática es un objeto, así que ahí termina lo que dijo
+> el modelo y todo lo demás lo escribió la herramienta — y eso sigue siendo cierto
+> con lo que decida imprimir la versión siguiente. Recortar el literal
+> ` [end of text]` habría sido la regla 6 al revés. `Proposal::parse` sigue siendo
+> estricta: la laxitud vive en un solo sitio, el borde donde otro programa
+> imprime.
+>
+> ### Lo que esto deja probado contra hierro real, y lo que no
+>
+> | Afirmación | Estado |
+> |---|---|
+> | Las banderas que Thalyx pasa las acepta esta compilación | **Probado** |
+> | Los pesos cargan; el prompt vuelve con el marcador intacto | **Probado** |
+> | Vuelve una propuesta bien formada, dentro del plazo | **Probado** (una gama, un enunciado) |
+> | `--grammar-file` es lo que restringió esa respuesta | **No probado** — un 3B al que se le pide JSON puede darlo solo |
+> | Los números por gama del banco | **No probado**, ninguna gama medida |
+>
+> ### Reglas nuevas en [[Estrategia-de-Pruebas]]
+>
+> - **Un límite definido de un solo lado no es un límite.**
+> - **Una fixture no puede estar en desacuerdo contigo.** Las nueve de este parser
+>   terminaban donde el parser esperaba que terminara una respuesta, porque las
+>   escribió la misma mano. La regla 6 ya existía y aquí no se siguió; ahora hay
+>   una muestra capturada literal, con su procedencia.
+> - **Una comprobación que señala a un culpable tiene que enseñar la evidencia que
+>   juzgó.** Es lo único que hizo que esto se viera de una sola lectura, en vez de
+>   mandar a auditar el manejo de gramáticas de `llama.cpp` durante días.
+>
+> ### Pendiente menor
+>
+> `CLAUDE.md` dice que el instrumento se equivocó **seis** veces; con ésta van
+> siete, y las dos últimas por la misma causa. Cambiarlo es decisión de Cesar.
+>
 > ## El primer `llama.cpp` de verdad: Thalyx pedía el binario que dejó de ser el correcto — 2026-08-08
 >
 > **El bloque de abajo es el que construyó esto; éste es el que dice dónde está.**

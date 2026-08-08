@@ -1128,6 +1128,12 @@ fi
 # a good model might have emitted the same JSON unprompted. The grammar's effect
 # on what is *acceptable* is proven by the parser tests in the workspace, which
 # run everywhere.
+#
+# (2) is also the only check that sees what a llama.cpp build prints *around*
+# the completion. On 2026-08-08 this build appended ` [end of text]` and Thalyx
+# read it as part of the answer; the workspace could not have caught it, because
+# every fixture in the workspace was written by the same hand as the parser.
+# When a future build changes that text, this stage is where it shows up.
 
 MODEL_BINARY="${THALYX_AGENT_BINARY:-llama-completion}"
 MODEL_TIER="${THALYX_AGENT_TIER:-media}"
@@ -1154,7 +1160,7 @@ if [ "$HAVE_LLAMA" = 1 ] && [ "$HAVE_WEIGHTS" = 1 ]; then
     if THALYX_ROOT="$MSTORE" "$THALYX" agent model check "dev.thalyx.demo, ese quiero" \
             > "$WORK/model-check.log" 2>&1 &&
        grep -q "parsed as:" "$WORK/model-check.log"; then
-        proven "llama.cpp took the flags and the grammar, and answered something the parser accepts"
+        proven "llama.cpp accepted every flag and answered something the parser accepts"
         grep -E "latency|peak rss" "$WORK/model-check.log" | sed 's/^/     /'
     else
         failed "the real model produced nothing usable; see $WORK/model-check.log"

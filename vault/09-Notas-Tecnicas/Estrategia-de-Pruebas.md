@@ -2048,6 +2048,76 @@ arregla la clase es que **el contrato se comprueba en vez de suponerse**:
 Ninguna de las tres olfatea la prosa de otra herramienta, que sería la regla 6
 otra vez.
 
+## Regla derivada: un límite definido de un solo lado no es un límite
+
+Encontrada el 2026-08-08, **el mismo día y contra el mismo `llama.cpp`**, en la
+corrida siguiente. La corrección de arriba funcionó: `llama-completion` cargó los
+pesos, completó el prompt y **Qwen2.5-3B emitió exactamente el objeto que
+describe la gramática**, con saltos de línea y sangría, que es lo que
+`ws ::= [ \t\n]*` permite.
+
+Thalyx lo rechazó. Y no calladamente: dijo que la gramática no se había aplicado
+y que **la culpa era de la herramienta**.
+
+`llama.cpp` imprime su propio final de generación detrás del completado —
+`tools/completion/completion.cpp`:
+
+```cpp
+if (!embd.empty() && llama_vocab_is_eog(vocab, embd.back()) && !(params.interactive)) {
+    LOG(" [end of text]\n");
+    break;
+}
+```
+
+`Proposal::parse` era `serde_json::from_str`, que rechaza cualquier byte después
+del objeto. Y el marcador aleatorio del prompt decía **dónde empieza** la
+respuesta. Nunca nadie dijo **dónde termina**:
+
+> **Un límite definido de un solo lado no es un límite.** Recortar texto prestado
+> por el principio deja el final en manos de quien lo imprimió, y ese final
+> cambia entre versiones sin avisar a nadie. Donde termina lo que dijo el modelo
+> lo decide la gramática, no el sufijo que la herramienta pone después.
+
+La corrección lee **el primer valor JSON completo** después del marcador, porque
+la raíz de la gramática es un objeto y todo lo que venga detrás lo escribió quien
+sea que estuviera imprimiendo. Recortar el literal ` [end of text]` habría sido
+la regla 6 al revés: esa cadena es *una muestra* de la salida de *una* compilación,
+no el formato.
+
+### Las fixtures no podían encontrarlo, y no por ser malas
+
+Es la séptima vez que el instrumento se equivocó antes que lo medido, y la
+**segunda por la misma causa**: un parser probado sólo contra fixtures que
+inventó su autor. La regla 6 ya existía, estaba escrita, y aquí no se siguió — no
+había ni una muestra capturada. Lo que faltaba decir es por qué eso es peor que
+un descuido:
+
+> **Una fixture no puede estar en desacuerdo contigo.** Hereda el modelo del
+> formato que tiene quien la escribe, *incluidas las partes en las que nunca
+> pensó*. Las nueve fixtures de este parser terminaban donde el parser esperaba
+> que terminara una respuesta, porque las escribió la misma mano. Ninguna
+> cantidad de fixtures nuevas iba a estar en desacuerdo sobre eso.
+
+Ahora hay una muestra capturada literal, con su procedencia anotada
+(`llama.cpp b1-3653e6d`, `llama-completion`, Qwen2.5-3B-Instruct-Q4_K_M,
+2026-08-08), y de ella cuelgan tres pruebas.
+
+### Lo que sí funcionó: el mensaje enseñaba lo que estaba juzgando
+
+El defecto se encontró **de una sola lectura**, y no por suerte. El error
+imprimía la respuesta que estaba rechazando, así que debajo de la frase «esto es
+la herramienta ignorando la gramática» se veía una propuesta perfecta. La
+contradicción saltaba sola.
+
+> **Una comprobación que señala a un culpable tiene que enseñar la evidencia que
+> juzgó.** Un mensaje que sólo hubiera dicho *«la gramática no estaba en vigor»*
+> era una acusación creíble, específica y falsa, y el paso siguiente habría sido
+> auditar el manejo de gramáticas de `llama.cpp`: días en el sitio equivocado.
+> Cuanto más confiado el diagnóstico, más obligatorio adjuntar lo que lo produjo.
+
+El mensaje corregido explica además dónde corta, para que la próxima acusación
+falsa se delate igual de rápido.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
