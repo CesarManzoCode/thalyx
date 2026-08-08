@@ -49,21 +49,45 @@ tags: [continuidad, punto-actual, sesiones]
 >    con la alta —dos casos— ya no cae dentro del ruido del instrumento. Lo que
 >    le falta a esa comparación es que la alta corra dos veces, y está aplazada.
 >
-> ### El comando que resuelve el caso 4
+> ### El caso 4, resuelto el mismo día — y era `module-id`
 >
-> Es para lo que se construyó `--keep-prompt`. El directorio de un caso se
-> encuentra por su enunciado, que está dentro del prompt guardado:
+> Cesar corrió la inferencia guardada. La salida contesta sola:
 >
-> ```sh
-> cd "$(dirname "$(grep -rl 'quiero la 1.4 del demo' ~/evidencia/ligera-3/*/prompt.txt)")"
-> sh command
+> ```
+> "targets": ["dev.thalyx.demo.versions.versions.versions.versions…
 > ```
 >
-> Vuelve a correr **esa** inferencia, con su marcador, y enseña entera la cadena
-> donde se quedó. Si el ciclo está en la versión se verá una versión que no
-> termina; si está en el id, un id que no termina. Son las dos producciones de la
-> gramática que no tienen cota. Acotar la culpable haría incomparables todas las
-> corridas anteriores, así que se mide antes y después o no se toca.
+> 255 de 256 tokens, y **nunca llegó a `constraint`**. La hipótesis del punto en
+> `1.4` queda **refutada**: el ciclo está en `module-id`, no en `range`.
+>
+> Las tres capas, que hay que decir separadas:
+>
+> | | |
+> |---|---|
+> | Causa inmediata | agotó `n_predict` sin cerrar el objeto |
+> | Causa observada | repitió `.versions` dentro de `module-id` |
+> | Condición que lo permite | la producción admite segmentos sin cota |
+>
+> **La gramática no lo obliga a repetir** — el modelo elige `.versions`; la
+> gramática nunca le exige cerrar.
+>
+> Y explica de más, que es lo importante: `ese.abc.abc.abc`, `thallyx.ing.ing`,
+> `dev.thalyx.demo.localhost`, `photoshop-1.ashx.ashx`,
+> `python3.ipython3.ipython3` son **el mismo comportamiento**. Cuando el 1.5B no
+> sabe cerrar semánticamente un id, sigue produciendo segmentos válidos; si el
+> corte llega antes de cerrar la cadena sale `ERR`, si llega después sale una
+> invención. Un comportamiento que llevábamos contando como tres.
+>
+> El caso 4 es además la demostración más limpia del proyecto de lo que la
+> gramática no puede hacer: el modelo **empieza con el id correcto** —está en el
+> prompt— y lo convierte en otro. `dev.thalyx.demo.versions` es sintácticamente
+> válido y semánticamente inventado. Esa segunda columna es de la atribución.
+>
+> Al inspeccionar la producción salió algo que no se buscaba: **`thalyx-manifest`
+> tampoco tiene cota**, así que la gramática espeja fielmente a la autoridad y el
+> hueco está en las dos. Tres opciones escritas en [[Gamas-de-Modelo]], con la
+> predicción de que acotar **no subiría el acierto** —convertiría `ERR` en `REF`,
+> como ya se observó—. **Nada tocado.**
 >
 > Detalle completo en [[Gamas-de-Modelo]], «Tres corridas de ligera y dos de
 > media».

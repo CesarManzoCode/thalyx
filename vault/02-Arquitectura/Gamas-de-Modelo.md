@@ -1064,7 +1064,72 @@ también. Lo que tiene de único en toda la suite es **la forma de la respuesta
 que pide** — es el único caso cuya restricción esperada lleva un punto adentro
 (`1.4`); la del caso 15 es `1`, y la media lo acierta las dos veces.
 
-### Hipótesis sobre el caso 4, que es una hipótesis
+### Resuelto: el ciclo está en `module-id`, no en `range`
+
+> **La hipótesis de abajo quedó refutada el mismo día**, y se conserva porque la
+> diferencia entre lo que se supuso y lo que se vio es el punto. Cesar corrió la
+> inferencia guardada del caso 4 —`prompt.txt`, `proposal.gbnf`, marcador
+> original y `command` original, sin Thalyx de por medio— y la salida completa
+> contesta sola:
+>
+> ```
+> {"operation": "install_module",
+>  "targets": ["dev.thalyx.demo.versions.versions.versions.versions.versions…
+> ```
+>
+> `eval time … / 255 runs` contra `n_predict = 256`: se gastó el presupuesto
+> entero repitiendo `.versions`. **Nunca llegó a `constraint`**, así que el punto
+> de `1.4` no tuvo nada que ver. La producción que absorbe los tokens es
+> `module-id`, y era la otra sospechosa de la lista.
+
+Las tres capas hay que decirlas separadas, porque nombrar una por otra es cómo
+se arregla lo que no era:
+
+| | |
+|---|---|
+| **Causa inmediata** | agotó `n_predict` sin cerrar el objeto |
+| **Causa observada** | entró en repetición de `.versions` dentro de `module-id` |
+| **Condición que lo permite** | la producción admite segmentos sin cota |
+
+Y la atribución de culpa importa: **la gramática no lo obliga a repetir**. El
+modelo elige `.versions`; la gramática simplemente nunca le exige cerrar. Decir
+«la gramática lo hizo ciclar» sería falso y llevaría a tratar como defecto
+estructural lo que es una decisión del modelo ante una producción permisiva.
+
+Lo que sí queda demostrado es que **esto explica de más**, y ése es el hallazgo
+mayor. No es una excepción del caso `1.4`: es el mismo patrón que ya se había
+visto sin reconocerlo.
+
+```
+dev.thalyx.demo.versions.versions.versions…   ← caso 4, hasta agotar el presupuesto
+dev.thalyx.demo.https.localhost               ← caso 1
+dev.thalyx.demo.localhost                     ← casos 9 y 16
+ese.abc.abc.abc                               ← caso 2
+thallyx.ing.ing                               ← caso 8
+photoshop-1.ashx.ashx                         ← caso 19
+python3.ipython3.ipython3…                    ← el brazo restringido del sondeo
+```
+
+> **Cuando el 1.5B no sabe cómo cerrar semánticamente un identificador, sigue
+> produciendo segmentos sintácticamente válidos.** Si el corte llega antes de
+> cerrar la cadena sale `ERR`; si llega después, sale un id inventado. Un solo
+> comportamiento, contado hasta ahora como dos o tres.
+
+Y el caso 4 es la demostración más limpia que tiene este proyecto de lo que la
+gramática **no** puede hacer. El prompt dice `Name only module ids that appear in
+the material below` y debajo trae `available: dev.thalyx.demo 1.4.2, 2.0.0`. El
+modelo **empieza con el id correcto** y lo convierte en otro al no saber parar:
+
+```
+Gramática:   "dev.thalyx.demo.versions" es un module-id válido      ✅
+Atribución:  nadie mencionó "dev.thalyx.demo.versions"              ❌
+```
+
+Estructura y significado, separados en una sola cadena. La gramática garantiza
+la primera columna y no puede tocar la segunda — que es exactamente lo que
+[[Marcado-de-Origen]] dice y lo que la atribución existe para cubrir.
+
+### La hipótesis anterior, que estaba equivocada
 
 La gramática tiene **tres repeticiones sin cota superior**:
 
@@ -1079,24 +1144,78 @@ admite el punto, los dígitos, las letras y el espacio. La hipótesis es que el
 modelo escribe `1.4` y **no encuentra dónde parar**, igual que se cicla dentro
 de un id (`python3.ipython3.ipython3`, `ese.abc.abc.abc`, `photoshop-1.ashx.ashx`).
 
-**No está probada**, y la diferencia importa: sabemos que agotó el presupuesto
-dentro del objeto, no *dentro de qué producción*. Lo que se ve del texto en el
-banco está truncado a 90 caracteres.
+**Refutada.** Lo que se supuso fue que el punto de `1.4` dejaba a `range` sin
+dónde terminar; lo que ocurrió fue que nunca llegó a `range`. Se conserva escrita
+porque la lección no es que la hipótesis fuera tonta —las dos producciones sin
+cota eran igual de sospechosas— sino que se distinguían con **un comando**, y
+hasta correrlo no había forma de elegir entre ellas. El banco truncaba el texto a
+90 caracteres, así que la evidencia estaba a la vista y cortada justo antes de la
+parte que decidía.
 
-Ahora se puede saber, y cuesta un comando, que es justo para lo que se construyó
-`--keep-prompt`. El directorio de cada caso se encuentra por su enunciado, que
-está dentro del prompt guardado:
+Eso es lo que `--keep-prompt` compró, un día después de construirse.
 
-```sh
-cd "$(dirname "$(grep -rl 'quiero la 1.4 del demo' ~/evidencia/ligera-3/*/prompt.txt)")"
-sh command
+### Propuesta de cota estructural — no aplicada
+
+Lo primero que salió al inspeccionar la producción no era lo que se buscaba:
+
+```rust
+// thalyx-manifest, que es la autoridad sobre qué es un id
+fn is_valid_module_id(id: &str) -> bool {
+    let segments: Vec<&str> = id.split('.').collect();
+    if segments.len() < 3 { return false; }
+    segments.iter().all(|segment| { /* … juego de caracteres … */ })
+}
 ```
 
-Eso vuelve a correr **esa** inferencia, con su marcador, y enseña entera la
-cadena en la que se quedó. Si el ciclo está en `range`, se verá una versión que
-no termina; si está en el id, se verá un id que no termina. Acotar la producción
-culpable sería un cambio de gramática y **haría incomparables todas las corridas
-anteriores**, así que no se toca sin medir antes y después.
+**La autoridad tampoco tiene cota superior.** Un id de cuarenta segmentos es un
+id válido para Thalyx hoy. La gramática no es más permisiva que el manifiesto —
+lo espeja fielmente, como dice su comentario. El hueco está en los dos.
+
+Eso decide la forma de la propuesta: **acotar sólo la gramática la volvería más
+estricta que la autoridad**, y entonces el modelo no podría proponer ids que
+Thalyx sí aceptaría. Un desacuerdo así es exactamente lo que
+`the_grammar_and_the_scanner_agree_on_what_a_module_id_is_made_of` existe para
+impedir, y esa prueba hoy sólo compara juegos de caracteres, no cuenta segmentos.
+
+Lo que se sabe de los ids reales: **todos los que existen en este repositorio
+tienen exactamente tres segmentos** — `dev.thalyx.demo`, `dev.thalyx.greeter`,
+`org.demo.thing`, `org.example.tool`, `org.publisher.pyassist`, `dev.evil.module`.
+Ninguno tiene cuatro.
+
+Las opciones, para que Cesar decida:
+
+| | Qué cambia | Qué cuesta |
+|---|---|---|
+| **A. Acotar los dos** —manifiesto y gramática, p. ej. máximo 6 segmentos | Quedan de acuerdo, y la cota es una propiedad del sistema | Cambia qué acepta el manifiesto, y el id es inmutable y está anclado a una llave de publicador. Es decreto, no limpieza |
+| **B. Acotar sólo la gramática** | Corta el ciclo sin tocar la identidad de los módulos | La gramática se vuelve más estricta que la autoridad, y hay que decir por qué en vez de que sea un descuido |
+| **C. No acotar nada** | Cero riesgo, cero cambio | Se conserva `ERR` como señal visible, y se pierden casos de la medición |
+
+**La predicción, que importa más que la preferencia:** acotar **no subiría el
+acierto**. Un `module-id` con tope obligaría al modelo a cerrar la cadena en
+`dev.thalyx.demo.versions.versions.versions`, que sigue siendo un id que nadie
+mencionó y que la atribución sigue rechazando. Convertiría `ERR` en `REF`, no en
+`ok`.
+
+Y eso no es especulación: **ya se observó**. En la tercera corrida de la ligera
+los casos 9, 16 y 19 dejaron de ser `ERR` por su cuenta y volvieron los tres
+`INV`. Más casos medidos, mismo número de aciertos.
+
+Así que el argumento a favor de acotar no es que el agente entienda mejor —no lo
+haría— sino que el banco mediría más casos y se dejarían de gastar 256 tokens y
+casi cuatro segundos en cada ciclo. El argumento en contra es de la regla 9:
+un `ERR` visible es la respuesta cautelosa y un id inventado bien formado es la
+rápida. La atribución caza las dos, así que ninguna es peligrosa; la diferencia
+es cuál se lee más fácil.
+
+**No se toca sin medir antes y después.** Las seis corridas actuales son la línea
+base y cambiar la gramática las vuelve incomparables. Y `-n` no sube: esta
+corrida demuestra que el presupuesto no es la causa, y 512 tokens sólo comprarían
+más `.versions`.
+
+Una nota práctica para quien lo implemente: la forma segura de escribir la cota
+en GBNF es repetir el grupo opcional —`("." segment)? ("." segment)? …`— porque
+si el `{m,n}` de GBNF lo acepta la versión de llama.cpp de Cesar **no está
+verificado**, y una gramática que su build rechaza tumba la inferencia entera.
 
 ### La abstención, ahora sobre 46 oportunidades
 
