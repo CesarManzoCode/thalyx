@@ -282,27 +282,39 @@ y dice `NOT PROVEN`, que no es lo mismo que pasar.
 | RAM | ~8 GB | **4.78 GB** de RSS pico |
 | Latencia | — | mediana **6.58 s**, peor **7.94 s** |
 
-| Acierto (gama media) | Resultado |
-|---|---|
-| Intención | 6/9 |
-| Argumentos | 6/9 |
-| Abstención | 3/4, **con 1 invención** |
-
-**La estimación de RAM iba alta por casi el doble.** Las de disco acertaron.
-
-Los tres casos que fallaron dicen más que el total:
-
-- **Abstuvo con el id dicho en claro** y sin verbo delante. Es el caso más fácil
-  del banco y lo dejó pasar — apunta a que la instrucción de abstención del
-  prompt pesa demasiado, no a que la gama sea corta.
-- **Abstuvo ante una versión dicha en palabras.**
-- **Actuó sobre un módulo que se mencionó y luego se descartó.** Éste es el que
-  importa: no inventó un id, tomó uno que la persona había excluido. Es
-  exactamente la clase de error que este decreto llama cara, porque la corrección
-  cuesta una instalación y no un segundo.
-
-Nada de esto toca la seguridad: los nueve casos produjeron contratos válidos por
+**La estimación de RAM iba alta por casi el doble.** Las de disco acertaron. Y
+nada de esto toca la seguridad: los nueve casos produjeron contratos válidos por
 construcción, y los nueve siguen detrás del camino confiable.
+
+#### Las cifras de acierto de esa corrida quedan retiradas
+
+Decían intención 6/9, argumentos 6/9, abstención 3/4 con 1 invención. **No
+significan lo que parecen**, y el defecto se encontró al día siguiente leyendo el
+banco en vez de leyendo sus números: clasificaba con `Err(_) => Abstained`, o sea
+que **toda forma de fallar contaba como abstención correcta**. Un plazo agotado,
+una respuesta truncada, una gramática no aplicada, `llama.cpp` cayéndose.
+
+Dos consecuencias, y la segunda es peor:
+
+1. Una gama cuyo modelo no arrancara nunca sacaba **abstención perfecta** — la
+   medida que este decreto llama la más importante.
+2. `AgentError::Attribution` caía ahí también. Eso es el núcleo cazando al modelo
+   nombrando un id que nadie mencionó: **la conducta más peligrosa que el banco
+   busca, contada como la más segura.** La defensa puntuaba como si fuera la
+   virtud.
+
+Así que de esa corrida sobreviven el disco, la RAM y la latencia —que se miden
+alrededor del proceso y no dependen de la clasificación— y **ninguna cifra de
+acierto**. Con ellas se va también la hipótesis que se había anotado aquí, que la
+instrucción de abstención del prompt pesaba de más: los dos `MISS` pudieron ser
+abstenciones reales o errores disfrazados, y desde la salida impresa no se
+distingue.
+
+La suite pasó de 9 a 20 casos por la misma razón. Con nueve, un caso vale once
+puntos y la suite no puede ordenar hipótesis mejor que una moneda; los casos
+nuevos varían **una** cosa a la vez —el mismo id, con verbo y sin verbo, con
+contexto y sin contexto— para que la próxima corrida conteste por qué falló el
+caso fácil en vez de volver a plantear la pregunta.
 
 ### La gramática restringe de verdad, y cómo se vio
 

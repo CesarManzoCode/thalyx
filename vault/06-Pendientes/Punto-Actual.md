@@ -14,6 +14,60 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El banco contaba todo fallo como abstención correcta — 2026-08-08
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar dijo que por ahora no descarga más modelos y que como máximo corre
+> verificaciones, así que el trabajo fue sobre el instrumento. Encontrado
+> leyendo el banco, no leyendo sus números:
+>
+> ```rust
+> Err(_) => Outcome::Abstained,
+> ```
+>
+> **Toda forma de fallar contaba como el modelo absteniéndose bien.** Un plazo
+> agotado, un truncamiento, una gramática no aplicada, `llama.cpp` cayéndose. Una
+> gama cuyo modelo no arrancara nunca sacaba 4/4 en abstención, que es la medida
+> que [[Gamas-de-Modelo]] llama la más importante.
+>
+> Y peor: `AgentError::Attribution` —el núcleo cazando al modelo nombrando un id
+> que nadie mencionó— caía en la misma rama. **La conducta más peligrosa que el
+> banco busca, contada como la más segura.**
+>
+> ### Las cifras de acierto del 2026-08-08 quedan retiradas
+>
+> Intención 6/9, argumentos 6/9, abstención 3/4 no significan lo que parecían. Se
+> mantienen disco, RAM y latencia, que se miden alrededor del proceso. **Se cae
+> también la hipótesis** de que la instrucción de abstención del prompt pesa de
+> más: los dos `MISS` pudieron ser abstenciones reales o errores disfrazados, y
+> desde la salida impresa no se distinguen.
+>
+> ### Qué se construyó
+>
+> - **Cinco resultados** y ninguno inferido de la ausencia de otro: correcto,
+>   equivocado, abstenido, **rechazado por el núcleo**, **sin medición**.
+> - Un caso sin medición no cuenta en ninguna fracción. Los denominadores son
+>   sobre lo medido, y el resumen lo dice **antes** que cualquier cifra.
+> - La clasificación salió del bucle a `Outcome::of`, que es una función pura —
+>   el defecto vivía enterrado en una expresión donde ninguna prueba lo alcanzaba.
+> - **La suite pasó de 9 casos a 20.** Con nueve, un caso vale once puntos. Los
+>   nuevos varían **una** cosa a la vez respecto de uno que ya estaba, para que la
+>   próxima corrida conteste por qué falló el caso fácil.
+> - La exención de «este caso de abstención sí nombra un módulo» era una
+>   subcadena del *nombre* del caso; ahora es un campo con la razón escrita, con
+>   su control.
+>
+> ### Lo que corre Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx agent bench
+> ```
+>
+> Una corrida, con el modelo que ya tiene. Devuelve las cifras de acierto con
+> significado por primera vez.
+>
 > ## La gramática restringe de verdad, probado en hierro — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

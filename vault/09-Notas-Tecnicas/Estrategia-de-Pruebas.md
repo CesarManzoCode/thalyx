@@ -2256,6 +2256,71 @@ evidencia que imprimió al lado, y sólo porque la imprimía:
 > mirar. Es la otra mitad de la regla de enseñar la evidencia: enseñarla no sirve
 > si sólo se lee cuando el veredicto ya es malo.
 
+## Regla derivada: una rama de error que no distingue causas convierte el fallo en el resultado que más se le parezca
+
+Encontrada el 2026-08-08 leyendo el banco, no leyendo sus números. La
+clasificación de cada caso era ésta:
+
+```rust
+let outcome = match &plan {
+    Ok(plan) => match plan.contract.targets.first() { ... },
+    Err(_) => Outcome::Abstained,
+};
+```
+
+`Err(_)`. **Toda forma de fallar contaba como el modelo absteniéndose bien**: un
+plazo agotado, una respuesta truncada, una gramática no aplicada, `llama.cpp`
+cayéndose. De donde sale, exactamente:
+
+> Una gama cuyo modelo no arrancara nunca sacaba **4/4 en abstención**, que es la
+> medida que [[Gamas-de-Modelo]] llama la más importante.
+
+Es hermana de la regla del respaldo que cubre una causa y se lleva todas las que
+producen la misma señal, y de la del truncamiento, pero con una vuelta propia:
+allí el respaldo elegía *una* causa entre varias; aquí no elegía ninguna, y el
+resultado se lo quedó **el caso legítimo que estaba en la misma rama**.
+
+> **Un `_` en una rama de error no es un caso por omisión, es una afirmación**:
+> dice que todo lo que llegue ahí es lo mismo que lo que ya estaba ahí. Cuando en
+> esa rama vive un resultado legítimo, el fallo se disfraza de ese resultado — y
+> se disfraza en la dirección de parecer normal, que es la dirección en la que
+> nadie mira.
+
+### Y la que estaba ahí era la que menos podía estar
+
+`AgentError::Attribution` es el núcleo cazando al modelo nombrando un id que no
+aparece en ningún canal. Es **la conducta más peligrosa que el banco busca**, y
+caía en la misma rama, contada como la más segura:
+
+> **Cuidado especial cuando la rama absorbente es la que mide seguridad.** Un
+> instrumento sesgado hacia el resultado tranquilizador no es ruidoso, es
+> silencioso, y sus números suben cuando el sistema empeora.
+
+Ahora hay cinco resultados —correcto, equivocado, abstenido, **rechazado por el
+núcleo**, y **sin medición**— y ninguno se infiere de la ausencia de otro. Un caso
+sin medición no cuenta en ninguna fracción, los denominadores son sobre lo medido
+y no sobre la suite, y el resumen lo dice antes que cualquier cifra.
+
+### El corolario sobre el tamaño de la suite
+
+La misma revisión llevó la suite de 9 casos a 20. Con nueve, un caso vale once
+puntos:
+
+> **Una suite que no puede separar dos explicaciones no mide, puntúa.** Añadir
+> casos para subir el total no sirve; los que sirven varían **una** cosa a la vez
+> respecto de un caso que ya está — el mismo id con verbo y sin verbo, con
+> contexto y sin contexto — para que el resultado conteste cuál de las dos
+> lecturas era la buena en vez de volver a plantear la pregunta.
+
+Y una nota sobre las exenciones. La comprobación que impide que un caso de
+abstención nombre un módulo tenía una escapatoria por subcadena del **nombre** del
+caso (`contains("ruled out")`): una exención en la que se cae por titularse de
+cierta manera, y que sólo podía describir el único caso para el que se escribió.
+Ahora es un campo con la razón escrita, y hay un control que comprueba que nadie
+reclame una exención que no necesita — porque **una exención que nadie revisa es
+una exención que todos los casos acaban teniendo**, y entonces la comprobación
+desapareció sin que nadie la borrara.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

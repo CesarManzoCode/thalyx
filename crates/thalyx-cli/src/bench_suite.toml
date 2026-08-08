@@ -72,3 +72,107 @@ name = "a module that was mentioned and then ruled out"
 utterance = "el demo no, el otro"
 context = ["installed: dev.thalyx.demo 1.4.2"]
 expect = "abstain"
+abstains_despite = "the module is named and then ruled out in the same sentence, so naming it is taking the negation off"
+
+# ---------------------------------------------------------------------------
+# Added 2026-08-08, after the first bench. Nine cases scored a tier on nine
+# answers, two of which went the wrong way, and a difference of one case is a
+# difference of eleven points — so the suite could rank hypotheses about as well
+# as a coin. These are chosen to *separate* explanations rather than to add to a
+# total.
+#
+# The first group exists because `dev.thalyx.demo, ese` was the one plainly
+# stated id the tier declined, and there were two readings of that: the sentence
+# is a fragment with no verb at all, or the prompt's abstention instruction
+# outweighs a stated id. The cases below hold everything else still and vary the
+# verb. If the ones with a verb land and the bare one does not, it is the
+# fragment; if none land, it is the instruction — and nothing needs guessing.
+#
+# None of these may carry an install verb *and* exactly one id, or the router
+# resolves them and the model is never asked. `instala a o b` is safe because
+# two ids is a sentence the rules refuse on purpose.
+
+[[case]]
+name = "the id said plainly, with a verb that is not an install verb"
+utterance = "dev.thalyx.demo, ese quiero"
+expect = "dev.thalyx.demo"
+
+[[case]]
+name = "the id said plainly, with the machine listing it"
+utterance = "dev.thalyx.demo, ese"
+context = ["available: dev.thalyx.demo — a demonstration module"]
+expect = "dev.thalyx.demo"
+
+[[case]]
+name = "the id said plainly, in English, with no verb"
+utterance = "dev.thalyx.greeter, that one"
+expect = "dev.thalyx.greeter"
+
+[[case]]
+name = "an install verb with two ids, which the rules refuse to choose between"
+utterance = "instala dev.thalyx.greeter o dev.thalyx.demo, el que saluda"
+expect = "dev.thalyx.greeter"
+
+[[case]]
+name = "a module named by description among three"
+utterance = "necesito el que saluda, no los otros"
+context = [
+    "available: dev.thalyx.demo — a demonstration module",
+    "available: dev.thalyx.greeter — prints a greeting",
+    "available: dev.thalyx.probe — reports on the machine",
+]
+expect = "dev.thalyx.greeter"
+
+[[case]]
+name = "a version said as a range rather than as a number"
+utterance = "el demo, pero de la serie 1 nada más"
+context = ["available: dev.thalyx.demo 1.4.2, 2.0.0"]
+expect = "dev.thalyx.demo"
+constraint = "1"
+
+# More abstention, and the same reasoning: one negation case cannot tell a tier
+# that mishandles negation from a tier that mishandled that sentence. Three can.
+
+[[case]]
+name = "a negation with the module named first"
+utterance = "el demo no"
+context = ["installed: dev.thalyx.demo 1.4.2"]
+expect = "abstain"
+abstains_despite = "the machine lists the module, and the sentence rejects it and names no other"
+
+[[case]]
+name = "a negation phrased as an exclusion from a list"
+# Three available and not two. With two, "any except the greeter" names the
+# other one and abstaining would be the *wrong* answer — the case would have
+# scored the opposite of what it claims, which is exactly what the check below
+# it in agent_model.rs exists to catch. Caught by that check while writing it.
+utterance = "cualquiera menos el que saluda"
+context = [
+    "available: dev.thalyx.greeter — prints a greeting",
+    "available: dev.thalyx.demo — a demonstration module",
+    "available: dev.thalyx.probe — reports on the machine",
+]
+expect = "abstain"
+abstains_despite = "modules are listed, but the sentence excludes one and leaves two, so there is nothing to pick"
+
+[[case]]
+name = "a question about a module rather than a request for one"
+utterance = "y el demo qué hace?"
+context = ["available: dev.thalyx.demo — a demonstration module"]
+expect = "abstain"
+abstains_despite = "the module is listed, but a question about what it does is not a request to install it"
+
+[[case]]
+name = "a need stated as a category, in English"
+utterance = "I need something to edit photos"
+expect = "abstain"
+
+[[case]]
+name = "a demonstrative pointing at nothing, with things listed"
+utterance = "ese, el que te dije"
+context = [
+    "available: dev.thalyx.demo — a demonstration module",
+    "available: dev.thalyx.greeter — prints a greeting",
+]
+expect = "abstain"
+abstains_despite = "modules are listed, and the sentence points at one from a conversation that is not in the transcript"
