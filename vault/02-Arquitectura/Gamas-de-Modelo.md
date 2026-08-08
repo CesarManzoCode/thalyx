@@ -1293,24 +1293,60 @@ para complacer, o que la negación sea comprensión y no estructura —y los cas
 16, 17 y 18 sí son de negación o de pregunta—. Lo que la distingue es que
 explica por qué el resultado **no se mueve con el tamaño**, y las otras no.
 
-#### Cómo se prueba, sin cambiar nada de Thalyx
+#### El instrumento: `thalyx agent grammar-effect`
 
-Ahora se puede, y por dos cosas que se construyeron esta semana: los prompts
-están guardados y el sistema es determinista.
+El primer plan era un `sed` sobre el `command` guardado y tres lecturas a ojo.
+Eso habría contestado, y habría dejado el resultado dependiendo de cómo alguien
+leyó tres párrafos de prosa. Se construyó el instrumento en su lugar
+—`crates/thalyx-agent/src/grammar_effect.rs` y `thalyx agent grammar-effect`—
+porque esta pregunta merece un veredicto que se pueda repetir.
 
-```sh
-cd "$(dirname "$(grep -rl 'instala algo bueno' ~/evidencia/ligera-3/*/prompt.txt)")"
-sed 's/ --grammar-file [^ ]*//' command | sh
-```
+**Corre la suite entera dos veces**, con `--grammar-file` y sin él, con **un solo
+prompt renderizado por caso** —mismo marcador en los dos brazos, así que difieren
+en exactamente un flag—.
 
-El mismo prompt exacto, con y sin gramática — la forma del sondeo de gramática,
-un solo flag de diferencia. Si sin la gramática el modelo dice en prosa que no
-hay nada que instalar, y con ella inventa `org.openjdk.jmh`, **la gramática es lo
-que le quita la decisión**. Si sin gramática también inventa, la hipótesis se cae
-y el problema es del prompt o del modelo.
+**No lee prosa.** La tentación era escribir algo que decidiera si un párrafo
+libre «se rehusó», y eso es un analizador de la salida de otra herramienta hecho
+con fixtures inventadas por su autor: el error que esta bóveda ya registra dos
+veces. En vez de eso hace la pregunta mecánica que la atribución ya sabe hacer:
+**¿nombró un id que no aparece en nada de lo que se le dijo?** Inventar es el
+fallo bajo estudio, e inventar se cuenta.
 
-Tres casos, tres lecturas a ojo, cero código. Y como la salida no será una
-propuesta, la lee una persona.
+Tres respuestas por brazo, y la de en medio es honesta sobre su debilidad:
+
+| | |
+|---|---|
+| `INVENTED <id>` | nombró algo que nadie mencionó — el fallo, sin interpretación |
+| `named nothing` | ningún id en todo el texto |
+| `named <id>` | sólo ids reales. **No significa que propusiera instalarlo**: «ningún módulo coincide, el disponible es dev.thalyx.demo» cae aquí y es un rechazo. No cuenta para ningún lado; se imprime para que lo lea una persona |
+
+**Y lleva control, que es de lo que depende todo.** Regla 4: sin él, «el brazo
+libre no nombró nada» tiene dos lecturas idénticas —el modelo declinó, o el
+modelo divaga sin gramática y nunca nombra nada—. Así que los casos de *acción*
+también se corren por los dos brazos, y **si sin gramática el modelo no encuentra
+el módulo correcto ni donde sí lo hay, el veredicto es `NOT PROVEN` y sale
+distinto de cero**. Un sondeo que no puede fallar no es un sondeo.
+
+Dos defectos aparecieron construyéndolo, y los dos habrían empujado el resultado
+hacia declarar culpable a la gramática:
+
+1. **El escáner de ids era ciego al JSON.** El brazo restringido siempre es JSON
+   —`["dev.thalyx.demo"]` es un solo token de espacio en blanco— así que una
+   respuesta llena de invenciones se habría reportado como silencio. Lo encontró
+   una prueba, no una corrida.
+2. **Los dos brazos se pisaban el `command` guardado.** Comparten marcador, así
+   que compartían directorio, y lo que sobrevivía era la línea sin
+   `--grammar-file`. La evidencia del brazo que importa habría descrito al otro.
+   **Ese defecto ya existía en `grammar-check` desde que se construyó
+   `--keep-prompt`**, y nadie lo había visto. Corregido con su regresión,
+   comprobada fallando contra el nombre anterior.
+
+Quince pruebas cubren el veredicto sin necesitar un modelo, incluidos los tres
+caminos a `Inconclusive`. Lo que no se puede probar en el contenedor es la
+medición misma, y **no lleva etapa en `verify.sh` a propósito**: `verify.sh`
+prueba afirmaciones de Thalyx, y esto es un experimento que contesta una pregunta
+una vez. Cuarenta inferencias son cinco minutos que toda verificación pagaría
+para siempre.
 
 Si resultara confirmada, el arreglo tiene forma conocida —una operación que
 signifique «nada que hacer», elegible en el primer campo— y **cambia la gramática,

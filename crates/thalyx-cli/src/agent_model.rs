@@ -821,6 +821,173 @@ fn truncate(text: &str, at: usize) -> String {
     text.chars().take(at.saturating_sub(1)).collect::<String>() + "…"
 }
 
+/// Run the whole suite twice — with the grammar and without it — and report
+/// what the grammar changed.
+///
+/// The bench answers "how good is this tier". This answers a narrower question
+/// that six bench runs raised and none could settle: **abstention came back
+/// zero out of forty-six, identical across three model sizes, and a result that
+/// does not move when the only variable moves is about what those runs share.**
+/// See [`thalyx_agent::grammar_effect`] for the mechanism under suspicion and
+/// for why nothing here reads prose.
+///
+/// Twice the inferences of a bench, so twice the wait. Every case prints as it
+/// finishes rather than at the end, because a silent five minutes is
+/// indistinguishable from a hang.
+pub fn grammar_effect(
+    store: &Store,
+    cases: Option<&Path>,
+    keep_prompt: Option<PathBuf>,
+) -> Fallible {
+    use thalyx_agent::grammar_effect::{
+        BothArms, Effect, Named, Tally, what_a_proposal_named, what_it_named,
+    };
+
+    let settings = configured(store)?.ok_or(
+        "no model is configured, so there is nothing to ask. \
+         `thalyx agent model use <tier> --weights <file>`",
+    )?;
+    let model = settings.model()?.keeping_prompt(keep_prompt);
+    model.preflight()?;
+
+    let text = match cases {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => DEFAULT_SUITE.to_string(),
+    };
+    let suite: Suite = toml::from_str(&text)?;
+    if suite.cases.is_empty() {
+        return Err("the suite has no cases in it".into());
+    }
+
+    println!(
+        "tier     {} ▪ {}",
+        settings.tier,
+        settings.weights.display()
+    );
+    println!("asking   every case twice, with --grammar-file and without");
+    println!(
+        "cases    {} ▪ {} inferences",
+        suite.cases.len(),
+        suite.cases.len() * 2
+    );
+    println!();
+
+    let mut tally = Tally::default();
+
+    for case in &suite.cases {
+        let transcript = case.transcript();
+        let (constrained, free) = model.with_and_without_grammar(&transcript);
+
+        // The constrained arm is a contract, so its targets come from the
+        // parser; the free arm is whatever the model felt like, so its ids are
+        // scanned. Same question, right authority for each shape.
+        let constrained = constrained.map_err(|e| e.to_string()).and_then(|answer| {
+            thalyx_agent::Proposal::parse(&answer)
+                .map(|proposal| what_a_proposal_named(&proposal.targets, &transcript))
+                .map_err(|e| e.to_string())
+        });
+        let free = free
+            .map_err(|e| e.to_string())
+            .map(|answer| (what_it_named(&answer, &transcript), answer));
+
+        let arms = BothArms {
+            constrained: constrained.clone(),
+            unconstrained: free.clone().map(|(named, _)| named),
+            wants_abstention: case.wants_abstention(),
+            expected: (!case.wants_abstention()).then(|| case.expect.clone()),
+        };
+        tally.count(&arms);
+
+        let describe = |named: &Result<Named, String>| match named {
+            Ok(Named::Nothing) => "named nothing".to_string(),
+            Ok(Named::Attributable(id)) => format!("named {id}"),
+            Ok(Named::Invented(id)) => format!("INVENTED {id}"),
+            Err(why) => format!("NO MEASUREMENT: {}", truncate(why, 60)),
+        };
+
+        println!(
+            "  {}  {}",
+            if case.wants_abstention() {
+                "decline"
+            } else {
+                "act    "
+            },
+            truncate(&case.name, 52)
+        );
+        println!("    with grammar     {}", describe(&arms.constrained));
+        println!("    without it       {}", describe(&arms.unconstrained));
+
+        // The free arm's words are the evidence a human has to read, and only
+        // for the cases where declining was right. Printed whole rather than
+        // summarised: what it *said* is the thing a count cannot carry.
+        if case.wants_abstention()
+            && let Ok((_, answer)) = &free
+        {
+            println!(
+                "    it said          {:?}",
+                truncate(&answer.replace('\n', " "), 220)
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "abstention cases measured on both arms   {}",
+        tally.abstention_measured()
+    );
+    println!(
+        "  with the grammar, invented             {}",
+        tally.abstention_constrained_invented
+    );
+    println!(
+        "  without it, invented                   {}",
+        tally.abstention_free_invented
+    );
+    println!(
+        "  without it, named nothing              {}",
+        tally.abstention_free_silent
+    );
+    println!(
+        "  without it, named only real ids        {}",
+        tally.abstention_free_attributable
+    );
+    println!();
+    println!(
+        "control — acting cases measured          {}",
+        tally.acting_measured
+    );
+    println!(
+        "  without the grammar, found the module  {}",
+        tally.acting_free_named_expected
+    );
+    println!();
+
+    match tally.verdict() {
+        Effect::GrammarTakesTheDecision => {
+            println!("THE GRAMMAR TAKES THE DECISION: constrained it invented; left alone it");
+            println!("never did, on a run where it could still find the right module when");
+            println!("there was one. The zero in `bench` is not this model refusing to");
+            println!("decline — it is Thalyx making it say `install_module` before it can.");
+            Ok(())
+        }
+        Effect::InventsEitherWay => {
+            println!("IT INVENTS EITHER WAY: taking the grammar off did not stop it, so the");
+            println!("grammar is not what causes this. The hypothesis is refuted for these");
+            println!("cases, and what is left to suspect is the prompt or the model.");
+            Ok(())
+        }
+        Effect::Inconclusive { why } => {
+            // Non-zero, like `grammar-check`. A probe that could not tell its
+            // arms apart has not passed, and a script must not read it as one.
+            eprintln!("NOT PROVEN: {why}.");
+            eprintln!();
+            eprintln!("This is not evidence the grammar is innocent — it is no evidence at");
+            eprintln!("all, and it must not be read as either answer.");
+            Err("the probe could not tell the two arms apart".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

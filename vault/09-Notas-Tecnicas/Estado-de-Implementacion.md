@@ -175,7 +175,7 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-875 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+891 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

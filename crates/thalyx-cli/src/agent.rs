@@ -94,6 +94,20 @@ pub enum AgentCommand {
         keep_prompt: Option<PathBuf>,
     },
 
+    /// Run the suite with the grammar and without it, and say what it changed
+    ///
+    /// Six bench runs reported abstention as zero, identically on three model
+    /// sizes. This asks whether the grammar is what stops the model declining:
+    /// every case twice, differing in one flag. Twice the inferences of a bench.
+    GrammarEffect {
+        /// A suite of cases. Without one, the suite built into Thalyx is used.
+        #[arg(long)]
+        cases: Option<PathBuf>,
+        /// Leave every arm's prompt, grammar and command under this directory
+        #[arg(long)]
+        keep_prompt: Option<PathBuf>,
+    },
+
     /// Turn a sentence into a contract and carry it out
     Do {
         utterance: String,
@@ -152,6 +166,10 @@ pub fn run(store: &Store, command: AgentCommand, request_id: &str) -> Fallible {
 
         AgentCommand::Bench { cases, keep_prompt } => {
             agent_model::bench(store, cases.as_deref(), keep_prompt, request_id)
+        }
+
+        AgentCommand::GrammarEffect { cases, keep_prompt } => {
+            agent_model::grammar_effect(store, cases.as_deref(), keep_prompt)
         }
 
         AgentCommand::Do {
