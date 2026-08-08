@@ -14,9 +14,63 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La gama ligera se corrió dos veces, y no dio lo mismo — 2026-08-08
+> ## Cinco corridas, y el banco es más estable de lo que parecía — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Tres corridas de la gama ligera y dos de la media, con `--keep-prompt`. Esto
+> **corrige la lectura del bloque de abajo**, que decía que las cifras de
+> acierto se mueven:
+>
+> | | ligera ×3 | media ×2 |
+> |---|---|---|
+> | **Aciertos sobre los 20** | **5, 6, 6** | **9, 9** |
+> | Sin medición | 6, 5, 2 | 1, 2 |
+> | Intención (sobre lo medido) | 5/14, 6/15, 6/18 | 9/19, 9/18 |
+> | Abstención | 0/6, 0/6, 0/9 | 0/9, 0/8 |
+>
+> 1. **Lo que se mueve no es el acierto, es cuántos casos contestan.** El número
+>    de respuestas correctas casi no se movió; el denominador sí. Y pasó el caso
+>    que lo demuestra: la ligera contestó cuatro casos más, acertó uno más, **y
+>    su fracción bajó** de 36 % a 33 %, porque los cuatro que recuperó volvieron
+>    mal. **La cifra que se compara entre corridas es aciertos sobre 20.**
+> 2. **Catorce de los veinte casos dieron la misma marca en las cinco corridas.**
+>    La suite es estable. Los aciertos se mueven ±1.
+> 3. **El caso 4 no ha producido una medición ni una sola vez**: `quiero la 1.4
+>    del demo`, cinco de seis corridas con el presupuesto de tokens agotado. Es
+>    el único caso de la suite cuya restricción esperada lleva un punto adentro
+>    (`1.4`). Hay hipótesis y **no está probada**; se resuelve con un comando,
+>    abajo.
+> 4. **Abstención: cero en 46 oportunidades**, tres tamaños de modelo, seis
+>    corridas. Es la propiedad más firmemente medida del proyecto. Los tres casos
+>    que la ligera nunca había alcanzado a contestar resultaron ser de
+>    abstención, y al contestarlos por fin los falló los tres.
+> 5. **La media no se movió ni un caso en dos corridas** (9 y 9). La distancia
+>    con la alta —dos casos— ya no cae dentro del ruido del instrumento. Lo que
+>    le falta a esa comparación es que la alta corra dos veces, y está aplazada.
+>
+> ### El comando que resuelve el caso 4
+>
+> Es para lo que se construyó `--keep-prompt`. El directorio de un caso se
+> encuentra por su enunciado, que está dentro del prompt guardado:
+>
+> ```sh
+> cd "$(dirname "$(grep -rl 'quiero la 1.4 del demo' ~/evidencia/ligera-3/*/prompt.txt)")"
+> sh command
+> ```
+>
+> Vuelve a correr **esa** inferencia, con su marcador, y enseña entera la cadena
+> donde se quedó. Si el ciclo está en la versión se verá una versión que no
+> termina; si está en el id, un id que no termina. Son las dos producciones de la
+> gramática que no tienen cota. Acotar la culpable haría incomparables todas las
+> corridas anteriores, así que se mide antes y después o no se toca.
+>
+> Detalle completo en [[Gamas-de-Modelo]], «Tres corridas de ligera y dos de
+> media».
+>
+> ## La gama ligera se corrió dos veces, y no dio lo mismo — 2026-08-08
+>
+> Cómo se llegó a lo de arriba, y con una lectura que el bloque anterior corrige.
 >
 > Cesar repitió `grammar-check` y el banco sobre la gama ligera, sin cambiar
 > nada. Tres resultados, en orden de importancia:
