@@ -2444,6 +2444,19 @@ De ahí el corolario, que es de dónde mirar y no de qué probar:
 > Cuando una prueba y un comentario del mismo módulo se contradicen, **la prueba
 > es la que corre**. Búscala antes de creerle a la prosa.
 
+Y buscando eso apareció el otro extremo del mismo problema. El encabezado citaba
+`Invocation::command_line` como *la* forma de reproducir una corrida, y esa
+función **no tenía una sola llamada fuera de su propia prueba**. Estaba probada
+—la prueba comprobaba que la línea trae la gramática y la semilla— y nunca se
+ejecutaba en producción, así que la prueba certificaba una función correcta que
+no hacía nada por nadie.
+
+> Una función pública con una prueba y sin ninguna llamada **no es una
+> característica, es una intención**. La prueba dice que hace lo que dice; no
+> dice que alguien la use, y la documentación de al lado sí lo daba por hecho.
+
+La corrección no fue borrarla: `--keep-prompt` es su primera llamada de verdad.
+
 ### Y la consecuencia sobre lo que ya estaba medido
 
 Nada de lo medido se retira: los costes —disco, RSS, latencia mediana—

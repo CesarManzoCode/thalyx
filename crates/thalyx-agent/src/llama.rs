@@ -5,13 +5,13 @@
 //!
 //! - **No build dependency.** Nothing here needs a C++ toolchain, so somebody
 //!   who only wants the CLI does not pay for a piece they will not use.
-//! - **Every step inspectable by hand.** [`Invocation::command_line`] prints the
-//!   exact command and `thalyx agent grammar` prints the exact grammar, so a
-//!   strange answer can be taken to a terminal with no Thalyx in the way. A
-//!   fault only observable from inside the process that caused it costs twice
-//!   as much to find. What this does *not* buy is the same answer twice — this
-//!   bullet used to claim it did, and the section below is why it no longer
-//!   does.
+//! - **Every step inspectable by hand.** `thalyx agent grammar` prints the exact
+//!   grammar, and with [`Invocation::keep_prompt`] set, every run leaves its
+//!   prompt, its grammar and the command that ran them on disk — so a strange
+//!   answer can be taken to a terminal with no Thalyx in the way. A fault only
+//!   observable from inside the process that caused it costs twice as much to
+//!   find. What none of that buys is the same answer twice; the section below
+//!   is why this bullet no longer claims it.
 //! - **The model is outside the process.** It is outside the TCB by
 //!   `vault/11-Seguridad/Modelo-de-Amenaza.md`; running it in another process
 //!   makes that boundary one the operating system enforces rather than one the
@@ -26,9 +26,13 @@
 //! - [`crate::prompt::Prompt::render`] mints a fresh random marker on every
 //!   invocation, so **the prompt is different bytes every time**. Determinism
 //!   given the same input is not reproducibility when the input changes.
-//! - The `-f` path [`Invocation::command_line`] prints lives in a
-//!   `tempfile::tempdir()` that is removed when the run ends, so the file the
-//!   printed command names is gone before anybody can paste the line.
+//! - The `-f` path [`Invocation::command_line`] names used to live in a
+//!   `tempfile::tempdir()` removed when the run ends, so the file the command
+//!   named was gone before anybody could paste the line. Worse, nothing outside
+//!   a test ever called `command_line` — the bullet above described a feature
+//!   that had never run. [`Invocation::keep_prompt`] is the fix Cesar chose:
+//!   with a path, the prompt, the grammar and the command stay on disk, and
+//!   *that* run can be repeated exactly, marker and all.
 //!
 //! None of that needed a machine to notice — `prompt::tests::
 //! a_marker_is_never_reused_between_two_renders` has asserted the marker
@@ -44,9 +48,13 @@
 //! that size, and a two-case gap between two tiers is not a difference between
 //! them.
 //!
-//! Making the marker derivable would buy the reproducibility back, and it is
-//! not done here: a marker foreign text cannot guess is the whole reason
-//! [`crate::prompt`] randomises it. That trade is a decision, not a cleanup.
+//! Making the marker *derivable* would buy back reproducibility across runs,
+//! and it is deliberately not done: a marker foreign text cannot guess is the
+//! whole reason [`crate::prompt`] randomises it. Keeping the prompt costs
+//! nothing of the sort, and it is also the honest half of the trade — the
+//! run-to-run movement it leaves in place is real, and a benchmark that hides
+//! it reports one sample of a distribution with the confidence of a
+//! measurement.
 //!
 //! ## What has run, and what still has not — revised 2026-08-08
 //!
@@ -226,10 +234,19 @@ pub struct Invocation {
     /// Token cap. A grammar-constrained proposal is far under this; the cap is
     /// for the case where the grammar is not doing what it is supposed to.
     pub predict: u32,
-    /// Fixed, so that the same question asked twice gets the same answer and a
-    /// bad answer can be reproduced by hand.
+    /// Fixed, so the sampler is deterministic. Note what that is not: the
+    /// prompt carries a marker that changes every invocation, so two runs of
+    /// the same question are two different questions. See the module docs.
     pub seed: u64,
     pub timeout: Duration,
+    /// Where to leave the prompt, the grammar and the command that ran them.
+    ///
+    /// [`None`] puts them in a scratch directory that is removed when the run
+    /// ends, which is right for a bench of twenty cases and wrong for a person
+    /// trying to see what was actually asked. With a path, the files stay and
+    /// *that* run can be repeated by hand — the marker inside the kept prompt
+    /// is the one that ran, which is the part a re-render cannot give back.
+    pub keep_prompt: Option<PathBuf>,
 }
 
 /// The llama.cpp tool that honours the one-shot completion contract.
@@ -253,26 +270,30 @@ impl Invocation {
             predict: 256,
             seed: 1,
             timeout: Duration::from_secs(180),
+            keep_prompt: None,
         }
     }
 
     /// The command as somebody would type it, for reproducing a run by hand.
     ///
-    /// Takes the two paths it would write rather than inventing names, so what
-    /// is printed is what was run.
-    pub fn command_line(&self, prompt_file: &Path, grammar_file: &Path) -> String {
+    /// Takes the paths it would write rather than inventing names, so what is
+    /// written is what was run. `grammar_file` is [`None`] for the free arm of
+    /// the grammar probe, which is the one run that passes no `--grammar-file`
+    /// — printing the flag there would describe the other arm.
+    pub fn command_line(&self, prompt_file: &Path, grammar_file: Option<&Path>) -> String {
         let mut parts = vec![self.binary.display().to_string()];
-        for (flag, value) in [
-            ("-m", self.weights.display().to_string()),
-            ("-f", prompt_file.display().to_string()),
-            ("--grammar-file", grammar_file.display().to_string()),
-            ("-n", self.predict.to_string()),
-            ("--seed", self.seed.to_string()),
-            ("--temp", "0".to_string()),
-        ] {
+        let mut push = |flag: &str, value: String| {
             parts.push(flag.to_string());
             parts.push(value);
+        };
+        push("-m", self.weights.display().to_string());
+        push("-f", prompt_file.display().to_string());
+        if let Some(grammar_file) = grammar_file {
+            push("--grammar-file", grammar_file.display().to_string());
         }
+        push("-n", self.predict.to_string());
+        push("--seed", self.seed.to_string());
+        push("--temp", "0".to_string());
         parts.extend(self.extra_args.iter().cloned());
         parts.join(" ")
     }
@@ -306,6 +327,38 @@ pub struct Run {
 enum Constrained {
     Yes,
     No,
+}
+
+/// Where a run's prompt and grammar sit while llama.cpp reads them.
+///
+/// Two shapes because they answer to different people. [`Scratch::Discarded`]
+/// is gone the moment the run ends, which is what a bench of twenty cases
+/// wants; [`Scratch::Kept`] is what somebody wants who is trying to see what
+/// was actually asked, and it exists because the prompt carries a marker that
+/// no later render will produce again. See [`Invocation::keep_prompt`].
+enum Scratch {
+    Discarded(tempfile::TempDir),
+    Kept(PathBuf),
+}
+
+impl Scratch {
+    fn open(keep: Option<&Path>, named: &str) -> Result<Scratch, std::io::Error> {
+        match keep {
+            None => Ok(Scratch::Discarded(tempfile::tempdir()?)),
+            Some(root) => {
+                let dir = root.join(named);
+                std::fs::create_dir_all(&dir)?;
+                Ok(Scratch::Kept(dir))
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Scratch::Discarded(dir) => dir.path(),
+            Scratch::Kept(dir) => dir,
+        }
+    }
 }
 
 /// How many tokens the probe is given.
@@ -368,6 +421,18 @@ impl LlamaModel {
 
     pub fn invocation(&self) -> &Invocation {
         &self.invocation
+    }
+
+    /// Leave every run's prompt, grammar and command line under `dir`.
+    ///
+    /// Deliberately not a field in the config file. Keeping prompts is what
+    /// somebody does while looking into one strange answer, and a setting that
+    /// survives reboots would fill a disk on the machine of somebody who set it
+    /// once and forgot. [`None`] restores the disposable default, so a caller
+    /// can pass an `Option` straight through from a flag.
+    pub fn keeping_prompt(mut self, dir: Option<PathBuf>) -> LlamaModel {
+        self.invocation.keep_prompt = dir;
+        self
     }
 
     /// Check what can be checked without spending a minute loading weights.
@@ -543,11 +608,34 @@ impl LlamaModel {
     fn complete(&self, prompt: &Prompt, constrained: Constrained) -> Result<Run, LlamaError> {
         self.preflight()?;
 
-        let scratch = tempfile::tempdir()?;
+        // Named after the marker, which is unique per invocation: a bench of
+        // twenty cases leaves twenty directories instead of overwriting one,
+        // and the name is a string the run's own output already shows.
+        let named: String = prompt
+            .marker()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        let scratch = Scratch::open(self.invocation.keep_prompt.as_deref(), &named)?;
         let prompt_file = scratch.path().join("prompt.txt");
         let grammar_file = scratch.path().join("proposal.gbnf");
         std::fs::write(&prompt_file, prompt.text())?;
         std::fs::write(&grammar_file, crate::grammar::gbnf())?;
+
+        // Written beside the files it names, rather than printed: this is a
+        // library, and a command line naming two paths is worth nothing away
+        // from them. Until this call `command_line` had no caller outside its
+        // own test, while the module docs said it was how a run got reproduced.
+        if let Scratch::Kept(dir) = &scratch {
+            let line = self.invocation.command_line(
+                &prompt_file,
+                match constrained {
+                    Constrained::Yes => Some(grammar_file.as_path()),
+                    Constrained::No => None,
+                },
+            );
+            std::fs::write(dir.join("command"), line + "\n")?;
+        }
 
         let started = Instant::now();
         let mut child = self.spawn(&prompt_file, &grammar_file, constrained)?;
@@ -1350,7 +1438,7 @@ esac"#,
         // printed command missing the grammar would reproduce a different
         // inference and prove the wrong thing innocent.
         let invocation = Invocation::new(COMPLETION_BINARY, "/models/qwen.gguf");
-        let line = invocation.command_line(Path::new("/tmp/p.txt"), Path::new("/tmp/g.gbnf"));
+        let line = invocation.command_line(Path::new("/tmp/p.txt"), Some(Path::new("/tmp/g.gbnf")));
 
         for expected in [
             COMPLETION_BINARY,
@@ -1368,6 +1456,86 @@ esac"#,
         for extra in &invocation.extra_args {
             assert!(line.contains(extra), "{extra:?} missing from {line:?}");
         }
+    }
+
+    #[test]
+    fn the_free_arm_of_the_probe_is_not_written_down_as_a_constrained_one() {
+        // The probe's two arms differ in exactly one flag, so a command line
+        // that names a grammar for the arm that ran without one describes the
+        // other arm. Somebody pasting it would watch the grammar hold and
+        // conclude the probe had lied to them.
+        let invocation = Invocation::new(COMPLETION_BINARY, "/models/qwen.gguf");
+        let line = invocation.command_line(Path::new("/tmp/p.txt"), None);
+
+        assert!(!line.contains("--grammar-file"), "got {line:?}");
+        assert!(line.contains("-f /tmp/p.txt"), "got {line:?}");
+    }
+
+    #[test]
+    fn a_kept_prompt_outlives_the_run_and_carries_the_marker_that_ran() {
+        // The reason this exists: `Prompt::render` mints a new marker every
+        // invocation, so re-rendering the same transcript afterwards does not
+        // rebuild the prompt that produced a strange answer. The bytes have to
+        // survive the run or they are unrecoverable.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": ["dev.thalyx.demo"]}'"#,
+        );
+        let kept = scratch.path().join("kept");
+
+        let mut invocation = Invocation::new(&binary, &weights);
+        invocation.keep_prompt = Some(kept.clone());
+        LlamaModel::new(invocation)
+            .run(&transcript())
+            .expect("the stand-in answers");
+
+        let dirs: Vec<_> = std::fs::read_dir(&kept)
+            .expect("the kept directory exists")
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(dirs.len(), 1, "one run, one directory: {dirs:?}");
+
+        let prompt = std::fs::read_to_string(dirs[0].join("prompt.txt")).unwrap();
+        let command = std::fs::read_to_string(dirs[0].join("command")).unwrap();
+        assert!(prompt.contains("<<<THALYX-"), "no marker in {prompt:?}");
+        assert!(dirs[0].join("proposal.gbnf").exists());
+        assert!(
+            command.contains("--grammar-file") && command.contains("-f "),
+            "the command does not name what it ran: {command:?}"
+        );
+    }
+
+    #[test]
+    fn asking_for_no_path_leaves_nothing_behind_and_asking_for_one_leaves_everything() {
+        // The default has to stay the disposable one: a bench of twenty cases
+        // that quietly filled a directory would be a disk leak nobody asked
+        // for, and the tier run most often would leak most. Both halves are
+        // here because a `Scratch` that always kept and a `Scratch` that always
+        // discarded each pass one of them.
+        let root = tempfile::tempdir().unwrap();
+
+        let discarded = {
+            let scratch = Scratch::open(None, "ignored").unwrap();
+            std::fs::write(scratch.path().join("prompt.txt"), "asked").unwrap();
+            scratch.path().to_path_buf()
+        };
+        assert!(!discarded.exists(), "{discarded:?} survived the run");
+
+        let kept = {
+            let scratch = Scratch::open(Some(root.path()), "THALYXdeadbeef").unwrap();
+            std::fs::write(scratch.path().join("prompt.txt"), "asked").unwrap();
+            scratch.path().to_path_buf()
+        };
+        assert_eq!(
+            std::fs::read_to_string(kept.join("prompt.txt")).unwrap(),
+            "asked"
+        );
+        assert!(
+            kept.ends_with("THALYXdeadbeef"),
+            "{kept:?} is not named after its marker"
+        );
     }
 
     #[test]

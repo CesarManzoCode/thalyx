@@ -41,9 +41,42 @@ tags: [continuidad, punto-actual, sesiones]
 >    La corrección del día anterior quedó verificada donde importa.
 >
 > Detalle completo en [[Gamas-de-Modelo]], sección «Segunda corrida de la gama
-> ligera». Hay **una decisión pendiente para Cesar** en
-> [[Tareas-Pendientes]]: recuperar la reproducibilidad haría el marcador
-> adivinable, que es justo contra lo que se aleatoriza.
+> ligera».
+>
+> ### Lo que Cesar decidió, y ya está construido
+>
+> **Guardar el prompt bajo una bandera.** `--keep-prompt <dir>` en `agent model
+> check`, `agent model grammar-check` y `agent bench`: cada inferencia deja un
+> directorio —nombrado por su marcador, así que veinte casos dejan veinte— con
+> `prompt.txt`, `proposal.gbnf` y `command`. Con eso *esa* corrida se repite a
+> mano, marcador incluido. El marcador **sigue siendo aleatorio**, así que dos
+> corridas distintas siguen moviéndose, y eso es lo correcto: esconderlo daría
+> una muestra de una distribución con cara de medición. Sin la bandera no queda
+> nada en disco.
+>
+> De paso: `Invocation::command_line` —la función que el encabezado de
+> `llama.rs` citaba como *la* forma de reproducir una corrida— no tenía ninguna
+> llamada fuera de su propia prueba. Documentación de una función que nunca se
+> había ejecutado. `--keep-prompt` es su primera llamada real.
+>
+> ### Lo siguiente que hay que correr
+>
+> **Repetir la ligera y la media** —una vez cada una, sin cambiar nada— para
+> darle réplica a sus cifras de acierto. La **alta queda aplazada**: tarda
+> demasiado en esta máquina, y Cesar la corre cuando consiga el equipo con el
+> que también pueda medir la máxima. Vale la pena correrlas ya con la bandera:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+> thalyx agent bench --keep-prompt ~/evidencia/ligera-3 2>&1 | tee ligera-3.log
+> thalyx agent model use media  --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
+> thalyx agent bench --keep-prompt ~/evidencia/media-2  2>&1 | tee media-2.log
+> ```
+>
+> Lo que hay que mirar al terminar: **cuántos casos cambiaron de marca** contra
+> la corrida anterior de esa misma gama. Ése es el margen de error del banco, y
+> hasta tenerlo la distancia entre la media y la alta no significa nada.
 >
 > ## Las cuatro gamas corrieron sobre la misma máquina, y la más grande no cabe — 2026-08-08
 >
