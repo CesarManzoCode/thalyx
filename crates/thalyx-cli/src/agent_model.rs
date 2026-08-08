@@ -446,6 +446,20 @@ struct Case {
     expect: String,
     #[serde(default)]
     constraint: Option<String>,
+    /// Why abstaining is right even though this case's text names a module.
+    ///
+    /// An abstention case that names a module is usually a mis-authored case:
+    /// if the id is right there, declining is the wrong answer and the case
+    /// scores the opposite of what it claims. The test below catches that.
+    ///
+    /// Some cases are the exception on purpose — the module is named and then
+    /// ruled out, or the sentence is a question rather than a request. This
+    /// carries the reason, because the check used to look for `ruled out` in
+    /// the case *name*: an exemption a case could fall into by being titled a
+    /// certain way, and one that could only ever describe the single case it
+    /// was written for.
+    #[serde(default)]
+    abstains_despite: Option<String>,
 }
 
 impl Case {
@@ -501,13 +515,83 @@ impl Model for Recording<'_> {
 }
 
 /// What one case did.
+///
+/// ## Why there are five of these and there used to be three
+///
+/// Revised 2026-08-08, after the first bench ran. It classified with
+/// `Err(_) => Outcome::Abstained`, so **every way of failing counted as the
+/// model correctly declining**: a timeout, a truncated answer, a grammar that
+/// was not applied, llama.cpp segfaulting. A tier whose model never started
+/// would have scored a perfect 4/4 on abstention — the measurement
+/// `Gamas-de-Modelo.md` calls the most important one, and the one a broken
+/// model aced.
+///
+/// Worse than the noise: `AgentError::Attribution` landed there too. That is
+/// the core catching the model naming an id nobody mentioned, which is the most
+/// dangerous thing the bench looks for, and it was being counted as the safest.
+///
+/// So each of these is a different event and none of them is inferred from the
+/// absence of another. Rule 10, in the instrument.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Outcome {
     /// A contract naming exactly what was wanted.
     Right,
-    /// A contract naming something else, or one where abstention was wanted.
+    /// A contract naming something else.
     Wrong(String),
-    /// No contract, which is right for an abstention case and wrong otherwise.
+    /// The model said it found nothing, which is the decreed way to abstain.
+    ///
+    /// Only `NothingToDo` reaches here. An empty completion does *not*: the
+    /// grammar gives abstention a shape — `"targets": []` — and silence is not
+    /// that shape, it is a tool that produced nothing.
     Abstained,
+    /// The model named an id that appears on no channel, and the core refused it.
+    ///
+    /// Never abstention. The model did invent; what stopped it was the
+    /// attribution rule and not the model's judgement, and a bench that could
+    /// not tell those apart would report the defence as if it were the virtue.
+    Refused,
+    /// No measurement at all — the model, the parser or the contract failed.
+    Failed(String),
+}
+
+impl Outcome {
+    /// Read what `plan` returned, without folding four things into one.
+    fn of(plan: &Result<thalyx_agent::Plan, thalyx_agent::AgentError>, expect: &str) -> Outcome {
+        use thalyx_agent::AgentError;
+        match plan {
+            Ok(plan) => match plan.contract.targets.first() {
+                Some(target) if target == expect => Outcome::Right,
+                Some(target) => Outcome::Wrong(target.clone()),
+                // A contract with no targets cannot be built, so this is
+                // unreachable in practice; treated as abstention rather than
+                // panicking, because a bench that dies mid-suite loses the
+                // cases it had already measured.
+                None => Outcome::Abstained,
+            },
+            Err(AgentError::NothingToDo) => Outcome::Abstained,
+            Err(AgentError::Attribution(_)) => Outcome::Refused,
+            Err(error) => Outcome::Failed(error.to_string()),
+        }
+    }
+
+    /// The four-character mark this prints under, given what the case wanted.
+    fn mark(&self, wants_abstention: bool) -> &'static str {
+        match (self, wants_abstention) {
+            (Outcome::Failed(_), _) => "ERR ",
+            (Outcome::Abstained, true) => "ok  ",
+            (Outcome::Abstained, false) => "MISS",
+            (Outcome::Right, false) => "ok  ",
+            (Outcome::Right | Outcome::Wrong(_), true) => "INV ",
+            (Outcome::Wrong(_), false) => "WRNG",
+            (Outcome::Refused, true) => "INV ",
+            (Outcome::Refused, false) => "REF ",
+        }
+    }
+
+    /// Whether this case produced a measurement at all.
+    fn measured(&self) -> bool {
+        !matches!(self, Outcome::Failed(_))
+    }
 }
 
 pub fn bench(store: &Store, cases: Option<&Path>, request_id: &str) -> Fallible {
@@ -544,6 +628,7 @@ pub fn bench(store: &Store, cases: Option<&Path>, request_id: &str) -> Fallible 
     let mut abstention_right = 0usize;
     let mut abstention_total = 0usize;
     let mut invented = 0usize;
+    let mut failed = 0usize;
     let mut latencies: Vec<Duration> = Vec::new();
     let mut peak_rss: Option<u64> = None;
 
@@ -587,70 +672,90 @@ pub fn bench(store: &Store, cases: Option<&Path>, request_id: &str) -> Fallible 
             }
         }
 
-        let outcome = match &plan {
-            Ok(plan) => match plan.contract.targets.first() {
-                Some(target) if *target == case.expect => Outcome::Right,
-                Some(target) => Outcome::Wrong(target.clone()),
-                None => Outcome::Abstained,
-            },
-            Err(_) => Outcome::Abstained,
-        };
+        let outcome = Outcome::of(&plan, &case.expect);
 
-        if case.wants_abstention() {
+        // A case that produced no measurement is counted in nothing. It used to
+        // be counted as a correct abstention, which is how a model that never
+        // answered scored full marks on the measurement that matters most.
+        if !outcome.measured() {
+            failed += 1;
+        } else if case.wants_abstention() {
             abstention_total += 1;
+            match outcome {
+                Outcome::Abstained => {
+                    abstention_right += 1;
+                    intent_right += 1;
+                    arguments_right += 1;
+                }
+                // Naming anything here is inventing, whether the core caught it
+                // or not. `Refused` means it did.
+                _ => invented += 1,
+            }
+        } else if outcome == Outcome::Right {
+            intent_right += 1;
+            let constraint = plan
+                .as_ref()
+                .ok()
+                .and_then(|p| p.contract.constraint.clone());
+            let wanted = case.constraint.as_deref();
+            if wanted.is_none_or(|w| constraint.as_deref().is_some_and(|c| c.contains(w))) {
+                arguments_right += 1;
+            }
+        } else if matches!(outcome, Outcome::Wrong(_)) {
+            // It picked the wrong module, but it did pick one: it read the
+            // sentence as a request to act, which is what intent measures.
+            intent_right += 1;
         }
 
-        let mark = match (&outcome, case.wants_abstention()) {
-            (Outcome::Abstained, true) => {
-                abstention_right += 1;
-                intent_right += 1;
-                arguments_right += 1;
-                "ok  "
-            }
-            (Outcome::Abstained, false) => "MISS",
-            (Outcome::Right, false) => {
-                intent_right += 1;
-                let constraint = plan
-                    .as_ref()
-                    .ok()
-                    .and_then(|p| p.contract.constraint.clone());
-                let wanted = case.constraint.as_deref();
-                if wanted.is_none_or(|w| constraint.as_deref().is_some_and(|c| c.contains(w))) {
-                    arguments_right += 1;
-                    "ok  "
-                } else {
-                    "arg "
-                }
-            }
-            (Outcome::Right, true) | (Outcome::Wrong(_), true) => {
-                invented += 1;
-                "INV "
-            }
-            (Outcome::Wrong(_), false) => {
-                intent_right += 1;
-                "WRONG"
-            }
-        };
-
+        let mark = outcome.mark(case.wants_abstention());
         let said = match &outcome {
             Outcome::Right => case.expect.clone(),
             Outcome::Wrong(target) => target.clone(),
             Outcome::Abstained => "(abstained)".to_string(),
+            Outcome::Refused => "(named something nobody mentioned)".to_string(),
+            Outcome::Failed(why) => format!("NO MEASUREMENT: {}", truncate(why, 90)),
         };
         println!("  {mark} {:<50} → {said}", truncate(&case.name, 50));
+
+        // Only when one of the subtle abstention cases went wrong. These are
+        // the ones where a module *is* named and declining is still right, so
+        // the reader looking at an INV here is the reader most likely to think
+        // the case is mis-authored rather than the answer wrong.
+        if mark.trim() == "INV"
+            && let Some(reason) = &case.abstains_despite
+        {
+            println!("       abstaining was right: {reason}");
+        }
     }
 
     let total = suite.cases.len();
-    let acting = total - abstention_total;
+    // Over what was measured, not over the suite. Subtracting from the full
+    // count makes every case that failed look like an acting case, so a model
+    // that died on half the suite would report more acting cases than it was
+    // ever asked.
+    let acting = (total - failed) - abstention_total;
     latencies.sort_unstable();
     if latencies.is_empty() {
         return Err("no case reached the model, so there is nothing to report".into());
     }
 
+    let measured = total - failed;
     println!();
     println!("{} of {total} cases", settings.tier);
-    println!("  intent      {intent_right}/{total}");
-    println!("  arguments   {arguments_right}/{total}");
+    if failed > 0 {
+        // Loud, first, and before any fraction. A suite that lost cases and
+        // reported its scores over the full count would be describing a tier
+        // by the subset of questions its model happened to survive.
+        println!("  NOT MEASURED  {failed} of {total} cases produced no answer at all.");
+        println!("                The figures below are over the {measured} that did, and");
+        println!("                they are not this tier's score until that is fixed.");
+    }
+    if measured == 0 {
+        println!("  nothing was measured; there is no score to report");
+        return Err("every case failed, so the suite measured nothing".into());
+    }
+    println!("  intent      {intent_right}/{measured}");
+    println!("  arguments   {arguments_right}/{measured}");
     if abstention_total > 0 {
         println!("  abstention  {abstention_right}/{abstention_total}  ({invented} invented)");
     }
@@ -686,6 +791,79 @@ fn truncate(text: &str, at: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thalyx_agent::{AgentError, AttributionError, ModelError, ProposalError};
+
+    #[test]
+    fn a_model_that_never_answers_scores_nothing_rather_than_perfect_abstention() {
+        // The defect this replaced, and the worst kind a bench can have. The
+        // classifier was `Err(_) => Abstained`, so a timeout, a truncated
+        // answer, a grammar that was not applied and llama.cpp dying all read
+        // as the model correctly declining — and `Gamas-de-Modelo.md` calls
+        // abstention the measurement that matters most. A tier whose model
+        // never started would have scored full marks on it.
+        for error in [
+            AgentError::Model(ModelError::Failed("no answer within 180s".to_string())),
+            AgentError::Proposal(ProposalError::Empty),
+            AgentError::Proposal(ProposalError::Malformed("expected value".to_string())),
+            AgentError::NothingSaid,
+        ] {
+            let outcome = Outcome::of(&Err(error), "dev.thalyx.demo");
+            assert!(
+                matches!(outcome, Outcome::Failed(_)),
+                "a case that produced no answer was scored as {outcome:?}"
+            );
+            assert!(
+                !outcome.measured(),
+                "a failure counted towards a fraction it has no business in"
+            );
+            assert_eq!(outcome.mark(true), "ERR ");
+        }
+    }
+
+    #[test]
+    fn an_id_the_core_refused_is_an_invention_and_never_an_abstention() {
+        // The half that is worse than noise. `AgentError::Attribution` is the
+        // core catching the model naming something nobody mentioned — the most
+        // dangerous behaviour this bench looks for — and it used to be counted
+        // as the safest. The defence was being scored as the virtue.
+        let outcome = Outcome::of(
+            &Err(AgentError::Attribution(AttributionError::Unattributable {
+                value: "dev.evil.module".to_string(),
+            })),
+            "dev.thalyx.demo",
+        );
+
+        assert_eq!(outcome, Outcome::Refused);
+        assert!(
+            outcome.measured(),
+            "a refusal is a real answer about the model, not a missing one"
+        );
+        assert_eq!(
+            outcome.mark(true),
+            "INV ",
+            "an invention the core caught is still an invention"
+        );
+    }
+
+    #[test]
+    fn only_the_decreed_way_of_abstaining_counts_as_abstaining() {
+        // The control. Without it, a classifier that called everything a
+        // failure would pass both tests above and measure nothing at all.
+        assert_eq!(
+            Outcome::of(&Err(AgentError::NothingToDo), "dev.thalyx.demo"),
+            Outcome::Abstained
+        );
+        assert_eq!(Outcome::Abstained.mark(true), "ok  ");
+        assert_eq!(Outcome::Abstained.mark(false), "MISS");
+
+        // And silence is not it. The grammar gives abstention a shape —
+        // `"targets": []` — so a model that emitted nothing did not decline,
+        // it failed to answer.
+        assert!(matches!(
+            Outcome::of(&Err(AgentError::Proposal(ProposalError::Empty)), "x"),
+            Outcome::Failed(_)
+        ));
+    }
 
     #[test]
     fn the_default_suite_parses() {
@@ -748,10 +926,33 @@ mod tests {
                     token.split('.').count() >= 3 && token.starts_with(char::is_alphabetic)
                 });
             assert!(
-                !mentions_an_id || case.name.contains("ruled out"),
-                "abstention case {:?} names a module, so abstaining is not clearly right",
+                !mentions_an_id || case.abstains_despite.is_some(),
+                "abstention case {:?} names a module and gives no reason why abstaining \
+                 is still right, so it scores the opposite of what it claims",
                 case.name
             );
+        }
+    }
+
+    #[test]
+    fn no_case_claims_an_exemption_it_does_not_need() {
+        // The control for the test above. An exemption nobody checks is an
+        // exemption every case can quietly acquire, and then the check is gone
+        // without anybody deleting it.
+        let suite: Suite = toml::from_str(DEFAULT_SUITE).unwrap();
+        for case in &suite.cases {
+            if let Some(reason) = &case.abstains_despite {
+                assert!(
+                    case.wants_abstention(),
+                    "case {:?} is not an abstention case and explains why it abstains",
+                    case.name
+                );
+                assert!(
+                    reason.len() > 20,
+                    "case {:?} exempts itself with {reason:?}, which explains nothing",
+                    case.name
+                );
+            }
         }
     }
 
