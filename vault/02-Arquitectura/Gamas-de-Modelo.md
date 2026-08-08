@@ -478,6 +478,12 @@ comparables como porcentajes** sin recordar que el primero descarta seis casos
 que la gama ligera no pudo contestar — y no poder contestar seis de veinte es en
 sí mismo el hallazgo más duro sobre esa gama.
 
+**Las cifras de la columna ligera son las de su primera corrida.** La segunda
+—misma máquina, misma suite, nada cambiado— dio `15/20` medidos y `6/15`, y por
+qué se mueven está en «Segunda corrida de la gama ligera», al final de esta
+nota. Léela antes de tratar cualquier fracción de esta tabla como un número
+exacto.
+
 ### La medición se repitió, y salió igual
 
 La gama media ya se había medido el 2026-08-08 sobre nueve casos. Las dos
@@ -797,6 +803,154 @@ Cinco cosas que se leen de esa tabla y no del resumen:
 El valor que cada gama propuso se conserva sólo donde la transcripción de la
 corrida lo traía; la próxima corrida lo trae completo, ahora que los rechazos
 imprimen el valor.
+
+## Segunda corrida de la gama ligera — 2026-08-08
+
+El experimento que la revisión anterior dejó pedido, y corrido sin cambiar
+nada: mismo modelo, misma suite de veinte casos, misma máquina, misma
+llama.cpp. Lo único distinto es el código de evidencia corregido —el sondeo de
+gramática que ya no llega a `InForce` por descarte, y los rechazos que ahora
+imprimen el valor propuesto—. Ninguno de los dos cambia una medición.
+
+### La gramática: `NOT PROVEN`, en la máquina, como debía
+
+```
+with the grammar     { "operation": "install_module", "targets": ["python3.ipython3.ipython3.…
+without it           [end of text]
+
+NOT PROVEN: the unconstrained arm did not say the word either, so nothing
+here shows the grammar is what stopped it.
+```
+
+La corrección funciona sobre hardware real, que es la única forma de saberlo
+—regla 1—. El `PROVEN` de la gama ligera está retirado y en su lugar hay el
+resultado correcto: **no hay evidencia**, ni a favor ni en contra.
+
+Y el brazo restringido dice algo que no se había visto: `python3.ipython3.`
+`ipython3.…`. El 1.5B **se cicla dentro del identificador**. Guárdalo, porque
+es la misma patología que explica los `ERR`.
+
+### Las dos corridas de la gama ligera no dieron lo mismo
+
+| | 1ª corrida | 2ª corrida |
+|---|---|---|
+| Disco | 1 117 320 736 B | 1 117 320 736 B |
+| RSS pico | 2.82 GB | 2.82 GB |
+| Latencia mediana | 3.77 s | 3.77 s |
+| Latencia peor | 4.27 s | **5.07 s** |
+| Casos medidos | 14/20 | **15/20** |
+| Intención | 5/14 | **6/15** |
+| Argumentos | 5/14 | **6/15** |
+| Abstención | 0/6 | 0/6 |
+
+Se movieron **dos casos de veinte, en direcciones opuestas**:
+
+| # | Caso | 1ª | 2ª |
+|---|---|---|---|
+| 1 | a pronoun pointing at the one thing installed | `ERR` | `REF` |
+| 11 | the id said plainly, with the machine listing it | `REF` | `ok` |
+
+El caso 1 pasó de no medirse a medirse mal; el 11, de mal a bien. Los otros
+dieciocho salieron idénticos, marca por marca.
+
+Esto es lo primero de este proyecto que **replica una cifra de acierto**, y lo
+que dice es que esas cifras se mueven. Las de coste no: disco al byte, RSS a la
+centésima de GB y mediana a la centésima de segundo, dos veces. **El coste de
+una gama se mide; su acierto se estima.**
+
+### Por qué se mueven dos corridas que deberían ser idénticas
+
+`Invocation` fija `--seed 1` y `--temp 0`. Con eso el *muestreador* es
+determinista, y de ahí venía la creencia —escrita en el encabezado de
+`llama.rs`— de que una corrida se puede repetir. No se puede, y no por culpa de
+llama.cpp:
+
+- `Prompt::render` genera un **marcador aleatorio nuevo en cada invocación**, así
+  que el prompt son bytes distintos cada vez. Determinismo ante la misma
+  entrada no es reproducibilidad cuando la entrada cambia.
+- La ruta que `-f` imprime vive en un directorio temporal que se borra al
+  terminar la corrida, así que el archivo que nombra el comando ya no existe
+  cuando alguien lee la línea.
+
+Lo más incómodo: **no hacía falta una máquina para verlo**. La prueba
+`a_marker_is_never_reused_between_two_renders` afirma que el marcador cambia
+desde el día en que se escribió. Una prueba y un comentario del mismo crate
+decían cosas opuestas, y se le creyó al comentario porque nunca nadie los puso
+a coincidir.
+
+Consecuencia para todo lo de arriba: **ninguna fracción por gama es una cifra
+exacta**, y una diferencia de dos casos entre dos gamas —los `9/19` de la media
+contra los `7/19` de la alta— es del mismo tamaño que lo que se movió una sola
+gama consigo misma. Eso no retira nada de lo medido; le pone el margen que le
+faltaba.
+
+Recuperar la reproducibilidad es posible —haciendo el marcador derivable— y **no
+se hizo**: que el marcador no se pueda adivinar es la razón entera por la que se
+aleatoriza, contra un texto extraño que quisiera fingir el final del prompt. Ese
+intercambio es una decisión, no una limpieza.
+
+### Los `ERR` tienen una sola causa, y ahora se sabe cuál
+
+Los cinco dan exactamente el mismo mensaje:
+
+> the model began the object the grammar describes and ran out of tokens before
+> closing it, at the 256-token cap.
+
+No es plazo agotado, no es llama.cpp cayéndose, no es la gramática sin aplicar,
+no es el analizador. Es **una sola causa, la misma cinco veces**, y el propio
+error ya la explicaba antes de que se midiera: la gramática no acota cuán largo
+puede ser un id de módulo, así que un modelo que no encuentra una forma legal de
+contestar **se gasta el presupuesto entero dentro de una sola cadena**. El
+sondeo de gramática lo enseña en vivo: `python3.ipython3.ipython3.…`.
+
+Dos cosas se siguen de ahí, y ninguna es «el 1.5B no entiende»:
+
+1. **Subir `-n` no arregla nada.** Lo dice el mensaje: una cuota mayor no hace
+   la respuesta correcta, la hace más larga. Un ciclo con más presupuesto es un
+   ciclo más largo.
+2. **Es la misma patología que las invenciones**, no otra. `ese.abc.abc.abc`,
+   `thallyx.ing.ing`, `python3.ipython3.ipython3` — repetir un segmento hasta
+   que algo lo detenga. Cuando el corte llega antes del cierre sale `ERR`;
+   cuando llega después, sale un id inventado. **Es un fallo, contado como
+   dos.**
+
+### Los valores inventados, ahora visibles
+
+El arreglo del banco —imprimir qué propuso el modelo— rinde de inmediato:
+
+| # | Caso | Lo que propuso |
+|---|---|---|
+| 1 | a pronoun pointing at the one thing installed | `dev.thalyx.demo.localhost` |
+| 2 | the id said plainly, with no verb in front of it | `ese.abc.abc.abc` |
+| 6 | a wish with no module behind it | `org.openjdk.jmh` |
+| 7 | a need stated as a category | `org.webmuse.video-editing` |
+| 8 | a demonstrative pointing at nothing | `thallyx.ing.ing` |
+| 10 | the id said plainly, with a verb that is not an install verb | `ese.quiero.iam` |
+
+Cuatro formas distintas de inventar, y ninguna es ruido:
+
+- **Un id real con un sufijo pegado** (`dev.thalyx.demo` + `.localhost`). El
+  módulo existe; lo que no existe es el id propuesto.
+- **Una palabra española tratada como espacio de nombres**: `ese` de «ese
+  quiero» encabeza dos ids distintos. El modelo lee el demostrativo como parte
+  del identificador.
+- **Repetición hasta el corte**: `.abc.abc`, `.ing.ing`.
+- **Ids memorizados del entrenamiento**: `org.openjdk.jmh` y
+  `org.webmuse.video-editing` no salen de la conversación, salen de haber visto
+  coordenadas Maven. Es exactamente lo que la atribución existe para cazar, y
+  lo cazó.
+
+El caso 10 confirma que la patología es estable y el token exacto no: la primera
+corrida propuso `ese.quiero.ios`, esta `ese.quiero.iam`. Misma estructura, final
+distinto.
+
+Y una distinción que el resumen tapa: **«inventó» son dos cosas**. En los casos
+6, 7 y 8 el modelo nombró algo que no aparece en ningún canal y el núcleo lo
+rechazó. En los casos 17, 18 y 20 nombró `dev.thalyx.demo`, que **sí está
+listado** —la máquina lo dijo—, así que la atribución no tenía nada que objetar:
+el id es real, lo que está mal es que la frase no pedía instalarlo. Contra la
+segunda clase la atribución no protege, y no es su trabajo. Es el único lugar de
+todo esto donde el `0/6` de abstención no tiene ninguna red debajo.
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

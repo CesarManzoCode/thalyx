@@ -5,15 +5,48 @@
 //!
 //! - **No build dependency.** Nothing here needs a C++ toolchain, so somebody
 //!   who only wants the CLI does not pay for a piece they will not use.
-//! - **Every step reproducible by hand.** [`Invocation::command_line`] prints
-//!   the exact command, `thalyx agent grammar` prints the exact grammar, and the
-//!   seed is fixed — so a strange answer can be reproduced in a terminal with no
-//!   Thalyx in the way. A fault only observable from inside the process that
-//!   caused it costs twice as much to find.
+//! - **Every step inspectable by hand.** [`Invocation::command_line`] prints the
+//!   exact command and `thalyx agent grammar` prints the exact grammar, so a
+//!   strange answer can be taken to a terminal with no Thalyx in the way. A
+//!   fault only observable from inside the process that caused it costs twice
+//!   as much to find. What this does *not* buy is the same answer twice — this
+//!   bullet used to claim it did, and the section below is why it no longer
+//!   does.
 //! - **The model is outside the process.** It is outside the TCB by
 //!   `vault/11-Seguridad/Modelo-de-Amenaza.md`; running it in another process
 //!   makes that boundary one the operating system enforces rather than one the
 //!   design asserts.
+//!
+//! ## A fixed seed is not a reproducible run — measured 2026-08-08
+//!
+//! [`Invocation`] pins `--seed 1` and `--temp 0`, so the *sampler* is
+//! deterministic. That was read here as "the run is reproducible", and it is
+//! not, because the sampler is not the only input:
+//!
+//! - [`crate::prompt::Prompt::render`] mints a fresh random marker on every
+//!   invocation, so **the prompt is different bytes every time**. Determinism
+//!   given the same input is not reproducibility when the input changes.
+//! - The `-f` path [`Invocation::command_line`] prints lives in a
+//!   `tempfile::tempdir()` that is removed when the run ends, so the file the
+//!   printed command names is gone before anybody can paste the line.
+//!
+//! None of that needed a machine to notice — `prompt::tests::
+//! a_marker_is_never_reused_between_two_renders` has asserted the marker
+//! changes since the day it was written. A test in this crate and a doc comment
+//! in this crate said opposite things, and the doc comment was believed because
+//! nothing ever asked the two to agree.
+//!
+//! What did need a machine: the light tier, run twice through `thalyx agent
+//! bench` with the same weights, the same suite and the same machine, moved
+//! **two cases of twenty, in opposite directions** — one from no-measurement to
+//! a rejected id, one from a rejected id to the right answer. So every per-tier
+//! fraction in `vault/02-Arquitectura/Gamas-de-Modelo.md` carries movement of
+//! that size, and a two-case gap between two tiers is not a difference between
+//! them.
+//!
+//! Making the marker derivable would buy the reproducibility back, and it is
+//! not done here: a marker foreign text cannot guess is the whole reason
+//! [`crate::prompt`] randomises it. That trade is a decision, not a cleanup.
 //!
 //! ## What has run, and what still has not — revised 2026-08-08
 //!

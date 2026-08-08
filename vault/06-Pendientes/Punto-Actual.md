@@ -14,9 +14,40 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Las cuatro gamas corrieron sobre la misma máquina, y la más grande no cabe — 2026-08-08
+> ## La gama ligera se corrió dos veces, y no dio lo mismo — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar repitió `grammar-check` y el banco sobre la gama ligera, sin cambiar
+> nada. Tres resultados, en orden de importancia:
+>
+> 1. **Las cifras de acierto se mueven entre corridas; las de coste no.** Dos
+>    casos de veinte cambiaron, en direcciones opuestas (14/20 → 15/20 medidos,
+>    5/14 → 6/15). El disco, el RSS pico (2.82 GB) y la latencia mediana (3.77 s)
+>    salieron idénticos. La causa no es llama.cpp: la semilla está fija pero
+>    **el prompt lleva un marcador aleatorio nuevo en cada invocación**, así que
+>    la entrada cambia. El encabezado de `llama.rs` afirmaba lo contrario y ya no
+>    lo afirma. Consecuencia directa: la distancia de **dos casos** entre la gama
+>    media y la alta es del tamaño de lo que se mueve una gama consigo misma, así
+>    que no es una diferencia entre gamas. Nada de lo medido se retira; ahora
+>    tiene margen.
+> 2. **Los cinco `ERR` tienen una sola causa, y ya se sabe cuál**: el modelo
+>    empieza el objeto y se queda sin presupuesto dentro de un identificador —la
+>    gramática no acota cuán largo puede ser—. Se cicla:
+>    `python3.ipython3.ipython3.…`. Subir `-n` no lo arregla, sólo alarga el
+>    ciclo. Y es la **misma** patología que las invenciones (`ese.abc.abc.abc`,
+>    `thallyx.ing.ing`): un fallo, contado como dos.
+> 3. **`grammar-check` de la ligera ya dice `NOT PROVEN` sobre hardware real.**
+>    La corrección del día anterior quedó verificada donde importa.
+>
+> Detalle completo en [[Gamas-de-Modelo]], sección «Segunda corrida de la gama
+> ligera». Hay **una decisión pendiente para Cesar** en
+> [[Tareas-Pendientes]]: recuperar la reproducibilidad haría el marcador
+> adivinable, que es justo contra lo que se aleatoriza.
+>
+> ## Las cuatro gamas corrieron sobre la misma máquina, y la más grande no cabe — 2026-08-08
+>
+> Cómo se llegó a la corrida de arriba.
 >
 > Cesar corrió `check`, `grammar-check` y el banco de 20 casos en **ligera,
 > media y alta**, sobre su Ryzen 5 5600G de 16 GB, sin GPU, en CPU, con la misma

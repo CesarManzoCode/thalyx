@@ -2408,6 +2408,53 @@ señala a un culpable tiene que enseñar la evidencia que juzgó»*— y esta es
 segunda vez que se paga por no aplicarla. Corregido: el rechazo viaja con el
 valor.
 
+## Regla derivada: fijar la semilla no vuelve reproducible una corrida cuya entrada cambia
+
+**Descubierta el 2026-08-08, al correr dos veces la misma cosa.**
+
+El invocador de llama.cpp fija `--seed 1` y `--temp 0`, y de ahí el encabezado
+de `llama.rs` concluía que «una respuesta rara se puede reproducir en una
+terminal». Dos corridas del banco sobre la gama ligera —mismo modelo, misma
+suite, misma máquina, nada tocado— movieron **dos casos de veinte, en
+direcciones opuestas**.
+
+La causa no es llama.cpp. Es que la semilla fija el *muestreador* y nadie fijó
+la *entrada*: `Prompt::render` genera un marcador aleatorio nuevo en cada
+invocación, así que el prompt son bytes distintos cada vez. Un sistema
+determinista alimentado con algo distinto contesta algo distinto, y eso es lo
+correcto.
+
+La regla, entonces:
+
+> **Reproducible no es «el generador de azar está fijo». Es «toda la entrada
+> está fija».** Antes de prometer que una corrida se repite, hay que enumerar
+> qué entra, no qué se sortea.
+
+### No hacía falta una máquina para verlo, y eso es lo peor
+
+`a_marker_is_never_reused_between_two_renders` afirma que el marcador cambia
+entre dos renders, y existe desde el día en que se escribió el marcador. **Una
+prueba y un comentario del mismo crate decían cosas opuestas durante meses.** Se
+le creyó al comentario porque nada pone a coincidir la documentación con las
+pruebas: el compilador verifica que un `[`enlace`]` apunte a algo, no que la
+frase de al lado sea cierta.
+
+De ahí el corolario, que es de dónde mirar y no de qué probar:
+
+> Cuando una prueba y un comentario del mismo módulo se contradicen, **la prueba
+> es la que corre**. Búscala antes de creerle a la prosa.
+
+### Y la consecuencia sobre lo que ya estaba medido
+
+Nada de lo medido se retira: los costes —disco, RSS, latencia mediana—
+replicaron al byte y a la centésima. Lo que cambia es cuánto pesa una fracción
+de acierto. Una gama se movió un caso consigo misma; la distancia entre la gama
+media y la alta era de dos. **Una diferencia del tamaño del ruido del
+instrumento no es una diferencia**, y hasta esta corrida no había forma de saber
+cuál era ese tamaño, porque ninguna cifra de acierto se había medido dos veces.
+
+Una suite corrida una vez no da una barra de error. Da un punto.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
