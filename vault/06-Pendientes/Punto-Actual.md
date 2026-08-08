@@ -77,16 +77,34 @@ tags: [continuidad, punto-actual, sesiones]
 > se cierra con más comparaciones. Por eso las dos afirmaciones nuevas viven en
 > `init.rs`, y las dos se verificaron fallando sin el arreglo.
 >
-> ### Lo que falta, y es un arranque
+> ### Comprobado en hierro el mismo día, y el número salió exacto
 >
 > ```
-> git pull && make -C image && sudo make -C image installed INSTALLEDSIZE=2G
+> The kernel talked for 5.7s. The longest silences in it:
+>     1.53s  at 0.07s
+>         after  printk: legacy console [ttyS0] enabled
+>         then   ACPI: Core revision 20240827
 > ```
 >
-> `dd` a la memoria, arrancar, y teclear **`nucleo lento`** otra vez. Lo que debe
-> pasar: el hueco de 18.27 s desaparece y el total baja de 38.5 s a unos 6-8 s. Es
-> una medida de un solo lado —si el arranque se desploma, está probado— así que no
-> necesita una máquina quieta.
+> **38.5 s → 5.7 s.** Y lo que lo convierte en prueba y no en mejora es el hueco:
+> las mismas dos líneas, en el mismo sitio, **18.27 s → 1.53 s**. Eso es un factor
+> de **11.94**, contra el 12.0 que predice `115200 ÷ 9600`. El diagnóstico no
+> predijo «va a bajar»; predijo *cuánto*, y bajó eso.
+>
+> Con las dos medidas se despeja lo que costaba cada parte. Si `T = W + S`, donde
+> `W` es trabajo real y `S` el puerto serie, entonces `38.5 = W + S` y
+> `5.7 = W + S/12` dan **S = 35.8 s y W = 2.7 s**. O sea que el puerto se llevaba
+> **35.8 de los 38.5 segundos** —más de los ~30 que estimé— y la máquina de verdad
+> tarda **2.7 segundos** en arrancar. El resto de los 5.7 son los mismos mensajes a
+> 115200.
+>
+> ### Y de paso apareció qué máquina es
+>
+> `smpboot: CPU0: AMD Ryzen 5 5600G` — seis núcleos, doce hilos. Con `NR_CPUS=2`
+> Thalyx estaba tirando diez de los doce. El prompt ahora avisa **7 problemas** en
+> vez de 10, que es lo que se espera si la línea de `CPU topo` desapareció, pero
+> eso no está confirmado: lo confirma `nucleo`, y no se ha corrido después del
+> cambio.
 >
 > **802 pruebas pasan** (800 antes), `clippy` limpio, `cargo fmt` aplicado.
 >

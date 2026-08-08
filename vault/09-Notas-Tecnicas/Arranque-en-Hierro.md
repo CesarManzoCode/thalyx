@@ -317,8 +317,13 @@ esperaba a que cada carácter saliera por un puerto sin nada del otro lado. El
 puerto serie de QEMU es un pty y no tiene baudios, por eso costó cero en todas las
 máquinas donde se había probado.
 
-Arreglado con `console=ttyS0,115200`. Un arranque después del arreglo debería
-mostrar ese hueco desaparecido y un total de unos 6-8 segundos.
+Arreglado con `console=ttyS0,115200`, y comprobado el mismo día: **38.5 s → 5.7 s**,
+con el hueco pasando de **18.27 s a 1.53 s** entre las mismas dos líneas. Eso es un
+factor de 11.94 contra el 12.0 que predice `115200 ÷ 9600` — el diagnóstico no
+predijo que bajara, predijo cuánto.
+
+Despejando las dos medidas, el puerto se llevaba **35.8 de los 38.5 segundos** y el
+trabajo real de arrancar son **2.7 segundos**.
 
 ## Lo que queda sin responder aunque todo salga bien
 
