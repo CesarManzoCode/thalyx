@@ -14,6 +14,60 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El agente corre entero contra hierro real, con el primer banco medido — 2026-08-08
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### La gama media, medida
+>
+> | Medida | Estimado | Medido |
+> |---|---|---|
+> | Disco | ~2.0 GB | 2 104 932 768 bytes |
+> | RAM | ~8 GB | **4.78 GB** |
+> | Latencia | — | mediana 6.58 s, peor 7.94 s |
+> | Intención | — | 6/9 |
+> | Abstención | — | 3/4, con **1 invención** |
+>
+> La estimación de RAM iba alta por casi el doble. Los tres fallos están
+> analizados en [[Gamas-de-Modelo]]; el que importa es que **actuó sobre un
+> módulo que la persona había descartado** — no inventó un id, tomó uno excluido.
+>
+> ### `grammar-check` falló, y el que estaba mal era `grammar-check`
+>
+> Dijo `FAILED`. La prueba de que estaba al revés venía en su propia salida: el
+> brazo restringido había emitido `{ "operation": "install_module", "targets":
+> ["banana_module_1234…` hasta agotar los 256 tokens. **Empieza con `{`.** La
+> gramática le prohibió empezar con `B` y el modelo desvió el intento a una cadena
+> de id legal, quedándose ahí hasta el tope. El JSON no cerró, así que no parseaba
+> — y la comprobación preguntaba si parseaba.
+>
+> > **Una falla al terminar no es una falla al cumplir.** Regla 10 en un sitio
+> > nuevo, y la octava vez que el instrumento se equivocó antes que lo medido.
+>
+> Y lo delató una contradicción entre dos corridas: `grammar-check` decía que la
+> gramática no se aplicaba, y `bench` sacaba nueve propuestas bien formadas de
+> nueve casos minutos después. Las dos no pueden ser ciertas.
+>
+> ### Qué se corrigió
+>
+> - Se lee **el primer carácter**, no si el resultado parsea. `root ::= "{"` es
+>   absoluto y sobrevive al truncamiento.
+> - El mismo defecto estaba **en el camino de producción**: una inferencia normal
+>   truncada contra `-n` también salía como «gramática no aplicada». Ahora hay
+>   `Truncated`, y su mensaje dice que *esto es la gramática funcionando*.
+> - El sondeo gasta 48 tokens en vez de 256; sólo el primer carácter decide.
+> - Las dos ramas se imprimen **también cuando falla**. La versión anterior
+>   escondía la de control justo en el caso donde valía más.
+>
+> ### Lo siguiente
+>
+> Cesar corre `git pull && cargo install --path crates/thalyx-cli` y luego
+> `thalyx agent model grammar-check`, que debe salir `PROVEN`.
+>
+> Decidido a medias y sin decidir: la instrucción de abstención del prompt pesa
+> demasiado —abstuvo con el id dicho en claro— y bajarla es tocar el prompt, que
+> mueve los nueve casos a la vez. Ver [[Tareas-Pendientes]].
+>
 > ## El agente contesta desde hierro real, y falta una comprobación por correr — 2026-08-08
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

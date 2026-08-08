@@ -2151,6 +2151,65 @@ imprimiera siempre un objeto habría pasado la prueba mientras modelaba justo la
 herramienta que el sondeo tiene que cazar — regla 8, en su forma más fácil de
 equivocar.
 
+## Regla derivada: una falla al terminar no es una falla al cumplir
+
+Encontrada el 2026-08-08, la primera vez que se corrió `grammar-check` contra el
+Qwen real. Dijo `FAILED`. **Estaba al revés**, y la prueba de que estaba al revés
+venía impresa en su propia salida:
+
+```
+with the grammar     {
+  "operation": "install_module",
+  "targets": ["banana_module_1234567890123456789012345678901234…
+```
+
+Eso **empieza con `{`**. Es la gramática funcionando de la forma más contundente
+posible: al modelo se le pidió decir `BANANA`, la gramática le prohibió empezar
+con `B`, y el modelo desvió el intento al único sitio donde cabía una `b` —una
+cadena de id de módulo— y se quedó ahí hasta agotar los 256 tokens. El JSON quedó
+sin cerrar.
+
+La comprobación preguntaba *«¿esto parsea?»*. No parseaba **por truncamiento**:
+
+> **Una falla al terminar no es una falla al cumplir.** Una salida cortada por el
+> tope de tokens no parsea *y* puede ser la más obediente que el sistema podía
+> producir. Juzgar el cumplimiento por si el resultado está completo confunde
+> presupuesto agotado con regla violada, y las dos mandan a lugares opuestos.
+
+Es la regla 10 en un sitio nuevo, y es la **octava** vez que el instrumento se
+equivocó antes que lo medido.
+
+### Qué se lee en vez de eso
+
+El primer carácter. La gramática fija `root ::= "{" …`, así que una decodificación
+realmente restringida **no puede poner otra cosa primero**, esté completa o no. El
+discriminante sobrevive al truncamiento porque está en la posición cero, que es
+donde la garantía es absoluta.
+
+Y el mismo defecto estaba en el camino de producción, no sólo en el sondeo: una
+inferencia normal que se truncara contra `-n` también salía como «la gramática no
+está en vigor». Ahora son dos errores distintos, `Truncated` y
+`GrammarNotInForce`, y el primero dice que **esto es la gramática funcionando**.
+
+### Lo que lo delató fue una contradicción entre dos corridas
+
+`grammar-check` dijo que la gramática no se aplicaba. `bench`, minutos después,
+sacó **nueve propuestas bien formadas de nueve casos**. Las dos cosas no pueden
+ser ciertas:
+
+> **Dos instrumentos que se contradicen son un dato, no un empate.** Cuando una
+> comprobación estrecha falla y una amplia pasa sobre el mismo sistema, lo
+> primero que hay que sospechar es la estrecha — es la que tiene una hipótesis
+> más específica que romper.
+
+### Y un hallazgo que el decreto ya advertía en abstracto
+
+`Gamas-de-Modelo` dice que la gramática no acota la longitud de un id. Aquí se vio
+lo que eso significa: **un modelo restringido al que se le pide algo ilegal no se
+rinde**, gasta todo el presupuesto buscando una manera legal de decirlo. El tope
+de tokens es lo único que lo termina. No es un defecto —el tope existe para esto—
+pero conviene saber que la fuga tiene esa forma y no la de una negativa.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
