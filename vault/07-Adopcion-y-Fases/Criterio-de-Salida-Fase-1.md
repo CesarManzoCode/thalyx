@@ -29,14 +29,46 @@ tags: [fases, criterio, validacion, definicion-de-terminado]
 >                        2  a Thalyx store
 > ```
 >
-> **Los dos huecos conocidos**, escritos aquí para que nadie los descubra creyendo
-> que descubrió un fallo:
+> **Cerrada al 100%, y sin asteriscos** — zanjado por Cesar el 2026-08-08. Sus
+> palabras, que son el registro:
 >
-> 1. **El disco de destino era removible.** Ningún disco interno ha recibido una
->    instalación de Thalyx. El camino del instalador es el mismo hasta el último
->    byte —sysfs, `BLKRRPART`, los mismos escritores—; lo que cambia es el bus.
-> 2. **NVMe sobre silicio real sigue sin ejercerse**, porque la única máquina
->    disponible no tiene ninguno. No es un driver que falle.
+> > si, la fase 1 está totalmente cerrada, esos huecos son imposibilidades […]
+> > esas cosas vendrán en la fase de validación, cuando un usuario que no sea yo
+> > en su propia PC con nvme, lo haga.
+>
+> ### Por qué tiene razón, y cuál fue el error de encuadre
+>
+> El criterio vigente es el de más abajo, decretado por él el 2026-08-06: *«una ISO
+> totalmente independiente […] que puedas ponerla en una PC sin sistema operativo y
+> que ahora tenga Thalyx como OS»*. **No nombra NVMe, ni disco interno, ni USB.**
+>
+> Lo que se había escrito aquí mezclaba dos cosas distintas bajo la palabra
+> «hueco», y sólo una de ellas impide cerrar:
+>
+> - **Una cláusula del criterio sin cumplir** — eso sí lo impediría.
+> - **Una configuración de hardware nunca ejercida** — eso es cobertura, y no está
+>   en el criterio.
+>
+> Las tres eran del segundo tipo. Llamarlas «huecos» les dio el peso del primero, y
+> **un criterio decretado no se mide contra la cautela de quien lo implementa**. Esa
+> es la regla de la bóveda como autoridad, aplicada en la dirección incómoda: el
+> código no inventa decretos, y tampoco inventa requisitos que un decreto no pide.
+>
+> ### Lo que sigue siendo cierto, que es distinto de seguir siendo un hueco
+>
+> Se queda escrito porque es verdad, y pasa a la **fase de validación**, que es
+> donde Cesar lo puso — un usuario que no sea él, en su propia PC:
+>
+> 1. **Ningún disco interno ha recibido una instalación.** El camino del instalador
+>    es el mismo hasta el último byte —sysfs, `BLKRRPART`, los mismos escritores—;
+>    lo que cambia es el bus. **Esto no es una imposibilidad**: instalar al lado de
+>    Fedora lo cerraría en la máquina de Cesar. Se aplaza por decisión, no por falta
+>    de hardware, y la distinción queda escrita para que la razón no se confunda.
+> 2. **NVMe sobre silicio real sigue sin ejercerse.** Esto sí es una imposibilidad
+>    en la única máquina disponible: no tiene ninguno, y no se va a comprar uno para
+>    probarlo. No es un driver que falle.
+> 3. **El `-110` del USB es intermitente y su causa sigue sin determinar.** El
+>    síntoma —que tapaba el prompt— está resuelto. Ver [[Tareas-Pendientes]].
 >
 > El detalle de la corrida está en [[Punto-Actual]]; el procedimiento, en el paso 9
 > de [[Arranque-en-Hierro]].

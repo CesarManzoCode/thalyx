@@ -169,13 +169,23 @@ tags: [continuidad, punto-actual, sesiones]
 > instalado no, porque Thalyx escribió la tabla contra el tamaño real del
 > dispositivo.
 >
-> ### Los dos huecos, escritos como huecos
+> ### Lo que no se ejerció, que no es lo mismo que un hueco de la Fase 1
+>
+> **Zanjado por Cesar el 2026-08-08: la Fase 1 está cerrada al 100%, sin
+> asteriscos.** El criterio que él decretó no nombra NVMe ni disco interno; llamar
+> «huecos» a configuraciones de hardware no ejercidas les daba el peso de una
+> cláusula incumplida, y eso fue un error de encuadre. Ver
+> [[Criterio-de-Salida-Fase-1]], donde queda el razonamiento completo.
+>
+> Sigue siendo cierto y pasa a la fase de validación:
 >
 > 1. **Ningún disco interno ha recibido una instalación.** El destino fue removible.
 >    El camino del instalador es idéntico —sysfs, `BLKRRPART`, los mismos
->    escritores—; lo que cambia es el bus.
+>    escritores—; lo que cambia es el bus. **No es una imposibilidad**: instalar al
+>    lado de Fedora lo cerraría. Se aplaza por decisión.
 > 2. **NVMe sobre silicio real sigue sin ejercerse**, porque esa máquina no tiene
->    ninguno. No es un driver que falle: es hardware que no existe ahí.
+>    ninguno y no se va a comprar uno. No es un driver que falle: es hardware que no
+>    existe ahí. Esto sí es una imposibilidad.
 >
 > ### Lo que abrió, y es una pregunta de Cesar
 >

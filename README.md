@@ -332,10 +332,16 @@ boot.
   another operating system on it, named by its filesystem label — and then
   installed itself onto a second disk with `instalar-en`. The medium came out, the
   machine started again, and it found its own store by label with nothing naming
-  it. **Two things that closes are recorded as still open**: the disk it installed
-  onto was removable, so no internal disk has ever received a Thalyx install, and
-  that machine has no NVMe, so NVMe on real silicon stays unexercised — not
-  because a driver failed, but because there is no hardware to fail on.
+  it. **That closed Phase 1.** Its exit criterion — decreed as "an ISO you can put
+  into a PC with no operating system so that it now has Thalyx as its OS" — names
+  no particular disk, and this is that.
+
+  Two hardware configurations remain unexercised, which is a statement about
+  coverage and not an open clause: the disk it installed onto was removable, so no
+  internal disk has ever received a Thalyx install, and that machine has no NVMe,
+  so NVMe on real silicon stays unexercised — not because a driver failed, but
+  because there is no hardware to fail on. Both move to validation, on somebody
+  else's machine.
 - **Before that, only a virtual one had.** On 2026-08-07 a UEFI
   firmware found `\EFI\BOOT\BOOTX64.EFI` on a disk Thalyx wrote and started it —
   no `-kernel`, no `-append`, no boot loader — and the machine found its own
