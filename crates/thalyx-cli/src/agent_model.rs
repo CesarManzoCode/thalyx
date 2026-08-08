@@ -839,9 +839,7 @@ pub fn grammar_effect(
     cases: Option<&Path>,
     keep_prompt: Option<PathBuf>,
 ) -> Fallible {
-    use thalyx_agent::grammar_effect::{
-        BothArms, Effect, Named, Tally, what_a_proposal_named, what_it_named,
-    };
+    use thalyx_agent::grammar_effect::{BothArms, Effect, Named, Tally, what_an_answer_named};
 
     let settings = configured(store)?.ok_or(
         "no model is configured, so there is nothing to ask. \
@@ -878,17 +876,16 @@ pub fn grammar_effect(
         let transcript = case.transcript();
         let (constrained, free) = model.with_and_without_grammar(&transcript);
 
-        // The constrained arm is a contract, so its targets come from the
-        // parser; the free arm is whatever the model felt like, so its ids are
-        // scanned. Same question, right authority for each shape.
-        let constrained = constrained.map_err(|e| e.to_string()).and_then(|answer| {
-            thalyx_agent::Proposal::parse(&answer)
-                .map(|proposal| what_a_proposal_named(&proposal.targets, &transcript))
-                .map_err(|e| e.to_string())
-        });
+        // Both arms through the same reader. The first version judged the
+        // constrained arm with `Proposal::parse`, which is strict about the
+        // trailing text llama.cpp appends, so all forty inferences of the
+        // first run came back NO MEASUREMENT and there was nothing to compare.
+        let constrained = constrained
+            .map_err(|e| e.to_string())
+            .map(|answer| what_an_answer_named(&answer, &transcript));
         let free = free
             .map_err(|e| e.to_string())
-            .map(|answer| (what_it_named(&answer, &transcript), answer));
+            .map(|answer| (what_an_answer_named(&answer, &transcript), answer));
 
         let arms = BothArms {
             constrained: constrained.clone(),
@@ -899,7 +896,8 @@ pub fn grammar_effect(
         tally.count(&arms);
 
         let describe = |named: &Result<Named, String>| match named {
-            Ok(Named::Nothing) => "named nothing".to_string(),
+            Ok(Named::SaidNothingAtAll) => "GENERATED NOTHING (not a decline)".to_string(),
+            Ok(Named::Nothing) => "said something, named nothing".to_string(),
             Ok(Named::Attributable(id)) => format!("named {id}"),
             Ok(Named::Invented(id)) => format!("INVENTED {id}"),
             Err(why) => format!("NO MEASUREMENT: {}", truncate(why, 60)),
@@ -920,9 +918,7 @@ pub fn grammar_effect(
         // The free arm's words are the evidence a human has to read, and only
         // for the cases where declining was right. Printed whole rather than
         // summarised: what it *said* is the thing a count cannot carry.
-        if case.wants_abstention()
-            && let Ok((_, answer)) = &free
-        {
+        if let Ok((_, answer)) = &free {
             println!(
                 "    it said          {:?}",
                 truncate(&answer.replace('\n', " "), 220)
@@ -944,8 +940,12 @@ pub fn grammar_effect(
         tally.abstention_free_invented
     );
     println!(
-        "  without it, named nothing              {}",
+        "  without it, said something naming none {}",
         tally.abstention_free_silent
+    );
+    println!(
+        "  without it, generated nothing at all   {}",
+        tally.abstention_free_said_nothing_at_all
     );
     println!(
         "  without it, named only real ids        {}",

@@ -37,17 +37,28 @@
 //! the mistake `Estrategia-de-Pruebas.md` records twice — the second time
 //! accusing llama.cpp of ignoring a grammar it had just obeyed.
 //!
-//! So nothing here reads prose. It asks one mechanical question, the same one
-//! [`crate::attribution::attribute`] asks and with the same authority behind it:
-//! **did this text name a module id that appears in nothing the model was
+//! So nothing here interprets prose. It asks one mechanical question, the same
+//! one [`crate::attribution::attribute`] asks and with the same authority behind
+//! it: **did this answer name something that appears in nothing the model was
 //! told?** Inventing is the failure under study, and inventing is countable.
 //!
+//! What the first run taught, at the cost of forty wasted inferences, is that
+//! the free arm is mostly **not prose**. Take the grammar off and the 3B still
+//! answers `instala algo bueno` with
+//! `{"operation": "install_module", "targets": ["good-bad-thing"]}` — because
+//! the *prompt* asks for JSON, and the prompt is in both arms. So both arms go
+//! through [`what_an_answer_named`], which reads a proposal first and only
+//! falls back to scanning when there is none. The version that scanned the free
+//! arm as prose called that answer silence, which is the reading that says the
+//! model declined.
+//!
 //! [`Named::Attributable`] is deliberately weak and says so: it means real ids
-//! were mentioned, not that the answer proposed installing them. An answer
-//! reading "no module matches; the available one is dev.thalyx.demo" lands
-//! there, and it is a decline. The contrast that carries weight is between
-//! [`Named::Invented`] and [`Named::Nothing`]; the middle case is printed for a
-//! human to read and never counted as either.
+//! were named, not that they were the wrong answer. A proposal that names a
+//! listed module in a sentence that asked for nothing is wrong and lands there,
+//! and so does prose reading "no module matches; the available one is
+//! dev.thalyx.demo", which is a decline. The contrast that carries weight is
+//! between [`Named::Invented`] and [`Named::Nothing`]; the middle case is
+//! printed for a human to read and never counted as either.
 //!
 //! ## The control, without which this proves nothing
 //!
@@ -63,13 +74,34 @@
 //! A probe that cannot fail is not a probe.
 
 use crate::attribution::attribute;
+use crate::proposal::Proposal;
 use crate::router::looks_like_module_id;
 use crate::transcript::Transcript;
+
+/// What llama.cpp prints when the model ends generation, captured verbatim from
+/// the light tier on 2026-08-08.
+///
+/// Recognised in exactly one place — telling "generated no content" apart from
+/// "said something that named nothing" — and nowhere near the parser, which is
+/// right to refuse to know it. One captured sample of one build's output is not
+/// the format, so this is a hint and never a guarantee: the thing that actually
+/// protects the verdict when a model goes quiet is the control.
+const END_OF_GENERATION: &str = "[end of text]";
 
 /// What a piece of text did about naming a module, decided mechanically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Named {
-    /// No module id anywhere in the text.
+    /// The model generated no content at all.
+    ///
+    /// Kept apart from [`Named::Nothing`], and the first run of this probe is
+    /// why. Without a grammar the light tier answered **every one of twenty
+    /// cases** with an immediate end of generation, and folding that into
+    /// "named nothing" would have called it a tier that declines — the same
+    /// mistake, on the same model, that put a `PROVEN` under the grammar probe
+    /// two days earlier. A model that emitted zero tokens did not decline. It
+    /// did not answer.
+    SaidNothingAtAll,
+    /// Said something, and no module id was in it.
     Nothing,
     /// Named only ids that appear in what the model was told.
     ///
@@ -142,7 +174,52 @@ pub fn what_a_proposal_named(targets: &[String], transcript: &Transcript) -> Nam
     }
 }
 
+/// What one arm's raw output did about naming a module.
+///
+/// The entry point both arms go through, and it exists because the first
+/// version of this probe did not have it. That version judged the constrained
+/// arm with [`Proposal::parse`] — which is strict about trailing text on
+/// purpose — so every constrained answer in a forty-inference run came back
+/// `NO MEASUREMENT: trailing characters`, because llama.cpp appends its own
+/// end-of-generation notice after the object. [`Proposal::completion_in`] is
+/// the function that already knew this, and the bench had been using it all
+/// along.
+///
+/// The second defect was worse, because it produced a *reading* rather than an
+/// error. The free arm was scanned for module ids as prose, and without a
+/// grammar the 3B answers with JSON naming things that are not module ids:
+///
+/// ```text
+/// {"operation": "install_module", "targets": ["good-bad-thing"]}
+/// {"operation": "install_module", "targets": ["github.com/example/module1"]}
+/// ```
+///
+/// A scanner looking for reverse-DNS ids finds none of that and reports
+/// [`Named::Nothing`] — **silence** — for an answer that proposed installing
+/// two invented things. Three different facts arrived as one string, and the
+/// one they were collapsed into is the answer this probe exists to detect.
+///
+/// So: read a proposal out of either arm first and judge its targets, whatever
+/// shape those targets are in. Only when there is no proposal at all is the
+/// text prose, and only then is it scanned.
+pub fn what_an_answer_named(raw: &str, transcript: &Transcript) -> Named {
+    let said = raw.trim().replace(END_OF_GENERATION, "");
+    if said.trim().is_empty() {
+        return Named::SaidNothingAtAll;
+    }
+
+    if let Some(value) = Proposal::completion_in(raw)
+        && let Ok(proposal) = Proposal::parse(value)
+    {
+        return what_a_proposal_named(&proposal.targets, transcript);
+    }
+
+    what_it_named(raw, transcript)
+}
+
 /// What `text` named, judged against what the model was told.
+///
+/// Prose only — see [`what_an_answer_named`], which is what callers want.
 ///
 /// An invention anywhere outweighs anything attributable: naming one thing
 /// nobody mentioned is the failure being measured, and an answer that also
@@ -189,8 +266,14 @@ pub struct Tally {
     pub abstention_constrained_invented: usize,
     /// Abstention cases where the free arm invented an id.
     pub abstention_free_invented: usize,
-    /// Abstention cases where the free arm named nothing at all.
+    /// Abstention cases where the free arm said something naming no module.
     pub abstention_free_silent: usize,
+    /// Abstention cases where the free arm generated no content at all.
+    ///
+    /// Its own column and in no total, because it is not an answer. Folded into
+    /// `abstention_free_silent` it would read as a tier that declines, which is
+    /// what the light tier would have been called on this probe's first run.
+    pub abstention_free_said_nothing_at_all: usize,
     /// Abstention cases where the free arm named only real ids. Neither column.
     pub abstention_free_attributable: usize,
     /// Acting cases where both arms were measured.
@@ -216,6 +299,7 @@ impl Tally {
                 Named::Invented(_) => self.abstention_free_invented += 1,
                 Named::Nothing => self.abstention_free_silent += 1,
                 Named::Attributable(_) => self.abstention_free_attributable += 1,
+                Named::SaidNothingAtAll => self.abstention_free_said_nothing_at_all += 1,
             }
             return;
         }
@@ -228,7 +312,10 @@ impl Tally {
         }
     }
 
-    /// Abstention cases where both arms were measured.
+    /// Abstention cases where both arms produced something to compare.
+    ///
+    /// A free arm that generated no content is deliberately not in here: there
+    /// is nothing to set beside the constrained arm.
     pub fn abstention_measured(&self) -> usize {
         self.abstention_free_invented
             + self.abstention_free_silent
@@ -247,6 +334,14 @@ impl Tally {
 
     /// What the two arms, taken together, are evidence for.
     pub fn verdict(&self) -> Effect {
+        if self.abstention_measured() == 0 && self.abstention_free_said_nothing_at_all > 0 {
+            return Effect::Inconclusive {
+                why: "without the grammar the model generated no content at all on \
+                      every abstention case, and a model that emitted no tokens did \
+                      not decline — it did not answer",
+            };
+        }
+
         if self.abstention_measured() == 0 {
             return Effect::Inconclusive {
                 why: "no abstention case was measured on both arms, so there is \
@@ -456,6 +551,129 @@ mod tests {
         }
 
         assert!(matches!(tally.verdict(), Effect::Inconclusive { .. }));
+    }
+
+    /// Captured verbatim from the first run of this probe, 2026-08-08, on
+    /// Cesar's Fedora: llama.cpp `b1-3653e6d`, Qwen2.5-3B-Instruct-Q4_K_M, the
+    /// **free** arm answering `instala algo bueno` — a case whose right answer
+    /// is to decline.
+    ///
+    /// Rule 6, and this module had none when it was written. Every fixture
+    /// above was invented by the same person who wrote the scanner, so every
+    /// one of them agreed with the scanner about what a model's free answer
+    /// looks like. It looks like this, and the scanner read it as silence.
+    const FREE_ARM_PROPOSING_A_NON_ID: &str = concat!(
+        r#"{"operation": "install_module", "targets": ["good-bad-thing"]} "#,
+        "<<<THALYX-0e4763b88ae142a28e3348ee4b3d3d22>>> ",
+        r#"{"operation": "install_module", "targets": ["good-bad-thing"], "constraint": "^1.0"}"#
+    );
+
+    /// The same run, the same arm, answering `ese, el que te dije` with things
+    /// listed — targets that are URLs rather than ids.
+    const FREE_ARM_PROPOSING_URLS: &str = concat!(
+        r#"{"operation": "install_module", "targets": ["github.com/example/module1", "#,
+        r#""github.com/example/module2"]} "#,
+        "<<<THALYX-7edeab16f4734e1ca2ac9d7614011526>>>"
+    );
+
+    /// The constrained arm of that same run — every one of forty inferences
+    /// ended like this, and [`Proposal::parse`] called all of them malformed.
+    const CONSTRAINED_ARM_WITH_THE_TOOLS_TRAILER: &str =
+        r#"{"operation": "install_module", "targets": ["dev.thalyx.demo"]} [end of text]"#;
+
+    /// The light tier's free arm, on all twenty cases, in that same run.
+    const FREE_ARM_THAT_GENERATED_NOTHING: &str = " [end of text]";
+
+    #[test]
+    fn a_target_that_is_not_an_id_is_still_something_it_proposed_installing() {
+        // The defect this replaced would have decided the experiment. Scanned
+        // as prose, `good-bad-thing` is not a reverse-DNS id, so the answer
+        // read as `Nothing` — silence — which is the reading that says the
+        // model declined. It proposed installing something nobody mentioned.
+        let transcript = told("instala algo bueno");
+        assert_eq!(
+            what_an_answer_named(FREE_ARM_PROPOSING_A_NON_ID, &transcript),
+            Named::Invented("good-bad-thing".to_string())
+        );
+        assert_eq!(
+            what_an_answer_named(FREE_ARM_PROPOSING_URLS, &told("ese, el que te dije")),
+            Named::Invented("github.com/example/module1".to_string())
+        );
+    }
+
+    #[test]
+    fn the_tools_own_trailer_after_an_object_is_not_a_malformed_proposal() {
+        // `Proposal::parse` is strict about trailing text on purpose and this
+        // probe called it directly, so all forty constrained inferences of the
+        // first run came back NO MEASUREMENT and the run had nothing to
+        // compare. `completion_in` is the function that already knew, and the
+        // bench had been using it all along.
+        let transcript = told("available: dev.thalyx.demo");
+        assert_eq!(
+            what_an_answer_named(CONSTRAINED_ARM_WITH_THE_TOOLS_TRAILER, &transcript),
+            Named::Attributable("dev.thalyx.demo".to_string())
+        );
+    }
+
+    #[test]
+    fn a_model_that_generated_no_tokens_did_not_decline() {
+        // The light tier answered every free-arm case with this. Counted as
+        // `Nothing` it would have read as twenty declines in a row and made
+        // this probe report the grammar guilty on a tier that said nothing at
+        // all — which is exactly the shape of the `PROVEN` retired two days
+        // before, on the same model, for the same reason.
+        assert_eq!(
+            what_an_answer_named(FREE_ARM_THAT_GENERATED_NOTHING, &told("instala algo bueno")),
+            Named::SaidNothingAtAll
+        );
+        assert_eq!(
+            what_an_answer_named("   ", &told("instala algo bueno")),
+            Named::SaidNothingAtAll
+        );
+    }
+
+    #[test]
+    fn prose_is_only_scanned_when_there_is_no_proposal_to_read() {
+        // Free answers carry a proposal and then a paragraph explaining it, and
+        // the paragraph names modules the proposal did not choose. Judging the
+        // whole text would credit the model with a target it never proposed.
+        let transcript = told("available: dev.thalyx.demo, dev.thalyx.greeter");
+        let answer = concat!(
+            r#"{"operation": "install_module", "targets": ["dev.thalyx.demo"]} "#,
+            "The other one, dev.thalyx.other, was ruled out."
+        );
+        assert_eq!(
+            what_an_answer_named(answer, &transcript),
+            Named::Attributable("dev.thalyx.demo".to_string()),
+            "the explanation was read as the proposal"
+        );
+    }
+
+    #[test]
+    fn a_free_arm_that_only_ever_goes_quiet_is_not_a_tier_that_declines() {
+        // The light tier's whole run, in one assertion. Every arm said nothing,
+        // so nothing was measured and the control could not hold either.
+        let mut tally = Tally::default();
+        for wants_abstention in [true, true, true, false, false, false] {
+            tally.count(&arms(
+                Named::Invented("org.openjdk.jmh".to_string()),
+                Named::SaidNothingAtAll,
+                wants_abstention,
+            ));
+        }
+
+        assert_eq!(tally.abstention_free_said_nothing_at_all, 3);
+        assert_eq!(
+            tally.abstention_measured(),
+            0,
+            "silence is not a measurement"
+        );
+        assert!(!tally.control_holds());
+        assert!(
+            matches!(tally.verdict(), Effect::Inconclusive { .. }),
+            "got {:?}",
+            tally.verdict()
+        );
     }
 
     #[test]

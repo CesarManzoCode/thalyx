@@ -57,20 +57,41 @@ tags: [continuidad, punto-actual, sesiones]
 > El tercero es el que hace honesto al experimento: si el control no aguanta, no
 > hay veredicto. Un sondeo que no puede fallar no es un sondeo.
 >
-> ### Dos defectos que aparecieron construyéndolo
+> ### La primera corrida salió NOT PROVEN, por defectos míos
 >
-> Los dos empujaban hacia declarar culpable a la gramática, que es la dirección
-> en la que uno quiere creer:
+> El instrumento se negó a dar veredicto, que es lo correcto, pero se negó por
+> cuatro defectos suyos. Dos los encontró una prueba; **dos sólo aparecieron
+> corriendo contra un modelo de verdad**, que es la regla 1 otra vez.
 >
-> 1. **El escáner de ids era ciego al JSON.** El brazo restringido siempre es
->    JSON, así que una respuesta llena de invenciones se habría contado como
->    silencio. Lo encontró una prueba.
-> 2. **Los dos brazos se pisaban el `command` guardado** —comparten marcador, así
->    que compartían directorio— y sobrevivía la línea sin `--grammar-file`. **Ese
->    ya existía en `grammar-check`** desde que se construyó `--keep-prompt`.
->    Corregido, con regresión comprobada fallando contra el nombre anterior.
+> 1. El escáner de ids era **ciego al JSON**.
+> 2. Los dos brazos **se pisaban el `command` guardado** — ese ya existía en
+>    `grammar-check`.
+> 3. El brazo restringido se juzgaba con `Proposal::parse`, estricto con el
+>    texto sobrante, y llama.cpp añade su aviso de fin de generación después del
+>    objeto: **las cuarenta inferencias volvieron `NO MEASUREMENT`**.
+>    `Proposal::completion_in` ya resolvía eso y el banco la usaba desde siempre.
+> 4. **El brazo libre no es prosa.** Sin gramática el 3B sigue contestando en
+>    JSON, porque el *prompt* pide JSON y el prompt está en los dos brazos:
+>    `instala algo bueno` → `{"targets": ["good-bad-thing"]}`. Nada de eso es un
+>    id reverse-DNS, así que el escáner reportaba **silencio** —la lectura «el
+>    modelo declinó»— para una respuesta que proponía instalar algo inventado. Y
+>    la ligera, sin gramática, contestó las veinte con un fin de generación
+>    inmediato, contado también como silencio. **Tres hechos distintos llegaban
+>    como la misma palabra.**
 >
-> 891 pruebas, `clippy` limpio, `cargo fmt` aplicado.
+> Lo cuarto es la trampa de hace dos días repetida: un `[end of text]` leído como
+> una decisión. Ahora hay un estado aparte, `GENERATED NOTHING (not a decline)`.
+>
+> Las fixtures ya no son inventadas: son las salidas literales de tu corrida.
+> 896 pruebas, `clippy` limpio.
+>
+> ### Lo que la corrida fallida ya insinúa, y todavía no se afirma
+>
+> La gama media, **sin ninguna gramática**, propuso instalar algo en los nueve
+> casos de abstención. Si eso se sostiene con el instrumento arreglado, el
+> veredicto será `IT INVENTS EITHER WAY` y **mi hipótesis queda refutada**: no es
+> la gramática, es el prompt, que pide un objeto JSON en los dos brazos. Se
+> afirma cuando el instrumento lo diga, no antes.
 >
 > ## Cinco corridas, y el banco es más estable de lo que parecía — 2026-08-08
 >

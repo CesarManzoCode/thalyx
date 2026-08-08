@@ -1327,8 +1327,13 @@ también se corren por los dos brazos, y **si sin gramática el modelo no encuen
 el módulo correcto ni donde sí lo hay, el veredicto es `NOT PROVEN` y sale
 distinto de cero**. Un sondeo que no puede fallar no es un sondeo.
 
-Dos defectos aparecieron construyéndolo, y los dos habrían empujado el resultado
-hacia declarar culpable a la gramática:
+**La primera corrida salió `NOT PROVEN` en las dos gamas por defectos del
+instrumento**, y quedó registrada abajo porque enseñó lo que ninguna prueba
+había podido enseñar. Cuatro defectos en total: dos encontrados construyéndolo,
+dos que sólo aparecieron corriéndolo contra un modelo de verdad —regla 1—.
+
+Los dos primeros habrían empujado el resultado hacia declarar culpable a la
+gramática:
 
 1. **El escáner de ids era ciego al JSON.** El brazo restringido siempre es JSON
    —`["dev.thalyx.demo"]` es un solo token de espacio en blanco— así que una
@@ -1341,7 +1346,41 @@ hacia declarar culpable a la gramática:
    `--keep-prompt`**, y nadie lo había visto. Corregido con su regresión,
    comprobada fallando contra el nombre anterior.
 
-Quince pruebas cubren el veredicto sin necesitar un modelo, incluidos los tres
+Y los dos que sólo la corrida pudo enseñar, el 2026-08-08:
+
+3. **El brazo restringido se juzgaba con `Proposal::parse`**, que es estricto
+   con el texto sobrante a propósito. llama.cpp añade su propio aviso de fin de
+   generación después del objeto, así que **las cuarenta inferencias de la
+   primera corrida volvieron `NO MEASUREMENT: trailing characters`** y no hubo
+   nada que comparar. `Proposal::completion_in` es la función que ya sabía esto,
+   y el banco la usaba desde siempre. Escribí una segunda lectura peor de algo
+   que ya estaba resuelto a diez líneas de distancia.
+4. **El brazo libre no es prosa**, y ése es el defecto que habría decidido mal
+   el experimento. Sin gramática el 3B **sigue contestando en JSON**, porque el
+   *prompt* pide JSON y el prompt está en los dos brazos:
+
+   ```
+   instala algo bueno    → {"operation": "install_module", "targets": ["good-bad-thing"]}
+   ese, el que te dije   → {"targets": ["github.com/example/module1", …]}
+   ```
+
+   Ninguno de esos objetivos es un id reverse-DNS, así que el escáner de prosa
+   no encontraba nada y reportaba **silencio** — que es la lectura «el modelo
+   declinó»— para una respuesta que proponía instalar dos cosas inventadas.
+
+   Y la gama ligera, sin gramática, contestó **las veinte** con un fin de
+   generación inmediato. Eso también se contaba como silencio. **Tres hechos
+   distintos llegaban como la misma palabra**, y uno de los tres es la respuesta
+   que este sondeo existe para detectar.
+
+Lo tercero es la misma trampa de hace dos días, en el mismo modelo: un
+`[end of text]` leído como una decisión. Por eso ahora hay un estado aparte
+—`GENERATED NOTHING (not a decline)`— que no cuenta para ningún lado.
+
+Las fixtures ya no son inventadas: son las salidas literales de esa corrida
+—regla 6, que este módulo no cumplía cuando se escribió—.
+
+Veinte pruebas cubren el veredicto sin necesitar un modelo, incluidos los cuatro
 caminos a `Inconclusive`. Lo que no se puede probar en el contenedor es la
 medición misma, y **no lleva etapa en `verify.sh` a propósito**: `verify.sh`
 prueba afirmaciones de Thalyx, y esto es un experimento que contesta una pregunta
