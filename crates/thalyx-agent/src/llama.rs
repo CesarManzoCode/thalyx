@@ -300,6 +300,11 @@ const PROBE_PREDICT: u32 = 48;
 #[derive(Debug, Clone)]
 pub enum GrammarCheck {
     /// Constrained it could not open with the word; left alone it did.
+    ///
+    /// Both halves of that sentence are checked. The second one used to be
+    /// inferred from the free arm not opening an object, which is how a tier
+    /// whose model answered the free probe with nothing at all was reported as
+    /// proof that the grammar stopped it from speaking.
     InForce {
         constrained: String,
         unconstrained: String,
@@ -461,8 +466,34 @@ impl LlamaModel {
                 constrained,
                 unconstrained,
             }
-        } else {
+        } else if says_word(&unconstrained) {
             GrammarCheck::InForce {
+                constrained,
+                unconstrained,
+            }
+        } else {
+            // The control arm has to be *asserted*, not left over. This branch
+            // used to be the `else`, so `InForce` was reached whenever the free
+            // arm merely failed to open an object — and the verdict printed
+            // underneath it says "left alone it did [say the word]", which
+            // nothing had checked.
+            //
+            // Found on the light tier, 2026-08-08: the 1.5B answered the free
+            // probe with an immediate end-of-generation, so its control arm read
+            // ` [end of text]` and the probe declared PROVEN over evidence that
+            // showed the model saying nothing at all. Rule 4 — a denial and an
+            // operation that never happened look identical without a control —
+            // and the reason it survived is rule 8: every stand-in here said the
+            // word when handed no grammar, so no fake ever modelled a model that
+            // stays quiet.
+            //
+            // What can still be said from such a run is smaller than PROVEN and
+            // is not this probe's claim: the flag changed the output. Whether
+            // the *word* was what the grammar stopped is unmeasured, because the
+            // model never showed it would say it.
+            GrammarCheck::Inconclusive {
+                why: "the unconstrained arm did not say the word either, so \
+                      nothing here shows the grammar is what stopped it",
                 constrained,
                 unconstrained,
             }
@@ -1085,6 +1116,70 @@ esac"#,
         assert!(
             matches!(check, GrammarCheck::Inconclusive { .. }),
             "a probe that measured nothing was reported as {check:?}"
+        );
+    }
+
+    #[test]
+    fn a_control_arm_that_said_nothing_proves_nothing_however_obedient_the_other_was() {
+        // The light tier, 2026-08-08, on Cesar's Fedora. Qwen2.5-1.5B answered
+        // the free probe by ending generation immediately, so the control arm
+        // came back as the trailer llama.cpp prints after an empty completion:
+        //
+        //     with the grammar     { "operation": "install_module", "targets": ["python3.…
+        //     without it           [end of text]
+        //
+        // and the probe said PROVEN, over a verdict that reads "left alone it
+        // did [say the word]". Nothing had checked that. `InForce` was the
+        // `else`, so it was reached by the free arm merely failing to open an
+        // object — and an arm that says nothing fails that too.
+        //
+        // The trailer is verbatim from that build rather than invented: rule 6,
+        // and the whole point is what a real tool prints when a model is quiet.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"
+case "$*" in
+  *--grammar-file*) printf '%s' '{"operation": "install_module", "targets": ["python3.abc_1.abc"' ;;
+  *)                printf '%s' ' [end of text]' ;;
+esac"#,
+        );
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+
+        assert!(
+            matches!(check, GrammarCheck::Inconclusive { .. }),
+            "a probe whose control arm never said the word was reported as {check:?}"
+        );
+    }
+
+    #[test]
+    fn a_control_arm_that_said_something_else_entirely_proves_nothing_either() {
+        // The general shape of the case above, and the reason the check is
+        // "did it say the word" rather than "was it silent": a free arm that
+        // answers with prose has also not shown the model would say the word,
+        // so the grammar is not what the difference is attributable to.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"
+case "$*" in
+  *--grammar-file*) printf '%s' '{"operation": "install_module", "targets": []}' ;;
+  *)                printf '%s' 'Sure! I can help you with that.' ;;
+esac"#,
+        );
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+
+        assert!(
+            matches!(check, GrammarCheck::Inconclusive { .. }),
+            "a control arm that answered something else was reported as {check:?}"
         );
     }
 

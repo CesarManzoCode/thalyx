@@ -109,6 +109,10 @@ impl Prompt {
     /// - constrained it cannot, unconstrained it does ⇒ the grammar **is**
     /// - both come back as proposals ⇒ the probe proved nothing, and says so
     ///   rather than counting as a pass
+    /// - the free arm does not say the word either ⇒ also nothing proved. The
+    ///   light tier answered this probe with an immediate end of generation, and
+    ///   a model that never shows it would say the word cannot show the grammar
+    ///   is what stopped it
     ///
     /// Bare on purpose. Wrapping it in the real instructions would put "answer
     /// with an object" back in, which is the confound this exists to remove.
