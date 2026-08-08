@@ -50,6 +50,20 @@
 
 use crate::proposal::ProposedOperation;
 
+/// The character every constrained completion must begin with.
+///
+/// `root` opens on a literal brace, so a decode that is genuinely constrained
+/// cannot put anything else first — whatever the model would rather say.
+///
+/// This is what [`crate::llama::LlamaModel::grammar_check`] reads, and it is
+/// deliberately the *first* character rather than the whole answer parsing.
+/// A constrained model asked for something the grammar forbids will spend its
+/// entire token budget looking for a legal way to comply, run into the cap, and
+/// leave an object that does not parse because it never got to close. That is a
+/// failure to **finish**, not a failure to obey, and judging it by whether it
+/// parsed reported the most obedient possible answer as a broken grammar.
+pub const ROOT_FIRST_CHAR: char = '{';
+
 /// What a module-id segment may start with, as a GBNF character class body.
 ///
 /// Kept as a constant rather than inlined so the test below can compare it

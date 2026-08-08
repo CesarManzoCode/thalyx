@@ -154,6 +154,23 @@ pub enum LlamaError {
     )]
     GrammarNotInForce { binary: PathBuf, answer: String },
 
+    #[error(
+        "the model began the object the grammar describes and ran out of tokens \
+         before closing it, at the {predict}-token cap.\n\
+         \n\
+         This is the grammar working, not failing: the answer opens exactly \
+         where the grammar says it must. What it ran out of was budget.\n\
+         \n\
+         The grammar does not bound how long a module id may be, so a model \
+         that cannot find a legal way to answer will spend the whole cap inside \
+         one string. If the request was ordinary, that is what happened, and a \
+         larger `predict` will not make the answer right — it will make it \
+         longer.\n\
+         \n\
+         What it got to:\n{answer}"
+    )]
+    Truncated { predict: u32, answer: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -258,23 +275,43 @@ enum Constrained {
     No,
 }
 
+/// How many tokens the probe is given.
+///
+/// Small because only the first character decides the outcome, and because a
+/// constrained model that was asked for something illegal does not give up: on
+/// the first real run it filled 256 tokens with a module id spelling out
+/// `banana_module_1234…`, hunting for a legal way to say the word. The grammar
+/// does not bound the length of an id — see `grammar.rs` — so the budget is the
+/// only thing that ends that, and there is no reason to pay for all of it.
+const PROBE_PREDICT: u32 = 48;
+
 /// What [`LlamaModel::grammar_check`] found.
 ///
 /// Three outcomes and not two. `Inconclusive` is the one that has to exist:
 /// rule 3 says a check that could not be made must say so rather than counting
 /// as a pass, and a probe both arms answer the same way has not measured
 /// anything.
+///
+/// Both arms travel with every outcome, including the failure. The first
+/// version of this dropped the control arm from `NotInForce` on the grounds
+/// that the failure was already definitive — and then reported a false failure
+/// with half the evidence missing, which is the one situation where the other
+/// half is worth most.
 #[derive(Debug, Clone)]
 pub enum GrammarCheck {
-    /// Constrained it could not say the word; left alone it did.
+    /// Constrained it could not open with the word; left alone it did.
     InForce {
         constrained: String,
         unconstrained: String,
     },
     /// Constrained it said the word anyway, which the grammar forbids.
-    NotInForce { constrained: String },
-    /// Both arms produced a proposal, so this probe cannot tell them apart.
+    NotInForce {
+        constrained: String,
+        unconstrained: String,
+    },
+    /// The probe could not tell the two arms apart, and says which way.
     Inconclusive {
+        why: &'static str,
         constrained: String,
         unconstrained: String,
     },
@@ -326,18 +363,41 @@ impl LlamaModel {
             return Ok(run);
         }
 
-        match crate::proposal::Proposal::completion_in(&run.answer) {
-            Some(completion) if crate::proposal::Proposal::parse(completion).is_ok() => Ok(Run {
+        if let Some(completion) = crate::proposal::Proposal::completion_in(&run.answer)
+            && crate::proposal::Proposal::parse(completion).is_ok()
+        {
+            return Ok(Run {
                 answer: completion.to_string(),
                 ..run
-            }),
-            // A grammar-constrained decode *cannot* produce anything that is
-            // not a proposal, so this is the grammar not being applied.
-            _ => Err(LlamaError::GrammarNotInForce {
-                binary: self.invocation.binary.clone(),
-                answer: sample_of(&run.answer),
-            }),
+            });
         }
+
+        // It did not parse, and there are two ways to get here that want
+        // opposite things done about them. The first character tells them
+        // apart, because it is the one thing the grammar fixes absolutely.
+        //
+        // Found on Cesar's machine by the grammar probe, which had this same
+        // bug: told to emit a word the grammar forbids, the model spent every
+        // token it had spelling a legal id and hit the cap mid-string. That
+        // answer is unparseable *and* maximally obedient, and calling it a
+        // broken grammar sends whoever reads it to audit llama.cpp.
+        if run
+            .answer
+            .trim_start()
+            .starts_with(crate::grammar::ROOT_FIRST_CHAR)
+        {
+            return Err(LlamaError::Truncated {
+                predict: self.invocation.predict,
+                answer: sample_of(&run.answer),
+            });
+        }
+
+        // It did not even open where `root` opens. A constrained decode cannot
+        // do that, so the grammar is not being applied.
+        Err(LlamaError::GrammarNotInForce {
+            binary: self.invocation.binary.clone(),
+            answer: sample_of(&run.answer),
+        })
     }
 
     /// Ask the model for something the grammar forbids, with and without it.
@@ -351,32 +411,61 @@ impl LlamaModel {
     /// cannot say which one moved the result.
     pub fn grammar_check(&self) -> Result<GrammarCheck, LlamaError> {
         let probe = Prompt::probe();
-        let constrained = self.complete(&probe, Constrained::Yes)?.answer;
-        let unconstrained = self.complete(&probe, Constrained::No)?.answer;
 
-        let constrained_is_proposal = crate::proposal::Proposal::completion_in(&constrained)
-            .is_some_and(|c| crate::proposal::Proposal::parse(c).is_ok());
-        let unconstrained_is_proposal = crate::proposal::Proposal::completion_in(&unconstrained)
-            .is_some_and(|c| crate::proposal::Proposal::parse(c).is_ok());
+        // A short budget, and it is the probe's whole cost. Only the first
+        // character decides this, and a constrained model that cannot say what
+        // it was asked for will otherwise spend every token it is given hunting
+        // for a legal way to comply — which is what happened on the first real
+        // run, at 256 tokens of a module id spelling out `banana_module_…`.
+        let mut brief = self.clone();
+        brief.invocation.predict = PROBE_PREDICT;
 
-        Ok(match (constrained_is_proposal, unconstrained_is_proposal) {
-            // Told to say one word, it emitted a proposal instead — and left to
-            // itself it obeyed. Nothing but the grammar does that.
-            (true, false) => GrammarCheck::InForce {
+        let constrained = brief.complete(&probe, Constrained::Yes)?.answer;
+        let unconstrained = brief.complete(&probe, Constrained::No)?.answer;
+
+        let obeys_root = |answer: &str| {
+            answer
+                .trim_start()
+                .starts_with(crate::grammar::ROOT_FIRST_CHAR)
+        };
+        let says_word = |answer: &str| answer.trim_start().starts_with(crate::prompt::PROBE_WORD);
+
+        // Read at the first character, not by parsing. See `ROOT_FIRST_CHAR`:
+        // an answer cut off by the token cap does not parse and is *maximally*
+        // obedient, and the version of this that asked "did it parse" reported
+        // exactly that case as a broken grammar.
+        Ok(if says_word(&constrained) {
+            // Definitive, and the only definitive failure available: the
+            // grammar cannot put that character first, so it was not applied.
+            GrammarCheck::NotInForce {
                 constrained,
                 unconstrained,
-            },
-            // It said the word while the grammar was supposedly in force. The
-            // grammar cannot express it, so the grammar was not applied.
-            (false, _) => GrammarCheck::NotInForce { constrained },
-            // Both proposals. The grammar may be working perfectly; this probe
-            // cannot see it, because the model would have answered that way
-            // anyway. Rule 4: without the control arm, a check that always
-            // passes and a check that works look the same.
-            (true, true) => GrammarCheck::Inconclusive {
+            }
+        } else if !obeys_root(&constrained) {
+            // Neither the forbidden word nor an object. Rule 10 — say which
+            // thing happened rather than picking the confident reading.
+            GrammarCheck::Inconclusive {
+                why: "the constrained answer is neither the word nor an object, \
+                      so this probe cannot say what shaped it",
                 constrained,
                 unconstrained,
-            },
+            }
+        } else if obeys_root(&unconstrained) {
+            // Both arms opened an object. The grammar may be working perfectly;
+            // this probe cannot see it, because the model would have answered
+            // that way anyway. Rule 4: without the control arm, a grammar doing
+            // nothing and a grammar working look the same.
+            GrammarCheck::Inconclusive {
+                why: "this model opens an object with or without the grammar, so \
+                      the two arms cannot be told apart",
+                constrained,
+                unconstrained,
+            }
+        } else {
+            GrammarCheck::InForce {
+                constrained,
+                unconstrained,
+            }
         })
     }
 
@@ -822,6 +911,48 @@ CAPTURED"#,
     }
 
     #[test]
+    fn an_answer_that_ran_out_of_tokens_is_told_apart_from_one_the_grammar_never_shaped() {
+        // Rule 10, in the production path rather than in the probe. Both of
+        // these fail to parse, and they want opposite things done about them:
+        // one says raise the budget or ask a narrower question, the other says
+        // the grammar is not reaching llama.cpp at all. They used to be the
+        // same message, and it was the wrong one for the case that actually
+        // happens.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+
+        let truncated = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": ["dev.thalyx.aaaa'"#,
+        );
+        let error = LlamaModel::new(Invocation::new(&truncated, &weights))
+            .run(&transcript())
+            .expect_err("an unclosed object is not an answer");
+        assert!(
+            matches!(error, LlamaError::Truncated { .. }),
+            "an obedient answer that ran out of budget was reported as {error}"
+        );
+        assert!(
+            error.to_string().contains("the grammar working"),
+            "the message does not say which of the two this is: {error}"
+        );
+
+        // The control. Without it, a check that called everything a truncation
+        // would pass the test above while losing the failure that matters.
+        let unconstrained = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' 'Sure, I can install that for you'"#,
+        );
+        let error = LlamaModel::new(Invocation::new(&unconstrained, &weights))
+            .run(&transcript())
+            .expect_err("prose is not an answer");
+        assert!(
+            matches!(error, LlamaError::GrammarNotInForce { .. }),
+            "an answer the grammar never shaped was reported as {error}"
+        );
+    }
+
+    #[test]
     fn a_completion_that_is_prose_means_the_grammar_was_not_applied() {
         // A grammar-constrained completion cannot produce prose. So prose after
         // the marker is the tool ignoring --grammar-file, and saying "the model
@@ -881,6 +1012,42 @@ esac"#,
         assert!(
             unconstrained.contains(crate::prompt::PROBE_WORD),
             "the control arm did not show the model doing what it was asked: {unconstrained:?}"
+        );
+    }
+
+    #[test]
+    fn an_obedient_answer_cut_off_by_the_token_cap_is_not_a_broken_grammar() {
+        // What Cesar's machine actually did, and what the first version of this
+        // check called a failure. Told to say a word the grammar forbids, the
+        // model could not refuse and could not comply, so it went hunting for a
+        // legal way to say it — a module id reading `banana_module_1234…` — and
+        // ran into the token cap mid-string.
+        //
+        // The answer therefore did not parse. It was also the most obedient
+        // output the grammar could possibly have produced: it opens exactly
+        // where `root` opens. Judging by "did it parse" read maximal obedience
+        // as no grammar at all. Rule 10, in a new place: a failure to *finish*
+        // is not a failure to comply.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"
+case "$*" in
+  *--grammar-file*) printf '%s' '{
+  "operation": "install_module",
+  "targets": ["banana_module_1234567890123456789012345678901234567890' ;;
+  *)                printf '%s' 'BANANA' ;;
+esac"#,
+        );
+
+        let check = LlamaModel::new(Invocation::new(&binary, &weights))
+            .grammar_check()
+            .expect("both arms ran");
+
+        assert!(
+            matches!(check, GrammarCheck::InForce { .. }),
+            "a truncated but perfectly obedient answer was reported as {check:?}"
         );
     }
 

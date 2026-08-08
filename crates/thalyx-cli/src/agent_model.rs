@@ -343,38 +343,71 @@ fn grammar_check(store: &Store) -> Fallible {
     );
     println!();
 
+    // Both arms are printed under every outcome, including the failure. The
+    // first version showed only the constrained arm when it failed — and the
+    // failure it reported was false, which is precisely when the missing half
+    // was worth most.
+    let show = |constrained: &str, unconstrained: &str| {
+        println!("with the grammar     {}", one_line_of(constrained));
+        println!("without it           {}", one_line_of(unconstrained));
+        println!();
+    };
+
     match model.grammar_check()? {
         GrammarCheck::InForce {
             constrained,
             unconstrained,
         } => {
-            println!("with the grammar     {constrained}");
-            println!("without it           {unconstrained}");
-            println!();
-            println!("PROVEN: told to say one word it could not, and left alone it did.");
-            println!("--grammar-file is constraining the decoding, not just being accepted.");
+            show(&constrained, &unconstrained);
+            println!("PROVEN: told to say one word, constrained it could not even begin");
+            println!("with it, and left alone it did. --grammar-file is shaping the");
+            println!("decoding, not just being accepted as a flag.");
             Ok(())
         }
-        GrammarCheck::NotInForce { constrained } => {
-            println!("with the grammar     {constrained}");
-            println!();
-            println!("FAILED: it said the word while the grammar was supposedly in force.");
-            println!("The grammar cannot express that, so it is not being applied. Every");
-            println!("guarantee in Gamas-de-Modelo.md that rests on the grammar is void.");
-            Err("the grammar is not constraining the model".into())
-        }
-        GrammarCheck::Inconclusive {
+        GrammarCheck::NotInForce {
             constrained,
             unconstrained,
         } => {
-            println!("with the grammar     {constrained}");
-            println!("without it           {unconstrained}");
-            println!();
-            println!("NOT PROVEN: both answers are proposals, so this model would have");
-            println!("produced one either way and the probe cannot see the grammar work.");
-            println!("It is not evidence the grammar is broken — it is no evidence at all.");
-            Err("the probe could not tell the two apart".into())
+            show(&constrained, &unconstrained);
+            println!("FAILED: it opened with the word while the grammar was supposedly in");
+            println!("force. The grammar cannot put that character first, so it is not");
+            println!("being applied. Every guarantee in Gamas-de-Modelo.md that rests on");
+            println!("the grammar is void.");
+            Err("the grammar is not constraining the model".into())
         }
+        GrammarCheck::Inconclusive {
+            why,
+            constrained,
+            unconstrained,
+        } => {
+            show(&constrained, &unconstrained);
+            println!("NOT PROVEN: {why}.");
+            println!("This is not evidence the grammar is broken — it is no evidence at");
+            println!("all, and it must not be read as a pass.");
+            Err("the probe could not tell the two arms apart".into())
+        }
+    }
+}
+
+/// Enough of an answer to see which of the two things it is, on one line.
+///
+/// Bounded because the answer that matters most here is what a constrained
+/// model produces when it cannot comply: an id it keeps spelling until the
+/// token budget runs out. Printed whole, that scrolls the verdict off the
+/// screen.
+///
+/// Whitespace is collapsed rather than cut at the first newline. A real model
+/// pretty-prints, so the first line of an obedient answer is the single
+/// character `{` — which is exactly what decides the verdict and tells a person
+/// reading it nothing at all. The evidence has to be legible or printing it is
+/// a gesture.
+fn one_line_of(answer: &str) -> String {
+    const AT: usize = 72;
+    let line = answer.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(AT) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None if line.is_empty() => "(nothing)".to_string(),
+        None => line,
     }
 }
 

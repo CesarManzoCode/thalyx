@@ -274,15 +274,50 @@ suelto sí, sólo la gramática explica eso. Tiene **tres** resultados y no dos 
 si el modelo contesta con una propuesta en las dos ramas, el sondeo no midió nada
 y dice `NOT PROVEN`, que no es lo mismo que pasar.
 
-### La primera medición real, contra la estimación de la tabla
+### El primer banco corrido: gama media, 9 casos
 
-| Gama | RAM estimada aquí | RAM medida | Latencia |
-|---|---|---|---|
-| media (Qwen2.5-3B Q4_K_M) | ~8 GB | **4.77 GB** | **6.88 s** |
+| Medida | Estimado en esta nota | Medido el 2026-08-08 |
+|---|---|---|
+| Disco | ~2.0 GB | **2 104 932 768 bytes** (1.96 GiB) |
+| RAM | ~8 GB | **4.78 GB** de RSS pico |
+| Latencia | — | mediana **6.58 s**, peor **7.94 s** |
 
-Un enunciado, una gama, una máquina — no es el banco. Pero es el primer número
-de esta nota que **alguien midió en vez de estimar**, y la estimación iba alta
-por casi el doble.
+| Acierto (gama media) | Resultado |
+|---|---|
+| Intención | 6/9 |
+| Argumentos | 6/9 |
+| Abstención | 3/4, **con 1 invención** |
+
+**La estimación de RAM iba alta por casi el doble.** Las de disco acertaron.
+
+Los tres casos que fallaron dicen más que el total:
+
+- **Abstuvo con el id dicho en claro** y sin verbo delante. Es el caso más fácil
+  del banco y lo dejó pasar — apunta a que la instrucción de abstención del
+  prompt pesa demasiado, no a que la gama sea corta.
+- **Abstuvo ante una versión dicha en palabras.**
+- **Actuó sobre un módulo que se mencionó y luego se descartó.** Éste es el que
+  importa: no inventó un id, tomó uno que la persona había excluido. Es
+  exactamente la clase de error que este decreto llama cara, porque la corrección
+  cuesta una instalación y no un segundo.
+
+Nada de esto toca la seguridad: los nueve casos produjeron contratos válidos por
+construcción, y los nueve siguen detrás del camino confiable.
+
+### La gramática restringe de verdad, y cómo se vio
+
+`grammar-check` dijo `FAILED` la primera vez y **estaba al revés**. El brazo
+restringido había emitido `{ "operation": "install_module", "targets":
+["banana_module_1234…` hasta agotar el tope de tokens: la gramática le prohibió
+empezar con `B`, y el modelo desvió el intento a una cadena de id legal. Era la
+gramática funcionando, y la comprobación lo leyó como lo contrario porque
+preguntaba si el resultado parseaba en vez de mirar el primer carácter. Ver
+[[Estrategia-de-Pruebas]].
+
+Vale la pena anotarlo aquí porque confirma en concreto lo que esta nota decía en
+abstracto —que la gramática no acota la longitud de un id—: **un modelo
+restringido al que se le pide algo ilegal no se rinde, gasta todo el presupuesto
+buscando cómo decirlo legalmente.** El tope de tokens es lo único que lo termina.
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer
