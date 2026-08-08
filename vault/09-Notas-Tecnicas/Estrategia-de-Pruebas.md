@@ -2493,6 +2493,56 @@ alta tenga una segunda corrida, no que el instrumento sea impreciso.
 
 Una suite corrida una vez no da una barra de error. Da un punto.
 
+## Regla derivada: un mensaje de error que nombra el mecanismo no nombra la causa
+
+**Descubierta el 2026-08-08, resolviendo el caso 4 del banco.**
+
+El error decía la verdad —*«empezó el objeto y se quedó sin tokens antes de
+cerrarlo»*— y por eso mismo se leyó como una explicación. No lo era: es el
+**mecanismo final**, el momento en que el proceso se detuvo. Con eso a la vista
+se propuso una causa equivocada, que el modelo se ciclaba escribiendo la versión,
+porque era el único caso de la suite cuya restricción llevaba un punto.
+
+La salida completa lo refutó en una línea: el modelo repetía `.versions` dentro
+del identificador y **nunca llegó a la versión**.
+
+> Un error que dice *cómo* se detuvo algo no dice *qué* lo llevó ahí. Separar
+> siempre: **causa inmediata** (agotó el presupuesto), **causa observada** (se
+> cicló en esta producción), **condición que lo permite** (la producción no tiene
+> cota). Arreglar la tercera creyendo que es la primera es cómo se sube `-n` y no
+> pasa nada.
+
+Y la tercera capa **no es culpa**: la gramática no obliga a repetir, el modelo
+elige. Una condición que permite un fallo y una causa que lo produce no son lo
+mismo, y confundirlas lleva a tratar como defecto estructural lo que es una
+decisión de otro sistema.
+
+### Lo que impidió verlo era una decisión de presentación
+
+La evidencia estaba en el mensaje desde la primera corrida. El banco la
+truncaba a 90 caracteres, y el corte caía **justo antes de la repetición**, que
+era la parte que decidía entre las dos hipótesis. Seis corridas con el dato
+delante y cortado.
+
+> Un resumen que trunca puede cortar exactamente lo que distingue dos
+> explicaciones. Cuando dos hipótesis compiten, ir al texto entero **antes** de
+> elegir entre ellas.
+
+Lo que lo resolvió fue `--keep-prompt`, construido un día antes para otra cosa
+—reproducir una corrida— y usado aquí para volver a correr esa inferencia con su
+marcador original y ver la salida completa. Un comando.
+
+### Y el hallazgo fue mejor que la hipótesis
+
+La hipótesis, de haber acertado, habría explicado **un** caso. Lo que se
+encontró explica siete: `ese.abc.abc.abc`, `thallyx.ing.ing`,
+`dev.thalyx.demo.localhost`, `dev.thalyx.demo.https.localhost`,
+`photoshop-1.ashx.ashx`, `python3.ipython3.ipython3` y el propio caso 4 son el
+mismo comportamiento cortado en momentos distintos.
+
+> Cuando la explicación correcta aparece, **suele explicar más de lo que se le
+> preguntó**. Una que explica exactamente un caso y nada más merece desconfianza.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
