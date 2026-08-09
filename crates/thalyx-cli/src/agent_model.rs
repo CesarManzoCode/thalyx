@@ -897,6 +897,7 @@ pub fn grammar_effect(
 
         let describe = |named: &Result<Named, String>| match named {
             Ok(Named::SaidNothingAtAll) => "GENERATED NOTHING (not a decline)".to_string(),
+            Ok(Named::Abstained) => "ABSTAINED — empty target list".to_string(),
             Ok(Named::Nothing) => "said something, named nothing".to_string(),
             Ok(Named::Attributable(id)) => format!("named {id}"),
             Ok(Named::Invented(id)) => format!("INVENTED {id}"),
@@ -927,17 +928,29 @@ pub fn grammar_effect(
     }
 
     println!();
+    // Two columns, two denominators, both printed. Reporting the constrained
+    // counts under `abstention_measured` — which drops the cases where the free
+    // arm generated nothing — put "invented 6" under "measured 2" on the light
+    // tier's run.
     println!(
-        "abstention cases measured on both arms   {}",
-        tally.abstention_measured()
+        "abstention cases, both arms answered     {}",
+        tally.abstention_paired
     );
     println!(
         "  with the grammar, invented             {}",
         tally.abstention_constrained_invented
     );
     println!(
+        "  with the grammar, ABSTAINED            {}",
+        tally.abstention_constrained_abstained
+    );
+    println!(
         "  without it, invented                   {}",
         tally.abstention_free_invented
+    );
+    println!(
+        "  without it, ABSTAINED                  {}",
+        tally.abstention_free_abstained
     );
     println!(
         "  without it, said something naming none {}",
@@ -950,6 +963,10 @@ pub fn grammar_effect(
     println!(
         "  without it, named only real ids        {}",
         tally.abstention_free_attributable
+    );
+    println!(
+        "  of those, comparable on both arms      {}",
+        tally.abstention_measured()
     );
     println!();
     println!(

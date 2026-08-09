@@ -52,6 +52,16 @@
 //! arm as prose called that answer silence, which is the reading that says the
 //! model declined.
 //!
+//! The second successful run taught the same lesson a third time, and this one
+//! cost the answer rather than the run. Under the grammar, asked `instala algo
+//! bueno`, the 3B emitted `{"operation": "install_module", "targets": []}` —
+//! **an abstention**, the behaviour six bench runs had reported as zero out of
+//! forty-six — and this module printed it as "said something, named nothing",
+//! which is also what it prints for a paragraph that rambled. The observation
+//! the investigation existed to find was written down as noise. Hence
+//! [`Named::Abstained`], which is a decision and never shares a word with an
+//! omission.
+//!
 //! [`Named::Attributable`] is deliberately weak and says so: it means real ids
 //! were named, not that they were the wrong answer. A proposal that names a
 //! listed module in a sentence that asked for nothing is wrong and lands there,
@@ -101,7 +111,24 @@ pub enum Named {
     /// two days earlier. A model that emitted zero tokens did not decline. It
     /// did not answer.
     SaidNothingAtAll,
+    /// Emitted a well-formed proposal whose target list was **empty**.
+    ///
+    /// This is not silence. It is the sentence `prompt.rs` teaches — *if
+    /// nothing here names a module, leave targets empty* — and the one
+    /// `grammar.rs` widened the target rule to make expressible. It reaches the
+    /// agent as [`crate::AgentError::NothingToDo`]. It is, in other words, the
+    /// behaviour six bench runs reported as zero out of forty-six.
+    ///
+    /// Kept apart from [`Named::Nothing`] for the third time in this module,
+    /// and the reason is the same one both times before: the first version of
+    /// this enum folded it in, so a model that abstained and a model that
+    /// rambled without naming anything printed the same words. The difference
+    /// is the entire question.
+    Abstained,
     /// Said something, and no module id was in it.
+    ///
+    /// Prose only. A proposal that named nothing is [`Named::Abstained`],
+    /// because a proposal saying nothing is a proposal that decided.
     Nothing,
     /// Named only ids that appear in what the model was told.
     ///
@@ -170,7 +197,10 @@ pub fn what_a_proposal_named(targets: &[String], transcript: &Transcript) -> Nam
 
     match targets.first() {
         Some(real) => Named::Attributable(real.clone()),
-        None => Named::Nothing,
+        // An empty list is the one thing a proposal can say that is a decision
+        // rather than an omission, and it has its own name so it can never be
+        // reported as the model having gone quiet.
+        None => Named::Abstained,
     }
 }
 
@@ -262,10 +292,30 @@ pub struct BothArms {
 /// marks on abstention.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tally {
+    /// Abstention cases where **both** arms produced an answer of some kind.
+    ///
+    /// The denominator the constrained column is counted over, and it is a
+    /// field rather than a derived sum because the first version had no such
+    /// thing: the constrained counts were printed under
+    /// [`Tally::abstention_measured`], which excludes the cases where the free
+    /// arm generated nothing, and the light tier's run therefore reported
+    /// *invented 6* directly beneath *measured 2*. Six out of two is not a
+    /// reading anyone can act on.
+    pub abstention_paired: usize,
     /// Abstention cases where the constrained arm invented an id.
     pub abstention_constrained_invented: usize,
+    /// Abstention cases where the constrained arm left the target list empty.
+    ///
+    /// The behaviour under study, on the arm that is actually shipped.
+    pub abstention_constrained_abstained: usize,
     /// Abstention cases where the free arm invented an id.
     pub abstention_free_invented: usize,
+    /// Abstention cases where the free arm left the target list empty.
+    ///
+    /// Kept apart from `abstention_free_silent` on the same grounds as
+    /// [`Named::Abstained`]: a model that answered with an empty proposal chose
+    /// to, and a model that wrote a paragraph naming nothing may not have.
+    pub abstention_free_abstained: usize,
     /// Abstention cases where the free arm said something naming no module.
     pub abstention_free_silent: usize,
     /// Abstention cases where the free arm generated no content at all.
@@ -292,11 +342,15 @@ impl Tally {
         };
 
         if arms.wants_abstention {
-            if matches!(constrained, Named::Invented(_)) {
-                self.abstention_constrained_invented += 1;
+            self.abstention_paired += 1;
+            match constrained {
+                Named::Invented(_) => self.abstention_constrained_invented += 1,
+                Named::Abstained => self.abstention_constrained_abstained += 1,
+                _ => {}
             }
             match free {
                 Named::Invented(_) => self.abstention_free_invented += 1,
+                Named::Abstained => self.abstention_free_abstained += 1,
                 Named::Nothing => self.abstention_free_silent += 1,
                 Named::Attributable(_) => self.abstention_free_attributable += 1,
                 Named::SaidNothingAtAll => self.abstention_free_said_nothing_at_all += 1,
@@ -318,6 +372,7 @@ impl Tally {
     /// is nothing to set beside the constrained arm.
     pub fn abstention_measured(&self) -> usize {
         self.abstention_free_invented
+            + self.abstention_free_abstained
             + self.abstention_free_silent
             + self.abstention_free_attributable
     }
@@ -430,6 +485,97 @@ mod tests {
         assert_eq!(
             what_it_named("I could not find a module matching that.", &transcript),
             Named::Nothing
+        );
+    }
+
+    #[test]
+    fn an_empty_target_list_is_a_decision_and_not_a_model_that_went_quiet() {
+        // The defect this replaced, found in the 3B's first successful run of
+        // this probe. Asked `instala algo bueno` under the grammar, it emitted
+        // an empty target list — which is exactly the abstention six bench runs
+        // had reported as zero out of forty-six — and the probe printed "said
+        // something, named nothing", the same words it uses for a paragraph
+        // that rambled. The one observation the whole investigation was looking
+        // for was written down as noise.
+        let transcript = told("instala algo bueno");
+        assert_eq!(
+            what_an_answer_named(
+                r#"{"operation": "install_module", "targets": []} [end of text]"#,
+                &transcript,
+            ),
+            Named::Abstained
+        );
+    }
+
+    #[test]
+    fn abstaining_is_not_the_same_word_as_generating_nothing_or_as_naming_nothing() {
+        // Three things a human reading a run has to be able to tell apart, and
+        // this module has now folded two of them together twice. Stated once,
+        // as a claim, so a third folding fails here rather than in a run.
+        let transcript = told("instala algo bueno");
+        let abstained = what_an_answer_named(
+            r#"{"operation": "install_module", "targets": []}"#,
+            &transcript,
+        );
+        let generated_nothing = what_an_answer_named(" [end of text]", &transcript);
+        let named_nothing = what_an_answer_named("I could not find one.", &transcript);
+
+        assert_eq!(abstained, Named::Abstained);
+        assert_eq!(generated_nothing, Named::SaidNothingAtAll);
+        assert_eq!(named_nothing, Named::Nothing);
+        assert_ne!(abstained, generated_nothing);
+        assert_ne!(abstained, named_nothing);
+    }
+
+    #[test]
+    fn the_constrained_column_is_counted_over_the_cases_the_constrained_arm_answered() {
+        // The light tier's run printed "with the grammar, invented 6" directly
+        // under "abstention cases measured on both arms 2", because the
+        // constrained counts were reported against a denominator that drops
+        // every case where the *free* arm generated nothing. Six out of two is
+        // not a number anyone can act on.
+        let mut tally = Tally::default();
+        for _ in 0..6 {
+            tally.count(&arms(
+                Named::Invented("org.openjdk.jmh".to_string()),
+                Named::SaidNothingAtAll,
+                true,
+            ));
+        }
+        for _ in 0..2 {
+            tally.count(&arms(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                true,
+            ));
+        }
+
+        assert_eq!(tally.abstention_paired, 8);
+        assert_eq!(tally.abstention_constrained_invented, 6);
+        assert_eq!(tally.abstention_measured(), 2);
+        assert!(
+            tally.abstention_constrained_invented <= tally.abstention_paired,
+            "the constrained column is printed over a denominator smaller than itself"
+        );
+    }
+
+    #[test]
+    fn an_abstention_is_counted_on_whichever_arm_produced_it() {
+        let mut tally = Tally::default();
+        tally.count(&arms(Named::Abstained, Named::Abstained, true));
+        tally.count(&arms(
+            Named::Abstained,
+            Named::Invented("com.adobe.photoshop".to_string()),
+            true,
+        ));
+
+        assert_eq!(tally.abstention_constrained_abstained, 2);
+        assert_eq!(tally.abstention_free_abstained, 1);
+        assert_eq!(tally.abstention_free_invented, 1);
+        assert_eq!(
+            tally.abstention_measured(),
+            2,
+            "an empty proposal is an answer, so it belongs in what was compared"
         );
     }
 
@@ -708,7 +854,7 @@ mod tests {
         );
         assert_eq!(
             what_a_proposal_named(&[], &transcript),
-            Named::Nothing,
+            Named::Abstained,
             "an empty target list is how a proposal abstains"
         );
         assert_eq!(
