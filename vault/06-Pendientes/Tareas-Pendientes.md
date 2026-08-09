@@ -63,10 +63,20 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       al soltarse, porque una sesión que sale sin hacerlo deja la máquina
       inservible. Encontró dos defectos sobre quién es dueño de `stdin`, y ahora
       hay **un solo lector**: `term::read_answer()`.
-- [ ] **4. `crear`, `copiar`, `mover`, `borrar`, `renombrar`.** Depende del 2 —
-      ver antes de destruir. `Coherencia-Doble-Ruta` ya contesta la pregunta de
-      diseño: lo que el humano hace en `/home` **no entra al journal** y el
-      rollback no lo toca, así que estos verbos no escriben journal.
+- [x] **4. `mkdir`, `touch`, `cp`, `mv`, `rm`** — hecho el 2026-08-09, con
+      comodines `*` y `?`. Primera pieza construida bajo el decreto del objetivo:
+      cada operación devuelve un `Done` con **qué pasó, dónde, y los bytes
+      exactos**, y las dos caras leen ese mismo hecho. Nada sobrescribe sin
+      pedirlo: `Exists` es su propio error. Un enlace se copia como enlace y se
+      borra como enlace, nunca como lo que apunta. `*` no cruza `/`, que es lo
+      que impide que `rm *` alcance carpetas que nadie nombró, y no toca ocultos
+      salvo que el patrón empiece con punto. `rm` con varios blancos los lista
+      **antes** de tocar nada, porque `/home` es el único sitio que ningún
+      rollback nuestro puede devolver.
+- [ ] **4b. La cara estructurada, expuesta.** El `Done` existe y hoy sólo lo lee
+      el impresor humano. Falta que un programa pueda pedirlo y parsearlo, que
+      es el punto entero del decreto del objetivo. **Ninguna de las cuatro
+      ventajas está expuesta todavía a nadie.**
 - [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
       corregir un archivo de configuración desde la máquina.
 - [ ] **6. `buscar`** por nombre y por contenido.
