@@ -1054,6 +1054,21 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     println!();
     match &standing {
         Standing::TheMachine => {
+            // Files first, and not out of politeness. There is no shell behind
+            // this session, so a verb that is not on this list does not exist
+            // for the person holding the machine — and the first thing anybody
+            // does on a computer is look at what is on it.
+            //
+            // The standard names are the ones taught here, by Cesar's decision
+            // of 2026-08-09: a system whose first screen offers a vocabulary
+            // nobody has seen reads as a toy, and adoption is the whole reason
+            // that matters. The Spanish verbs all still work.
+            println!("  `ls` shows what is here, `cat <archivo>` shows what is in");
+            println!("  one, `cd <carpeta>` moves, `pwd` says where you are and");
+            println!("  `clear` wipes the screen. `cd` alone goes home, `ls -a`");
+            println!("  includes hidden names and `ls -l` shows sizes.");
+            println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
+            println!("  `rm <cosa>` change what is there. `*` and `?` work.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1066,6 +1081,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
+            println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
+            println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1085,6 +1102,17 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 
     let mut watch = KernelWatch::from_now();
 
+    // Where the person is. Carried across lines because that is what makes a
+    // relative name mean anything — without it every verb would need the whole
+    // path typed out, which is the difference between a system somebody can work
+    // in and one they can only inspect.
+    let mut here = crate::files::Where::start();
+
+    // Opened once and held: raw mode is a change to the terminal that outlives
+    // this program, and every transition in and out is a chance to leave it
+    // broken for whoever comes next.
+    let mut terminal = crate::term::Terminal::open();
+
     loop {
         // Before the prompt and not after it, so the notice never lands on a
         // line the human is in the middle of typing — which is the whole defect
@@ -1092,14 +1120,20 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         if let Some(notice) = watch.since_last_prompt() {
             println!("{notice}");
         }
-        print!("  > ");
-        std::io::stdout().flush()?;
-
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line)? == 0 {
-            println!();
-            break;
-        }
+        // The location is in the prompt rather than only in `donde`, because a
+        // relative name means nothing without it: `leer notas.txt` reads a
+        // different file depending on where the person is standing, and a prompt
+        // that hid that would make the same words do different things with no
+        // warning on screen.
+        let prompt = format!("  {} > ", here.briefly());
+        let at = here.at().to_path_buf();
+        let line = match terminal.read_line(&prompt, |before| completions(&at, before))? {
+            crate::term::Ended::Line(line) => line,
+            // Ctrl-C throws the line away and gives a fresh prompt. It is not a
+            // way out of the session, because on the image there is nowhere out.
+            crate::term::Ended::Abandoned => continue,
+            crate::term::Ended::Closed => break,
+        };
         let line = line.trim();
 
         match line {
@@ -1129,7 +1163,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             "apagar" | "poweroff" => {
                 power_off(&standing);
             }
-            "modulos" | "módulos" => {
+            "modules" | "modulos" | "módulos" => {
                 list_modules(store);
             }
             "disponibles" | "available" | "repo" => {
@@ -1155,6 +1189,62 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "discos" | "disks" => {
                 list_disks();
+            }
+            // ─────────────────────────────────────────── files, layer 1 of the decree
+            //
+            // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
+            // work without the agent. These four are the smallest set that makes
+            // the rest of it possible — a person who cannot see what is there
+            // cannot copy, move or delete it either.
+            "clear" | "limpiar" | "cls" => {
+                crate::files::clear();
+            }
+            "pwd" | "donde" | "dónde" | "where" => {
+                crate::files::where_am_i(&here);
+            }
+            _ if starts_any(line, &["cd ", "ir ", "go "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::go(&mut here, rest);
+            }
+            // Unlike `instalar` and `correr`, the bare verb is not a question:
+            // `ir` with nothing after it means home, which is somewhere a person
+            // always wants to be able to get back to in one word.
+            "cd" | "ir" | "go" => {
+                crate::files::go(&mut here, "");
+            }
+            _ if starts_any(line, &["ls ", "ver ", "look "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::look(&here, rest);
+            }
+            "ls" | "ver" | "look" => {
+                crate::files::look(&here, "");
+            }
+            _ if starts_any(line, &["cat ", "leer ", "read "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::read(&here, rest);
+            }
+            _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::make(&here, rest, true)?;
+            }
+            _ if starts_any(line, &["touch ", "crear "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::make(&here, rest, false)?;
+            }
+            _ if starts_any(line, &["cp ", "copiar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::transfer(&here, rest, false)?;
+            }
+            _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::transfer(&here, rest, true)?;
+            }
+            _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::erase(&here, rest)?;
+            }
+            "cat" | "leer" | "read" => {
+                crate::files::read(&here, "");
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1206,6 +1296,107 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 //
 // So `discos` and `instalar-en <disco>`. They are the last two words the exit
 // criterion needed and they are the reason the criterion is reachable at all.
+
+/// Every verb the session answers to, in the order they are offered.
+///
+/// One list, used by Tab and nothing else — the dispatch still matches its own
+/// arms, so this cannot make a verb *work*. That is on purpose and it is the
+/// honest arrangement: a name here that the dispatch does not have completes and
+/// then fails, which is visible immediately, while the reverse — a working verb
+/// missing from here — costs nobody anything.
+const VERBS: &[&str] = &[
+    "ls",
+    "cat",
+    "cd",
+    "pwd",
+    "clear",
+    "modules",
+    "available",
+    "install",
+    "run",
+    "permissions",
+    "rollback",
+    "memory",
+    "status",
+    "kernel",
+    "disks",
+    "install-onto",
+    "exit",
+    "poweroff",
+    "ver",
+    "leer",
+    "ir",
+    "donde",
+    "limpiar",
+    "modulos",
+    "disponibles",
+    "instalar",
+    "correr",
+    "permisos",
+    "revertir",
+    "recuerdos",
+    "estado",
+    "nucleo",
+    "discos",
+    "instalar-en",
+    "salir",
+    "apagar",
+];
+
+/// What could follow what has been typed so far.
+///
+/// The first word is a verb and everything after it is a path, which is the
+/// whole rule. Offering file names where a verb belongs would put `Documentos`
+/// at the start of a line, where nothing can run it.
+fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
+    if !before.contains(' ') {
+        return VERBS.iter().map(|verb| verb.to_string()).collect();
+    }
+
+    let fragment = before.rsplit(' ').next().unwrap_or("");
+    // The directory being completed *in* is whatever the fragment names up to
+    // its last slash, so `cat Documentos/no` looks inside `Documentos`.
+    let (folder, partial) = match fragment.rsplit_once('/') {
+        Some((folder, partial)) => (thalyx_files::resolve(here, folder), partial.to_string()),
+        None => (here.to_path_buf(), fragment.to_string()),
+    };
+    let prefix = &fragment[..fragment.len() - partial.len()];
+
+    let Ok(listing) = thalyx_files::list(&folder) else {
+        return Vec::new();
+    };
+    listing
+        .entries
+        .iter()
+        // Hidden names appear only once the person has typed the dot that says
+        // they want them, which is the same rule `ls` follows and for the same
+        // reason: thirty-five of them would bury every real answer.
+        .filter(|entry| partial.starts_with('.') || !thalyx_files::is_hidden(&entry.name))
+        .map(|entry| {
+            let name = entry.name.to_string_lossy();
+            // The slash matters: it is what lets a second Tab descend instead of
+            // stopping at the folder.
+            let tail = if entry.kind == thalyx_files::Kind::Directory {
+                "/"
+            } else {
+                ""
+            };
+            format!("{prefix}{name}{tail}")
+        })
+        .collect()
+}
+
+/// Whether a line opens with any of these verbs, so a verb can have more than
+/// one name without the dispatch growing a clause per spelling.
+///
+/// Cesar decided on 2026-08-09 that the standard names lead and the Spanish ones
+/// keep working: somebody who arrives from Linux types `ls` and it answers, and
+/// somebody who learned Thalyx's own words is not made to unlearn them. A name
+/// is not a foreign program — every one of these is the same Rust inside
+/// `thalyx`, and `make -C image count` still says one.
+fn starts_any(line: &str, verbs: &[&str]) -> bool {
+    verbs.iter().any(|verb| line.starts_with(verb))
+}
 
 /// What is on a partition right now, read off the disk rather than remembered.
 ///
@@ -1429,10 +1620,11 @@ fn install_onto(disk: &str) {
     }
     print!("  Type the disk's path to confirm: ");
     let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err()
-        || answer.trim() != disk.display().to_string()
-    {
+    let answer = crate::term::read_answer()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if answer.trim() != disk.display().to_string() {
         println!();
         println!("  That is not {}. Nothing was written.", disk.display());
         println!();

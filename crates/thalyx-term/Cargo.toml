@@ -1,0 +1,11 @@
+[package]
+name = "thalyx-term"
+description = "The line a person is typing: editing it, remembering it, finishing it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

@@ -919,6 +919,7 @@ dependencies = [
  "thalyx-btrfs",
  "thalyx-contract",
  "thalyx-core",
+ "thalyx-files",
  "thalyx-graph",
  "thalyx-install",
  "thalyx-journal",
@@ -928,6 +929,7 @@ dependencies = [
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",
+ "thalyx-term",
  "thalyx-watch",
  "toml",
  "uuid",
@@ -967,6 +969,14 @@ dependencies = [
  "thalyx-syscall",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "thalyx-files"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -1075,6 +1085,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "thalyx-term"
+version = "0.1.0"
 
 [[package]]
 name = "thalyx-watch"

@@ -7,6 +7,30 @@ tags: [pruebas, ci, atomicidad, evidencia]
 
 # Estrategia de pruebas
 
+## Dos lectores de la misma entrada, y uno que guarda lo que sobra
+
+**Descubierta el 2026-08-09, colgando la suite entera de `exit_criterion`.**
+
+Un `read` sobre la entrada devuelve **todo lo que haya llegado**, no una línea.
+El editor de línea nuevo guardaba lo que sobraba para la siguiente vuelta, que es
+lo correcto — sin eso, teclear por adelantado pierde todo lo que sigue al primer
+Return.
+
+Pero `instalar` pide una confirmación, y esa confirmación leía `stdin` **por su
+cuenta**. La `y` que la contestaba ya estaba en el búfer del editor: fuera del
+kernel, dentro del proceso, invisible para quien la esperaba. Seis sitios del
+CLI leían `stdin` directo.
+
+> **Dos lugares que leen la misma entrada, y uno que guarda lo que sobra, no
+> pueden coexistir.** El segundo espera para siempre bytes que ya se leyeron.
+
+Lo que la hace difícil de ver es que **el síntoma no es un error, es un
+silencio**: nada falla, nada se imprime, el proceso simplemente no vuelve. Y no
+la encuentra ninguna prueba unitaria, porque cada mitad es correcta por separado.
+
+La corrección no es coordinar los dos: es que haya **un solo dueño de la
+entrada**. `term::read_answer()`, y los seis sitios pasan por él.
+
 ## Por qué existe esta nota
 
 La atomicidad del commit y la garantía de rollback son **las afirmaciones centrales de Thalyx**. Hasta el 1 de agosto de 2026 nada en la bóveda verificaba ninguna de las dos: eran diseño, no evidencia.

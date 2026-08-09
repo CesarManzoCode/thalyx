@@ -9,6 +9,155 @@ tags: [filosofia, core, no-negociable]
 
 El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
 
+## El objetivo, y todo lo demás es medio
+
+**Decretado por Cesar el 2026-08-09.** Es la frase contra la que se juzga
+cualquier decisión de este repositorio:
+
+> todo lo que haremos girará en torno a que un LLM se desenvuelva mejor en
+> nuestro sistema, todo lo demás son medios para lograrlo, y sí, el humano
+> deberá tener todo lo que tiene en Linux, pero no es un objetivo, es una
+> obligación que hay que cumplir.
+
+Dos frases y hay que leerlas juntas:
+
+1. **El objetivo es uno.** Que un LLM trabaje mejor aquí que en cualquier otro
+   sistema. No «también»: es el que hay.
+2. **El camino humano es obligación, no meta.** [[Principio-Doble-Ruta]] se
+   cumple entero — el humano tiene todo lo que tiene en Linux — pero se cumple
+   *porque hay que cumplirlo*, no porque sea hacia dónde va el proyecto.
+
+### Cómo se resuelve un choque entre las dos
+
+**Gana el LLM, y el humano conserva acceso completo aunque sea menos cómodo.**
+Nunca al revés: la comodidad humana no puede costarle capacidad al modelo.
+
+Esto no es teórico y ya ocurrió el mismo día. `ls` salía en columnas, con
+tamaños redondeados a `1.2 kB` y los archivos ocultos escondidos — las tres
+decisiones tomadas para un ojo humano, y **las tres peores para una máquina**:
+las columnas son más difíciles de parsear que una cosa por renglón, `1.2 kB` es
+un número que perdió precisión, y ocultar información a un agente que la pide es
+quitarle capacidad. Se tomaron sin notar siquiera que había una elección, porque
+el objetivo no estaba escrito.
+
+### La consecuencia de ingeniería, y es la que hay que recordar
+
+**Cada cosa que se construya nace con dos caras**: la que ve el humano y una
+forma estructurada que un programa puede pedir y parsear sin ambigüedad. La
+segunda no se agrega después — si se agrega después, no se agrega.
+
+Y lo que hace que la respuesta sea *mejor* y no *igual* ya existe y no está
+expuesto a nadie: el índice semántico ([[FS-en-Grafo]]), el rollback
+([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]]) y
+los permisos por tarea ([[Permisos-JIT]]).
+
+## Thalyx es el mejor sitio donde un LLM puede trabajar
+
+**Decretado por Cesar el 2026-08-09**, después de que yo lo malinterpretara tres
+veces seguidas:
+
+> estoy hablando de cosas ya hechas, cosas como Claude Code y demás, nunca dije
+> que fuéramos a hacer nuestro agente de codeo […] estoy hablando de que nuestro
+> sistema debe estar preparado para potenciar a cualquier LLM, que cualquier LLM
+> se pueda mover mejor en nuestro sistema que en cualquier otro, no me importa
+> cómo lo haremos.
+
+### Qué NO es esto, porque ahí me equivoqué tres veces
+
+- **No es sobre el agente local de Thalyx.** Las cuatro gamas de
+  [[Gamas-de-Modelo]] son para enrutar módulos y tareas del sistema. La
+  abstención 0 de 55 es una medición de un 3B en ese oficio y **no dice nada**
+  sobre un modelo frontera escribiendo código.
+- **No es sobre construir un agente de codeo propio.** No está descartado; no es
+  de lo que trata esto.
+- **No es sobre que Thalyx llame a una API.** El decreto de
+  [[Agente-Conversacional]] sobre la nube en Fase 1 **no está en discusión** y
+  no lo toca esto: ahí Thalyx es el que llama. Aquí Thalyx es **el anfitrión**.
+
+### Qué sí es, y es la vara
+
+**Un agente ajeno, ya escrito, corriendo sobre Thalyx, y trabajando mejor que
+sobre Linux o macOS.** No igual: mejor.
+
+### El estado real, y es duro
+
+**Hoy Claude Code no podría arrancar en Thalyx.** No trabajaría mal — no
+arrancaría. Necesita ejecutar procesos, leer y escribir archivos, `grep`,
+`find`, `git`, un runtime. Thalyx tiene el kernel, un programa y veinte verbos.
+
+Eso convierte esta nota en la medida de todo lo demás: **cada verbo construido
+es una cosa más que un agente ajeno puede usar**, y por eso la decisión del
+2026-08-09 de llamarlos `ls`, `cd`, `cat` es doblemente correcta — un agente que
+sabe `ls` encuentra `ls`.
+
+### Dónde Thalyx puede ser mejor y no sólo alcanzar
+
+Igualar a Linux es trabajo. Superarlo es lo que pide el decreto, y Thalyx ya
+tiene con qué; nada de esto existe en otro sistema:
+
+- **El índice semántico.** Un agente puede preguntar por estructura en vez de
+  hacer `grep` a ciegas. Ver [[FS-en-Grafo]].
+- **Journal, snapshots y rollback.** *«Intenta esto y si sale mal deshazlo»* no
+  existe en ningún sistema operativo. Ver [[Journal-y-Snapshots]].
+- **Procedencia por campo.** El sistema sabe qué vino del humano, qué de la
+  máquina y qué de un texto ajeno — que es exactamente la distinción que un
+  agente no puede hacer solo. Ver [[Marcado-de-Origen]].
+- **Permisos por tarea, mediados.** Un agente puede recibir alcance acotado en
+  vez de todo o nada. Ver [[Permisos-JIT]].
+
+Eso es la respuesta a *«mejor que cualquier otro»*, y ninguna de las cuatro está
+expuesta todavía a un agente ajeno.
+
+## El LLM es para quien se construye, no un consumidor del sistema
+
+**Decretado por Cesar el 2026-08-09**, después de que yo le planteara como
+decisión abierta cómo debía aprender el agente a tocar archivos:
+
+> no hay nada que discutir, no sé ni porqué lo preguntas, la fundación de esto
+> es que el LLM la tenga lo más fácil posible, que todo esté hecho para que el
+> LLM lo entienda y ejecute mejor.
+
+Eso **no es una preferencia de diseño, es el criterio**. Cuando una decisión
+tenga dos formas y una le facilite el trabajo al modelo, ésa es la forma, y no
+hace falta preguntarlo.
+
+### Qué corrige exactamente
+
+La frase de arriba —*«a través de la API de Thalyx, no a través de POSIX»*— se
+había estado leyendo como si el objetivo fuera **restringir** al agente. No lo
+es. Es la misma confusión que hubo con [[Principio-Doble-Ruta]] y la shell:
+prohibido es incrustarse en el sistema de alguien más, no tener la capacidad.
+Que la superficie sea de Thalyx existe para que cada acción sea **atribuible y
+mediada**, no para que el modelo pueda menos.
+
+El ejemplo que Cesar puso es el que zanja el punto: un agente de programación
+moderno ejecuta comandos, y por eso sirve.
+
+### La consecuencia práctica, y es medible
+
+Hoy la gramática del agente tiene **una sola operación**, `install_module`. Ese
+es el techo real, y no es filosófico: el modelo no puede pedir ver una carpeta
+porque no existe la producción que lo diría.
+
+Y hay una segunda razón, más incómoda: **Thalyx casi no tiene qué ejecutar**. El
+conocimiento que un LLM ya trae sobre Linux no tiene dónde aterrizar mientras la
+máquina tenga veinte verbos. Por eso construir los verbos y hacer capaz al
+agente **son el mismo trabajo, no dos**. Y por eso la decisión del 2026-08-09 de
+llamarlos `ls`, `cd`, `cat` en vez de sólo `ver`, `ir`, `leer` es también una
+decisión sobre el modelo: los primeros los ha visto mil millones de veces, los
+segundos hay que enseñárselos en el prompt.
+
+### Lo que esto no cambia
+
+La atribución. **La abstención sale 0 de 55**: el modelo nombra ids que nadie
+mencionó, y lo que lo detiene es que el núcleo comprueba cada id contra los
+canales del transcript. Facilitarle el trabajo al modelo es el criterio;
+quitarle la comprobación al núcleo no es facilitarle nada, es quitarle a Cesar
+la última línea que lo protege de un error del modelo. Las dos cosas conviven —
+un agente de programación moderno también pide permiso antes de tocar algo.
+
+Ver [[Agente-Conversacional]] y [[Gamas-de-Modelo]].
+
 ## El decreto fundacional
 
 *Escrito por Cesar Manzo el 2026-08-03. Es el texto del que nace todo lo demás

@@ -8,6 +8,7 @@ mod agent;
 mod agent_model;
 mod dev;
 mod enforce;
+mod files;
 mod graph;
 mod image;
 mod init;
@@ -19,6 +20,7 @@ mod run;
 mod session;
 mod snapshot;
 mod store_disk;
+mod term;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;

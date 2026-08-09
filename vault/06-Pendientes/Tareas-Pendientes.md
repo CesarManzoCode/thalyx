@@ -46,6 +46,120 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Qué lleva el store de una máquina recién instalada.** Queda vacío: la imagen no puede llevar el `greeter` —lleva el kernel y un programa— así que una PC recién instalada arranca con un store bueno y **nada que instalar**, y los pasos 2 a 6 del criterio no se pueden hacer *en ella*. En la máquina de desarrollo sí, porque `make -C image store` pone el bundle en el repositorio. Es la pregunta de cómo llega el software a una máquina que no es ésta, o sea la Fase 2. Ver [[Criterio-de-Salida-Fase-1]].
 
 
+## La terminal usable, decidida el 2026-08-09
+
+Cesar preguntó cuánto falta para un sistema en el que se pueda trabajar sin el
+agente, y la respuesta medida contra el código fue que la capa 1 de
+[[Principio-Doble-Ruta]] —no negociable— no tenía ninguna implementación. El
+orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor.
+
+- [x] **1. Dónde estoy y moverme** — `ir`, `donde`. `/home` ya estaba montado
+      desde el subvolumen `user`; lo que faltaban eran los verbos.
+- [x] **2. `ver` y `leer`** — mirar sin tocar. `crates/thalyx-files`.
+- [x] **3. La terminal como terminal** — hecho el 2026-08-09. Flechas, borrar a
+      media línea, historial de 500, y tab que completa verbos al principio de
+      la línea y nombres de archivo después. `crates/thalyx-term` es puro y se
+      prueba sin terminal; el modo crudo es una guarda que devuelve la terminal
+      al soltarse, porque una sesión que sale sin hacerlo deja la máquina
+      inservible. Encontró dos defectos sobre quién es dueño de `stdin`, y ahora
+      hay **un solo lector**: `term::read_answer()`.
+- [x] **4. `mkdir`, `touch`, `cp`, `mv`, `rm`** — hecho el 2026-08-09, con
+      comodines `*` y `?`. Primera pieza construida bajo el decreto del objetivo:
+      cada operación devuelve un `Done` con **qué pasó, dónde, y los bytes
+      exactos**, y las dos caras leen ese mismo hecho. Nada sobrescribe sin
+      pedirlo: `Exists` es su propio error. Un enlace se copia como enlace y se
+      borra como enlace, nunca como lo que apunta. `*` no cruza `/`, que es lo
+      que impide que `rm *` alcance carpetas que nadie nombró, y no toca ocultos
+      salvo que el patrón empiece con punto. `rm` con varios blancos los lista
+      **antes** de tocar nada, porque `/home` es el único sitio que ningún
+      rollback nuestro puede devolver.
+- [ ] **4b. La cara estructurada, expuesta.** El `Done` existe y hoy sólo lo lee
+      el impresor humano. Falta que un programa pueda pedirlo y parsearlo, que
+      es el punto entero del decreto del objetivo. **Ninguna de las cuatro
+      ventajas está expuesta todavía a nadie.**
+- [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
+      corregir un archivo de configuración desde la máquina.
+- [ ] **6. `buscar`** por nombre y por contenido.
+- [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
+      va sobre `/proc`.
+- [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
+      red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
+      necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
+      el store de una máquina recién instalada», que es la Fase 2. **Sólo se
+      puede verificar en el hierro de Cesar.**
+- [ ] **9. Decidir si Thalyx tiene lenguaje de shell** — tuberías, redirección,
+      comodines, variables. **Decreto antes que código.** Trece verbos sueltos y
+      un lenguaje que los compone son proyectos distintos, y es la diferencia
+      entre que alguien que viene de Linux sienta que sigue en casa o no.
+- [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Aplazado por Cesar
+      el 2026-08-09 —*«déjalo bloqueado pero cuando tengamos que decidir,
+      explícamelos bien»*— así que **queda una deuda de explicación, no sólo una
+      decisión**: cuando esto se retome hay que exponerle los trade-offs
+      completos, no en tres líneas. Lo que hay que cubrir: qué gana un
+      desarrollador y qué pierde un usuario que no lo es; por qué hoy la
+      pregunta es hipotética (sin red y con el store vacío no existe el programa
+      que se querría correr); qué superficie abre exactamente —cualquier byte
+      que aterrice en `/home`, bajado o escrito por un módulo con permiso, puede
+      volverse un proceso—; y cuáles son las salidas intermedias, como marcar
+      ejecutable archivo por archivo o un subdirectorio propio sin `NOEXEC`.
+      **Nada tocado.**
+
+- [x] **Decidir cómo se llaman los comandos** — resuelto el 2026-08-09:
+      **estándar primero, español también.** `ls`, `cd`, `cat`, `pwd`, `clear`
+      son los que enseña el banner y los que aprende la gente; `ver`, `leer`,
+      `ir`, `donde`, `limpiar` siguen funcionando, igual que los nueve verbos en
+      español que ya existían. La razón es de adopción y es de Cesar: un sistema
+      cuya primera pantalla ofrece un vocabulario que nadie ha visto *«parece
+      juguete más que sistema operativo serio»*. **Un nombre no es un programa
+      ajeno** — todos son el mismo Rust dentro de `thalyx`, y `make -C image
+      count` sigue diciendo uno.
+
+- [x] **Decidir si Thalyx tiene lenguaje de terminal** — decidido a medias el
+      2026-08-09, **partido en dos y a propósito.** Los comodines (`*.txt`) y la
+      redirección a archivo (`>`) entran junto con copiar/mover/borrar, porque
+      son notación de uso diario y no un lenguaje. Las tuberías (`|`) van
+      después. **Los guiones y las variables quedan sin decidir**, y no por
+      pereza: ahí la pregunta deja de ser «¿tiene notación?» y pasa a ser «¿tiene
+      lenguaje de programación?», que es como la gente termina construyendo
+      software encima del sistema sin pasar por los módulos — exactamente lo que
+      [[Filosofia-Fundacional]] apuntaba con *«no a través de scripts de
+      shell»*.
+
+- [ ] **Ampliar la gramática del agente más allá de `install_module`.** Es el
+      techo real de lo que el agente puede hacer, y no es filosófico: la
+      producción `operation ::= "install_module"` tiene **una sola
+      alternativa**, así que el modelo no puede pedir ver una carpeta porque no
+      existe la forma de decirlo. Bajo el decreto del 2026-08-09
+      ([[Filosofia-Fundacional]], «el LLM es para quien se construye») esto deja
+      de ser una decisión abierta y pasa a ser trabajo pendiente: cada verbo que
+      el humano gana debe tener su operación. Va **después** de que existan los
+      verbos, porque una operación que nombra algo que la máquina no sabe hacer
+      no se puede probar. Dos cosas que hay que resolver al hacerlo: que la
+      abstención siga siendo expresable —fue imposible una vez y nadie lo notó
+      hasta escribir el banco— y que cada argumento nuevo tenga dónde
+      comprobarse contra los canales, como los ids tienen la atribución.
+
+## Que un agente ajeno pueda trabajar aquí
+
+Decretado el 2026-08-09: la vara es que **Claude Code y cualquier otro agente ya
+escrito corran sobre Thalyx mejor que sobre Linux o macOS**. Ver
+[[Filosofia-Fundacional]]. Hoy **no arrancarían**, así que esto no es afinar,
+es construir.
+
+- [ ] **Averiguar qué necesita exactamente un agente ajeno para arrancar.** No
+      por suposición: tomar Claude Code, mirar qué llama, y hacer la lista. Es
+      barato y no se ha hecho, y sin ella todo lo de abajo es adivinado.
+- [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
+      instalados. Cruza con la decisión de `NOEXEC` en `/home`.
+- [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
+      está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
+      no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback
+      ([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]])
+      y los permisos por tarea ([[Permisos-JIT]]).
+- [ ] **Decidir por dónde entra un agente ajeno.** ¿Es un módulo con permisos
+      amplios, un proceso aparte, o algo nuevo? No decidido, y no urge hasta que
+      haya qué ejecutar.
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].

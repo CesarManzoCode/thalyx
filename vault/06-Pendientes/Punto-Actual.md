@@ -14,6 +14,318 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Quedó escrito para quién se construye, y los verbos ya cambian archivos — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Dos decretos, y son la vara de todo lo demás
+>
+> **El objetivo es uno: que un LLM trabaje mejor aquí que en cualquier otro
+> sistema.** Todo lo demás es medio, y el camino humano se cumple entero porque
+> es obligación, no porque sea hacia dónde va el proyecto. Cuando las dos cosas
+> choquen **gana el LLM**, y el humano conserva acceso completo aunque le salga
+> menos cómodo.
+>
+> El choque ya había ocurrido el mismo día sin que nadie lo notara: `ls` en
+> columnas, tamaños redondeados a `1.2 kB` y ocultos escondidos son tres
+> decisiones tomadas para un ojo humano, y las tres son peores para una máquina.
+> Se tomaron sin notar que había una elección, porque el objetivo no estaba
+> escrito. Ahora lo está.
+>
+> **Y la vara es un agente ajeno**, no el agente local de Thalyx: Claude Code y
+> los suyos moviéndose aquí mejor que en Linux. Thalyx como **anfitrión**, no
+> como llamador. Eso deja ver el estado real, que es duro: hoy Claude Code no
+> arrancaría en Thalyx. No trabajaría mal — **no arrancaría**. Necesita ejecutar
+> procesos, leer y escribir archivos, `grep`, `find`, `git`, un runtime, y aquí
+> hay el kernel, un programa y veinte verbos.
+>
+> Lo que hace que la vara sea *mejor* y no *igual* **ya existe y no está expuesto
+> a nadie**: el índice semántico, el rollback, la procedencia por campo y los
+> permisos por tarea. Ningún otro sistema operativo ofrece «intenta esto y si
+> sale mal deshazlo».
+>
+> La consecuencia de ingeniería es la que hay que recordar: **cada cosa nace con
+> dos caras**, la humana y una estructurada que un programa pueda parsear. La
+> segunda no se agrega después — si se agrega después, no se agrega.
+>
+> Detalle en [[Filosofia-Fundacional]], las dos secciones nuevas.
+>
+> ### `mkdir`, `touch`, `cp`, `mv`, `rm` — el punto 4, hecho
+>
+> Con comodines `*` y `?`. **Primera pieza construida bajo el decreto**, y se
+> nota en la forma: ninguna operación imprime lo que hizo. Devuelve un `Done` con
+> **qué pasó, dónde acabó y los bytes exactos**; la cara humana formatea ese
+> hecho y la estructurada leerá el mismo. Un segundo camino que compone su propia
+> frase es una segunda versión de los hechos.
+>
+> Cinco decisiones, cada una con la falla que evita escrita al lado:
+>
+> - **Nada sobrescribe sin pedirlo.** `Exists` es su propio error, porque
+>   sobrescribir es otra petición y cuesta un archivo cuando se supone.
+> - `make_file` usa `create_new`: comprobar y crear son dos momentos y entre
+>   ellos puede aparecer algo. Que decida el kernel es la única versión sin hueco.
+> - **Un enlace se copia como enlace y se borra como enlace.** Seguirlo
+>   duplicaría el destino, y un enlace a un ancestro llenaría el disco.
+> - `mv` cae a copiar-y-borrar ante `EXDEV`, que aquí es el caso ordinario y no
+>   el exótico: `/home` y `/opt/thalyx` son subvolúmenes distintos.
+> - **`*` no cruza `/`**, y no alcanza ocultos salvo que el patrón empiece con
+>   punto. Sin lo primero, borrar `*` llega a todas las carpetas de abajo; sin lo
+>   segundo, `rm *` se lleva la configuración de alguien.
+>
+> El comparador de patrones es iterativo con punto de retroceso y no recursivo:
+> cuarenta estrellas contra un nombre largo es una pila que la forma recursiva no
+> puede pagar, y un patrón así es justo lo que alguien teclea por accidente.
+>
+> `rm` con varios blancos **los lista antes de tocar nada**. `/home` es el único
+> sitio del sistema que ningún rollback nuestro puede devolver, así que ese
+> listado es el único aviso que existe.
+>
+> **1004 pruebas** (984 antes), `clippy` limpio.
+>
+> ### El hueco que esto deja abierto, y es el del decreto
+>
+> **La cara estructurada existe y nadie puede pedirla.** El `Done` lo lee hoy
+> sólo el impresor humano. Mientras siga así, el decreto está escrito y no
+> construido, y **ninguna de las cuatro ventajas está expuesta a nadie**. Es el
+> punto 4b de [[Tareas-Pendientes]] y va antes que el editor.
+>
+> ### Una falla de proceso que hay que decir
+>
+> Estos tres avances —los dos decretos y los cinco verbos— **vivieron sólo en los
+> mensajes de commit y en una rama**, sin llegar aquí ni a `main`. Es exactamente
+> lo que este archivo existe para impedir. Corregido: la rama pasó a llamarse
+> `feat/file-mutating-verbs`, está fusionada en `main`, y `git pull` en `main`
+> ya trae los verbos.
+>
+> ## La terminal es una terminal, y dos lectores de `stdin` no caben — 2026-08-09
+>
+> Cómo se llegó a lo de arriba.
+>
+> Flechas, borrar a media línea, historial y tab. `crates/thalyx-term` decide qué
+> significa cada tecla y dónde queda el cursor —puro, sin abrir ninguna
+> terminal—; `thalyx-syscall` apaga el editor de línea del kernel con `termios`;
+> `thalyx-cli/src/term.rs` es el único sitio donde se dibuja.
+>
+> **La guarda de modo crudo es lo más peligroso del archivo**, y por eso es una
+> guarda: una sesión que sale sin devolver la terminal deja la máquina
+> inservible, y en la imagen no hay una segunda de dónde recuperarse. El
+> `Drop` cubre la salida normal y el desenrollado de un panic; no cubre un
+> `SIGKILL`, y nada puede.
+>
+> ### Dos defectos de la misma familia, los dos encontrados corriéndolo
+>
+> Ninguna prueba unitaria los veía, porque los dos son sobre **quién es dueño de
+> la entrada**:
+>
+> 1. **Lo tecleado por adelantado se perdía.** El búfer de bytes vivía dentro de
+>    `read_line`, así que al pulsar Return todo lo que venía detrás se tiraba.
+>    Un `read` devuelve lo que haya llegado, y eso es rutinariamente más de una
+>    línea: alguien tecleando rápido, un pegado, o una prueba escribiendo todo
+>    de golpe.
+> 2. **Y al arreglar eso, la suite de `exit_criterion` se colgó entera.**
+>    `instalar` pide una confirmación que leía `stdin` por su cuenta — y la `y`
+>    que la contestaba ya estaba en mi búfer. **Seis sitios del CLI leían
+>    `stdin` directo.** Ahora hay un solo dueño, `term::read_answer()`, y los
+>    seis pasan por él.
+>
+> La regla que sale de esto, para [[Estrategia-de-Pruebas]]: **dos lugares que
+> leen la misma entrada y uno que guarda lo que sobra no pueden coexistir**; el
+> segundo espera para siempre bytes que ya salieron del kernel y están en
+> memoria. El síntoma no es un error, es un silencio.
+>
+> ### Probado con una terminal de verdad
+>
+> El contenedor no alcanza esto con tuberías, así que se manejó un pty: `lst` +
+> flecha + suprimir da `ls`; la flecha arriba devuelve el comando anterior; `cd
+> Doc` + tab da `cd Documentos/`; con varias opciones se imprimen en columnas
+> sin perder la línea; y **`cat niño` + flecha + retroceso da `nio`** — la `ñ`
+> entera, que es de lo que trata que la línea sea `Vec<char>` y no `String`.
+>
+> Ctrl-C abandona la línea y da prompt nuevo; **no es una salida**, porque en la
+> imagen no hay a dónde salir. Ctrl-D con algo escrito no hace nada: tratarlo
+> como fin sería tirar la línea y salir, dos sorpresas por una tecla.
+>
+> **984 pruebas** (959 antes), `clippy` limpio.
+>
+> ## `ls` existe, y el vocabulario dejó de ser un problema de adopción — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió los cuatro verbos en su Fedora y la primera frase fue la
+> correcta: *«eso parece juguete más que sistema operativo serio»*. Tenía razón,
+> y el problema era más viejo que mis cuatro verbos — **el vocabulario entero del
+> sistema ya era así**: `discos`, `modulos`, `correr`, `apagar`.
+>
+> ### Lo que decidió, y por qué importa
+>
+> **Estándar primero, español también.** `ls`, `cd`, `cat`, `pwd`, `clear` son
+> los que enseña el banner; `ver`, `leer`, `ir`, `donde`, `limpiar` siguen
+> funcionando. El argumento es suyo, de dos mensajes antes: si para usar el
+> sistema hay que decirle adiós a todos los comandos útiles, no hay adopción.
+>
+> **Un nombre no es un programa ajeno.** `ls` escrito en Rust dentro de `thalyx`
+> es tan propio como `ver`. Lo que [[Construccion-del-ISO]] prohíbe es
+> incrustarse en el sistema de alguien más, y `make -C image count` sigue
+> diciendo uno.
+>
+> También decidió el **lenguaje de terminal, partido en dos**: comodines y
+> redirección entran con copiar/mover/borrar porque son notación de diario;
+> tuberías después; **guiones y variables quedan sin decidir**, porque ahí la
+> pregunta pasa a ser si Thalyx tiene lenguaje de programación, que es como la
+> gente construye software encima sin pasar por los módulos.
+>
+> Y aplazó lo de `NOEXEC` con una condición: *«cuando tengamos que decidir,
+> explícamelos bien»*. Eso quedó en [[Tareas-Pendientes]] como **deuda de
+> explicación**, con la lista de lo que hay que cubrir cuando se retome.
+>
+> ### Cuatro defectos, todos encontrados corriéndolo en su máquina
+>
+> Regla 1 otra vez, y ninguno lo veía el contenedor porque ninguno aparece en un
+> directorio de prueba con seis archivos:
+>
+> 1. **`clear` contestaba con un discurso sobre el agente**, porque una línea
+>    desconocida cae al mensaje de «no tengo modelo». Un comando común que
+>    responde algo de otro tema es exactamente cómo un sistema se lee inacabado.
+> 2. **Los ocultos se mostraban siempre.** Su carpeta tiene **treinta y cinco
+>    nombres con punto** antes del primero que él puso, así que lo que buscaba
+>    quedaba sepultado. Ahora se ocultan, `ls -a` los muestra, y **el listado
+>    dice cuántos escondió** — un filtro silencioso es uno que nadie descubre.
+> 3. **Una cosa por renglón.** Sesenta entradas eran cuatro pantallas. Ahora van
+>    en columnas, hacia abajo y no a lo ancho, con el ancho real preguntado al
+>    kernel por `TIOCGWINSZ` y ochenta como respaldo — y `None` es respuesta, no
+>    fallo, porque una salida redirigida no tiene ancho.
+> 4. **Se desalineaba con nombres largos.** La columna era fija en 32 y
+>    `First_Layer_Bed_Leveling_Test.stl` tiene 33: **un archivo rompía la columna
+>    de todos los renglones**. Ahora se mide.
+>
+> `ls -l` da tamaños, `ls -a` los ocultos, `ls -la` las dos, y las banderas
+> tienen las dos escrituras (`todo`, `detalles`). Una bandera que no se conoce
+> **no se ignora**: se queda como el lugar, para que la persona lea «`-z` no está
+> ahí» en vez de recibir un listado que hace ver que la bandera funcionó.
+>
+> **959 pruebas** (946 antes), `clippy` limpio.
+>
+> ## Thalyx puede mirar sus propios archivos, y el prompt no era la causa — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Lo que cambió de rumbo, y por qué
+>
+> Cesar preguntó cuánto falta para un sistema **usable sin el agente** — ver
+> archivos, carpetas, correr comandos. Medido contra el código, la respuesta era
+> incómoda: la sesión tenía **trece verbos y ninguno tocaba un archivo**. La
+> capa 1 de [[Principio-Doble-Ruta]], marcada *no negociable*, no tenía
+> implementación.
+>
+> Y al ir a construirlo salió que el proyecto se había estado leyendo mal a sí
+> mismo. [[Construccion-del-ISO]] decía «Ningún shell. Ningún conjunto de
+> utilidades — `ls`, `cat`», y eso parecía contradecir a Doble-Ruta. Cesar lo
+> zanjó y la nota ya lo dice con sus palabras:
+>
+> > lo que está prohibido no es la shell, lo que está prohibido es incrustarnos
+> > en la shell de otro sistema […] no es `ls` ni `cat`, está prohibido meternos
+> > en un sistema ya hecho, porque si es así, no seremos un sistema operativo,
+> > seremos una distro parcheada con IA.
+>
+> **Lo prohibido es el programa ajeno, no la capacidad.** No había
+> contradicción entre dos decretos; había una nota ambigua, y ya está corregida.
+>
+> ### Lo construido
+>
+> `crates/thalyx-files` y cuatro verbos: **`ver`**, **`leer`**, **`ir`**,
+> **`donde`**. Compilados dentro de `thalyx` — `make -C image count` sigue
+> diciendo uno.
+>
+> Y una corrección de una afirmación mía anterior: **el subvolumen `user` sí se
+> monta**, en `/home`, por `store_disk::mount()` desde PID 1. Yo había dicho que
+> nadie lo conectaba porque lo busqué en `init.rs`. El piso ya existía; lo que
+> faltaban eran los verbos.
+>
+> ### Tres defectos que sólo aparecieron corriéndolo
+>
+> Regla 1, otra vez, y los tres pasaban todas las pruebas:
+>
+> 1. **El prompt no cabía.** Con la ruta entera puso **noventa caracteres** antes
+>    de que se pudiera teclear, y la consola de una máquina real suele tener
+>    ochenta. Un sistema cuyo *prompt* no cabe no lo usa nadie. Ahora se acorta
+>    por componentes enteros —nunca a media palabra— y **`donde` sigue siendo
+>    exacto**: el recordatorio puede ser lossy, la respuesta no.
+> 2. **`ir` imprimía el destino y el prompt lo repetía debajo.** La misma ruta
+>    dos veces por cada movimiento.
+> 3. **Los verbos nuevos no estaban en el banner.** Sin shell detrás, un verbo
+>    que no está en esa lista no existe para quien tiene la máquina.
+>
+> Decisiones que quedaron con su razón escrita: `..` se pliega léxicamente (lo
+> contrario de lo que hace la API de módulos, y a propósito — ahí no hay
+> concesión de la que escapar); `leer` **se niega** ante un binario en vez de
+> destrozar la terminal, porque en la imagen la sesión *es* la máquina y no hay
+> una segunda de dónde recuperarse; y un enlace roto se lista **como roto**, no
+> como ausente.
+>
+> **946 pruebas** (915 antes), `clippy` limpio.
+>
+> ### El tercer brazo corrió, y refutó mi hipótesis
+>
+> `IT INVENTS EITHER WAY` otra vez en los brazos de objeto, control 9 de 11.
+> Firme, tercera vez.
+>
+> El brazo en prosa volvió a `NOT PROVEN`, y **la colisión de `NOTHING` no era la
+> causa**. Corregí el prompt con su prueba, y las veinte respuestas siguen
+> empezando con `NOTHING`. Lo que sobrevive es la degeneración, y se ve entera:
+>
+> ```
+> NOTHING  NOTHING  NOTHING  NOTHING  NOTHING …
+> NOTHING id only NOTHING id only NOTHING id only …
+> NOTHING <<<THALYX-…613>>> NOTHING <<<THALYX-…614>>> NOTHING <<<THALYX-…615>>>
+> ```
+>
+> Esa última línea es nueva: **el modelo fabrica marcadores contando hacia
+> arriba**. El 2026-08-08 quedó escrito que un delimitador que el sistema medido
+> puede escribir no delimita; esto lo empeora.
+>
+> **Y el control de 3 de 11 es en realidad 0.** Los tres «encontró el módulo» son
+> eco del material devuelto (`NOTHING Identities: dev.thalyx.demo, ese …`). El
+> pendiente *«dónde termina una respuesta en prosa»* ya no infla el control: **es
+> el control**.
+>
+> Lo que queda establecido:
+>
+> | Brazo | Cómo se cicla |
+> |---|---|
+> | con gramática | `dev.thalyx.demo.versions.versions.versions…` |
+> | sin gramática, en JSON | repite el objeto entero |
+> | en prosa | `NOTHING NOTHING NOTHING…` |
+>
+> **Una patología con tres disfraces.** El 3B a temperatura 0 con este prompt
+> degenera en cuanto se le suelta; la gramática era lo único que le daba una
+> forma con final. El sospechoso ya no es el prompt. **Hipótesis, no conclusión.**
+>
+> ### Lo que sigue, en orden de dependencia
+>
+> Decidido por Cesar el 2026-08-09: construir la usabilidad, en este orden.
+> **Del 1 al 7 se prueba todo en el contenedor**, así que por primera vez el
+> trabajo no tiene a Cesar en el camino crítico.
+>
+> | # | Qué | Depende de | Estado |
+> |---|---|---|---|
+> | 1 | Dónde estoy y moverme | `/home` ya montado | **hecho** |
+> | 2 | `ver` y `leer` | 1 | **hecho** |
+> | 3 | Terminal: flechas, historial, tab | 2 — el tab completa nombres | siguiente |
+> | 4 | `crear`, `copiar`, `mover`, `borrar`, `renombrar` | 2 | |
+> | 5 | Editor de texto | 2 + 4 | |
+> | 6 | `buscar` por nombre y por contenido | 2 | |
+> | 7 | Procesos: qué corre, matarlo, memoria | independiente | |
+> | 8 | Red: drivers, IP, DNS | independiente | **sólo hierro de Cesar** |
+> | 9 | Lenguaje: tuberías, redirección, comodines | 2+4+6 **y decreto** | |
+>
+> Dos cosas que hay que decir y no se tocaron:
+>
+> - **`/home` está montado `NOEXEC`.** Nadie puede ejecutar un programa desde su
+>   carpeta personal, y en Linux sí se puede. Es de las cosas que un usuario
+>   nota. **Decisión de Cesar**, ver [[Tareas-Pendientes]].
+> - **El punto 9 es decreto antes que código.** Trece verbos sueltos y un
+>   lenguaje que los compone son proyectos distintos.
+>
 > ## El prompt gastó su propia señal, y la corrida no midió — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

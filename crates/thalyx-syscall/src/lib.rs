@@ -231,6 +231,128 @@ pub fn reread_partition_table(disk: std::os::fd::BorrowedFd<'_>) -> io::Result<(
     check(result)
 }
 
+/// The terminal put into raw mode, and put back when this is dropped.
+///
+/// Raw mode is what makes an arrow key reach the program instead of being
+/// swallowed by the kernel's own line editor. It is also the most dangerous
+/// thing in this file, and the danger is why this is a guard and not two
+/// functions: **a session that exits without restoring the terminal leaves the
+/// machine unusable.** No echo, no line editing, no Ctrl-C — and on the image
+/// there is no second terminal to recover from, because the session *is* the
+/// machine.
+///
+/// So the restore rides on `Drop`, which runs on the ordinary path and while a
+/// panic unwinds. It cannot cover a `SIGKILL` or an abort, and nothing can.
+pub struct RawMode {
+    fd: std::os::fd::RawFd,
+    saved: libc::termios,
+}
+
+impl RawMode {
+    /// Turn off the kernel's line discipline, or say why it could not be.
+    ///
+    /// `None` when the input is not a terminal — a pipe has no line discipline
+    /// to turn off, and treating that as a failure would stop a session from
+    /// being driven by a script. The caller falls back to reading whole lines.
+    pub fn enter(terminal: std::os::fd::BorrowedFd<'_>) -> Option<Self> {
+        use std::os::fd::AsRawFd;
+        let fd = terminal.as_raw_fd();
+
+        // SAFETY: `tcgetattr` writes one `termios` through the pointer, which is
+        // to a live local. `fd` is borrowed for the call.
+        #[allow(unsafe_code)]
+        let saved = unsafe {
+            let mut saved: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd, &raw mut saved) != 0 {
+                return None;
+            }
+            saved
+        };
+
+        let mut raw = saved;
+        // ICANON: stop waiting for a newline before handing bytes over — this is
+        // what lets a keystroke arrive as it is pressed. ECHO: stop the kernel
+        // printing the key, because the editor draws the line itself and both
+        // doing it prints everything twice.
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        // ISIG stays on deliberately. Ctrl-C must keep working: a person whose
+        // machine is one terminal needs a way out that does not depend on the
+        // program being well.
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+
+        // SAFETY: `raw` is a live, fully initialised `termios` copied from one
+        // the kernel produced. `TCSANOW` applies it without draining output.
+        #[allow(unsafe_code)]
+        let applied = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw const raw) };
+        if applied != 0 {
+            return None;
+        }
+        Some(Self { fd, saved })
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        // SAFETY: `self.saved` is the `termios` this guard read from the kernel
+        // and has not modified. The descriptor was valid when the guard was made
+        // and the guard does not outlive the borrow it came from.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &raw const self.saved);
+        }
+    }
+}
+
+/// `TIOCGWINSZ`, from `include/uapi/asm-generic/ioctls.h`: `0x5413`.
+///
+/// Spelled out for the same reason as [`BLKRRPART`]: `_IO` is a C macro and this
+/// workspace has no C.
+pub const TIOCGWINSZ: u64 = 0x5413;
+
+/// How many columns wide the terminal is, or `None` when that cannot be asked.
+///
+/// `None` is a real answer and not a failure. Output redirected to a file has no
+/// width, and a caller that treated "could not ask" as "zero columns" would lay
+/// out one character per line — rule 10, in the place where getting it wrong is
+/// visible on every screen.
+///
+/// The caller picks the fallback, because what to do without a width depends on
+/// what is being printed and this function has no business deciding it.
+pub fn terminal_width(terminal: std::os::fd::BorrowedFd<'_>) -> Option<u16> {
+    use std::os::fd::AsRawFd;
+
+    // The kernel's `struct winsize`: four `unsigned short`, in this order.
+    // Declared here rather than borrowed from libc so the layout this code
+    // depends on is written down where the ioctl number is.
+    #[repr(C)]
+    #[derive(Default)]
+    struct WinSize {
+        rows: u16,
+        columns: u16,
+        x_pixels: u16,
+        y_pixels: u16,
+    }
+
+    let mut size = WinSize::default();
+    let request = TIOCGWINSZ as libc::Ioctl;
+
+    // SAFETY: `TIOCGWINSZ` writes exactly one `struct winsize` through the third
+    // parameter, and `WinSize` is that struct with `repr(C)`. The pointer is to a
+    // live local that outlives the call, and `terminal` is borrowed so it cannot
+    // be closed underneath it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(terminal.as_raw_fd(), request, &raw mut size) };
+
+    // Zero columns is what a kernel reports for something that is not a terminal
+    // with a size, and it is not a width. Passed on as `None` rather than as a
+    // number no layout can use.
+    if result < 0 || size.columns == 0 {
+        return None;
+    }
+    Some(size.columns)
+}
+
 /// Clone a mount into a detached tree, returning a file descriptor for it.
 ///
 /// A detached mount can be reconfigured before anyone can see it — which is the

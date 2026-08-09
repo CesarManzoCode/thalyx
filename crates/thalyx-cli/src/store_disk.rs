@@ -700,8 +700,7 @@ fn format(
     } else {
         print!("  Type the device's path to confirm: ");
         let _ = std::io::stdout().flush();
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
+        let answer = crate::term::read_answer()?.unwrap_or_default();
         if answer.trim() != device.display().to_string() {
             eprintln!("  that is not {}; refusing", device.display());
             return Err("formatting was not confirmed".into());
