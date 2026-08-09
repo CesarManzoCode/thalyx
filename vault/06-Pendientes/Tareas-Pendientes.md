@@ -129,6 +129,27 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       hasta escribir el banco— y que cada argumento nuevo tenga dónde
       comprobarse contra los canales, como los ids tienen la atribución.
 
+## Que un agente ajeno pueda trabajar aquí
+
+Decretado el 2026-08-09: la vara es que **Claude Code y cualquier otro agente ya
+escrito corran sobre Thalyx mejor que sobre Linux o macOS**. Ver
+[[Filosofia-Fundacional]]. Hoy **no arrancarían**, así que esto no es afinar,
+es construir.
+
+- [ ] **Averiguar qué necesita exactamente un agente ajeno para arrancar.** No
+      por suposición: tomar Claude Code, mirar qué llama, y hacer la lista. Es
+      barato y no se ha hecho, y sin ella todo lo de abajo es adivinado.
+- [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
+      instalados. Cruza con la decisión de `NOEXEC` en `/home`.
+- [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
+      está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
+      no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback
+      ([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]])
+      y los permisos por tarea ([[Permisos-JIT]]).
+- [ ] **Decidir por dónde entra un agente ajeno.** ¿Es un módulo con permisos
+      amplios, un proceso aparte, o algo nuevo? No decidido, y no urge hasta que
+      haya qué ejecutar.
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].

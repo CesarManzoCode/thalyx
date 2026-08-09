@@ -9,6 +9,63 @@ tags: [filosofia, core, no-negociable]
 
 El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
 
+## Thalyx es el mejor sitio donde un LLM puede trabajar
+
+**Decretado por Cesar el 2026-08-09**, después de que yo lo malinterpretara tres
+veces seguidas:
+
+> estoy hablando de cosas ya hechas, cosas como Claude Code y demás, nunca dije
+> que fuéramos a hacer nuestro agente de codeo […] estoy hablando de que nuestro
+> sistema debe estar preparado para potenciar a cualquier LLM, que cualquier LLM
+> se pueda mover mejor en nuestro sistema que en cualquier otro, no me importa
+> cómo lo haremos.
+
+### Qué NO es esto, porque ahí me equivoqué tres veces
+
+- **No es sobre el agente local de Thalyx.** Las cuatro gamas de
+  [[Gamas-de-Modelo]] son para enrutar módulos y tareas del sistema. La
+  abstención 0 de 55 es una medición de un 3B en ese oficio y **no dice nada**
+  sobre un modelo frontera escribiendo código.
+- **No es sobre construir un agente de codeo propio.** No está descartado; no es
+  de lo que trata esto.
+- **No es sobre que Thalyx llame a una API.** El decreto de
+  [[Agente-Conversacional]] sobre la nube en Fase 1 **no está en discusión** y
+  no lo toca esto: ahí Thalyx es el que llama. Aquí Thalyx es **el anfitrión**.
+
+### Qué sí es, y es la vara
+
+**Un agente ajeno, ya escrito, corriendo sobre Thalyx, y trabajando mejor que
+sobre Linux o macOS.** No igual: mejor.
+
+### El estado real, y es duro
+
+**Hoy Claude Code no podría arrancar en Thalyx.** No trabajaría mal — no
+arrancaría. Necesita ejecutar procesos, leer y escribir archivos, `grep`,
+`find`, `git`, un runtime. Thalyx tiene el kernel, un programa y veinte verbos.
+
+Eso convierte esta nota en la medida de todo lo demás: **cada verbo construido
+es una cosa más que un agente ajeno puede usar**, y por eso la decisión del
+2026-08-09 de llamarlos `ls`, `cd`, `cat` es doblemente correcta — un agente que
+sabe `ls` encuentra `ls`.
+
+### Dónde Thalyx puede ser mejor y no sólo alcanzar
+
+Igualar a Linux es trabajo. Superarlo es lo que pide el decreto, y Thalyx ya
+tiene con qué; nada de esto existe en otro sistema:
+
+- **El índice semántico.** Un agente puede preguntar por estructura en vez de
+  hacer `grep` a ciegas. Ver [[FS-en-Grafo]].
+- **Journal, snapshots y rollback.** *«Intenta esto y si sale mal deshazlo»* no
+  existe en ningún sistema operativo. Ver [[Journal-y-Snapshots]].
+- **Procedencia por campo.** El sistema sabe qué vino del humano, qué de la
+  máquina y qué de un texto ajeno — que es exactamente la distinción que un
+  agente no puede hacer solo. Ver [[Marcado-de-Origen]].
+- **Permisos por tarea, mediados.** Un agente puede recibir alcance acotado en
+  vez de todo o nada. Ver [[Permisos-JIT]].
+
+Eso es la respuesta a *«mejor que cualquier otro»*, y ninguna de las cuatro está
+expuesta todavía a un agente ajeno.
+
 ## El LLM es para quien se construye, no un consumidor del sistema
 
 **Decretado por Cesar el 2026-08-09**, después de que yo le planteara como
