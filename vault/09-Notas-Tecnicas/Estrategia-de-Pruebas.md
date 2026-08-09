@@ -2659,6 +2659,31 @@ Corolario incómodo, y por eso se escribe: **corregir el defecto puede destruir 
 8 de 9.** Se corrige igual. Un instrumento que falló por su construcción no
 adquiere validez porque el número que produjo agrade.
 
+## Regla derivada: una referencia local no es el estado del repositorio
+
+**2026-08-09.** Al retomar el proyecto comprobé qué había en `main` con
+`git rev-parse main`, salió doce commits atrás de la rama, y de ahí reporté que
+el trabajo no le llegaba a Cesar con `git pull`. Falso: `origin/main` ya tenía
+todo fusionado. Lo atrasado era **mi copia local**, que en un contenedor recién
+clonado y sin `fetch` no dice nada sobre el remoto.
+
+> `main` y `origin/main` son dos preguntas distintas, y sólo la segunda es sobre
+> el repositorio. Un nombre de rama sin `origin/` contesta por lo que este disco
+> alcanzó a ver, que puede ser de hace días o de nunca.
+
+Es la regla 5 —el instrumento incluye al arnés— en el sitio menos esperado: no
+falló una sonda ni un parser, falló **leer el resultado de `git`** dando por
+hecho que un nombre corto se refería a lo que se estaba preguntando. Lo que
+convierte esto en algo que hay que escribir y no en un descuido es la
+consecuencia: la lectura equivocada iba a mandar a Cesar a fusionar algo que ya
+estaba fusionado, y —peor— quedó escrita como un hecho en un bloque de
+[[Punto-Actual]] antes de que nadie la comprobara.
+
+Lo que hay que hacer en su lugar: `git fetch` primero, y comparar contra
+`origin/<rama>`. Si no se puede hacer `fetch`, la respuesta honesta es «no sé
+qué tiene el remoto», que es la regla 10 — una falla al leer no es una falla al
+existir.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

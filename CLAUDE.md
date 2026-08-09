@@ -123,12 +123,15 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened seven times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened eight times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
-   precondition, and — twice, for the same reason — a parser tested only
-   against fixtures its author invented. The second of those pair accused
-   llama.cpp of ignoring a grammar it had just obeyed, because every fixture
-   agreed with the parser about where an answer stops.
+   precondition, a stale local `main` read as the state of the repository, and
+   — twice, for the same reason — a parser tested only against fixtures its
+   author invented. The second of that pair accused llama.cpp of ignoring a
+   grammar it had just obeyed, because every fixture agreed with the parser
+   about where an answer stops. The stale `main` is the cheapest of them and
+   worth remembering for it: `main` and `origin/main` are different questions,
+   and only the second one is about the repository.
 6. **A parser for another tool's output needs one captured real sample,
    verbatim.** A hand-written fixture proves the parser matches your model of
    the format, not the format.

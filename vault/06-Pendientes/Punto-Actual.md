@@ -89,13 +89,24 @@ tags: [continuidad, punto-actual, sesiones]
 > construido, y **ninguna de las cuatro ventajas está expuesta a nadie**. Es el
 > punto 4b de [[Tareas-Pendientes]] y va antes que el editor.
 >
-> ### Una falla de proceso que hay que decir
+> ### Una falla de proceso, y una lectura equivocada de la misma sesión
 >
-> Estos tres avances —los dos decretos y los cinco verbos— **vivieron sólo en los
-> mensajes de commit y en una rama**, sin llegar aquí ni a `main`. Es exactamente
-> lo que este archivo existe para impedir. Corregido: la rama pasó a llamarse
-> `feat/file-mutating-verbs`, está fusionada en `main`, y `git pull` en `main`
-> ya trae los verbos.
+> Estos tres avances **vivieron sólo en los mensajes de commit**: ni este archivo
+> ni [[Estado-de-Implementacion]] los mencionaban, y esa segunda nota no tenía
+> fila para `thalyx-files` ni para `thalyx-term` —dos crates enteros ausentes de
+> la nota que dice qué está construido—. Una sesión nueva que leyera la bóveda
+> habría creído que lo último fue la terminal.
+>
+> Y al ir a corregirlo cometí el error de leer una copia local vieja de `main`
+> como si fuera el estado del repositorio, y le dije a Cesar que los verbos no
+> le llegaban con `git pull`. **Sí le llegaban**: `origin/main` ya tenía el
+> trabajo fusionado. Lo único que faltaba de verdad era la bóveda. Queda escrito
+> porque es la regla 5 en un sitio nuevo —el instrumento otra vez antes que lo
+> medido— y porque `git rev-parse main` y `git rev-parse origin/main` son dos
+> preguntas distintas.
+>
+> La rama sí estaba mal nombrada (`claude/verbos-donde-quedamos-uutcmm`) y ahora
+> es `feat/file-mutating-verbs`.
 >
 > ## La terminal es una terminal, y dos lectores de `stdin` no caben — 2026-08-09
 >
