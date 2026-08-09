@@ -919,6 +919,7 @@ dependencies = [
  "thalyx-btrfs",
  "thalyx-contract",
  "thalyx-core",
+ "thalyx-files",
  "thalyx-graph",
  "thalyx-install",
  "thalyx-journal",
@@ -967,6 +968,14 @@ dependencies = [
  "thalyx-syscall",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "thalyx-files"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

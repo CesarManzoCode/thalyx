@@ -8,6 +8,7 @@ mod agent;
 mod agent_model;
 mod dev;
 mod enforce;
+mod files;
 mod graph;
 mod image;
 mod init;

@@ -14,6 +14,127 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Thalyx puede mirar sus propios archivos, y el prompt no era la causa — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Lo que cambió de rumbo, y por qué
+>
+> Cesar preguntó cuánto falta para un sistema **usable sin el agente** — ver
+> archivos, carpetas, correr comandos. Medido contra el código, la respuesta era
+> incómoda: la sesión tenía **trece verbos y ninguno tocaba un archivo**. La
+> capa 1 de [[Principio-Doble-Ruta]], marcada *no negociable*, no tenía
+> implementación.
+>
+> Y al ir a construirlo salió que el proyecto se había estado leyendo mal a sí
+> mismo. [[Construccion-del-ISO]] decía «Ningún shell. Ningún conjunto de
+> utilidades — `ls`, `cat`», y eso parecía contradecir a Doble-Ruta. Cesar lo
+> zanjó y la nota ya lo dice con sus palabras:
+>
+> > lo que está prohibido no es la shell, lo que está prohibido es incrustarnos
+> > en la shell de otro sistema […] no es `ls` ni `cat`, está prohibido meternos
+> > en un sistema ya hecho, porque si es así, no seremos un sistema operativo,
+> > seremos una distro parcheada con IA.
+>
+> **Lo prohibido es el programa ajeno, no la capacidad.** No había
+> contradicción entre dos decretos; había una nota ambigua, y ya está corregida.
+>
+> ### Lo construido
+>
+> `crates/thalyx-files` y cuatro verbos: **`ver`**, **`leer`**, **`ir`**,
+> **`donde`**. Compilados dentro de `thalyx` — `make -C image count` sigue
+> diciendo uno.
+>
+> Y una corrección de una afirmación mía anterior: **el subvolumen `user` sí se
+> monta**, en `/home`, por `store_disk::mount()` desde PID 1. Yo había dicho que
+> nadie lo conectaba porque lo busqué en `init.rs`. El piso ya existía; lo que
+> faltaban eran los verbos.
+>
+> ### Tres defectos que sólo aparecieron corriéndolo
+>
+> Regla 1, otra vez, y los tres pasaban todas las pruebas:
+>
+> 1. **El prompt no cabía.** Con la ruta entera puso **noventa caracteres** antes
+>    de que se pudiera teclear, y la consola de una máquina real suele tener
+>    ochenta. Un sistema cuyo *prompt* no cabe no lo usa nadie. Ahora se acorta
+>    por componentes enteros —nunca a media palabra— y **`donde` sigue siendo
+>    exacto**: el recordatorio puede ser lossy, la respuesta no.
+> 2. **`ir` imprimía el destino y el prompt lo repetía debajo.** La misma ruta
+>    dos veces por cada movimiento.
+> 3. **Los verbos nuevos no estaban en el banner.** Sin shell detrás, un verbo
+>    que no está en esa lista no existe para quien tiene la máquina.
+>
+> Decisiones que quedaron con su razón escrita: `..` se pliega léxicamente (lo
+> contrario de lo que hace la API de módulos, y a propósito — ahí no hay
+> concesión de la que escapar); `leer` **se niega** ante un binario en vez de
+> destrozar la terminal, porque en la imagen la sesión *es* la máquina y no hay
+> una segunda de dónde recuperarse; y un enlace roto se lista **como roto**, no
+> como ausente.
+>
+> **946 pruebas** (915 antes), `clippy` limpio.
+>
+> ### El tercer brazo corrió, y refutó mi hipótesis
+>
+> `IT INVENTS EITHER WAY` otra vez en los brazos de objeto, control 9 de 11.
+> Firme, tercera vez.
+>
+> El brazo en prosa volvió a `NOT PROVEN`, y **la colisión de `NOTHING` no era la
+> causa**. Corregí el prompt con su prueba, y las veinte respuestas siguen
+> empezando con `NOTHING`. Lo que sobrevive es la degeneración, y se ve entera:
+>
+> ```
+> NOTHING  NOTHING  NOTHING  NOTHING  NOTHING …
+> NOTHING id only NOTHING id only NOTHING id only …
+> NOTHING <<<THALYX-…613>>> NOTHING <<<THALYX-…614>>> NOTHING <<<THALYX-…615>>>
+> ```
+>
+> Esa última línea es nueva: **el modelo fabrica marcadores contando hacia
+> arriba**. El 2026-08-08 quedó escrito que un delimitador que el sistema medido
+> puede escribir no delimita; esto lo empeora.
+>
+> **Y el control de 3 de 11 es en realidad 0.** Los tres «encontró el módulo» son
+> eco del material devuelto (`NOTHING Identities: dev.thalyx.demo, ese …`). El
+> pendiente *«dónde termina una respuesta en prosa»* ya no infla el control: **es
+> el control**.
+>
+> Lo que queda establecido:
+>
+> | Brazo | Cómo se cicla |
+> |---|---|
+> | con gramática | `dev.thalyx.demo.versions.versions.versions…` |
+> | sin gramática, en JSON | repite el objeto entero |
+> | en prosa | `NOTHING NOTHING NOTHING…` |
+>
+> **Una patología con tres disfraces.** El 3B a temperatura 0 con este prompt
+> degenera en cuanto se le suelta; la gramática era lo único que le daba una
+> forma con final. El sospechoso ya no es el prompt. **Hipótesis, no conclusión.**
+>
+> ### Lo que sigue, en orden de dependencia
+>
+> Decidido por Cesar el 2026-08-09: construir la usabilidad, en este orden.
+> **Del 1 al 7 se prueba todo en el contenedor**, así que por primera vez el
+> trabajo no tiene a Cesar en el camino crítico.
+>
+> | # | Qué | Depende de | Estado |
+> |---|---|---|---|
+> | 1 | Dónde estoy y moverme | `/home` ya montado | **hecho** |
+> | 2 | `ver` y `leer` | 1 | **hecho** |
+> | 3 | Terminal: flechas, historial, tab | 2 — el tab completa nombres | siguiente |
+> | 4 | `crear`, `copiar`, `mover`, `borrar`, `renombrar` | 2 | |
+> | 5 | Editor de texto | 2 + 4 | |
+> | 6 | `buscar` por nombre y por contenido | 2 | |
+> | 7 | Procesos: qué corre, matarlo, memoria | independiente | |
+> | 8 | Red: drivers, IP, DNS | independiente | **sólo hierro de Cesar** |
+> | 9 | Lenguaje: tuberías, redirección, comodines | 2+4+6 **y decreto** | |
+>
+> Dos cosas que hay que decir y no se tocaron:
+>
+> - **`/home` está montado `NOEXEC`.** Nadie puede ejecutar un programa desde su
+>   carpeta personal, y en Linux sí se puede. Es de las cosas que un usuario
+>   nota. **Decisión de Cesar**, ver [[Tareas-Pendientes]].
+> - **El punto 9 es decreto antes que código.** Trece verbos sueltos y un
+>   lenguaje que los compone son proyectos distintos.
+>
 > ## El prompt gastó su propia señal, y la corrida no midió — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

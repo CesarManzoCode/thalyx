@@ -22,12 +22,46 @@ o hay dos cosas o hay más. Un criterio que se comprueba mirando, no discutiendo
 Lo que no lleva, y no llevará:
 
 - Ninguna distribución. **Ni Alpine ni ninguna otra, nunca.**
-- Ningún shell.
-- Ningún conjunto de utilidades de sistema — `ls`, `cat`, `id`, busybox.
+- Ningún shell **ajeno** — ni `bash`, ni `ash`, ni `sh`.
+- Ningún conjunto de utilidades de sistema ajeno — los binarios `ls`, `cat`,
+  `id`, busybox.
 - Ningún gestor de paquetes. El software llega en `.thmod` o no llega.
 - Ningún init de terceros. PID 1 es `thalyx`.
 - Ninguna herramienta de construcción de distros: `mkimage.sh`, apkovl,
   live-build.
+
+### Lo prohibido es el programa ajeno, no la capacidad
+
+**Esta lista prohíbe importar el sistema de alguien más. No prohíbe que Thalyx
+sepa hacer las cosas.** La distinción es de Cesar, el 2026-08-09, y hay que
+tenerla presente al leer los dos puntos de arriba:
+
+> lo que está prohibido no es la shell, lo que está prohibido es incrustarnos en
+> la shell de otro sistema, porque cuando me di cuenta de que usaríamos Alpine
+> Linux, me di cuenta que solo éramos una capa más […] lo que está prohibido no
+> es `ls` ni `cat`, está prohibido meternos en un sistema ya hecho, porque si es
+> así, no seremos un sistema operativo, seremos una distro parcheada con IA.
+
+Y con una exigencia al otro lado, que es la razón de que esto importe:
+
+> para cuando instalemos esa ISO en un SSD real como sistema operativo real
+> deberemos de poder hacer todo lo que Linux y Windows hacen en su terminal, no
+> literalmente todo, pero sí lo suficiente como para que el usuario promedio no
+> note diferencia entre una y otra, porque si para usar nuestro sistema
+> necesitan decirle adiós a todos sus comandos útiles, entonces perderemos
+> cualquier posible adopción.
+
+Así que **Thalyx tiene terminal propia y verbos propios**, y eso no contradice el
+decreto: lo cumple. `ver`, `leer`, `ir` y `donde` se compilan dentro de `thalyx`,
+igual que el escritor de Btrfs, el cargador de BPF y el `cpio`. `make -C image
+count` sigue diciendo uno, que es lo que vuelve verificable la diferencia entre
+tener la capacidad y haber importado el programa.
+
+Esta sección se escribió porque la lista, tal como estaba, **se leyó al revés**.
+Sin ella, «Ningún shell. Ningún conjunto de utilidades — `ls`, `cat`» prohíbe
+exactamente lo que [[Principio-Doble-Ruta]] declara no negociable en su capa 1, y
+una sesión de trabajo entera llegó a la conclusión de que había una
+contradicción entre dos decretos. No la había: había una nota ambigua.
 
 ## Qué es y qué no es "depender del kernel de Linux"
 
