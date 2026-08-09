@@ -100,14 +100,34 @@ impl Where {
     }
 }
 
-/// `donde` — the one verb whose answer is always available.
+/// `clear` — the verb whose absence made the system look like a toy.
+///
+/// Cesar typed it on the first real session and got a paragraph about the agent,
+/// because an unknown line falls through to "I have no model loaded". A common
+/// command answering with a speech about something else is exactly how a system
+/// reads as unfinished.
+///
+/// The two escapes are the whole implementation: erase the screen, then put the
+/// cursor back at the top. Written out rather than borrowed from a terminal
+/// library, for the same reason as the cpio and the Btrfs writer — the image
+/// holds the kernel and one program.
+pub fn clear() {
+    use std::io::Write;
+    print!("\x1b[2J\x1b[H");
+    // Flushed here because what follows is a prompt printed with `print!` and no
+    // newline of its own; leaving this in the buffer would put the prompt on
+    // screen before the screen was cleared.
+    let _ = std::io::stdout().flush();
+}
+
+/// `pwd` — the one verb whose answer is always available.
 pub fn where_am_i(here: &Where) {
     println!();
     println!("  {}", here.at().display());
     println!();
 }
 
-/// `ir [ruta]` — with nothing after it, back to `/home`.
+/// `cd [ruta]` — with nothing after it, back to `/home`.
 pub fn go(here: &mut Where, rest: &str) {
     let named = if rest.is_empty() {
         thalyx_files::HOME
@@ -133,18 +153,90 @@ pub fn go(here: &mut Where, rest: &str) {
     }
 }
 
-/// `ver [ruta]` — what is here, or what is there.
+/// What the person asked `ls` for, on top of a place.
+///
+/// Parsed rather than guessed. `ls -la` is one word to a person and two flags to
+/// the machine, and a listing that took `-la` as a **folder name** would answer
+/// "not there" for something they typed correctly.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Asked {
+    /// Include the names the system keeps for itself.
+    pub all: bool,
+    /// One per line, with sizes, instead of columns of names.
+    pub long: bool,
+    /// What is left after the flags: the place, or nothing.
+    pub place: String,
+}
+
+impl Asked {
+    /// Both spellings of every flag, because the person chose to have both.
+    ///
+    /// The Spanish words are whole arguments and not letters, so `todo` cannot
+    /// collide with a `-t` that might exist later.
+    fn parse(rest: &str) -> Self {
+        let mut asked = Asked::default();
+        let mut place = Vec::new();
+
+        for word in rest.split_whitespace() {
+            match word {
+                "todo" | "todos" | "ocultos" => asked.all = true,
+                "detalles" | "largo" => asked.long = true,
+                // Grouped short flags — `-la` is what people's fingers do.
+                _ if word.starts_with('-') && word.len() > 1 => {
+                    for letter in word.chars().skip(1) {
+                        match letter {
+                            'a' => asked.all = true,
+                            'l' => asked.long = true,
+                            // An unknown flag is not silently ignored: it is kept
+                            // as part of the place, so the person gets "not
+                            // there" naming exactly what they typed instead of a
+                            // listing of somewhere they did not ask about.
+                            _ => place.push(word.to_string()),
+                        }
+                    }
+                }
+                _ => place.push(word.to_string()),
+            }
+        }
+
+        asked.place = place.join(" ");
+        asked
+    }
+}
+
+/// How wide to lay a listing out when nothing can say.
+///
+/// Eighty, because that is what a Linux console is when the framebuffer has not
+/// been asked otherwise, and because guessing wider produces lines that wrap —
+/// which is worse than guessing narrow and leaving space unused.
+const ASSUMED_WIDTH: usize = 80;
+
+fn screen_width() -> usize {
+    use std::io::IsTerminal;
+    let out = std::io::stdout();
+    if !out.is_terminal() {
+        // Redirected output has no width, and a made-up one would put column
+        // padding into somebody's file.
+        return ASSUMED_WIDTH;
+    }
+    thalyx_syscall::terminal_width(std::os::fd::AsFd::as_fd(&out))
+        .map(usize::from)
+        .unwrap_or(ASSUMED_WIDTH)
+}
+
+/// `ls [-a] [-l] [ruta]` — what is here, or what is there.
 pub fn look(here: &Where, rest: &str) {
-    let target = if rest.is_empty() {
+    let asked = Asked::parse(rest);
+    let target = if asked.place.is_empty() {
         here.at().to_path_buf()
     } else {
-        thalyx_files::resolve(here.at(), rest)
+        thalyx_files::resolve(here.at(), &asked.place)
     };
 
     println!();
     match thalyx_files::list(&target) {
-        Ok(listing) => print_listing(&target, &listing),
-        // `ver` on a file is a reasonable thing to type, so it answers instead
+        Ok(listing) => print_listing(&target, &listing, &asked),
+        // `ls` on a file is a reasonable thing to type, so it answers instead
         // of correcting: the person wanted to know about that file.
         Err(FileError::Unreadable { .. } | FileError::Absent(_))
             if target.is_file() || target.symlink_metadata().is_ok() =>
@@ -156,29 +248,45 @@ pub fn look(here: &Where, rest: &str) {
     println!();
 }
 
-fn print_listing(target: &Path, listing: &Listing) {
+fn print_listing(target: &Path, listing: &Listing, asked: &Asked) {
     println!("  {}", target.display());
 
-    if listing.entries.is_empty() && listing.unreadable.is_empty() {
+    let shown: Vec<&thalyx_files::Entry> = listing
+        .entries
+        .iter()
+        .filter(|entry| asked.all || !thalyx_files::is_hidden(&entry.name))
+        .collect();
+    let hidden = listing.entries.len() - shown.len();
+
+    if shown.is_empty() && listing.unreadable.is_empty() {
         println!();
-        println!("  nothing here");
+        // The count is why this is not just "nothing here". A directory holding
+        // thirty-five dotfiles is not an empty one, and saying so would send a
+        // person to look for files they already have.
+        if hidden > 0 {
+            println!("  nothing but {hidden} hidden — `ls -a` shows them");
+        } else {
+            println!("  nothing here");
+        }
         return;
     }
 
     println!();
-    for entry in &listing.entries {
-        let name = entry.name.to_string_lossy();
-        match &entry.kind {
-            // The trailing slash is the whole difference between a name a person
-            // can enter and one they can open, and it costs one character.
-            Kind::Directory => println!("    {name}/"),
-            Kind::File { bytes } => println!("    {:<32} {}", name, Size(*bytes)),
-            Kind::Link { to, broken } => {
-                let note = if *broken { "  — broken" } else { "" };
-                println!("    {name} -> {}{note}", to.display());
-            }
-            Kind::Other(what) => println!("    {:<32} {what}", name),
+    if asked.long {
+        print_long(&shown);
+    } else {
+        let names: Vec<String> = shown.iter().map(|entry| decorate(entry)).collect();
+        for line in thalyx_files::in_columns(&names, screen_width(), 4) {
+            println!("    {line}");
         }
+    }
+
+    // Said, never silently done. A person who is not told they are seeing a
+    // filtered listing has no reason to suspect one, and this is the sentence
+    // that makes `ls -a` findable at the moment it is wanted.
+    if hidden > 0 {
+        println!();
+        println!("  {hidden} hidden — `ls -a` shows them");
     }
 
     // Rule 10, printed. An entry that could not be read is not an entry that is
@@ -194,7 +302,49 @@ fn print_listing(target: &Path, listing: &Listing) {
     }
 }
 
-/// `ver` aimed at something that is not a directory.
+/// The name with the one character that says what it is.
+fn decorate(entry: &thalyx_files::Entry) -> String {
+    let name = entry.name.to_string_lossy();
+    match entry.kind {
+        // The trailing slash is the whole difference between a name a person can
+        // enter and one they can open, and it costs one character.
+        Kind::Directory => format!("{name}/"),
+        // `@` for a link and `!` for one that points nowhere. A broken link that
+        // looked like a file would be followed, and the person would be told the
+        // file cannot be read when the truth is that it is not there.
+        Kind::Link { broken: true, .. } => format!("{name}!"),
+        Kind::Link { broken: false, .. } => format!("{name}@"),
+        _ => name.to_string(),
+    }
+}
+
+/// One per line with sizes, for when the names are not the question.
+fn print_long(shown: &[&thalyx_files::Entry]) {
+    // Measured, not fixed at 32. A name longer than the column pushed the size
+    // out of line on Cesar's own machine — `First_Layer_Bed_Leveling_Test.stl`
+    // is thirty-three characters, and one file was enough to break the column
+    // for every row.
+    let widest = shown
+        .iter()
+        .map(|entry| decorate(entry).chars().count())
+        .max()
+        .unwrap_or(0);
+
+    for entry in shown {
+        let name = decorate(entry);
+        match &entry.kind {
+            Kind::Directory => println!("    {name}"),
+            Kind::File { bytes } => println!("    {name:<widest$}  {}", Size(*bytes)),
+            Kind::Link { to, broken } => {
+                let note = if *broken { "  — broken" } else { "" };
+                println!("    {name:<widest$}  -> {}{note}", to.display());
+            }
+            Kind::Other(what) => println!("    {name:<widest$}  {what}"),
+        }
+    }
+}
+
+/// `ls` aimed at something that is not a directory.
 fn print_one(target: &Path) {
     match target.symlink_metadata() {
         Ok(meta) if meta.is_file() => {
@@ -205,11 +355,11 @@ fn print_one(target: &Path) {
     }
 }
 
-/// `leer <archivo>` — show a file, or say why showing it would be a mistake.
+/// `cat <archivo>` — show a file, or say why showing it would be a mistake.
 pub fn read(here: &Where, rest: &str) {
     if rest.is_empty() {
         println!();
-        println!("  Which file. `ver` lists what is here.");
+        println!("  Which file. `ls` lists what is here.");
         println!();
         return;
     }
@@ -256,6 +406,56 @@ fn print_excerpt(target: &Path, excerpt: &Excerpt) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ──────────────────────────────────────────────── what the person asked for
+
+    #[test]
+    fn a_bare_ls_asks_for_nothing_in_particular() {
+        let asked = Asked::parse("");
+        assert!(!asked.all);
+        assert!(!asked.long);
+        assert!(asked.place.is_empty());
+    }
+
+    #[test]
+    fn grouped_flags_are_read_as_the_flags_they_are_and_not_as_a_folder() {
+        // The failure this prevents: `-la` taken as a place, answering "not
+        // there" for something the person typed correctly.
+        let asked = Asked::parse("-la");
+        assert!(asked.all && asked.long);
+        assert!(asked.place.is_empty(), "got {:?}", asked.place);
+    }
+
+    #[test]
+    fn flags_and_a_place_together_keep_the_place() {
+        let asked = Asked::parse("-a Documentos");
+        assert!(asked.all);
+        assert_eq!(asked.place, "Documentos");
+    }
+
+    #[test]
+    fn both_spellings_of_a_flag_mean_the_same_thing() {
+        // Cesar chose to keep both vocabularies, so the flags have both too.
+        assert_eq!(Asked::parse("-a"), Asked::parse("todo"));
+        assert_eq!(Asked::parse("-l"), Asked::parse("detalles"));
+    }
+
+    #[test]
+    fn an_unknown_flag_is_not_quietly_swallowed() {
+        let asked = Asked::parse("-z");
+        // Kept as the place, so the person is told "-z is not there" instead of
+        // being handed a listing of somewhere they did not ask about — which
+        // would look like the flag worked.
+        assert!(asked.place.contains("-z"), "got {asked:?}");
+        assert!(!asked.all && !asked.long);
+    }
+
+    #[test]
+    fn a_file_whose_name_begins_with_a_dash_is_still_reachable() {
+        // A single `-` is not a flag: `len() > 1` is what keeps a file actually
+        // named `-` from becoming unnameable.
+        assert_eq!(Asked::parse("-").place, "-");
+    }
 
     #[test]
     fn a_session_starts_in_the_persons_own_subvolume() {

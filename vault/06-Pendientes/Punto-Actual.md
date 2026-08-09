@@ -14,6 +14,64 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## `ls` existe, y el vocabulario dejó de ser un problema de adopción — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió los cuatro verbos en su Fedora y la primera frase fue la
+> correcta: *«eso parece juguete más que sistema operativo serio»*. Tenía razón,
+> y el problema era más viejo que mis cuatro verbos — **el vocabulario entero del
+> sistema ya era así**: `discos`, `modulos`, `correr`, `apagar`.
+>
+> ### Lo que decidió, y por qué importa
+>
+> **Estándar primero, español también.** `ls`, `cd`, `cat`, `pwd`, `clear` son
+> los que enseña el banner; `ver`, `leer`, `ir`, `donde`, `limpiar` siguen
+> funcionando. El argumento es suyo, de dos mensajes antes: si para usar el
+> sistema hay que decirle adiós a todos los comandos útiles, no hay adopción.
+>
+> **Un nombre no es un programa ajeno.** `ls` escrito en Rust dentro de `thalyx`
+> es tan propio como `ver`. Lo que [[Construccion-del-ISO]] prohíbe es
+> incrustarse en el sistema de alguien más, y `make -C image count` sigue
+> diciendo uno.
+>
+> También decidió el **lenguaje de terminal, partido en dos**: comodines y
+> redirección entran con copiar/mover/borrar porque son notación de diario;
+> tuberías después; **guiones y variables quedan sin decidir**, porque ahí la
+> pregunta pasa a ser si Thalyx tiene lenguaje de programación, que es como la
+> gente construye software encima sin pasar por los módulos.
+>
+> Y aplazó lo de `NOEXEC` con una condición: *«cuando tengamos que decidir,
+> explícamelos bien»*. Eso quedó en [[Tareas-Pendientes]] como **deuda de
+> explicación**, con la lista de lo que hay que cubrir cuando se retome.
+>
+> ### Cuatro defectos, todos encontrados corriéndolo en su máquina
+>
+> Regla 1 otra vez, y ninguno lo veía el contenedor porque ninguno aparece en un
+> directorio de prueba con seis archivos:
+>
+> 1. **`clear` contestaba con un discurso sobre el agente**, porque una línea
+>    desconocida cae al mensaje de «no tengo modelo». Un comando común que
+>    responde algo de otro tema es exactamente cómo un sistema se lee inacabado.
+> 2. **Los ocultos se mostraban siempre.** Su carpeta tiene **treinta y cinco
+>    nombres con punto** antes del primero que él puso, así que lo que buscaba
+>    quedaba sepultado. Ahora se ocultan, `ls -a` los muestra, y **el listado
+>    dice cuántos escondió** — un filtro silencioso es uno que nadie descubre.
+> 3. **Una cosa por renglón.** Sesenta entradas eran cuatro pantallas. Ahora van
+>    en columnas, hacia abajo y no a lo ancho, con el ancho real preguntado al
+>    kernel por `TIOCGWINSZ` y ochenta como respaldo — y `None` es respuesta, no
+>    fallo, porque una salida redirigida no tiene ancho.
+> 4. **Se desalineaba con nombres largos.** La columna era fija en 32 y
+>    `First_Layer_Bed_Leveling_Test.stl` tiene 33: **un archivo rompía la columna
+>    de todos los renglones**. Ahora se mide.
+>
+> `ls -l` da tamaños, `ls -a` los ocultos, `ls -la` las dos, y las banderas
+> tienen las dos escrituras (`todo`, `detalles`). Una bandera que no se conoce
+> **no se ignora**: se queda como el lugar, para que la persona lea «`-z` no está
+> ahí» en vez de recibir un listado que hace ver que la bandera funcionó.
+>
+> **959 pruebas** (946 antes), `clippy` limpio.
+>
 > ## Thalyx puede mirar sus propios archivos, y el prompt no era la causa — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

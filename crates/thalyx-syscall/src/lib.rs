@@ -231,6 +231,55 @@ pub fn reread_partition_table(disk: std::os::fd::BorrowedFd<'_>) -> io::Result<(
     check(result)
 }
 
+/// `TIOCGWINSZ`, from `include/uapi/asm-generic/ioctls.h`: `0x5413`.
+///
+/// Spelled out for the same reason as [`BLKRRPART`]: `_IO` is a C macro and this
+/// workspace has no C.
+pub const TIOCGWINSZ: u64 = 0x5413;
+
+/// How many columns wide the terminal is, or `None` when that cannot be asked.
+///
+/// `None` is a real answer and not a failure. Output redirected to a file has no
+/// width, and a caller that treated "could not ask" as "zero columns" would lay
+/// out one character per line — rule 10, in the place where getting it wrong is
+/// visible on every screen.
+///
+/// The caller picks the fallback, because what to do without a width depends on
+/// what is being printed and this function has no business deciding it.
+pub fn terminal_width(terminal: std::os::fd::BorrowedFd<'_>) -> Option<u16> {
+    use std::os::fd::AsRawFd;
+
+    // The kernel's `struct winsize`: four `unsigned short`, in this order.
+    // Declared here rather than borrowed from libc so the layout this code
+    // depends on is written down where the ioctl number is.
+    #[repr(C)]
+    #[derive(Default)]
+    struct WinSize {
+        rows: u16,
+        columns: u16,
+        x_pixels: u16,
+        y_pixels: u16,
+    }
+
+    let mut size = WinSize::default();
+    let request = TIOCGWINSZ as libc::Ioctl;
+
+    // SAFETY: `TIOCGWINSZ` writes exactly one `struct winsize` through the third
+    // parameter, and `WinSize` is that struct with `repr(C)`. The pointer is to a
+    // live local that outlives the call, and `terminal` is borrowed so it cannot
+    // be closed underneath it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(terminal.as_raw_fd(), request, &raw mut size) };
+
+    // Zero columns is what a kernel reports for something that is not a terminal
+    // with a size, and it is not a width. Passed on as `None` rather than as a
+    // number no layout can use.
+    if result < 0 || size.columns == 0 {
+        return None;
+    }
+    Some(size.columns)
+}
+
 /// Clone a mount into a detached tree, returning a file descriptor for it.
 ///
 /// A detached mount can be reconfigured before anyone can see it — which is the

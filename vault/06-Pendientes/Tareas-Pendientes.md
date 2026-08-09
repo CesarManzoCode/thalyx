@@ -78,10 +78,39 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       comodines, variables. **Decreto antes que código.** Trece verbos sueltos y
       un lenguaje que los compone son proyectos distintos, y es la diferencia
       entre que alguien que viene de Linux sienta que sigue en casa o no.
-- [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Hoy nadie puede
-      ejecutar un programa desde su carpeta personal; en Linux sí se puede, y es
-      de las cosas que un usuario promedio nota. Quitarlo abre la superficie que
-      `HARDENED` existe para cerrar. **Decisión de Cesar, nada tocado.**
+- [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Aplazado por Cesar
+      el 2026-08-09 —*«déjalo bloqueado pero cuando tengamos que decidir,
+      explícamelos bien»*— así que **queda una deuda de explicación, no sólo una
+      decisión**: cuando esto se retome hay que exponerle los trade-offs
+      completos, no en tres líneas. Lo que hay que cubrir: qué gana un
+      desarrollador y qué pierde un usuario que no lo es; por qué hoy la
+      pregunta es hipotética (sin red y con el store vacío no existe el programa
+      que se querría correr); qué superficie abre exactamente —cualquier byte
+      que aterrice en `/home`, bajado o escrito por un módulo con permiso, puede
+      volverse un proceso—; y cuáles son las salidas intermedias, como marcar
+      ejecutable archivo por archivo o un subdirectorio propio sin `NOEXEC`.
+      **Nada tocado.**
+
+- [x] **Decidir cómo se llaman los comandos** — resuelto el 2026-08-09:
+      **estándar primero, español también.** `ls`, `cd`, `cat`, `pwd`, `clear`
+      son los que enseña el banner y los que aprende la gente; `ver`, `leer`,
+      `ir`, `donde`, `limpiar` siguen funcionando, igual que los nueve verbos en
+      español que ya existían. La razón es de adopción y es de Cesar: un sistema
+      cuya primera pantalla ofrece un vocabulario que nadie ha visto *«parece
+      juguete más que sistema operativo serio»*. **Un nombre no es un programa
+      ajeno** — todos son el mismo Rust dentro de `thalyx`, y `make -C image
+      count` sigue diciendo uno.
+
+- [x] **Decidir si Thalyx tiene lenguaje de terminal** — decidido a medias el
+      2026-08-09, **partido en dos y a propósito.** Los comodines (`*.txt`) y la
+      redirección a archivo (`>`) entran junto con copiar/mover/borrar, porque
+      son notación de uso diario y no un lenguaje. Las tuberías (`|`) van
+      después. **Los guiones y las variables quedan sin decidir**, y no por
+      pereza: ahí la pregunta deja de ser «¿tiene notación?» y pasa a ser «¿tiene
+      lenguaje de programación?», que es como la gente termina construyendo
+      software encima del sistema sin pasar por los módulos — exactamente lo que
+      [[Filosofia-Fundacional]] apuntaba con *«no a través de scripts de
+      shell»*.
 
 ## Pendientes de decreto formal
 
