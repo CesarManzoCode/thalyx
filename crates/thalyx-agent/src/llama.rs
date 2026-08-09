@@ -319,14 +319,51 @@ pub struct Run {
 
 /// Whether a run is handed `--grammar-file`.
 ///
-/// Only [`LlamaModel::grammar_check`] ever passes [`Constrained::No`]. It is a
-/// private argument rather than a field on [`Invocation`] on purpose: an
-/// unconstrained inference is not a mode Thalyx supports, and a setting for it
-/// in the config file would be one.
+/// Only the probes ever pass [`Constrained::No`]. It is a private argument
+/// rather than a field on [`Invocation`] on purpose: an unconstrained inference
+/// is not a mode Thalyx supports, and a setting for it in the config file would
+/// be one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Constrained {
     Yes,
     No,
+}
+
+/// Which arm of a probe a run belongs to.
+///
+/// Carries [`Constrained`] rather than sitting beside it, so an arm cannot be
+/// labelled one way and run the other — which is the failure that makes saved
+/// evidence describe the wrong inference, and it has already happened once here
+/// for a different reason.
+///
+/// Two of the three arms run unconstrained and they are **not the same
+/// question**: [`Arm::Free`] is the object prompt with the flag removed, and
+/// [`Arm::Prose`] is a different prompt entirely. Naming only the flag would
+/// leave two directories called `-free` per case, distinguishable only by
+/// reading the prompts inside them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arm {
+    WithGrammar,
+    Free,
+    Prose,
+}
+
+impl Arm {
+    fn constrained(self) -> Constrained {
+        match self {
+            Arm::WithGrammar => Constrained::Yes,
+            Arm::Free | Arm::Prose => Constrained::No,
+        }
+    }
+
+    /// What this arm is called in a kept-evidence directory name.
+    fn suffix(self) -> &'static str {
+        match self {
+            Arm::WithGrammar => "-with-grammar",
+            Arm::Free => "-free",
+            Arm::Prose => "-prose",
+        }
+    }
 }
 
 /// Where a run's prompt and grammar sit while llama.cpp reads them.
@@ -452,7 +489,7 @@ impl LlamaModel {
 
     /// Run one inference and report what it cost.
     pub fn run(&self, transcript: &Transcript) -> Result<Run, LlamaError> {
-        let run = self.complete(&Prompt::render(transcript), Constrained::Yes)?;
+        let run = self.complete(&Prompt::render(transcript), Arm::WithGrammar)?;
 
         // The prompt was completed, so cut the completion out of what came
         // back. The marker said where the answer begins; the grammar says where
@@ -503,6 +540,53 @@ impl LlamaModel {
         })
     }
 
+    /// Answer one transcript three ways, for [`crate::grammar_effect`].
+    ///
+    /// - **with the grammar** — what Thalyx actually ships
+    /// - **without it**, same rendered prompt, marker and all, so the two differ
+    ///   in exactly one flag. A second render would carry a new marker and make
+    ///   them two different questions
+    /// - **in prose**, [`Prompt::in_prose`], which asks for no object and names
+    ///   no operation
+    ///
+    /// The third arm was added 2026-08-09, after the first two answered their
+    /// question and could not answer the next one. They showed the grammar is
+    /// not what stops this model declining — it invents with the flag and
+    /// without it — and then stopped, because the prompt they share asks for a
+    /// JSON object whose first field is an operation. Neither arm was ever free
+    /// of that. See [`Prompt::in_prose`].
+    ///
+    /// This is the only way out of this crate to an unconstrained answer, and it
+    /// is deliberately one call: `Gamas-de-Modelo.md` decrees that every
+    /// inference runs grammar-constrained, so a method handing back a free
+    /// answer on its own would be that decree with an opt-out. Nothing here can
+    /// become a [`crate::Proposal`] — all three arms come back as text.
+    #[allow(clippy::type_complexity)]
+    pub fn three_ways(
+        &self,
+        transcript: &Transcript,
+    ) -> (
+        Result<String, LlamaError>,
+        Result<String, LlamaError>,
+        Result<String, LlamaError>,
+    ) {
+        let asking_for_an_object = Prompt::render(transcript);
+        let asking_in_prose = Prompt::in_prose(transcript);
+
+        // Each arm's failure is carried out on its own. A single `Result` would
+        // lose the arms that worked, and which of them failed is most of the
+        // diagnosis: an unconstrained arm that runs away is a different fact
+        // from a constrained one that does.
+        (
+            self.complete(&asking_for_an_object, Arm::WithGrammar)
+                .map(|run| run.answer),
+            self.complete(&asking_for_an_object, Arm::Free)
+                .map(|run| run.answer),
+            self.complete(&asking_in_prose, Arm::Prose)
+                .map(|run| run.answer),
+        )
+    }
+
     /// Ask the model for something the grammar forbids, with and without it.
     ///
     /// The one thing `run` cannot establish. See [`Prompt::probe`] for why the
@@ -512,36 +596,6 @@ impl LlamaModel {
     /// Two runs of the *same* prompt so that `--grammar-file` is the only thing
     /// that differs between them. A check whose two arms differ in two things
     /// cannot say which one moved the result.
-    /// Answer one transcript twice, with the grammar and without it.
-    ///
-    /// For [`crate::grammar_effect`], which asks whether the grammar is what
-    /// stops this model from declining. The two arms share **one rendered
-    /// prompt**, marker and all, so they differ in exactly one flag — a second
-    /// render would carry a new marker and make them two different questions.
-    ///
-    /// This is the only way out of this crate to an unconstrained answer, and
-    /// it is deliberately paired: `Gamas-de-Modelo.md` decrees that every
-    /// inference runs grammar-constrained, so a method that handed back a free
-    /// answer on its own would be that decree with an opt-out. Nothing here can
-    /// become a [`crate::Proposal`] — both arms come back as text.
-    pub fn with_and_without_grammar(
-        &self,
-        transcript: &Transcript,
-    ) -> (Result<String, LlamaError>, Result<String, LlamaError>) {
-        let prompt = Prompt::render(transcript);
-
-        // Each arm's failure is carried out on its own. A single `Result` would
-        // lose the arm that worked, and which of the two failed is most of the
-        // diagnosis: an unconstrained arm that runs away is a different fact
-        // from a constrained one that does.
-        (
-            self.complete(&prompt, Constrained::Yes)
-                .map(|run| run.answer),
-            self.complete(&prompt, Constrained::No)
-                .map(|run| run.answer),
-        )
-    }
-
     pub fn grammar_check(&self) -> Result<GrammarCheck, LlamaError> {
         let probe = Prompt::probe();
 
@@ -553,8 +607,8 @@ impl LlamaModel {
         let mut brief = self.clone();
         brief.invocation.predict = PROBE_PREDICT;
 
-        let constrained = brief.complete(&probe, Constrained::Yes)?.answer;
-        let unconstrained = brief.complete(&probe, Constrained::No)?.answer;
+        let constrained = brief.complete(&probe, Arm::WithGrammar)?.answer;
+        let unconstrained = brief.complete(&probe, Arm::Free)?.answer;
 
         let obeys_root = |answer: &str| {
             answer
@@ -635,7 +689,8 @@ impl LlamaModel {
     /// grammar probe alone, since `Gamas-de-Modelo.md` decrees that every
     /// inference runs grammar-constrained, and a config knob for turning that
     /// off would be a decree with an opt-out.
-    fn complete(&self, prompt: &Prompt, constrained: Constrained) -> Result<Run, LlamaError> {
+    fn complete(&self, prompt: &Prompt, arm: Arm) -> Result<Run, LlamaError> {
+        let constrained = arm.constrained();
         self.preflight()?;
 
         // Named after the marker, which is unique per invocation: a bench of
@@ -643,23 +698,20 @@ impl LlamaModel {
         // and the name is a string the run's own output already shows.
         //
         // The arm is in the name because the marker is not enough. Both probes
-        // — `grammar_check` and `with_and_without_grammar` — run *one* rendered
-        // prompt twice on purpose, so the two arms share a marker; without this
-        // suffix the free arm overwrote the constrained arm's `command`, and
-        // what survived was a command line with no `--grammar-file` in it. The
-        // saved evidence for the arm that mattered would have described the
-        // other one.
+        // — `grammar_check` and `three_ways` — run *one* rendered prompt twice
+        // on purpose, so those two arms share a marker; without this suffix the
+        // free arm overwrote the constrained arm's `command`, and what survived
+        // was a command line with no `--grammar-file` in it. The saved evidence
+        // for the arm that mattered would have described the other one.
+        //
+        // The prose arm renders its own prompt and so carries its own marker,
+        // but it is named too: `-free` on two different questions would leave a
+        // reader to tell them apart by opening the prompts.
         let named: String = prompt
             .marker()
             .chars()
             .filter(char::is_ascii_alphanumeric)
-            .chain(
-                match constrained {
-                    Constrained::Yes => "-with-grammar",
-                    Constrained::No => "-free",
-                }
-                .chars(),
-            )
+            .chain(arm.suffix().chars())
             .collect();
         let scratch = Scratch::open(self.invocation.keep_prompt.as_deref(), &named)?;
         let prompt_file = scratch.path().join("prompt.txt");
@@ -1607,6 +1659,45 @@ esac"#,
             commands.iter().any(|c| !c.contains("--grammar-file")),
             "no arm kept the free command: {commands:?}"
         );
+    }
+
+    #[test]
+    fn the_three_arms_leave_three_directories_that_say_which_arm_they_are() {
+        // Two of the three run unconstrained, and they are different questions.
+        // Named by the flag alone the evidence would hold two directories called
+        // `-free` per case, and telling them apart would mean opening the
+        // prompts — which is exactly the reading the kept evidence exists to
+        // save somebody from.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(scratch.path(), r#"cat "$4"; printf '%s' 'dev.thalyx.demo'"#);
+        let kept = scratch.path().join("kept");
+
+        let mut invocation = Invocation::new(&binary, &weights);
+        invocation.keep_prompt = Some(kept.clone());
+        let (constrained, free, prose) = LlamaModel::new(invocation).three_ways(&transcript());
+        assert!(constrained.is_ok() && free.is_ok() && prose.is_ok());
+
+        let mut names: Vec<String> = std::fs::read_dir(&kept)
+            .expect("the kept directory exists")
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 3, "two arms shared a directory: {names:?}");
+
+        for suffix in ["-with-grammar", "-free", "-prose"] {
+            assert!(
+                names.iter().any(|name| name.ends_with(suffix)),
+                "no directory is the {suffix} arm: {names:?}"
+            );
+        }
+
+        // And the prose arm's kept prompt has to be the prose one. A name that
+        // says `-prose` over the object prompt would be worse than no name.
+        let prose_dir = names.iter().find(|n| n.ends_with("-prose")).unwrap();
+        let asked = std::fs::read_to_string(kept.join(prose_dir).join("prompt.txt")).unwrap();
+        assert!(!asked.contains('{'), "the prose arm kept an object prompt");
+        assert!(asked.contains(crate::prompt::ABSTENTION_WORD));
     }
 
     #[test]

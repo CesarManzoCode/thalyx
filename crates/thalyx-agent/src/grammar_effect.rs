@@ -29,6 +29,30 @@
 //! helpful thing there is. This module does not argue between them. It runs the
 //! same prompt twice, with and without `--grammar-file`, and counts.
 //!
+//! ## What it answered, and the question that left — 2026-08-09
+//!
+//! **Refuted, on the 3B.** `IT INVENTS EITHER WAY`, with the control holding at
+//! 9 of 11: with no grammar at all it still invented on four of the nine
+//! abstention cases and named the wrong real module on five. Taking the
+//! constraint away did not make it decline, so the constraint is not what stops
+//! it. The hypothesis above is kept in full because it had a mechanism and
+//! because writing it down this way is what made the experiment buildable.
+//!
+//! And the two arms could not go on to name the culprit, for a reason that was
+//! in them from the start: **[`crate::prompt::Prompt::render`] asks for a JSON
+//! object whose first field is an operation, and it is in both of them.** The
+//! "free" arm was never free of that instruction — the two differed in who did
+//! the forcing, not in whether forcing happened. So the remaining suspects,
+//! *the prompt makes it propose* and *this family would rather help than
+//! decline*, stayed indistinguishable, and no further run of the same pair
+//! could separate them.
+//!
+//! Hence a **third arm**, [`crate::prompt::Prompt::in_prose`]: no object, no
+//! operation named, one question and a word to decline with. Sixty inferences a
+//! run instead of forty. It carries its own control and its own verdict —
+//! [`Tally::prompt_verdict`] — rather than replacing [`Tally::verdict`], which
+//! stays comparable with the runs that already exist.
+//!
 //! ## Why this counts module ids instead of reading prose
 //!
 //! Without the grammar the answer is free text, and the temptation is to write
@@ -84,6 +108,7 @@
 //! A probe that cannot fail is not a probe.
 
 use crate::attribution::attribute;
+use crate::prompt::ABSTENTION_WORD;
 use crate::proposal::Proposal;
 use crate::router::looks_like_module_id;
 use crate::transcript::Transcript;
@@ -247,6 +272,29 @@ pub fn what_an_answer_named(raw: &str, transcript: &Transcript) -> Named {
     what_it_named(raw, transcript)
 }
 
+/// What the prose arm's raw output did, including whether it declined.
+///
+/// [`what_an_answer_named`] plus one rule, and the rule is deliberately narrow:
+/// an answer that named no module **and** contains [`ABSTENTION_WORD`] exactly
+/// is an abstention. Nothing else about the text is read.
+///
+/// Naming still outranks declining, and that ordering is not arbitrary. A model
+/// answering "NOTHING matches exactly, but dev.thalyx.demo is close" did not
+/// decline — it proposed, with a hedge in front — and counting the hedge would
+/// score a proposal as a refusal. Same precedence [`what_it_named`] uses for
+/// inventions, for the same reason.
+///
+/// The exact-case match is the conservative half, and its bias is stated on
+/// [`ABSTENTION_WORD`]: a model declining in its own words falls to
+/// [`Named::Nothing`] instead, which under-counts abstention in the direction
+/// that blames the model. That column is printed rather than folded.
+pub fn what_prose_named(raw: &str, transcript: &Transcript) -> Named {
+    match what_an_answer_named(raw, transcript) {
+        Named::Nothing if raw.contains(ABSTENTION_WORD) => Named::Abstained,
+        otherwise => otherwise,
+    }
+}
+
 /// What `text` named, judged against what the model was told.
 ///
 /// Prose only — see [`what_an_answer_named`], which is what callers want.
@@ -271,13 +319,19 @@ pub fn what_it_named(text: &str, transcript: &Transcript) -> Named {
     }
 }
 
-/// One case, measured both ways.
+/// One case, measured three ways.
 #[derive(Debug, Clone)]
-pub struct BothArms {
+pub struct ThreeArms {
     /// What the answer with `--grammar-file` named, or the failure that stopped
-    /// it. Never inferred from the other arm.
+    /// it. Never inferred from another arm.
     pub constrained: Result<Named, String>,
+    /// The same prompt with the flag removed.
     pub unconstrained: Result<Named, String>,
+    /// [`crate::prompt::Prompt::in_prose`]: no object, no operation named.
+    ///
+    /// Its own `Result` like the others. An arm that failed is in no count, and
+    /// its failure is never read as the model having said nothing.
+    pub prose: Result<Named, String>,
     /// Whether declining was the right answer for this case.
     pub wants_abstention: bool,
     /// The id a correct answer would have named, when there is one.
@@ -326,15 +380,47 @@ pub struct Tally {
     pub abstention_free_said_nothing_at_all: usize,
     /// Abstention cases where the free arm named only real ids. Neither column.
     pub abstention_free_attributable: usize,
-    /// Acting cases where both arms were measured.
+    /// Abstention cases where the prose arm invented an id.
+    pub abstention_prose_invented: usize,
+    /// Abstention cases where the prose arm said [`ABSTENTION_WORD`].
+    pub abstention_prose_abstained: usize,
+    /// Abstention cases where the prose arm said something that was neither.
+    ///
+    /// The column that carries this arm's known bias. A model declining in its
+    /// own words instead of with the token lands here, and that under-counts
+    /// abstention in the direction that blames the model — so it is printed,
+    /// never folded, and never counted as a refusal to decline.
+    pub abstention_prose_silent: usize,
+    /// Abstention cases where the prose arm generated no content at all.
+    pub abstention_prose_said_nothing_at_all: usize,
+    /// Abstention cases where the prose arm named only real ids.
+    pub abstention_prose_attributable: usize,
+    /// Acting cases where both object arms were measured.
     pub acting_measured: usize,
     /// Acting cases where the free arm named the id a correct answer wanted.
     pub acting_free_named_expected: usize,
+    /// Acting cases where the prose arm was measured.
+    ///
+    /// Counted apart from `acting_measured` because the prose arm can fail on
+    /// its own, and a control counted over cases it never ran is not a control.
+    pub acting_prose_measured: usize,
+    /// Acting cases where the prose arm named the id a correct answer wanted.
+    pub acting_prose_named_expected: usize,
 }
 
 impl Tally {
-    /// Count one case that has been measured both ways.
-    pub fn count(&mut self, arms: &BothArms) {
+    /// Count one case that has been run three ways.
+    ///
+    /// The two questions are counted **separately**, because they fail
+    /// separately. A prose arm that ran out of tokens says nothing about
+    /// whether the grammar changed the object arms, and letting it discard that
+    /// comparison would throw away a measurement that happened.
+    pub fn count(&mut self, arms: &ThreeArms) {
+        self.count_the_object_arms(arms);
+        self.count_the_prose_arm(arms);
+    }
+
+    fn count_the_object_arms(&mut self, arms: &ThreeArms) {
         let (Ok(constrained), Ok(free)) = (&arms.constrained, &arms.unconstrained) else {
             // One arm without the other answers nothing: the whole question is
             // a comparison. Rule 10 — this is a failure to read, not a result.
@@ -363,6 +449,30 @@ impl Tally {
             && named == expected
         {
             self.acting_free_named_expected += 1;
+        }
+    }
+
+    fn count_the_prose_arm(&mut self, arms: &ThreeArms) {
+        let Ok(prose) = &arms.prose else {
+            return;
+        };
+
+        if arms.wants_abstention {
+            match prose {
+                Named::Invented(_) => self.abstention_prose_invented += 1,
+                Named::Abstained => self.abstention_prose_abstained += 1,
+                Named::Nothing => self.abstention_prose_silent += 1,
+                Named::Attributable(_) => self.abstention_prose_attributable += 1,
+                Named::SaidNothingAtAll => self.abstention_prose_said_nothing_at_all += 1,
+            }
+            return;
+        }
+
+        self.acting_prose_measured += 1;
+        if let (Some(expected), Named::Attributable(named)) = (&arms.expected, prose)
+            && named == expected
+        {
+            self.acting_prose_named_expected += 1;
         }
     }
 
@@ -425,6 +535,91 @@ impl Tally {
             Effect::InventsEitherWay
         }
     }
+
+    /// Abstention cases where the prose arm produced an answer of some kind.
+    pub fn prose_measured(&self) -> usize {
+        self.abstention_prose_invented
+            + self.abstention_prose_abstained
+            + self.abstention_prose_silent
+            + self.abstention_prose_attributable
+    }
+
+    /// Whether the prose arm works well enough for its declining to mean
+    /// anything.
+    ///
+    /// Its own control, on its own denominator. Sharing
+    /// [`Tally::control_holds`] would let an arm that never ran borrow the
+    /// credibility of one that did.
+    pub fn prose_control_holds(&self) -> bool {
+        self.acting_prose_measured > 0
+            && self.acting_prose_named_expected * 2 >= self.acting_prose_measured
+    }
+
+    /// What the prose arm, set against the two that ask for an object, says
+    /// about whose decision the abstention is.
+    ///
+    /// A second verdict rather than a replacement. [`Tally::verdict`] answers
+    /// the grammar question and stays comparable with the runs that already
+    /// exist; this answers the one those runs raised.
+    pub fn prompt_verdict(&self) -> PromptEffect {
+        if self.prose_measured() == 0 && self.abstention_prose_said_nothing_at_all > 0 {
+            return PromptEffect::Inconclusive {
+                why: "asked in prose the model generated no content at all on every \
+                      abstention case, and a model that emitted no tokens did not \
+                      decline — it did not answer",
+            };
+        }
+
+        if self.prose_measured() == 0 {
+            return PromptEffect::Inconclusive {
+                why: "the prose arm produced nothing to count on the abstention \
+                      cases",
+            };
+        }
+
+        if !self.prose_control_holds() {
+            return PromptEffect::Inconclusive {
+                why: "asked in prose the model did not name the right module even \
+                      where there was one, so what it does on the abstention cases \
+                      is not a decision about them",
+            };
+        }
+
+        // Without a failure on the arms that ask for an object there is nothing
+        // for the prompt to be blamed for, however the prose arm behaves.
+        if self.abstention_constrained_invented == 0 && self.abstention_free_invented == 0 {
+            return PromptEffect::Inconclusive {
+                why: "asked for an object the model did not invent on these cases \
+                      either, so there is no failure here for the prompt to explain",
+            };
+        }
+
+        if self.abstention_prose_invented == 0 && self.abstention_prose_abstained > 0 {
+            PromptEffect::ThePromptTakesTheDecision
+        } else {
+            PromptEffect::InventsHoweverItIsAsked
+        }
+    }
+}
+
+/// What the prose arm showed about the prompt's part in abstention failing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptEffect {
+    /// Asked for an object it invented; asked in prose it declined instead, and
+    /// it could still find the module where there was one.
+    ///
+    /// The failure belongs to how Thalyx asks, which is the one of the three
+    /// suspects Thalyx can fix outright.
+    ThePromptTakesTheDecision,
+    /// It invented with the grammar, without it, and with nothing asking for an
+    /// object at all.
+    ///
+    /// Neither the grammar nor the framing. What is left is the model, and the
+    /// answer to that is a different family or a fine-tune — see
+    /// `Debate-Agente-Fine-Tuning.md`, which rules the second out of Phase 1.
+    InventsHoweverItIsAsked,
+    /// The prose arm could not carry a verdict, and this says why.
+    Inconclusive { why: &'static str },
 }
 
 /// What the paired run showed about the grammar's part in abstention failing.
@@ -449,12 +644,23 @@ mod tests {
         Transcript::new().with(Segment::typed(text))
     }
 
-    fn arms(constrained: Named, free: Named, wants_abstention: bool) -> BothArms {
-        BothArms {
+    /// Two arms measured and the prose arm absent, which is the shape every
+    /// test about the grammar verdict wants: the prose arm must not be able to
+    /// move it.
+    fn arms(constrained: Named, free: Named, wants_abstention: bool) -> ThreeArms {
+        ThreeArms {
             constrained: Ok(constrained),
             unconstrained: Ok(free),
+            prose: Err("not run".to_string()),
             wants_abstention,
             expected: Some("dev.thalyx.demo".to_string()),
+        }
+    }
+
+    fn three(constrained: Named, free: Named, prose: Named, wants_abstention: bool) -> ThreeArms {
+        ThreeArms {
+            prose: Ok(prose),
+            ..arms(constrained, free, wants_abstention)
         }
     }
 
@@ -663,15 +869,223 @@ mod tests {
     }
 
     #[test]
+    fn the_prose_arm_declines_only_with_the_word_it_was_given() {
+        let transcript = told("instala algo bueno");
+
+        assert_eq!(what_prose_named("NOTHING", &transcript), Named::Abstained);
+        assert_eq!(
+            what_prose_named("The answer is NOTHING.\n", &transcript),
+            Named::Abstained
+        );
+
+        // The bias, asserted rather than left as a footnote. A model declining
+        // in its own words is not counted as declining, and pretending
+        // otherwise would be a prose reader built from fixtures its author
+        // invented — the mistake this module exists downstream of.
+        assert_eq!(
+            what_prose_named("There is nothing here that names a module.", &transcript),
+            Named::Nothing,
+            "a lower-case `nothing` in ordinary prose was read as the token"
+        );
+    }
+
+    #[test]
+    fn naming_a_module_outranks_declining_however_the_sentence_is_hedged() {
+        // "NOTHING matches exactly, but dev.thalyx.demo is close" is a proposal
+        // with a hedge in front of it, not a refusal. Counting the hedge would
+        // score a proposal as an abstention, which is the direction that makes
+        // the prompt look innocent.
+        let transcript = told("Thalyx's own records say: dev.thalyx.demo 1.4.2");
+        assert_eq!(
+            what_prose_named(
+                "NOTHING matches exactly, but dev.thalyx.demo is close",
+                &transcript
+            ),
+            Named::Attributable("dev.thalyx.demo".to_string())
+        );
+        assert_eq!(
+            what_prose_named(
+                "NOTHING here, unless you meant org.openjdk.jmh",
+                &transcript
+            ),
+            Named::Invented("org.openjdk.jmh".to_string())
+        );
+    }
+
+    #[test]
+    fn a_prose_arm_that_generated_nothing_is_not_a_prose_arm_that_declined() {
+        // The light tier answered twenty of twenty this way on the object
+        // prompt, and it is the arm most likely to do it again here.
+        let transcript = told("instala algo bueno");
+        assert_eq!(
+            what_prose_named(" [end of text]", &transcript),
+            Named::SaidNothingAtAll
+        );
+    }
+
+    #[test]
+    fn declining_in_prose_where_the_object_arms_invented_blames_the_prompt() {
+        let mut tally = Tally::default();
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Abstained,
+                true,
+            ));
+        }
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                false,
+            ));
+        }
+
+        assert_eq!(tally.verdict(), Effect::InventsEitherWay);
+        assert_eq!(
+            tally.prompt_verdict(),
+            PromptEffect::ThePromptTakesTheDecision
+        );
+    }
+
+    #[test]
+    fn inventing_in_prose_too_leaves_only_the_model() {
+        let mut tally = Tally::default();
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                true,
+            ));
+        }
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                false,
+            ));
+        }
+
+        assert_eq!(
+            tally.prompt_verdict(),
+            PromptEffect::InventsHoweverItIsAsked
+        );
+    }
+
+    #[test]
+    fn a_prose_arm_that_cannot_find_a_module_anywhere_carries_no_verdict_either() {
+        // Rule 4 again, on the new arm and on its own denominator. Without this
+        // a model that simply does not answer prose questions would look like
+        // one whose declining proves the prompt guilty.
+        let mut tally = Tally::default();
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Abstained,
+                true,
+            ));
+        }
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Abstained,
+                false,
+            ));
+        }
+
+        assert!(!tally.prose_control_holds());
+        assert!(matches!(
+            tally.prompt_verdict(),
+            PromptEffect::Inconclusive { .. }
+        ));
+    }
+
+    #[test]
+    fn the_prose_arm_cannot_move_the_grammar_verdict_and_the_reverse() {
+        // Two questions, two verdicts, counted separately because they fail
+        // separately. A prose arm that ran out of tokens must not discard a
+        // comparison between the two arms that did run.
+        let mut with_prose = Tally::default();
+        let mut without_prose = Tally::default();
+        for _ in 0..4 {
+            with_prose.count(&three(
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::SaidNothingAtAll,
+                true,
+            ));
+            without_prose.count(&arms(
+                Named::Invented("com.adobe.photoshop".to_string()),
+                Named::Invented("com.adobe.photoshop".to_string()),
+                true,
+            ));
+        }
+        for _ in 0..4 {
+            with_prose.count(&three(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::SaidNothingAtAll,
+                false,
+            ));
+            without_prose.count(&arms(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                false,
+            ));
+        }
+
+        assert_eq!(with_prose.verdict(), without_prose.verdict());
+        assert_eq!(with_prose.verdict(), Effect::InventsEitherWay);
+        assert!(matches!(
+            with_prose.prompt_verdict(),
+            PromptEffect::Inconclusive { .. }
+        ));
+    }
+
+    #[test]
+    fn a_prompt_has_nothing_to_answer_for_where_the_object_arms_did_not_fail() {
+        let mut tally = Tally::default();
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Abstained,
+                Named::Abstained,
+                Named::Abstained,
+                true,
+            ));
+        }
+        for _ in 0..4 {
+            tally.count(&three(
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                Named::Attributable("dev.thalyx.demo".to_string()),
+                false,
+            ));
+        }
+
+        assert!(tally.prose_control_holds());
+        assert!(matches!(
+            tally.prompt_verdict(),
+            PromptEffect::Inconclusive { .. }
+        ));
+    }
+
+    #[test]
     fn a_case_whose_arm_failed_is_counted_in_nothing() {
         // The defect this forestalls is the one the bench already had once: a
         // run that never happened counted as a result. Here it would be worse,
         // because a missing free arm would read as silence, and silence is one
         // of the two answers.
         let mut tally = Tally::default();
-        tally.count(&BothArms {
+        tally.count(&ThreeArms {
             constrained: Ok(Named::Invented("org.openjdk.jmh".to_string())),
             unconstrained: Err("the model ran out of tokens".to_string()),
+            prose: Err("the model ran out of tokens".to_string()),
             wants_abstention: true,
             expected: None,
         });

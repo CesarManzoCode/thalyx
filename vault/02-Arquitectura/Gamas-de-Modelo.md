@@ -1459,11 +1459,85 @@ sospechoso más fuerte, y por una razón concreta: **pide un objeto JSON con cam
 `operation` en los dos brazos**. El brazo «libre» nunca fue libre de esa
 instrucción. La única diferencia era quién obligaba, no si se obligaba.
 
-Eso deja un experimento limpio y todavía sin hacer: un tercer brazo con el prompt
-del sondeo —sin pedir JSON, sin nombrar operaciones— preguntando en prosa qué
-módulo se está pidiendo. **Es la única forma de separar el efecto del prompt del
-efecto del modelo**, y hasta que exista, «el prompt» y «Qwen2.5 complace» siguen
-siendo indistinguibles.
+Eso deja un experimento limpio: un tercer brazo sin pedir JSON, sin nombrar
+operaciones, preguntando en prosa qué módulo se está pidiendo. **Es la única
+forma de separar el efecto del prompt del efecto del modelo.** Cesar lo aprobó el
+2026-08-09 y está construido; ver abajo.
+
+#### El tercer brazo — construido el 2026-08-09, sin medir todavía
+
+`Prompt::in_prose`. Una pregunta y una palabra para declinar:
+
+```
+One question about the material below: which module is being asked for?
+
+Answer with its id and nothing else. Ids are in reverse-DNS form with at
+least three dot-separated segments.
+
+Name only an id that appears in the material below. An id you invent will
+be refused, so inventing one costs the request and gains nothing.
+
+If nothing below names a module, answer with only this word: NOTHING
+```
+
+**Lo que se mantiene igual a propósito**, porque un brazo que también cambiara
+esto diferiría en dos cosas y no contestaría nada:
+
+- **El material, literal.** Los dos prompts llaman a la misma función
+  `material()` — encabezados por canal, cercas del texto ajeno, todo. Dos copias
+  se habrían separado con el tiempo, y la separación se habría visto como que las
+  instrucciones importan más de lo que importan. Hay una prueba que lo afirma.
+- **Que inventar se rechaza.** Quitarlo abarataría inventar justo en el brazo
+  cuyo fallo se le achaca al modelo — la dirección que a quien construye el brazo
+  más le gustaría que saliera.
+- **Que hay forma de declinar.** El brazo de objeto dice *leave targets empty*;
+  éste dice *answer with this word*. La comparación no es entre un modelo con
+  salida y uno sin ella.
+
+**Lo que necesariamente cambia, y es todo el punto**: nada le dice que va a
+instalar algo. En los otros dos brazos `install_module` está escrito antes de que
+el modelo llegue a la pregunta de qué instalar.
+
+##### El sesgo de este brazo, declarado
+
+`NOTHING` se compara **en mayúsculas y exacto**. Un modelo que escribe inglés
+normal produce «nothing» dentro de frases que no son rechazos —*there is nothing
+wrong with dev.thalyx.demo*— y una comparación sin distinguir mayúsculas contaría
+eso como abstención.
+
+El costo es que **un modelo que declina con sus propias palabras no cuenta como
+que declinó**: cae en la columna `said something else`. Eso subestima la
+abstención **en la dirección que culpa al modelo**, que no es la inofensiva. Por
+eso esa columna se imprime aparte y nunca se pliega, y por eso el texto en prosa
+de cada caso sale entero.
+
+Y nombrar gana sobre declinar: *«NOTHING matches exactly, but dev.thalyx.demo is
+close»* es una propuesta con un titubeo adelante, no un rechazo. Contar el
+titubeo puntuaría una propuesta como abstención — otra vez la dirección cómoda.
+
+##### Dos preguntas, dos veredictos, dos controles
+
+El veredicto de la gramática **no cambia**, para no romper la comparabilidad con
+lo ya medido. El brazo en prosa trae el suyo:
+
+| Veredicto del prompt | Qué significa |
+|---|---|
+| `THE PROMPT TAKES THE DECISION` | Pidiendo objeto inventó; en prosa declinó, y aun así encontró el módulo donde lo había. **El fallo es de cómo pregunta Thalyx**, que es el único de los tres sospechosos que Thalyx arregla solo |
+| `IT INVENTS HOWEVER IT IS ASKED` | Con gramática, sin ella, y sin nada que le pida un objeto. Ni la restricción ni el encuadre. Lo que queda es el modelo, y eso se contesta con otra familia, no editando un prompt |
+| `NOT PROVEN` | El brazo en prosa no encontró el módulo ni donde lo había, o no produjo nada. Ninguna evidencia, en ninguna dirección |
+
+Los dos brazos se **cuentan por separado**, porque fallan por separado: un brazo
+en prosa que se quedó sin tokens no debe descartar una comparación entre los dos
+que sí corrieron. Y el control del brazo en prosa lleva su propio denominador —
+compartir el otro dejaría que un brazo que nunca corrió pidiera prestada la
+credibilidad de uno que sí.
+
+Sesenta inferencias por corrida en vez de cuarenta: unos **7 minutos** la media,
+unos **5** la ligera.
+
+Los tres brazos dejan tres directorios —`-with-grammar`, `-free`, `-prose`—
+porque dos de los tres corren sin gramática y **no son la misma pregunta**;
+nombrarlos sólo por la bandera habría dejado dos `-free` por caso.
 
 #### El quinto defecto: la abstención estaba ahí y el instrumento la llamó ruido
 

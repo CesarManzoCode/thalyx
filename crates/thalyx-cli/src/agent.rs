@@ -94,11 +94,13 @@ pub enum AgentCommand {
         keep_prompt: Option<PathBuf>,
     },
 
-    /// Run the suite with the grammar and without it, and say what it changed
+    /// Run the suite three ways, and say what each way changed
     ///
     /// Six bench runs reported abstention as zero, identically on three model
-    /// sizes. This asks whether the grammar is what stops the model declining:
-    /// every case twice, differing in one flag. Twice the inferences of a bench.
+    /// sizes. Every case is asked with the grammar, without it, and in prose —
+    /// no object, no operation named. The first pair says whether the grammar
+    /// stops the model declining; the third says whether the prompt does.
+    /// Three times the inferences of a bench.
     GrammarEffect {
         /// A suite of cases. Without one, the suite built into Thalyx is used.
         #[arg(long)]
