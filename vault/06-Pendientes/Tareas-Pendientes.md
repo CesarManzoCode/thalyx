@@ -73,10 +73,30 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       salvo que el patrón empiece con punto. `rm` con varios blancos los lista
       **antes** de tocar nada, porque `/home` es el único sitio que ningún
       rollback nuestro puede devolver.
-- [ ] **4b. La cara estructurada, expuesta.** El `Done` existe y hoy sólo lo lee
-      el impresor humano. Falta que un programa pueda pedirlo y parsearlo, que
-      es el punto entero del decreto del objetivo. **Ninguna de las cuatro
-      ventajas está expuesta todavía a nadie.**
+- [x] **4b. La cara estructurada, expuesta** — hecha el 2026-08-09.
+      `structured on` en la sesión y cada verbo de archivos contesta un objeto
+      JSON por renglón; `structured off` devuelve las oraciones, y la
+      confirmación **carga la salida** porque en la imagen no hay una segunda
+      terminal. Tres cosas la hacen otra cara y no otro impresor, y las tres son
+      la regla de desempate del decreto: no esconde nada (`-a` y `-l` no le
+      cambian nada a un programa, porque nunca se le estaba dando menos), los
+      tamaños son exactos, y **el silencio nunca es respuesta** — un `cd` que a
+      una persona no le imprime nada sí contesta, porque un parser no distingue
+      un silencio que significa «me moví» de uno que significa que la sesión se
+      murió. El marco es **un renglón tecleado, exactamente un objeto**: `rm` con
+      varios blancos contesta uno con `count` y `results`, porque un límite
+      definido de un solo lado no es un límite. Encontró dos defectos en la cara
+      humana, ver [[Punto-Actual]]. `crates/thalyx-files/src/machine.rs`, etapa
+      21 de `verify.sh`.
+- [ ] **4c. Las otras cosas que la sesión sabe, con su segunda cara.** Sólo los
+      verbos de archivos tienen dos caras. `modulos`, `disponibles`, `permisos`,
+      `recuerdos`, `estado`, `nucleo` y `discos` contestan sólo en prosa, y con
+      ellos siguen **sin exponerse a nadie las cuatro ventajas** que hacen que la
+      vara sea *mejor* y no *igual*: el índice semántico, el rollback, la
+      procedencia por campo y los permisos por tarea. Un agente ajeno que llegue
+      a Thalyx hoy puede trabajar con archivos y no puede ver nada de lo que
+      distingue a este sistema de Linux. Ver [[Filosofia-Fundacional]], «Que un
+      agente ajeno pueda trabajar aquí».
 - [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
       corregir un archivo de configuración desde la máquina.
 - [ ] **6. `buscar`** por nombre y por contenido.

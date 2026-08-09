@@ -14,9 +14,103 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Quedó escrito para quién se construye, y los verbos ya cambian archivos — 2026-08-09
+> ## La cara estructurada existe, y encontró dos defectos en la humana — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El punto 4b está hecho: **un programa ya puede pedir los hechos en vez de las
+> frases.** `structured on` en la sesión, y de ahí en adelante cada verbo de
+> archivos contesta un objeto JSON por renglón; `structured off` devuelve las
+> oraciones. Los dos nombres funcionan (`estructurado`).
+>
+> Hasta hoy el decreto del objetivo estaba **escrito y no construido**: las
+> operaciones ya devolvían un `Done` desde ayer, pero lo único que lo leía era el
+> impresor humano.
+>
+> ### Las tres cosas que la hacen otra cara y no otro impresor
+>
+> Las tres son la regla de desempate del decreto — gana el LLM, y el humano
+> conserva acceso completo por otra vía:
+>
+> 1. **No esconde nada.** `ls` le oculta los archivos con punto a una persona
+>    porque tu carpeta tiene treinta y cinco antes del primero que pusiste.
+>    Ocultárselos a un programa que preguntó es quitarle capacidad, así que en
+>    esta cara están todos. `-a` y `-l` se leen en las dos caras y **se obedecen
+>    en una sola**: a un programa no le cambian nada porque nunca se le estaba
+>    dando menos.
+> 2. **Los tamaños son exactos.** `1.2 kB` es un número que perdió precisión, y
+>    dos programas comparando dos números redondeados comparan dos mentiras.
+> 3. **El silencio nunca es respuesta.** `cd` no imprime nada para una persona
+>    porque el prompt siguiente ya dice dónde quedó. Un parser no tiene prompt de
+>    dónde leerlo y **no distingue un silencio que significa «me moví» de uno que
+>    significa que la sesión se murió**. Un `cd` que falla contesta además dónde
+>    sigue parada la sesión, que es lo que la cara humana ya decía con palabras.
+>
+> ### El marco, que es el hueco que casi se repite
+>
+> **Un renglón tecleado, exactamente un objeto.** `rm *.log` que alcanza tres
+> archivos podría imprimir tres objetos, y quien lee no tiene cómo saber que debe
+> leer tres — el cuarto se leería como respuesta al comando siguiente. Así que un
+> verbo que puede tocar varias cosas contesta **un** objeto con `count` y
+> `results` adentro, y `ok` es verdadero sólo si todos salieron bien: un éxito
+> parcial reportado como éxito es cómo alguien sigue adelante creyendo que su
+> ciclo terminó.
+>
+> Es el mismo error del 2026-08-08 con el marcador del prompt del agente: **un
+> límite definido de un solo lado no es un límite.**
+>
+> ### Dos defectos, los dos encontrados corriéndolo, y los dos de la cara humana
+>
+> Esto es lo que más vale de la jornada, porque **la cara estructurada resultó ser
+> un instrumento**: exige respuesta donde una persona perdona el silencio.
+>
+> 1. **Cinco verbos a secas no eran verbos.** `rm`, `mkdir`, `touch`, `cp` y `mv`
+>    escritos solos caían al discurso del agente —«no tengo modelo»—, porque cada
+>    brazo del despacho exige **un espacio detrás**. Es exactamente el defecto que
+>    encontraste con `clear`, vivo en cinco verbos más y sin que nadie lo notara,
+>    porque una persona lee esa respuesta como que la máquina está rara y teclea
+>    otra cosa. Ahora cada uno tiene su propia pregunta: `cp` pide dos nombres y
+>    `rm` uno, y una pista que no dice cuál no sirve.
+> 2. **El primer objeto salía pegado al prompt humano.** El prompt del comando que
+>    enciende el modo se imprimió cuando la cara todavía era humana y no lleva
+>    salto de línea, así que la respuesta aterrizaba como
+>    `  /home > {"op":"structured",…`. **El único renglón que no parseaba era el
+>    que avisa que el modo está encendido.** Ninguna prueba del objeto lo veía; se
+>    encontró canalizando la sesión y leyendo la salida.
+>
+> La regla que sale de los dos, en [[Estrategia-de-Pruebas]]: **el primer renglón
+> de un modo nuevo lo escribió el modo anterior**, y es el que nadie prueba.
+>
+> ### Detalles con su razón escrita
+>
+> - **Un nombre que no es texto se marca.** Las rutas en Linux son bytes; un
+>   nombre inválido en UTF-8 sólo se puede mostrar con pérdida, y devuelto como
+>   argumento nombra otro archivo o ninguno. Sale `"exact": false`, y sólo cuando
+>   significa algo.
+> - **La forma se escribe a mano, no se deriva.** Nada lleva `#[derive(Serialize)]`:
+>   una forma derivada la decide el nombre de una variante de Rust, así que
+>   renombrar `Did::Copied` renombraría en silencio un campo que alguien parsea.
+> - **`unreadable` está siempre, aunque esté vacío.** Una llave que sólo aparece
+>   el día malo es una llave que nadie maneja el día malo.
+> - **La confirmación carga la salida** (`"off": "structured off"`). En la imagen
+>   no hay una segunda terminal, así que un modo sin salida visible puede dejar a
+>   alguien atrapado.
+>
+> **1040 pruebas** (1004 antes), `clippy` limpio. Etapa **21** nueva en
+> `verify.sh`, con su control: la misma sesión, el mismo store, y nadie pidiendo
+> nada tiene que contestar en prosa.
+>
+> ### Lo que esto todavía no es
+>
+> **Sólo los verbos de archivos tienen dos caras.** `modulos`, `disponibles`,
+> `permisos`, `recuerdos`, `estado`, `nucleo` y `discos` siguen contestando sólo
+> en prosa, y las cuatro ventajas que hacen que la vara sea *mejor* y no *igual*
+> —índice semántico, rollback, procedencia por campo, permisos por tarea— siguen
+> sin estar expuestas a nadie. Está en [[Tareas-Pendientes]] como 4c.
+>
+> ## Quedó escrito para quién se construye, y los verbos ya cambian archivos — 2026-08-09
+>
+> Cómo se llegó a lo de arriba.
 >
 > ### Dos decretos, y son la vara de todo lo demás
 >

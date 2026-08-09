@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 1004 of them**, across unit tests, fault injection
+**Built and covered by tests: 1040 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -305,11 +305,23 @@ runs of the exit criterion. `cargo test --workspace` runs all of it.
 and a terminal that is a terminal — arrows, line editing, a 500-line history,
 and tab completing verbs at the start of a line and file names after it. Every
 one of them is the same Rust inside `thalyx`, so `make -C image count` still
-says one program. What is **not** built yet is the second face those operations
-were designed for: each one returns a fact — what happened, where, and the exact
-byte count — and today only the human printer reads it. Until a program can ask
-for that fact and parse it, the point of the design is written down and not
-delivered.
+says one program.
+
+**And those verbs have a second face a program can ask for.** `structured on`,
+and every one of them answers with one JSON object per line instead of a
+sentence — built from the same fact the person is shown, so the two cannot drift
+apart. It hides nothing a person would not be shown, reports exact byte counts
+rather than `1.2 kB`, and answers even where a person is told nothing, because a
+parser cannot tell silence from a hang. One typed line produces exactly one
+object, so a command that touched three files is still one answer. `structured
+off` brings the sentences back, and the acknowledgement carries those words for
+anyone who turned it on by accident.
+
+What is **not** exposed yet is everything else the session knows. `modulos`,
+`permisos`, `recuerdos`, `estado` and the rest still answer only in prose, so
+the four things that would make this better rather than merely different — the
+semantic index, the rollback, the per-field provenance, the per-task permissions
+— remain unreachable to any program.
 
 **Verified on real hardware**: 110 checks, on one machine with a BPF LSM, cgroup
 v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07 — including the kernel
