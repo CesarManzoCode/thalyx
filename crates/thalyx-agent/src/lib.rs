@@ -65,7 +65,7 @@ pub mod transcript;
 pub use assemble::{ForeignText, Path};
 pub use attribution::AttributionError;
 pub use config::{ConfigError, Settings};
-pub use grammar_effect::{BothArms, Effect, Named, Tally};
+pub use grammar_effect::{Effect, Named, PromptEffect, Tally, ThreeArms};
 pub use llama::{Invocation, LlamaError, LlamaModel, Run};
 pub use model::{HostileModel, Misbehaviour, Model, ModelError, UnconfiguredModel};
 pub use prompt::Prompt;

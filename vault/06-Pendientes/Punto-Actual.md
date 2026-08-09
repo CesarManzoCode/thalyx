@@ -73,14 +73,43 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Si sale `"targets": []`, es la **primera abstención observada del proyecto**.
 >
-> ### Lo siguiente que hay que decidir
+> ### El tercer brazo está construido y falta correrlo
 >
-> El experimento que separa el prompt del modelo: **un tercer brazo sin pedir
-> JSON**, preguntando en prosa qué módulo se está pidiendo. Hasta que exista,
-> «el prompt pesa poco» y «Qwen2.5 complace» son indistinguibles. No se ha
-> construido; es decisión de Cesar.
+> Cesar lo aprobó el 2026-08-09. `Prompt::in_prose`: una pregunta, sin objeto,
+> sin nombrar ninguna operación, y la palabra `NOTHING` para declinar. Mismo
+> material literal que el otro prompt —los dos llaman a la misma función, y hay
+> una prueba que lo afirma—, misma advertencia de que inventar se rechaza, misma
+> existencia de una salida. **Lo único que cambia es que nada le dice que va a
+> instalar algo.**
 >
-> 900 pruebas, `clippy` limpio.
+> Sesenta inferencias por corrida en vez de cuarenta.
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+>
+> thalyx agent model use media --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
+> thalyx agent grammar-effect --keep-prompt ~/evidencia/prosa-media 2>&1 | tee prosa-media.log
+>
+> thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+> thalyx agent grammar-effect --keep-prompt ~/evidencia/prosa-ligera 2>&1 | tee prosa-ligera.log
+> ```
+>
+> El veredicto de la gramática **no cambia** —sigue comparable con lo ya
+> medido—; el brazo en prosa trae el suyo aparte:
+>
+> | Veredicto del prompt | Qué significa |
+> |---|---|
+> | `THE PROMPT TAKES THE DECISION` | Pidiendo objeto inventó; en prosa declinó, y aun así encontró el módulo donde lo había. **El fallo es de cómo pregunta Thalyx** |
+> | `IT INVENTS HOWEVER IT IS ASKED` | Ni la restricción ni el encuadre. Lo que queda es el modelo, y eso se contesta con otra familia |
+> | `NOT PROVEN` | El brazo en prosa no encontró el módulo ni donde lo había. Ninguna evidencia, en ninguna dirección |
+>
+> **Este brazo tiene un sesgo declarado**: `NOTHING` se compara exacto y en
+> mayúsculas, así que un modelo que declina con sus propias palabras **no**
+> cuenta como que declinó — cae en `said something else`. Eso subestima la
+> abstención en la dirección que culpa al modelo, que no es la inofensiva. Por
+> eso esa columna va aparte y el texto en prosa de cada caso se imprime entero.
+>
+> 914 pruebas, `clippy` limpio.
 >
 > ## El instrumento para la pregunta de la abstención está listo — 2026-08-08
 >

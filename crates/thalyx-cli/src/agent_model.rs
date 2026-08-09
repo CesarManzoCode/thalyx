@@ -839,7 +839,9 @@ pub fn grammar_effect(
     cases: Option<&Path>,
     keep_prompt: Option<PathBuf>,
 ) -> Fallible {
-    use thalyx_agent::grammar_effect::{BothArms, Effect, Named, Tally, what_an_answer_named};
+    use thalyx_agent::grammar_effect::{
+        Effect, Named, PromptEffect, Tally, ThreeArms, what_an_answer_named, what_prose_named,
+    };
 
     let settings = configured(store)?.ok_or(
         "no model is configured, so there is nothing to ask. \
@@ -862,11 +864,11 @@ pub fn grammar_effect(
         settings.tier,
         settings.weights.display()
     );
-    println!("asking   every case twice, with --grammar-file and without");
+    println!("asking   every case three ways: with the grammar, without it, and in prose");
     println!(
         "cases    {} ▪ {} inferences",
         suite.cases.len(),
-        suite.cases.len() * 2
+        suite.cases.len() * 3
     );
     println!();
 
@@ -874,10 +876,10 @@ pub fn grammar_effect(
 
     for case in &suite.cases {
         let transcript = case.transcript();
-        let (constrained, free) = model.with_and_without_grammar(&transcript);
+        let (constrained, free, prose) = model.three_ways(&transcript);
 
-        // Both arms through the same reader. The first version judged the
-        // constrained arm with `Proposal::parse`, which is strict about the
+        // The two object arms through the same reader. The first version judged
+        // the constrained arm with `Proposal::parse`, which is strict about the
         // trailing text llama.cpp appends, so all forty inferences of the
         // first run came back NO MEASUREMENT and there was nothing to compare.
         let constrained = constrained
@@ -887,17 +889,28 @@ pub fn grammar_effect(
             .map_err(|e| e.to_string())
             .map(|answer| (what_an_answer_named(&answer, &transcript), answer));
 
-        let arms = BothArms {
+        // The prose arm has its own reader, because it is the only one that was
+        // given a word to decline with. Nothing else about its text is read.
+        let prose = prose
+            .map_err(|e| e.to_string())
+            .map(|answer| (what_prose_named(&answer, &transcript), answer));
+
+        let arms = ThreeArms {
             constrained: constrained.clone(),
             unconstrained: free.clone().map(|(named, _)| named),
+            prose: prose.clone().map(|(named, _)| named),
             wants_abstention: case.wants_abstention(),
             expected: (!case.wants_abstention()).then(|| case.expect.clone()),
         };
         tally.count(&arms);
 
-        let describe = |named: &Result<Named, String>| match named {
+        // `empty target list` only makes sense on an arm that was asked for a
+        // target list. In prose the same decision is the word it was given, and
+        // printing one arm's vocabulary over the other's answer is how a reader
+        // ends up believing the prose arm emitted JSON.
+        let describe = |named: &Result<Named, String>, how_it_abstains: &str| match named {
             Ok(Named::SaidNothingAtAll) => "GENERATED NOTHING (not a decline)".to_string(),
-            Ok(Named::Abstained) => "ABSTAINED — empty target list".to_string(),
+            Ok(Named::Abstained) => format!("ABSTAINED — {how_it_abstains}"),
             Ok(Named::Nothing) => "said something, named nothing".to_string(),
             Ok(Named::Attributable(id)) => format!("named {id}"),
             Ok(Named::Invented(id)) => format!("INVENTED {id}"),
@@ -913,16 +926,34 @@ pub fn grammar_effect(
             },
             truncate(&case.name, 52)
         );
-        println!("    with grammar     {}", describe(&arms.constrained));
-        println!("    without it       {}", describe(&arms.unconstrained));
+        println!(
+            "    with grammar     {}",
+            describe(&arms.constrained, "empty target list")
+        );
+        println!(
+            "    without it       {}",
+            describe(&arms.unconstrained, "empty target list")
+        );
+        println!(
+            "    asked in prose   {}",
+            describe(&arms.prose, "said the word")
+        );
 
-        // The free arm's words are the evidence a human has to read, and only
-        // for the cases where declining was right. Printed whole rather than
-        // summarised: what it *said* is the thing a count cannot carry.
+        // What the unconstrained arms *said* is the evidence a human has to
+        // read; a count cannot carry it. Both are printed, and the prose one
+        // matters most — its `named nothing` column is where a model declining
+        // in its own words lands, and only the text can tell that apart from a
+        // model that answered something else entirely.
         if let Ok((_, answer)) = &free {
             println!(
                 "    it said          {:?}",
-                truncate(&answer.replace('\n', " "), 220)
+                truncate(&answer.replace('\n', " "), 200)
+            );
+        }
+        if let Ok((_, answer)) = &prose {
+            println!(
+                "    in prose         {:?}",
+                truncate(&answer.replace('\n', " "), 200)
             );
         }
     }
@@ -969,39 +1000,107 @@ pub fn grammar_effect(
         tally.abstention_measured()
     );
     println!();
+    println!();
     println!(
-        "control — acting cases measured          {}",
+        "abstention cases, prose arm answered     {}",
+        tally.prose_measured() + tally.abstention_prose_said_nothing_at_all
+    );
+    println!(
+        "  asked in prose, invented               {}",
+        tally.abstention_prose_invented
+    );
+    println!(
+        "  asked in prose, ABSTAINED              {}",
+        tally.abstention_prose_abstained
+    );
+    println!(
+        "  asked in prose, said something else    {}",
+        tally.abstention_prose_silent
+    );
+    println!(
+        "  asked in prose, generated nothing      {}",
+        tally.abstention_prose_said_nothing_at_all
+    );
+    println!(
+        "  asked in prose, named only real ids    {}",
+        tally.abstention_prose_attributable
+    );
+    println!();
+    println!(
+        "control — acting cases, object arms      {}",
         tally.acting_measured
     );
     println!(
         "  without the grammar, found the module  {}",
         tally.acting_free_named_expected
     );
+    println!(
+        "control — acting cases, prose arm        {}",
+        tally.acting_prose_measured
+    );
+    println!(
+        "  asked in prose, found the module       {}",
+        tally.acting_prose_named_expected
+    );
     println!();
 
-    match tally.verdict() {
+    // Two questions, two verdicts, printed one after the other. The first stays
+    // comparable with the runs that already exist; the second is the one those
+    // runs raised and could not answer.
+    let grammar = tally.verdict();
+    match &grammar {
         Effect::GrammarTakesTheDecision => {
             println!("THE GRAMMAR TAKES THE DECISION: constrained it invented; left alone it");
             println!("never did, on a run where it could still find the right module when");
             println!("there was one. The zero in `bench` is not this model refusing to");
             println!("decline — it is Thalyx making it say `install_module` before it can.");
-            Ok(())
         }
         Effect::InventsEitherWay => {
             println!("IT INVENTS EITHER WAY: taking the grammar off did not stop it, so the");
             println!("grammar is not what causes this. The hypothesis is refuted for these");
             println!("cases, and what is left to suspect is the prompt or the model.");
-            Ok(())
         }
         Effect::Inconclusive { why } => {
-            // Non-zero, like `grammar-check`. A probe that could not tell its
-            // arms apart has not passed, and a script must not read it as one.
-            eprintln!("NOT PROVEN: {why}.");
+            eprintln!("THE GRAMMAR — NOT PROVEN: {why}.");
             eprintln!();
             eprintln!("This is not evidence the grammar is innocent — it is no evidence at");
             eprintln!("all, and it must not be read as either answer.");
+        }
+    }
+
+    println!();
+    let prompt = tally.prompt_verdict();
+    match &prompt {
+        PromptEffect::ThePromptTakesTheDecision => {
+            println!("THE PROMPT TAKES THE DECISION: asked for an object it invented, and");
+            println!("asked the same thing in prose — no object, no operation named — it");
+            println!("declined instead, while still finding the module where there was one.");
+            println!("The failure belongs to how Thalyx asks, which Thalyx can change.");
+        }
+        PromptEffect::InventsHoweverItIsAsked => {
+            println!("IT INVENTS HOWEVER IT IS ASKED: with the grammar, without it, and with");
+            println!("nothing asking for an object at all. Neither the constraint nor the");
+            println!("framing is what does this, so what is left is the model — and that is");
+            println!("answered by a different family, not by editing a prompt.");
+        }
+        PromptEffect::Inconclusive { why } => {
+            eprintln!("THE PROMPT — NOT PROVEN: {why}.");
+            eprintln!();
+            eprintln!("The prose arm carries no verdict here, in either direction.");
+        }
+    }
+
+    // Non-zero if either question came back unanswered, like `grammar-check`.
+    // A probe that could not tell its arms apart has not passed, and a script
+    // must not read it as one.
+    match (grammar, prompt) {
+        (Effect::Inconclusive { .. }, _) => {
             Err("the probe could not tell the two arms apart".into())
         }
+        (_, PromptEffect::Inconclusive { .. }) => {
+            Err("the prose arm could not carry a verdict".into())
+        }
+        _ => Ok(()),
     }
 }
 
