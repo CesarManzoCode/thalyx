@@ -1058,9 +1058,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // this session, so a verb that is not on this list does not exist
             // for the person holding the machine — and the first thing anybody
             // does on a computer is look at what is on it.
-            println!("  `ver` shows what is where you are, `leer <archivo>` shows");
-            println!("  what is in one, `ir <carpeta>` moves and `donde` says where");
-            println!("  you are. `ir` on its own goes home.");
+            //
+            // The standard names are the ones taught here, by Cesar's decision
+            // of 2026-08-09: a system whose first screen offers a vocabulary
+            // nobody has seen reads as a toy, and adoption is the whole reason
+            // that matters. The Spanish verbs all still work.
+            println!("  `ls` shows what is here, `cat <archivo>` shows what is in");
+            println!("  one, `cd <carpeta>` moves, `pwd` says where you are and");
+            println!("  `clear` wipes the screen. `cd` alone goes home, `ls -a`");
+            println!("  includes hidden names and `ls -l` shows sizes.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1073,7 +1079,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
-            println!("  `ver`, `leer <archivo>`, `ir <carpeta>`, `donde`,");
+            println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1148,7 +1154,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             "apagar" | "poweroff" => {
                 power_off(&standing);
             }
-            "modulos" | "módulos" => {
+            "modules" | "modulos" | "módulos" => {
                 list_modules(store);
             }
             "disponibles" | "available" | "repo" => {
@@ -1181,31 +1187,34 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // work without the agent. These four are the smallest set that makes
             // the rest of it possible — a person who cannot see what is there
             // cannot copy, move or delete it either.
-            "donde" | "dónde" | "where" | "pwd" => {
+            "clear" | "limpiar" | "cls" => {
+                crate::files::clear();
+            }
+            "pwd" | "donde" | "dónde" | "where" => {
                 crate::files::where_am_i(&here);
             }
-            _ if line.starts_with("ir ") || line.starts_with("go ") => {
+            _ if starts_any(line, &["cd ", "ir ", "go "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 crate::files::go(&mut here, rest);
             }
             // Unlike `instalar` and `correr`, the bare verb is not a question:
             // `ir` with nothing after it means home, which is somewhere a person
             // always wants to be able to get back to in one word.
-            "ir" | "go" => {
+            "cd" | "ir" | "go" => {
                 crate::files::go(&mut here, "");
             }
-            _ if line.starts_with("ver ") || line.starts_with("look ") => {
+            _ if starts_any(line, &["ls ", "ver ", "look "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 crate::files::look(&here, rest);
             }
-            "ver" | "look" => {
+            "ls" | "ver" | "look" => {
                 crate::files::look(&here, "");
             }
-            _ if line.starts_with("leer ") || line.starts_with("read ") => {
+            _ if starts_any(line, &["cat ", "leer ", "read "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 crate::files::read(&here, rest);
             }
-            "leer" | "read" => {
+            "cat" | "leer" | "read" => {
                 crate::files::read(&here, "");
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
@@ -1258,6 +1267,18 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 //
 // So `discos` and `instalar-en <disco>`. They are the last two words the exit
 // criterion needed and they are the reason the criterion is reachable at all.
+
+/// Whether a line opens with any of these verbs, so a verb can have more than
+/// one name without the dispatch growing a clause per spelling.
+///
+/// Cesar decided on 2026-08-09 that the standard names lead and the Spanish ones
+/// keep working: somebody who arrives from Linux types `ls` and it answers, and
+/// somebody who learned Thalyx's own words is not made to unlearn them. A name
+/// is not a foreign program — every one of these is the same Rust inside
+/// `thalyx`, and `make -C image count` still says one.
+fn starts_any(line: &str, verbs: &[&str]) -> bool {
+    verbs.iter().any(|verb| line.starts_with(verb))
+}
 
 /// What is on a partition right now, read off the disk rather than remembered.
 ///

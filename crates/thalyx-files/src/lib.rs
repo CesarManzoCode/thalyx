@@ -133,6 +133,16 @@ pub struct Entry {
     pub kind: Kind,
 }
 
+/// A name the system keeps for itself rather than one the person made.
+///
+/// Not cosmetic. Cesar's own home directory holds **thirty-five** of these
+/// before the first folder he put there, so showing them by default buries
+/// everything he was looking for under configuration he never asked to see.
+/// Every system hides them, and this is why.
+pub fn is_hidden(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy().starts_with('.')
+}
+
 impl Entry {
     /// Files and directories sort apart, then by name, because that is how a
     /// person scans a listing — the folders they might enter, then the files
@@ -167,7 +177,7 @@ pub enum FileError {
     #[error("{0} is not there")]
     Absent(PathBuf),
 
-    #[error("{0} is a directory, and `ver` is what lists one")]
+    #[error("{0} is a directory, and `ls` is what lists one")]
     IsDirectory(PathBuf),
 
     /// Deliberately not "could not read". The bytes arrived; they are simply not
@@ -391,6 +401,60 @@ impl fmt::Display for Size {
         }
         unreachable!("the GB arm returns for everything that reaches it")
     }
+}
+
+// ──────────────────────────────────────────────────────────── fitting on a screen
+
+/// Lay names out in columns, the way a listing has to be to be read.
+///
+/// Found by running it on a real home directory: sixty-odd entries, one per
+/// line, is four screens of scrolling for something every other system fits in
+/// one. A listing nobody can take in at a glance does not do the job a listing
+/// is for.
+///
+/// `width` is what the terminal said, and the caller supplies it — including the
+/// fallback when nothing said anything, because what to do with no width depends
+/// on what is being printed.
+pub fn in_columns(names: &[String], width: usize, indent: usize) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    const GAP: usize = 2;
+    let longest = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+    let cell = longest + GAP;
+
+    // At least one column always. A name wider than the terminal still has to be
+    // printed — overrunning is the lesser failure, and printing nothing at all
+    // would be the instrument deciding a file may not be seen.
+    let columns = ((width.saturating_sub(indent)) / cell).max(1);
+    if columns == 1 {
+        return names.to_vec();
+    }
+
+    // Down each column and then across, which is how every listing anybody has
+    // read is arranged: alphabetical order runs down the page, not along it.
+    let rows = names.len().div_ceil(columns);
+    let mut out = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let mut line = String::new();
+        for column in 0..columns {
+            let Some(name) = names.get(column * rows + row) else {
+                continue;
+            };
+            if column * rows + row + rows >= names.len() {
+                // Last cell of the row: no padding after it, so a line never
+                // carries trailing spaces into somebody's terminal or diff.
+                line.push_str(name);
+            } else {
+                let pad = cell.saturating_sub(name.chars().count());
+                line.push_str(name);
+                line.push_str(&" ".repeat(pad));
+            }
+        }
+        out.push(line.trim_end().to_string());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -631,6 +695,88 @@ mod tests {
         let excerpt = read(&path).expect("an empty file is a file");
         assert_eq!(excerpt.text, "");
         assert_eq!(excerpt.of_bytes, 0);
+    }
+
+    // ──────────────────────────────────────────────────────── fitting on a screen
+
+    #[test]
+    fn a_name_that_starts_with_a_dot_is_one_the_system_keeps_for_itself() {
+        assert!(is_hidden(std::ffi::OsStr::new(".bashrc")));
+        assert!(is_hidden(std::ffi::OsStr::new(".config")));
+        assert!(!is_hidden(std::ffi::OsStr::new("Documentos")));
+        // A dot inside a name is an extension, not a hidden file.
+        assert!(!is_hidden(std::ffi::OsStr::new("notas.txt")));
+    }
+
+    #[test]
+    fn short_names_share_a_line_instead_of_taking_one_each() {
+        let names: Vec<String> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // The failure this prevents, found on a real home directory: sixty
+        // entries printed one per line is four screens of scrolling.
+        let lines = in_columns(&names, 80, 4);
+        assert!(lines.len() < names.len(), "got {lines:?}");
+    }
+
+    #[test]
+    fn columns_run_down_the_page_and_not_along_it() {
+        let names: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        // Seven columns wide fits exactly two cells, which is what makes this
+        // test able to tell the two fill orders apart. At twenty they all fit on
+        // one line and the question does not arise.
+        let lines = in_columns(&names, 7, 0);
+
+        // Alphabetical order reads downwards in every listing anybody has ever
+        // read. Filling across would put `a b` on one line and `c d` below it,
+        // and a person scanning the first column would see `a` then `c`.
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with('a'), "got {lines:?}");
+        assert!(lines[1].starts_with('b'), "got {lines:?}");
+    }
+
+    #[test]
+    fn a_name_wider_than_the_terminal_is_still_printed() {
+        let names = vec!["a-name-far-longer-than-the-terminal-is-wide".to_string()];
+        let lines = in_columns(&names, 20, 0);
+
+        // Overrunning is the lesser failure. Printing nothing would be the
+        // listing deciding a file may not be seen.
+        assert_eq!(lines, names);
+    }
+
+    #[test]
+    fn no_line_of_a_listing_carries_trailing_spaces() {
+        let names: Vec<String> = ["aa", "b", "ccc", "d", "e"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for line in in_columns(&names, 40, 2) {
+            assert_eq!(line, line.trim_end(), "trailing space in {line:?}");
+        }
+    }
+
+    #[test]
+    fn every_name_survives_being_laid_out() {
+        let names: Vec<String> = (0..37).map(|n| format!("archivo-{n}")).collect();
+        let laid_out = in_columns(&names, 80, 4).join(" ");
+
+        // The arithmetic of rows and columns is exactly where an entry goes
+        // missing, and a listing short by one is how somebody deletes a folder
+        // believing it empty.
+        for name in &names {
+            assert!(
+                laid_out.split_whitespace().any(|w| w == name),
+                "{name} was lost in the layout"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_directory_lays_out_to_nothing_rather_than_to_a_blank_line() {
+        assert!(in_columns(&[], 80, 4).is_empty());
     }
 
     // ────────────────────────────────────────────────────────────── saying sizes
