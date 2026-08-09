@@ -296,9 +296,20 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 915 of them**, across unit tests, fault injection
+**Built and covered by tests: 1004 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
+
+**The machine can be worked in without the agent.** `ls`, `cat`, `cd`, `pwd`,
+`clear` to look; `mkdir`, `touch`, `cp`, `mv`, `rm` to change, with `*` and `?`;
+and a terminal that is a terminal — arrows, line editing, a 500-line history,
+and tab completing verbs at the start of a line and file names after it. Every
+one of them is the same Rust inside `thalyx`, so `make -C image count` still
+says one program. What is **not** built yet is the second face those operations
+were designed for: each one returns a fact — what happened, where, and the exact
+byte count — and today only the human printer reads it. Until a program can ask
+for that fact and parse it, the point of the design is written down and not
+delivered.
 
 **Verified on real hardware**: 110 checks, on one machine with a BPF LSM, cgroup
 v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07 — including the kernel
