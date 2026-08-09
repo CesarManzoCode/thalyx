@@ -9,6 +9,56 @@ tags: [filosofia, core, no-negociable]
 
 El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
 
+## El LLM es para quien se construye, no un consumidor del sistema
+
+**Decretado por Cesar el 2026-08-09**, después de que yo le planteara como
+decisión abierta cómo debía aprender el agente a tocar archivos:
+
+> no hay nada que discutir, no sé ni porqué lo preguntas, la fundación de esto
+> es que el LLM la tenga lo más fácil posible, que todo esté hecho para que el
+> LLM lo entienda y ejecute mejor.
+
+Eso **no es una preferencia de diseño, es el criterio**. Cuando una decisión
+tenga dos formas y una le facilite el trabajo al modelo, ésa es la forma, y no
+hace falta preguntarlo.
+
+### Qué corrige exactamente
+
+La frase de arriba —*«a través de la API de Thalyx, no a través de POSIX»*— se
+había estado leyendo como si el objetivo fuera **restringir** al agente. No lo
+es. Es la misma confusión que hubo con [[Principio-Doble-Ruta]] y la shell:
+prohibido es incrustarse en el sistema de alguien más, no tener la capacidad.
+Que la superficie sea de Thalyx existe para que cada acción sea **atribuible y
+mediada**, no para que el modelo pueda menos.
+
+El ejemplo que Cesar puso es el que zanja el punto: un agente de programación
+moderno ejecuta comandos, y por eso sirve.
+
+### La consecuencia práctica, y es medible
+
+Hoy la gramática del agente tiene **una sola operación**, `install_module`. Ese
+es el techo real, y no es filosófico: el modelo no puede pedir ver una carpeta
+porque no existe la producción que lo diría.
+
+Y hay una segunda razón, más incómoda: **Thalyx casi no tiene qué ejecutar**. El
+conocimiento que un LLM ya trae sobre Linux no tiene dónde aterrizar mientras la
+máquina tenga veinte verbos. Por eso construir los verbos y hacer capaz al
+agente **son el mismo trabajo, no dos**. Y por eso la decisión del 2026-08-09 de
+llamarlos `ls`, `cd`, `cat` en vez de sólo `ver`, `ir`, `leer` es también una
+decisión sobre el modelo: los primeros los ha visto mil millones de veces, los
+segundos hay que enseñárselos en el prompt.
+
+### Lo que esto no cambia
+
+La atribución. **La abstención sale 0 de 55**: el modelo nombra ids que nadie
+mencionó, y lo que lo detiene es que el núcleo comprueba cada id contra los
+canales del transcript. Facilitarle el trabajo al modelo es el criterio;
+quitarle la comprobación al núcleo no es facilitarle nada, es quitarle a Cesar
+la última línea que lo protege de un error del modelo. Las dos cosas conviven —
+un agente de programación moderno también pide permiso antes de tocar algo.
+
+Ver [[Agente-Conversacional]] y [[Gamas-de-Modelo]].
+
 ## El decreto fundacional
 
 *Escrito por Cesar Manzo el 2026-08-03. Es el texto del que nace todo lo demás

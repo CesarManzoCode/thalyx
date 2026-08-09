@@ -115,6 +115,20 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       [[Filosofia-Fundacional]] apuntaba con *«no a través de scripts de
       shell»*.
 
+- [ ] **Ampliar la gramática del agente más allá de `install_module`.** Es el
+      techo real de lo que el agente puede hacer, y no es filosófico: la
+      producción `operation ::= "install_module"` tiene **una sola
+      alternativa**, así que el modelo no puede pedir ver una carpeta porque no
+      existe la forma de decirlo. Bajo el decreto del 2026-08-09
+      ([[Filosofia-Fundacional]], «el LLM es para quien se construye») esto deja
+      de ser una decisión abierta y pasa a ser trabajo pendiente: cada verbo que
+      el humano gana debe tener su operación. Va **después** de que existan los
+      verbos, porque una operación que nombra algo que la máquina no sabe hacer
+      no se puede probar. Dos cosas que hay que resolver al hacerlo: que la
+      abstención siga siendo expresable —fue imposible una vez y nadie lo notó
+      hasta escribir el banco— y que cada argumento nuevo tenga dónde
+      comprobarse contra los canales, como los ids tienen la atribución.
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].
