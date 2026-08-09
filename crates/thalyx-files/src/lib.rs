@@ -36,6 +36,17 @@
 //! Silently dropping it would report a smaller directory than the one on disk,
 //! and the person would delete a folder believing it empty.
 
+//! ## The two faces
+//!
+//! Nothing in this crate prints. Everything it can answer is a value — a
+//! [`Listing`], an [`Excerpt`], a [`Done`], a [`FileError`] — and the two faces
+//! are two readers of that one value: the human printer in
+//! `thalyx-cli/src/files.rs`, and [`machine`] here. That is the whole reason
+//! they cannot drift apart, and it is what the objective decree asks for by
+//! name.
+
+pub mod machine;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -236,6 +247,29 @@ pub fn list(path: &Path) -> Result<Listing, FileError> {
     Ok(Listing {
         entries,
         unreadable,
+    })
+}
+
+/// `ls` aimed at one thing that is not a directory.
+///
+/// Answered as a [`Listing`] of one rather than as its own shape, so that both
+/// faces keep reading the same kind of fact. The earlier version had the human
+/// printer read the metadata a second time on this path — a second code path
+/// describing the same file, which is exactly what the objective decree calls a
+/// second version of events, and it was already drifting: it reported a size
+/// where the listing reports a kind.
+pub fn list_one(path: &Path) -> Result<Listing, FileError> {
+    let meta = path
+        .symlink_metadata()
+        .map_err(|error| classify(path, error))?;
+    Ok(Listing {
+        entries: vec![Entry {
+            // A path ending in `..` or `/` has no file name of its own; naming
+            // it by the whole path is worse than naming it by nothing.
+            name: path.file_name().unwrap_or(path.as_os_str()).to_os_string(),
+            kind: kind_of(path, &meta),
+        }],
+        unreadable: Vec::new(),
     })
 }
 

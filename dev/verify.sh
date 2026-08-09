@@ -3045,6 +3045,91 @@ fi
 # built kernel and OVMF, so it is a thing a person runs and watches rather than a
 # stage here.
 
+# ────────────────────── 21. the structured face, asked for the way a program asks
+
+step "21. a program can ask the session for facts instead of sentences"
+
+# `Filosofia-Fundacional.md`, *El objetivo*: the objective is that an LLM works
+# better here than anywhere else, and the engineering consequence written there
+# is that every thing is born with two faces — the human one and a structured
+# one a program can ask for and parse.
+#
+# ## Why this is a stage and not only a cargo test
+#
+# `cargo test` already drives this through a pty and parses the answers. What it
+# cannot do is drive the session **on the machine the session is for**, and this
+# project has been caught once by exactly that distance: installed modules were
+# unexecutable for weeks while every test passed.
+#
+# The check is deliberately narrow. It asks the one thing that is the whole
+# claim — that the answers parse — with a control that the same session answers
+# a person in prose when nobody asked for JSON. Without that control, a session
+# that had been left in the structured face permanently would pass.
+
+FACE_STORE="$WORK/face-store"
+mkdir -p "$FACE_STORE"
+printf 'hola\n' > "$FACE_STORE/notas.txt"
+printf 'xx' > "$FACE_STORE/.oculto"
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so the structured face could not be driven"
+else
+    face_at_the_prompt() {
+        printf '%s\n' "$@" | \
+            THALYX_ROOT="$FACE_STORE" "$THALYX" dev pty -- "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    face_at_the_prompt "structured on" "cd $FACE_STORE" "ls" salir > "$WORK/face-machine.log"
+    face_at_the_prompt "cd $FACE_STORE" "ls" salir > "$WORK/face-human.log"
+
+    # Every line that begins with `{`, parsed. `grep` for a field name would
+    # pass on a line that is not an object at all, which is the failure this
+    # project keeps finding in its own instruments.
+    OBJECTS=$(grep '^{' "$WORK/face-machine.log" | python3 -c '
+import json, sys
+ok = 0
+for line in sys.stdin:
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and "op" in value and "ok" in value:
+        ok += 1
+print(ok)
+' 2>/dev/null || echo 0)
+
+    # The listing must carry the dotfile. That is the tie-break rule of the
+    # decree on the wire: when the two faces disagree the LLM wins, and hiding
+    # something from a program that asked is taking capability away.
+    HIDDEN_SHOWN=$(grep '^{' "$WORK/face-machine.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and value.get("op") == "list":
+        names = [entry.get("name") for entry in value.get("entries", [])]
+        print("yes" if ".oculto" in names else "no")
+        break
+else:
+    print("none")
+' 2>/dev/null || echo none)
+
+    # The control: the same session, same store, nobody asking.
+    HUMAN_OBJECTS=$(grep -c '^{' "$WORK/face-human.log" || true)
+
+    if [ "$OBJECTS" -ge 2 ] && [ "$HIDDEN_SHOWN" = "yes" ] && [ "$HUMAN_OBJECTS" -eq 0 ]; then
+        proven "the session answers a program in parseable facts, and a person in prose"
+    elif [ "$OBJECTS" -lt 2 ]; then
+        failed "the session did not answer in objects a parser accepts; see $WORK/face-machine.log"
+    elif [ "$HIDDEN_SHOWN" != "yes" ]; then
+        failed "the structured listing hid a name from something that asked; see $WORK/face-machine.log"
+    else
+        failed "the session answered a person in JSON without being asked; see $WORK/face-human.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

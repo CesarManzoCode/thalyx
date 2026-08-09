@@ -19,7 +19,36 @@
 use std::path::{Path, PathBuf};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
-use thalyx_files::{Excerpt, FileError, Kind, Listing, Size};
+use thalyx_files::{Excerpt, FileError, Kind, Listing, Size, machine};
+
+/// Which of the two faces this line is being answered in.
+///
+/// `vault/01-Filosofia/Filosofia-Fundacional.md`: every thing is born with two
+/// faces, the human one and a structured one a program can ask for. This is the
+/// *only* place the choice is made — each verb below computes a fact and hands
+/// it to one of two readers. A verb that branched on the face while composing
+/// its own sentence would be a second version of events, which is the thing the
+/// decree exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    Human,
+    Machine,
+}
+
+impl Face {
+    fn machine(self) -> bool {
+        self == Face::Machine
+    }
+
+    /// Print a line of the structured face.
+    ///
+    /// Kept as a method so no caller has to remember that these go out without
+    /// the blank lines and two-space indent the human face uses. Whitespace a
+    /// person reads as breathing room is noise a parser has to strip.
+    fn say(self, line: String) {
+        println!("{line}");
+    }
+}
 
 /// Where the person is, carried by the session across one line and the next.
 ///
@@ -122,15 +151,78 @@ pub fn clear() {
     let _ = std::io::stdout().flush();
 }
 
+/// `estructurado on|off` — the verb that asks for the other face.
+///
+/// This is the verb the objective decree was waiting on. Everything below it
+/// already returned facts instead of printing; until something could ask for
+/// them, the decree was written down and not built, and none of the four
+/// advantages Thalyx has over Linux was exposed to anybody.
+///
+/// The answer is always given **in the face that is now on**, which is what
+/// makes it usable from both sides: a program that asks for the structured face
+/// gets a parseable acknowledgement of its own request, and a person who turns
+/// it back off gets a sentence.
+///
+/// The acknowledgement carries the way out. A person who types this without
+/// meaning to would otherwise face a session that answers only in JSON with no
+/// visible way back, on a machine where there is no second terminal.
+pub fn structured(face: &mut Face, rest: &str) {
+    let was_human = !face.machine();
+    let asked = match rest.trim() {
+        "" => None,
+        "on" | "si" | "sí" => Some(Face::Machine),
+        "off" | "no" => Some(Face::Human),
+        other => {
+            let why = format!("`{other}` is neither `on` nor `off`");
+            if face.machine() {
+                face.say(machine::refusal("structured", &why));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return;
+        }
+    };
+
+    if let Some(wanted) = asked {
+        *face = wanted;
+    }
+
+    if face.machine() {
+        // The one line that would otherwise not parse, and it is the line that
+        // says the face is on. The human prompt for *this* command was printed
+        // before it was read — the face was still human then — and it ends
+        // without a newline, so the acknowledgement landed on the same line:
+        // `  /home > {"op":"structured",…`. Found by piping the session and
+        // reading it back, not by any test of the object itself.
+        if was_human {
+            println!();
+        }
+        face.say(machine::state(matches!(face, Face::Machine)));
+        return;
+    }
+    println!();
+    if asked.is_some() {
+        println!("  Answers are for a person again.");
+    } else {
+        println!("  Answers are for a person. `structured on` makes them JSON,");
+        println!("  one object per line, with nothing hidden and sizes exact.");
+    }
+    println!();
+}
+
 /// `pwd` — the one verb whose answer is always available.
-pub fn where_am_i(here: &Where) {
+pub fn where_am_i(here: &Where, face: Face) {
+    if face.machine() {
+        face.say(machine::location("where", here.at()));
+        return;
+    }
     println!();
     println!("  {}", here.at().display());
     println!();
 }
 
 /// `cd [ruta]` — with nothing after it, back to `/home`.
-pub fn go(here: &mut Where, rest: &str) {
+pub fn go(here: &mut Where, rest: &str, face: Face) {
     let named = if rest.is_empty() {
         thalyx_files::HOME
     } else {
@@ -142,8 +234,21 @@ pub fn go(here: &mut Where, rest: &str) {
         // says where the person now is. Printing it here as well put the same
         // path on screen twice for every move — noise that a person reads as
         // the machine repeating itself.
-        Ok(()) => {}
+        //
+        // The machine face answers anyway, and this is the sharpest case of why
+        // it must: a program has no next prompt to read the new location off,
+        // and cannot tell a silence that means "moved" from one that means the
+        // session stopped.
+        Ok(()) => {
+            if face.machine() {
+                face.say(machine::location("go", here.at()));
+            }
+        }
         Err(error) => {
+            if face.machine() {
+                face.say(machine::stayed("go", &error, here.at()));
+                return;
+            }
             println!();
             println!("  {error}");
             // Named explicitly, and this is why the failing path does not stay
@@ -227,7 +332,13 @@ pub fn screen_width() -> usize {
 }
 
 /// `ls [-a] [-l] [ruta]` — what is here, or what is there.
-pub fn look(here: &Where, rest: &str) {
+///
+/// The flags are read in both faces and **obeyed in only one**. `-a` and `-l`
+/// are about how much of the truth reaches a person; the structured face always
+/// carries all of it, so to a program they are neither an error nor a change.
+/// That is the tie-break rule of the objective decree: the LLM is never given
+/// less, and a human comfort is never allowed to cost it capability.
+pub fn look(here: &Where, rest: &str, face: Face) {
     let asked = Asked::parse(rest);
     let target = if asked.place.is_empty() {
         here.at().to_path_buf()
@@ -235,16 +346,46 @@ pub fn look(here: &Where, rest: &str) {
         thalyx_files::resolve(here.at(), &asked.place)
     };
 
+    // `ls` on a file is a reasonable thing to type, so it answers instead of
+    // correcting: the person wanted to know about that file. Both faces get the
+    // same fallback, which they did not before — the machine face would have
+    // reported "not there" for something that is there.
+    let mut single = false;
+    let found = match thalyx_files::list(&target) {
+        Ok(listing) => Ok(listing),
+        Err(error) => match thalyx_files::list_one(&target) {
+            Ok(one) => {
+                single = true;
+                Ok(one)
+            }
+            // The original error, not the one from the second attempt: the
+            // person asked to list a directory, and "is not there" said about
+            // the directory is the answer to what they typed.
+            Err(_) => Err(error),
+        },
+    };
+
+    if face.machine() {
+        face.say(match &found {
+            Ok(listing) => machine::listing(&target, listing),
+            Err(error) => machine::failure("list", error),
+        });
+        return;
+    }
+
     println!();
-    match thalyx_files::list(&target) {
-        Ok(listing) => print_listing(&target, &listing, &asked),
-        // `ls` on a file is a reasonable thing to type, so it answers instead
-        // of correcting: the person wanted to know about that file.
-        Err(FileError::Unreadable { .. } | FileError::Absent(_))
-            if target.is_file() || target.symlink_metadata().is_ok() =>
-        {
-            print_one(&target)
-        }
+    match found {
+        // One thing always shows its size: `ls archivo` is asked when the size
+        // is the question, and a bare name would answer nothing the person did
+        // not already type.
+        Ok(listing) => print_listing(
+            &target,
+            &listing,
+            &Asked {
+                long: asked.long || single,
+                ..asked
+            },
+        ),
         Err(error) => println!("  {error}"),
     }
     println!();
@@ -346,20 +487,13 @@ fn print_long(shown: &[&thalyx_files::Entry]) {
     }
 }
 
-/// `ls` aimed at something that is not a directory.
-fn print_one(target: &Path) {
-    match target.symlink_metadata() {
-        Ok(meta) if meta.is_file() => {
-            println!("  {:<32} {}", target.display(), Size(meta.len()));
-        }
-        Ok(_) => println!("  {}", target.display()),
-        Err(error) => println!("  {} could not be read: {error}", target.display()),
-    }
-}
-
 /// `cat <archivo>` — show a file, or say why showing it would be a mistake.
-pub fn read(here: &Where, rest: &str) {
+pub fn read(here: &Where, rest: &str, face: Face) {
     if rest.is_empty() {
+        if face.machine() {
+            face.say(machine::refusal("read", "which file"));
+            return;
+        }
         println!();
         println!("  Which file. `ls` lists what is here.");
         println!();
@@ -367,8 +501,22 @@ pub fn read(here: &Where, rest: &str) {
     }
 
     let target = thalyx_files::resolve(here.at(), rest);
+    let found = thalyx_files::read(&target);
+
+    if face.machine() {
+        face.say(match &found {
+            Ok(excerpt) => machine::excerpt(&target, excerpt),
+            // Including `not_text`, and that refusal is the one place the two
+            // faces are refusing for different reasons: printing bytes wrecks a
+            // person's only terminal, and a caller asking for text has been
+            // handed something that is not text. The word says which.
+            Err(error) => machine::failure("read", error),
+        });
+        return;
+    }
+
     println!();
-    match thalyx_files::read(&target) {
+    match found {
         Ok(excerpt) => print_excerpt(&target, &excerpt),
         Err(error) => println!("  {error}"),
     }
@@ -449,36 +597,91 @@ fn report(done: &thalyx_files::Done) {
     }
 }
 
-/// `mkdir <carpeta>` / `crear <archivo>`.
-pub fn make(here: &Where, rest: &str, directory: bool) -> Fallible {
-    if rest.is_empty() {
-        println!("\n  Which one.\n");
-        return Ok(());
+/// Every outcome of one typed line, before either face has seen it.
+///
+/// Collected rather than printed as it goes, because the structured face owes
+/// the caller one object per line and cannot know the count until the work is
+/// done. The human face reads the same vector, so the two cannot report
+/// different runs of the same command.
+type Outcomes = Vec<Result<thalyx_files::Done, FileError>>;
+
+fn speak(face: Face, op: &str, outcomes: &Outcomes) {
+    if face.machine() {
+        let results = outcomes
+            .iter()
+            .map(|outcome| match outcome {
+                Ok(done) => machine::fact(done),
+                Err(error) => machine::problem(error),
+            })
+            .collect();
+        face.say(machine::batch(op, results));
+        return;
     }
+
     println!();
-    for word in rest.split_whitespace() {
-        let path = thalyx_files::resolve(here.at(), word);
-        let made = if directory {
-            thalyx_files::make_directory(&path)
-        } else {
-            thalyx_files::make_file(&path)
-        };
-        match made {
-            Ok(done) => report(&done),
+    for outcome in outcomes {
+        match outcome {
+            Ok(done) => report(done),
             Err(error) => println!("  {error}"),
         }
     }
     println!();
+}
+
+/// A line that never reached the filesystem, said in whichever face is on.
+///
+/// A program that got silence here would wait forever for an answer that was
+/// never coming, which is the failure the structured face has to not have.
+fn incomplete(face: Face, op: &str, machine_why: &str, human_why: &str) {
+    if face.machine() {
+        face.say(machine::refusal(op, machine_why));
+        return;
+    }
+    println!("\n  {human_why}\n");
+}
+
+/// `mkdir <carpeta>` / `crear <archivo>`.
+pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
+    let op = if directory {
+        "make_directory"
+    } else {
+        "make_file"
+    };
+    if rest.is_empty() {
+        incomplete(face, op, "which one", "Which one.");
+        return Ok(());
+    }
+
+    let outcomes: Outcomes = rest
+        .split_whitespace()
+        .map(|word| {
+            let path = thalyx_files::resolve(here.at(), word);
+            if directory {
+                thalyx_files::make_directory(&path)
+            } else {
+                thalyx_files::make_file(&path)
+            }
+        })
+        .collect();
+
+    speak(face, op, &outcomes);
     Ok(())
 }
 
 /// `cp <de> <a>` and `mv <de> <a>`.
-pub fn transfer(here: &Where, rest: &str, moving: bool) -> Fallible {
+pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible {
+    let op = if moving { "move" } else { "copy" };
     let words: Vec<&str> = rest.split_whitespace().collect();
     if words.len() != 2 {
-        println!("\n  Two names: what to take, and where it goes.\n");
+        incomplete(
+            face,
+            op,
+            "two names are needed: what to take, and where it goes",
+            "Two names: what to take, and where it goes.",
+        );
         return Ok(());
     }
+
     let from = thalyx_files::resolve(here.at(), words[0]);
     let mut to = thalyx_files::resolve(here.at(), words[1]);
     // Naming a folder as the destination means "inside it", which is what both
@@ -489,24 +692,20 @@ pub fn transfer(here: &Where, rest: &str, moving: bool) -> Fallible {
         to = to.join(name);
     }
 
-    println!();
-    let done = if moving {
+    let outcome = if moving {
         thalyx_files::move_to(&from, &to)
     } else {
         thalyx_files::copy(&from, &to)
     };
-    match done {
-        Ok(done) => report(&done),
-        Err(error) => println!("  {error}"),
-    }
-    println!();
+
+    speak(face, op, &vec![outcome]);
     Ok(())
 }
 
 /// `rm <cosa>...`, which is the one verb here that cannot be taken back.
-pub fn erase(here: &Where, rest: &str) -> Fallible {
+pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
     if rest.is_empty() {
-        println!("\n  Which one.\n");
+        incomplete(face, "remove", "which one", "Which one.");
         return Ok(());
     }
 
@@ -515,25 +714,27 @@ pub fn erase(here: &Where, rest: &str) -> Fallible {
         chosen.extend(targets(here, word));
     }
 
-    println!();
     // Shown before anything is touched, and counted. A pattern is the one thing
     // a person types without knowing what it caught, and `/home` is decreed to
     // be the one place no rollback of ours can put back — so this listing is the
     // only warning there is.
-    if chosen.len() > 1 {
+    //
+    // The machine face has no equivalent and needs none: its answer carries
+    // every path it touched, and a program is not deciding whether to press
+    // Return halfway through reading a list.
+    if !face.machine() && chosen.len() > 1 {
+        println!();
         println!("  {} things:", chosen.len());
         for path in &chosen {
             println!("    {}", path.display());
         }
-        println!();
     }
-    for path in &chosen {
-        match thalyx_files::remove(path) {
-            Ok(done) => report(&done),
-            Err(error) => println!("  {error}"),
-        }
-    }
-    println!();
+
+    let outcomes: Outcomes = chosen
+        .iter()
+        .map(|path| thalyx_files::remove(path))
+        .collect();
+    speak(face, "remove", &outcomes);
     Ok(())
 }
 

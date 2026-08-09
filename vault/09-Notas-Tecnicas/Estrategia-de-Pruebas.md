@@ -2659,6 +2659,55 @@ Corolario incómodo, y por eso se escribe: **corregir el defecto puede destruir 
 8 de 9.** Se corrige igual. Un instrumento que falló por su construcción no
 adquiere validez porque el número que produjo agrade.
 
+## Regla derivada: el primer renglón de un modo nuevo lo escribió el modo anterior
+
+**2026-08-09.** La cara estructurada contesta un objeto JSON por renglón, y
+había una excepción: **el renglón que avisa que el modo está encendido**. El
+prompt de ese comando se imprimió cuando la cara todavía era humana y no lleva
+salto de línea, así que la respuesta aterrizaba pegada:
+
+```
+  /home > {"off":"structured off","ok":true,"op":"structured",…}
+```
+
+Veinte pruebas unitarias del objeto pasaban —el objeto estaba perfecto— y las
+pruebas de punta a punta también, porque el ayudante que las lee filtra los
+renglones que parsean. Lo encontró canalizar la sesión a mano y mirar la salida.
+
+> **El primer renglón de un modo nuevo no lo escribe ese modo.** Lo escribe lo
+> que estaba encendido cuando se pidió el cambio, y por eso es el único renglón
+> que ninguna prueba del modo nuevo cubre. La prueba que lo caza no pregunta por
+> un objeto: exige que **todos** los renglones desde el cambio parseen.
+
+Y hay un corolario sobre el arnés, que es la regla 5 otra vez: un ayudante que
+recoge «los renglones que parsean» **no puede fallar** ante un renglón que no
+parsea. Es exactamente la forma de un instrumento que aprueba lo que debería
+reprobar, y el ayudante seguía siendo el correcto para las otras quince pruebas.
+La respuesta no fue arreglarlo, fue agregar la que mira el flujo entero.
+
+## Regla derivada: una cara que exige respuesta es un instrumento sobre la que no
+
+**2026-08-09.** Al construir la cara estructurada, la primera prueba que pidió
+una respuesta a `rm` sin argumentos falló, y no por la cara nueva: **`rm`, `mkdir`,
+`touch`, `cp` y `mv` escritos solos no eran verbos.** Cada brazo del despacho de
+la sesión exige un espacio detrás (`"rm "`), así que la palabra sola caía al
+mensaje del agente — «no tengo modelo cargado» —, que es el mismo defecto que
+Cesar encontró con `clear` el 2026-08-09, vivo en cinco verbos más.
+
+Nadie lo había visto en semanas de uso humano, y la razón es la que hay que
+escribir:
+
+> **Una persona perdona el silencio y una máquina no.** Quien recibe un párrafo
+> raro asume que la máquina está de mal humor y teclea otra cosa; un programa
+> esperando un objeto se cuelga. Así que **la cara estructurada es un instrumento
+> sobre la humana**: exigirle respuesta a todo encuentra los sitios donde no
+> había ninguna.
+
+Vale para cualquier segunda cara que se construya: la primera vez que algo se
+expone a un consumidor que no puede improvisar, sale la lista de lo que nunca
+contestó. Escribir las pruebas de la cara nueva **antes** de darla por buena es
+lo que convierte eso en un hallazgo en vez de en un reporte de campo.
+
 ## Regla derivada: una referencia local no es el estado del repositorio
 
 **2026-08-09.** Al retomar el proyecto comprobé qué había en `main` con

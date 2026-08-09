@@ -1069,6 +1069,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  includes hidden names and `ls -l` shows sizes.");
             println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
             println!("  `rm <cosa>` change what is there. `*` and `?` work.");
+            println!("  `structured on` makes every one of those answer in JSON");
+            println!("  instead, for a program reading them; `structured off`");
+            println!("  brings the sentences back.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1082,7 +1085,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
         Standing::AProgram { .. } => {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
-            println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`,");
+            println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1108,6 +1111,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     // in and one they can only inspect.
     let mut here = crate::files::Where::start();
 
+    // Which face the file verbs answer in. Human until something asks otherwise,
+    // because a person who has not asked for JSON must never be handed it —
+    // `vault/01-Filosofia/Filosofia-Fundacional.md` requires the human keep
+    // everything, and being unable to read the answers is not keeping it.
+    let mut face = crate::files::Face::Human;
+
     // Opened once and held: raw mode is a change to the terminal that outlives
     // this program, and every transition in and out is a chance to leave it
     // broken for whoever comes next.
@@ -1125,7 +1134,14 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // different file depending on where the person is standing, and a prompt
         // that hid that would make the same words do different things with no
         // warning on screen.
-        let prompt = format!("  {} > ", here.briefly());
+        // Nothing at all in the structured face. A prompt is for somebody who is
+        // waiting; a program reading the stream has been promised one object per
+        // line, and `  /home > {"op":…}` is not one object per line — the answer
+        // would have to be found inside the line before it could be parsed.
+        let prompt = match face {
+            crate::files::Face::Machine => String::new(),
+            crate::files::Face::Human => format!("  {} > ", here.briefly()),
+        };
         let at = here.at().to_path_buf();
         let line = match terminal.read_line(&prompt, |before| completions(&at, before))? {
             crate::term::Ended::Line(line) => line,
@@ -1199,52 +1215,88 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             "clear" | "limpiar" | "cls" => {
                 crate::files::clear();
             }
+            // The verb the objective decree was waiting on: everything below
+            // already returns facts, and this is what lets something ask for
+            // them instead of for sentences about them.
+            _ if starts_any(line, &["structured ", "estructurado "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::structured(&mut face, rest);
+            }
+            "structured" | "estructurado" => {
+                crate::files::structured(&mut face, "");
+            }
             "pwd" | "donde" | "dónde" | "where" => {
-                crate::files::where_am_i(&here);
+                crate::files::where_am_i(&here, face);
             }
             _ if starts_any(line, &["cd ", "ir ", "go "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::go(&mut here, rest);
+                crate::files::go(&mut here, rest, face);
             }
             // Unlike `instalar` and `correr`, the bare verb is not a question:
             // `ir` with nothing after it means home, which is somewhere a person
             // always wants to be able to get back to in one word.
             "cd" | "ir" | "go" => {
-                crate::files::go(&mut here, "");
+                crate::files::go(&mut here, "", face);
             }
             _ if starts_any(line, &["ls ", "ver ", "look "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::look(&here, rest);
+                crate::files::look(&here, rest, face);
             }
             "ls" | "ver" | "look" => {
-                crate::files::look(&here, "");
+                crate::files::look(&here, "", face);
             }
             _ if starts_any(line, &["cat ", "leer ", "read "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::read(&here, rest);
+                crate::files::read(&here, rest, face);
             }
             _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, true)?;
+                crate::files::make(&here, rest, true, face)?;
             }
             _ if starts_any(line, &["touch ", "crear "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, false)?;
+                crate::files::make(&here, rest, false, face)?;
             }
             _ if starts_any(line, &["cp ", "copiar "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, false)?;
+                crate::files::transfer(&here, rest, false, face)?;
             }
             _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, true)?;
+                crate::files::transfer(&here, rest, true, face)?;
             }
             _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::erase(&here, rest)?;
+                crate::files::erase(&here, rest, face)?;
             }
             "cat" | "leer" | "read" => {
-                crate::files::read(&here, "");
+                crate::files::read(&here, "", face);
+            }
+            // The bare forms, and they are here because a test that drove the
+            // prompt found they were missing. Every arm above matches on a
+            // **trailing space**, so `rm` typed alone was not a verb at all and
+            // fell through to "I have no model loaded" — the same defect Cesar
+            // hit with `clear` on the first real session, still alive in five
+            // verbs. A common command answering with a speech about something
+            // else is exactly how a system reads as unfinished.
+            //
+            // Each one lands on its own "which one" rather than on a shared
+            // message, because `cp` needs two names and `rm` needs one, and a
+            // hint that does not say which is a hint nobody can act on.
+            "mkdir" | "crear-carpeta" | "nueva-carpeta" => {
+                crate::files::make(&here, "", true, face)?;
+            }
+            "touch" | "crear" => {
+                crate::files::make(&here, "", false, face)?;
+            }
+            "cp" | "copiar" => {
+                crate::files::transfer(&here, "", false, face)?;
+            }
+            "mv" | "mover" | "renombrar" => {
+                crate::files::transfer(&here, "", true, face)?;
+            }
+            "rm" | "borrar" | "eliminar" => {
+                crate::files::erase(&here, "", face)?;
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1321,6 +1373,7 @@ const VERBS: &[&str] = &[
     "kernel",
     "disks",
     "install-onto",
+    "structured",
     "exit",
     "poweroff",
     "ver",
@@ -1339,6 +1392,7 @@ const VERBS: &[&str] = &[
     "nucleo",
     "discos",
     "instalar-en",
+    "estructurado",
     "salir",
     "apagar",
 ];

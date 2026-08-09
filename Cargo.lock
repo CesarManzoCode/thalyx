@@ -910,6 +910,7 @@ dependencies = [
  "flate2",
  "hex",
  "serde",
+ "serde_json",
  "sha2",
  "tar",
  "tempfile",
@@ -975,6 +976,7 @@ dependencies = [
 name = "thalyx-files"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
