@@ -1539,6 +1539,72 @@ Los tres brazos dejan tres directorios —`-with-grammar`, `-free`, `-prose`—
 porque dos de los tres corren sin gramática y **no son la misma pregunta**;
 nombrarlos sólo por la bandera habría dejado dos `-free` por caso.
 
+##### Primera corrida del tercer brazo: `NOT PROVEN`, y el defecto es del prompt
+
+Corrido el 2026-08-09 en las dos gamas. **El veredicto de la gramática se
+reprodujo** en la media —`IT INVENTS EITHER WAY`, control 9 de 11, por segunda
+vez— y el brazo en prosa no pudo contestar nada:
+
+```
+abstention cases, prose arm answered     9
+  asked in prose, ABSTAINED              8
+  asked in prose, named only real ids    1
+
+control — acting cases, prose arm        11
+  asked in prose, found the module       5
+
+THE PROMPT — NOT PROVEN
+```
+
+Ocho de nueve rechazos parecería el resultado que la hipótesis quería. **El
+control lo tumbó**, y hay que mirar por qué, porque el motivo está a la vista en
+las respuestas: **las veinte empiezan con `NOTHING`.** También las once donde sí
+había un módulo que nombrar.
+
+```
+act  a pronoun pointing at the one thing installed
+  in prose  "NOTHING Identities: dev.thalyx.demo: 1.4.2 dev.thalyx.demo: 1.4.1 …"
+act  a module named by what it does rather than by its id
+  in prose  "NOTHING  NOTHING  NOTHING NOTHING NOTHING NOTHING NOTHING NOTHING …"
+```
+
+Eso no es un modelo declinando. Es un modelo al que se le dio esa palabra como
+primer token.
+
+**Y el defecto es mío, del prompt que escribí.** Usé la palabra tres veces en
+otro sentido en el mismo texto donde es la única señal:
+
+> «Answer with its id and **nothing** else» · «gains **nothing**» · «If
+> **nothing** below names a module»
+
+Un prompt que ofrece un token como su única señal no puede gastar ese token en
+inglés corriente. Corregido —*add no other text*, *only costs the request*, *if
+no module is named below*— con una prueba que cuenta las apariciones sin
+distinguir mayúsculas y falla si hay más de una. Era invisible leyendo la propia
+prosa.
+
+**Causa inmediata**: el brazo en prosa dijo `NOTHING` en los veinte casos.
+**Causa observada**: la palabra aparecía cuatro veces en el prompt, tres de ellas
+en otro sentido. **Condición que lo permite**: sin gramática este modelo repite
+—las respuestas son `NOTHING NOTHING NOTHING…`, la misma degeneración que el
+ciclo dentro de `module-id`, en otro token—.
+
+**No se afirma que la colisión sea la causa.** Compite con la degeneración, que
+está igual de a la vista. Lo que sí queda establecido es que el prompt no podía
+medir, y que corregirlo **puede destruir el 8 de 9** — que era el número
+favorable. Se corrige de todos modos: un instrumento que no puede fallar no es un
+instrumento, y éste falló por su construcción, no por el modelo.
+
+Lo que el control hizo aquí es exactamente para lo que existe. Sin él, `ABSTAINED
+8/9` se habría leído como `THE PROMPT TAKES THE DECISION` y habría cerrado la
+investigación con un resultado fabricado por su propio prompt.
+
+##### Y la gama ligera, por tercera vez
+
+Sin gramática —los dos brazos libres— la ligera contestó **las veinte con cero
+tokens**, y ahora también en prosa. Tres corridas diciendo lo mismo: en un 1.5B,
+forzarle el primer carácter es lo único que arranca la generación.
+
 #### El quinto defecto: la abstención estaba ahí y el instrumento la llamó ruido
 
 En esa misma corrida de la gama media, con gramática, ante `instala algo bueno`:
@@ -1569,8 +1635,31 @@ caso=$(grep -l 'instala algo bueno' ~/evidencia/efecto-media-2/*-with-grammar/pr
 cd "$(dirname "$caso")" && sh command
 ```
 
-Si sale `"targets": []`, es la **primera abstención observada del proyecto** y
-cambia lo que el banco viene reportando.
+##### Refutado el mismo día: no era una abstención
+
+Cesar corrió ese comando. La salida completa:
+
+```
+{
+  "operation": "install_module",
+  "targets": [
+    "good-luck-module-123456789012345678901234567890123456789012345678…
+```
+
+255 tokens de dígitos dentro de un identificador, y nunca cerró. **Era la
+segunda lectura**: se truncó sin llegar a nombrar nada, y `Named::Nothing` fue
+correcto. No hay primera abstención. **La abstención sigue en cero**, ahora sobre
+55 oportunidades.
+
+Y es **el octavo caso** de la misma patología: el modelo se cicla dentro de
+`module-id` y agota el presupuesto. `good-luck-module-` no lleva ni un punto, así
+que ni siquiera es un identificador — el escáner no encontró nada en él, que es
+por lo que el instrumento dijo `named nothing`.
+
+Vale la pena separar lo que esto costó de lo que no. Costó una hipótesis. **No
+costó una afirmación falsa en la bóveda**, porque se escribió como pendiente con
+su comando al lado en vez de como hallazgo. La diferencia entre las dos formas de
+escribirlo es todo lo que hubo entre registrar un dato y registrar un error.
 
 Y un defecto de reporte en la misma corrida: la columna del brazo restringido se
 imprimía bajo el denominador del brazo libre, así que la ligera reportó

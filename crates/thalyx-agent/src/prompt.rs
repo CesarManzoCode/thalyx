@@ -183,17 +183,21 @@ impl Prompt {
             "One question about the material below: which module is being asked \
              for?\n\n",
         );
+        // Not one of these sentences may use the abstention word in another
+        // sense, and the first version used it three times — "and nothing
+        // else", "gains nothing", "if nothing below". Every one of the 3B's
+        // twenty answers then opened with `NOTHING`, on the acting cases too.
+        // Asserted below, because it is invisible while reading.
         text.push_str(
-            "Answer with its id and nothing else. Ids are in reverse-DNS form \
-             with at least three dot-separated segments.\n\n",
+            "Answer with its id and add no other text. Ids are in reverse-DNS \
+             form with at least three dot-separated segments.\n\n",
         );
         text.push_str(
             "Name only an id that appears in the material below. An id you invent \
-             will be refused, so inventing one costs the request and gains \
-             nothing.\n\n",
+             will be refused, so inventing one only costs the request.\n\n",
         );
         text.push_str(&format!(
-            "If nothing below names a module, answer with only this word: \
+            "If no module is named below, answer with only this word: \
              {ABSTENTION_WORD}\n\n",
         ));
         material(transcript, &mut text);
@@ -532,6 +536,33 @@ mod tests {
         assert!(
             prose.text().contains(&shared),
             "the two arms are showing the model different material"
+        );
+    }
+
+    #[test]
+    fn the_abstention_word_appears_in_the_prose_prompt_once_and_in_one_sense() {
+        // Measured 2026-08-09, and it cost a run. The first version of this
+        // prompt used the word in three other senses — "answer with its id and
+        // nothing else", "gains nothing", "if nothing below names a module" —
+        // and every one of the 3B's twenty answers opened with `NOTHING`,
+        // including all eleven where a module was there to be named. The
+        // control refused the verdict, which is the only reason the run was
+        // not read as the prompt taking the decision.
+        //
+        // Whether the collision *caused* it is not settled — the same answers
+        // also show the repetition this model does when nothing constrains it.
+        // What is settled is that a prompt offering a token as its one signal
+        // must not spend that token on ordinary English, and that the defect is
+        // invisible to a person reading their own prose.
+        let rendered = Prompt::in_prose(&transcript());
+        let text = rendered.text().to_lowercase();
+        let word = ABSTENTION_WORD.to_lowercase();
+
+        assert_eq!(
+            text.matches(&word).count(),
+            1,
+            "the abstention word is used in another sense somewhere in: {}",
+            rendered.text()
         );
     }
 
