@@ -211,7 +211,7 @@ impl Asked {
 /// which is worse than guessing narrow and leaving space unused.
 const ASSUMED_WIDTH: usize = 80;
 
-fn screen_width() -> usize {
+pub fn screen_width() -> usize {
     use std::io::IsTerminal;
     let out = std::io::stdout();
     if !out.is_terminal() {

@@ -44,8 +44,11 @@ impl Confirmer for TerminalConfirmer {
         print!("  Confirm? [y/N] ");
         let _ = std::io::stdout().flush();
 
-        let mut answer = String::new();
-        if std::io::stdin().read_line(&mut answer).is_err() {
+        let answer = crate::term::read_answer()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if false {
             return false;
         }
         matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")

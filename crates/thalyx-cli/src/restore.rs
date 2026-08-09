@@ -91,7 +91,6 @@ fn confirmed(assume_yes: bool, deleted: usize) -> std::io::Result<bool> {
     print!("Type `restore` to destroy {deleted} file(s) and go back: ");
     std::io::stdout().flush()?;
 
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
+    let answer = crate::term::read_answer()?.unwrap_or_default();
     Ok(answer.trim() == "restore")
 }

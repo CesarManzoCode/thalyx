@@ -14,6 +14,56 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La terminal es una terminal, y dos lectores de `stdin` no caben — 2026-08-09
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Flechas, borrar a media línea, historial y tab. `crates/thalyx-term` decide qué
+> significa cada tecla y dónde queda el cursor —puro, sin abrir ninguna
+> terminal—; `thalyx-syscall` apaga el editor de línea del kernel con `termios`;
+> `thalyx-cli/src/term.rs` es el único sitio donde se dibuja.
+>
+> **La guarda de modo crudo es lo más peligroso del archivo**, y por eso es una
+> guarda: una sesión que sale sin devolver la terminal deja la máquina
+> inservible, y en la imagen no hay una segunda de dónde recuperarse. El
+> `Drop` cubre la salida normal y el desenrollado de un panic; no cubre un
+> `SIGKILL`, y nada puede.
+>
+> ### Dos defectos de la misma familia, los dos encontrados corriéndolo
+>
+> Ninguna prueba unitaria los veía, porque los dos son sobre **quién es dueño de
+> la entrada**:
+>
+> 1. **Lo tecleado por adelantado se perdía.** El búfer de bytes vivía dentro de
+>    `read_line`, así que al pulsar Return todo lo que venía detrás se tiraba.
+>    Un `read` devuelve lo que haya llegado, y eso es rutinariamente más de una
+>    línea: alguien tecleando rápido, un pegado, o una prueba escribiendo todo
+>    de golpe.
+> 2. **Y al arreglar eso, la suite de `exit_criterion` se colgó entera.**
+>    `instalar` pide una confirmación que leía `stdin` por su cuenta — y la `y`
+>    que la contestaba ya estaba en mi búfer. **Seis sitios del CLI leían
+>    `stdin` directo.** Ahora hay un solo dueño, `term::read_answer()`, y los
+>    seis pasan por él.
+>
+> La regla que sale de esto, para [[Estrategia-de-Pruebas]]: **dos lugares que
+> leen la misma entrada y uno que guarda lo que sobra no pueden coexistir**; el
+> segundo espera para siempre bytes que ya salieron del kernel y están en
+> memoria. El síntoma no es un error, es un silencio.
+>
+> ### Probado con una terminal de verdad
+>
+> El contenedor no alcanza esto con tuberías, así que se manejó un pty: `lst` +
+> flecha + suprimir da `ls`; la flecha arriba devuelve el comando anterior; `cd
+> Doc` + tab da `cd Documentos/`; con varias opciones se imprimen en columnas
+> sin perder la línea; y **`cat niño` + flecha + retroceso da `nio`** — la `ñ`
+> entera, que es de lo que trata que la línea sea `Vec<char>` y no `String`.
+>
+> Ctrl-C abandona la línea y da prompt nuevo; **no es una salida**, porque en la
+> imagen no hay a dónde salir. Ctrl-D con algo escrito no hace nada: tratarlo
+> como fin sería tirar la línea y salir, dos sorpresas por una tecla.
+>
+> **984 pruebas** (959 antes), `clippy` limpio.
+>
 > ## `ls` existe, y el vocabulario dejó de ser un problema de adopción — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

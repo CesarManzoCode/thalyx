@@ -929,6 +929,7 @@ dependencies = [
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",
+ "thalyx-term",
  "thalyx-watch",
  "toml",
  "uuid",
@@ -1084,6 +1085,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "thalyx-term"
+version = "0.1.0"
 
 [[package]]
 name = "thalyx-watch"

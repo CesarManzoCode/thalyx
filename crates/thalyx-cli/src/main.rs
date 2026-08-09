@@ -20,6 +20,7 @@ mod run;
 mod session;
 mod snapshot;
 mod store_disk;
+mod term;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;

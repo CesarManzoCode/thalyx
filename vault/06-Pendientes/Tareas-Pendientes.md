@@ -56,10 +56,13 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 - [x] **1. Dónde estoy y moverme** — `ir`, `donde`. `/home` ya estaba montado
       desde el subvolumen `user`; lo que faltaban eran los verbos.
 - [x] **2. `ver` y `leer`** — mirar sin tocar. `crates/thalyx-files`.
-- [ ] **3. La terminal como terminal** — flechas, borrar a media línea,
-      historial, tab. Depende del 2 porque el tab completa **nombres de
-      archivo**. Hoy la sesión lee con `read_line` y nada más: un typo a media
-      línea obliga a reescribirla entera.
+- [x] **3. La terminal como terminal** — hecho el 2026-08-09. Flechas, borrar a
+      media línea, historial de 500, y tab que completa verbos al principio de
+      la línea y nombres de archivo después. `crates/thalyx-term` es puro y se
+      prueba sin terminal; el modo crudo es una guarda que devuelve la terminal
+      al soltarse, porque una sesión que sale sin hacerlo deja la máquina
+      inservible. Encontró dos defectos sobre quién es dueño de `stdin`, y ahora
+      hay **un solo lector**: `term::read_answer()`.
 - [ ] **4. `crear`, `copiar`, `mover`, `borrar`, `renombrar`.** Depende del 2 —
       ver antes de destruir. `Coherencia-Doble-Ruta` ya contesta la pregunta de
       diseño: lo que el humano hace en `/home` **no entra al journal** y el

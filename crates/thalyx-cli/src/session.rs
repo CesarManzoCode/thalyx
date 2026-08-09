@@ -1105,6 +1105,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     // in and one they can only inspect.
     let mut here = crate::files::Where::start();
 
+    // Opened once and held: raw mode is a change to the terminal that outlives
+    // this program, and every transition in and out is a chance to leave it
+    // broken for whoever comes next.
+    let mut terminal = crate::term::Terminal::open();
+
     loop {
         // Before the prompt and not after it, so the notice never lands on a
         // line the human is in the middle of typing — which is the whole defect
@@ -1117,14 +1122,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // different file depending on where the person is standing, and a prompt
         // that hid that would make the same words do different things with no
         // warning on screen.
-        print!("  {} > ", here.briefly());
-        std::io::stdout().flush()?;
-
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line)? == 0 {
-            println!();
-            break;
-        }
+        let prompt = format!("  {} > ", here.briefly());
+        let at = here.at().to_path_buf();
+        let line = match terminal.read_line(&prompt, |before| completions(&at, before))? {
+            crate::term::Ended::Line(line) => line,
+            // Ctrl-C throws the line away and gives a fresh prompt. It is not a
+            // way out of the session, because on the image there is nowhere out.
+            crate::term::Ended::Abandoned => continue,
+            crate::term::Ended::Closed => break,
+        };
         let line = line.trim();
 
         match line {
@@ -1267,6 +1273,95 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 //
 // So `discos` and `instalar-en <disco>`. They are the last two words the exit
 // criterion needed and they are the reason the criterion is reachable at all.
+
+/// Every verb the session answers to, in the order they are offered.
+///
+/// One list, used by Tab and nothing else — the dispatch still matches its own
+/// arms, so this cannot make a verb *work*. That is on purpose and it is the
+/// honest arrangement: a name here that the dispatch does not have completes and
+/// then fails, which is visible immediately, while the reverse — a working verb
+/// missing from here — costs nobody anything.
+const VERBS: &[&str] = &[
+    "ls",
+    "cat",
+    "cd",
+    "pwd",
+    "clear",
+    "modules",
+    "available",
+    "install",
+    "run",
+    "permissions",
+    "rollback",
+    "memory",
+    "status",
+    "kernel",
+    "disks",
+    "install-onto",
+    "exit",
+    "poweroff",
+    "ver",
+    "leer",
+    "ir",
+    "donde",
+    "limpiar",
+    "modulos",
+    "disponibles",
+    "instalar",
+    "correr",
+    "permisos",
+    "revertir",
+    "recuerdos",
+    "estado",
+    "nucleo",
+    "discos",
+    "instalar-en",
+    "salir",
+    "apagar",
+];
+
+/// What could follow what has been typed so far.
+///
+/// The first word is a verb and everything after it is a path, which is the
+/// whole rule. Offering file names where a verb belongs would put `Documentos`
+/// at the start of a line, where nothing can run it.
+fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
+    if !before.contains(' ') {
+        return VERBS.iter().map(|verb| verb.to_string()).collect();
+    }
+
+    let fragment = before.rsplit(' ').next().unwrap_or("");
+    // The directory being completed *in* is whatever the fragment names up to
+    // its last slash, so `cat Documentos/no` looks inside `Documentos`.
+    let (folder, partial) = match fragment.rsplit_once('/') {
+        Some((folder, partial)) => (thalyx_files::resolve(here, folder), partial.to_string()),
+        None => (here.to_path_buf(), fragment.to_string()),
+    };
+    let prefix = &fragment[..fragment.len() - partial.len()];
+
+    let Ok(listing) = thalyx_files::list(&folder) else {
+        return Vec::new();
+    };
+    listing
+        .entries
+        .iter()
+        // Hidden names appear only once the person has typed the dot that says
+        // they want them, which is the same rule `ls` follows and for the same
+        // reason: thirty-five of them would bury every real answer.
+        .filter(|entry| partial.starts_with('.') || !thalyx_files::is_hidden(&entry.name))
+        .map(|entry| {
+            let name = entry.name.to_string_lossy();
+            // The slash matters: it is what lets a second Tab descend instead of
+            // stopping at the folder.
+            let tail = if entry.kind == thalyx_files::Kind::Directory {
+                "/"
+            } else {
+                ""
+            };
+            format!("{prefix}{name}{tail}")
+        })
+        .collect()
+}
 
 /// Whether a line opens with any of these verbs, so a verb can have more than
 /// one name without the dispatch growing a clause per spelling.
@@ -1502,10 +1597,11 @@ fn install_onto(disk: &str) {
     }
     print!("  Type the disk's path to confirm: ");
     let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err()
-        || answer.trim() != disk.display().to_string()
-    {
+    let answer = crate::term::read_answer()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if answer.trim() != disk.display().to_string() {
         println!();
         println!("  That is not {}. Nothing was written.", disk.display());
         println!();
