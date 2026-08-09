@@ -1067,6 +1067,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  one, `cd <carpeta>` moves, `pwd` says where you are and");
             println!("  `clear` wipes the screen. `cd` alone goes home, `ls -a`");
             println!("  includes hidden names and `ls -l` shows sizes.");
+            println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
+            println!("  `rm <cosa>` change what is there. `*` and `?` work.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1080,6 +1082,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
         Standing::AProgram { .. } => {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
+            println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1219,6 +1222,26 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             _ if starts_any(line, &["cat ", "leer ", "read "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 crate::files::read(&here, rest);
+            }
+            _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::make(&here, rest, true)?;
+            }
+            _ if starts_any(line, &["touch ", "crear "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::make(&here, rest, false)?;
+            }
+            _ if starts_any(line, &["cp ", "copiar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::transfer(&here, rest, false)?;
+            }
+            _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::transfer(&here, rest, true)?;
+            }
+            _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::erase(&here, rest)?;
             }
             "cat" | "leer" | "read" => {
                 crate::files::read(&here, "");

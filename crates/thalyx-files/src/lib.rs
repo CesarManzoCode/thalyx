@@ -187,6 +187,14 @@ pub enum FileError {
 
     #[error("{path} could not be read: {detail}")]
     Unreadable { path: PathBuf, detail: String },
+
+    /// Something is already there.
+    ///
+    /// Its own variant because every operation that writes has to refuse rather
+    /// than assume. Overwriting is a different request, and one that costs
+    /// somebody a file when it is guessed at.
+    #[error("{0} is already there, and I will not write over it")]
+    Exists(PathBuf),
 }
 
 /// List a directory, keeping what could not be established rather than dropping it.
@@ -779,6 +787,214 @@ mod tests {
         assert!(in_columns(&[], 80, 4).is_empty());
     }
 
+    // ──────────────────────────────────────────────────── changing what is there
+
+    #[test]
+    fn making_a_folder_that_is_already_there_is_refused_and_not_reported_as_made() {
+        let dir = tempfile::tempdir().unwrap();
+        make_directory(&dir.path().join("notas")).unwrap();
+        // "It is already there" and "I made it" are different facts, and an agent
+        // that cannot tell them apart cannot tell whether it is repeating itself.
+        let again = make_directory(&dir.path().join("notas"));
+        assert!(matches!(again, Err(FileError::Exists(_))), "got {again:?}");
+    }
+
+    #[test]
+    fn a_new_folder_brings_its_parents_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a/b/c");
+        assert_eq!(make_directory(&deep).unwrap().what, Did::MadeDirectory);
+        assert!(deep.is_dir());
+    }
+
+    #[test]
+    fn making_a_file_never_flattens_one_that_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notas.txt");
+        std::fs::write(&path, "no me borres").unwrap();
+
+        assert!(make_file(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "no me borres");
+    }
+
+    #[test]
+    fn a_copy_says_how_many_bytes_it_moved_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), vec![7u8; 1234]).unwrap();
+
+        let done = copy(&dir.path().join("a"), &dir.path().join("b")).unwrap();
+        // Exact, never the rounded form: a program comparing two rounded numbers
+        // compares two lies.
+        assert_eq!(done.bytes, 1234);
+        assert_eq!(done.what, Did::Copied);
+        assert_eq!(done.to.as_deref(), Some(dir.path().join("b").as_path()));
+    }
+
+    #[test]
+    fn copying_over_something_is_refused_rather_than_assumed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "nuevo").unwrap();
+        std::fs::write(dir.path().join("b"), "viejo, y quiero conservarlo").unwrap();
+
+        assert!(copy(&dir.path().join("a"), &dir.path().join("b")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b")).unwrap(),
+            "viejo, y quiero conservarlo"
+        );
+    }
+
+    #[test]
+    fn a_whole_folder_copies_with_what_is_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/hondo")).unwrap();
+        std::fs::write(dir.path().join("src/uno.txt"), "aa").unwrap();
+        std::fs::write(dir.path().join("src/hondo/dos.txt"), "bbb").unwrap();
+
+        let done = copy(&dir.path().join("src"), &dir.path().join("dest")).unwrap();
+        assert_eq!(done.bytes, 5);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dest/hondo/dos.txt")).unwrap(),
+            "bbb"
+        );
+    }
+
+    #[test]
+    fn copying_a_link_copies_the_link_and_not_what_it_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("real.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real.txt"), dir.path().join("src/enlace"))
+            .unwrap();
+
+        copy(&dir.path().join("src"), &dir.path().join("dest")).unwrap();
+        // Following it would duplicate the target, and a link to an ancestor
+        // would loop until the disk filled.
+        let copied = dir.path().join("dest/enlace");
+        assert!(copied.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn removing_a_link_removes_the_link_and_not_somebody_elses_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "x").unwrap();
+        let link = dir.path().join("enlace");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        remove(&link).unwrap();
+        assert!(link.symlink_metadata().is_err());
+        assert!(real.is_file(), "the file it pointed at is not the link");
+    }
+
+    #[test]
+    fn a_move_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "contenido").unwrap();
+
+        let done = move_to(&dir.path().join("a"), &dir.path().join("b")).unwrap();
+        assert_eq!(done.what, Did::Moved);
+        assert!(!dir.path().join("a").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b")).unwrap(),
+            "contenido"
+        );
+    }
+
+    #[test]
+    fn removing_a_folder_takes_what_is_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/c.txt"), "x").unwrap();
+
+        assert_eq!(remove(&dir.path().join("a")).unwrap().what, Did::Removed);
+        assert!(!dir.path().join("a").exists());
+    }
+
+    #[test]
+    fn removing_something_that_is_not_there_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = remove(&dir.path().join("fantasma")).unwrap_err();
+        assert!(matches!(error, FileError::Absent(_)), "got {error:?}");
+    }
+
+    #[test]
+    fn the_word_for_each_operation_is_stable_and_not_a_sentence() {
+        // What a program matches on. Changing one of these breaks every caller
+        // that reads the structured face, which is why they are here.
+        assert_eq!(Did::MadeDirectory.word(), "made_directory");
+        assert_eq!(Did::Copied.word(), "copied");
+        assert_eq!(Did::Moved.word(), "moved");
+        assert_eq!(Did::Removed.word(), "removed");
+        assert_eq!(Did::MadeFile.word(), "made_file");
+    }
+
+    // ──────────────────────────────────────────────────────────────── patterns
+
+    #[test]
+    fn a_star_stands_for_any_run_of_characters() {
+        assert!(matches("*.txt", "notas.txt"));
+        assert!(matches("*.txt", ".txt"));
+        assert!(!matches("*.txt", "notas.md"));
+        assert!(matches("notas*", "notas.txt"));
+        assert!(matches("*", "cualquier-cosa"));
+    }
+
+    #[test]
+    fn a_question_mark_stands_for_exactly_one() {
+        assert!(matches("a?c", "abc"));
+        assert!(!matches("a?c", "ac"));
+        assert!(!matches("a?c", "abbc"));
+    }
+
+    #[test]
+    fn a_star_never_crosses_a_folder_separator() {
+        // Without this, deleting `*` in one folder reaches into every folder
+        // below it.
+        assert!(!matches("*.txt", "notas/x.txt"));
+        assert!(!matches("*", "a/b"));
+    }
+
+    #[test]
+    fn many_stars_do_not_take_exponential_time() {
+        // A pattern somebody types by accident. The recursive form never returns
+        // on this one.
+        let pattern = "*".repeat(40) + "b";
+        assert!(!matches(&pattern, &"a".repeat(60)));
+    }
+
+    #[test]
+    fn a_pattern_matches_whole_names_and_not_pieces_of_them() {
+        assert!(!matches("nota", "notas.txt"));
+        assert!(matches("notas.txt", "notas.txt"));
+    }
+
+    #[test]
+    fn expanding_a_pattern_never_reaches_a_hidden_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "x").unwrap();
+        std::fs::write(dir.path().join(".oculto.txt"), "x").unwrap();
+
+        let found = expand(dir.path(), "*.txt").unwrap();
+        // The rule that keeps `rm *` from deleting somebody's configuration.
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("visible.txt"));
+    }
+
+    #[test]
+    fn a_pattern_that_starts_with_a_dot_does_reach_hidden_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".bashrc"), "x").unwrap();
+        // Typing the dot is the person saying they mean those.
+        assert_eq!(expand(dir.path(), ".*").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pattern_that_matches_nothing_is_an_answer_and_not_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // The caller is the one that knows whether zero results is a problem.
+        assert!(expand(dir.path(), "*.rs").unwrap().is_empty());
+    }
+
     // ────────────────────────────────────────────────────────────── saying sizes
 
     #[test]
@@ -794,4 +1010,260 @@ mod tests {
         assert_eq!(Size(2 * 1024 * 1024).to_string(), "2.0 MB");
         assert_eq!(Size(3 * 1024 * 1024 * 1024).to_string(), "3.0 GB");
     }
+}
+
+// ─────────────────────────────────────────────────────── changing what is there
+//
+// `vault/01-Filosofia/Filosofia-Fundacional.md`: the objective is that an LLM
+// works better here than anywhere else, and every one of these returns a
+// [`Done`] describing exactly what happened rather than only succeeding. A
+// program that has to re-list a directory to find out what a copy did is a
+// program guessing, and guessing is what the structured face exists to remove.
+
+/// What an operation actually did, in the terms it did it in.
+///
+/// Returned rather than printed. The human face formats this; the machine face
+/// serialises it. Both read the same fact, which is the only way the two cannot
+/// drift apart — a second code path that prints its own version of events is a
+/// second version of events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Done {
+    pub what: Did,
+    pub path: PathBuf,
+    /// Where it ended up, for the operations that move something.
+    pub to: Option<PathBuf>,
+    /// Bytes involved, exact. Never the rounded form — that is for a human eye
+    /// and a program comparing two rounded numbers compares two lies.
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Did {
+    MadeDirectory,
+    MadeFile,
+    Copied,
+    Moved,
+    Removed,
+}
+
+impl Did {
+    /// The word a program matches on. Stable, lowercase, never translated —
+    /// this is an identifier and not a sentence.
+    pub fn word(self) -> &'static str {
+        match self {
+            Did::MadeDirectory => "made_directory",
+            Did::MadeFile => "made_file",
+            Did::Copied => "copied",
+            Did::Moved => "moved",
+            Did::Removed => "removed",
+        }
+    }
+}
+
+/// Make a directory, and every parent it needs.
+///
+/// Making the parents is what a person and an agent both mean by "make this
+/// folder": failing on a missing parent forces a loop that recreates exactly
+/// this, one level at a time.
+pub fn make_directory(path: &Path) -> Result<Done, FileError> {
+    // Checked first so that an existing directory is refused rather than
+    // reported as made. "It is already there" and "I made it" are different
+    // facts, and an agent that cannot tell them apart cannot tell whether it is
+    // repeating itself.
+    if path.symlink_metadata().is_ok() {
+        return Err(FileError::Exists(path.to_path_buf()));
+    }
+    std::fs::create_dir_all(path).map_err(|error| classify(path, error))?;
+    Ok(Done {
+        what: Did::MadeDirectory,
+        path: path.to_path_buf(),
+        to: None,
+        bytes: 0,
+    })
+}
+
+/// Make an empty file, refusing to flatten one that is already there.
+pub fn make_file(path: &Path) -> Result<Done, FileError> {
+    if path.symlink_metadata().is_ok() {
+        return Err(FileError::Exists(path.to_path_buf()));
+    }
+    // `create_new`, not `create`: the check above and the creation are two
+    // moments, and between them something else can appear. The kernel deciding
+    // is the only version with no gap in it.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| classify(path, error))?;
+    Ok(Done {
+        what: Did::MadeFile,
+        path: path.to_path_buf(),
+        to: None,
+        bytes: 0,
+    })
+}
+
+/// Copy a file or a whole directory.
+pub fn copy(from: &Path, to: &Path) -> Result<Done, FileError> {
+    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
+    // Refused rather than merged or flattened. Overwriting is a separate
+    // request, and one that costs somebody a file when it is assumed.
+    if to.symlink_metadata().is_ok() {
+        return Err(FileError::Exists(to.to_path_buf()));
+    }
+
+    let bytes = if meta.is_dir() {
+        copy_tree(from, to)?
+    } else {
+        std::fs::copy(from, to).map_err(|error| classify(from, error))?
+    };
+    Ok(Done {
+        what: Did::Copied,
+        path: from.to_path_buf(),
+        to: Some(to.to_path_buf()),
+        bytes,
+    })
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<u64, FileError> {
+    std::fs::create_dir_all(to).map_err(|error| classify(to, error))?;
+    let mut bytes = 0;
+    for entry in std::fs::read_dir(from).map_err(|error| classify(from, error))? {
+        let entry = entry.map_err(|error| classify(from, error))?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let meta = source
+            .symlink_metadata()
+            .map_err(|e| classify(&source, e))?;
+        if meta.is_dir() {
+            bytes += copy_tree(&source, &target)?;
+        } else if meta.file_type().is_symlink() {
+            // Copied as a link, not as what it points at. Following it would
+            // duplicate the target and could loop forever on a link to an
+            // ancestor.
+            let dest = std::fs::read_link(&source).map_err(|e| classify(&source, e))?;
+            std::os::unix::fs::symlink(dest, &target).map_err(|e| classify(&target, e))?;
+        } else {
+            bytes += std::fs::copy(&source, &target).map_err(|error| classify(&source, error))?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// Move something, across filesystems if it has to.
+pub fn move_to(from: &Path, to: &Path) -> Result<Done, FileError> {
+    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
+    if to.symlink_metadata().is_ok() {
+        return Err(FileError::Exists(to.to_path_buf()));
+    }
+    let bytes = if meta.is_dir() { 0 } else { meta.len() };
+
+    match std::fs::rename(from, to) {
+        Ok(()) => {}
+        // `EXDEV`: the two are on different filesystems and the kernel will not
+        // rename across them. `/home` and `/opt/thalyx` are separate subvolumes,
+        // so this is the ordinary case here and not an exotic one — copy, then
+        // remove, and only remove once the copy is on disk.
+        Err(error) if error.raw_os_error() == Some(libc_exdev()) => {
+            copy(from, to)?;
+            remove(from)?;
+        }
+        Err(error) => return Err(classify(from, error)),
+    }
+    Ok(Done {
+        what: Did::Moved,
+        path: from.to_path_buf(),
+        to: Some(to.to_path_buf()),
+        bytes,
+    })
+}
+
+/// `EXDEV`, spelled out rather than linked: this crate has no libc dependency
+/// and one number is not worth one.
+fn libc_exdev() -> i32 {
+    18
+}
+
+/// Delete a file, a link, or a directory and what is under it.
+pub fn remove(path: &Path) -> Result<Done, FileError> {
+    let meta = path.symlink_metadata().map_err(|e| classify(path, e))?;
+    let bytes = if meta.is_dir() { 0 } else { meta.len() };
+
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| classify(path, error))?;
+    } else {
+        // `remove_file` on a symlink deletes the link. Anything that resolved it
+        // first would delete what it points at, which is somebody else's file.
+        std::fs::remove_file(path).map_err(|error| classify(path, error))?;
+    }
+    Ok(Done {
+        what: Did::Removed,
+        path: path.to_path_buf(),
+        to: None,
+        bytes,
+    })
+}
+
+// ──────────────────────────────────────────────────────────────────── `*.txt`
+
+/// Whether a name matches a pattern of `*` and `?`.
+///
+/// Written here rather than pulled in, for the same reason as the cpio and the
+/// Btrfs writer: the image holds the kernel and one program.
+///
+/// `*` does not cross a `/`, which is the rule every shell follows and the one
+/// that keeps `*.txt` from reaching into subdirectories a person did not name.
+pub fn matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+
+    // Iterative with a backtrack point rather than recursion: a pattern of forty
+    // stars against a long name is a stack the recursive form cannot afford, and
+    // a pattern is exactly the kind of input somebody types by accident.
+    let (mut p, mut n) = (0usize, 0usize);
+    let (mut star, mut retry) = (None, 0usize);
+
+    while n < name.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            retry = n;
+            p += 1;
+        } else if let Some(at) = star {
+            // A `*` never swallows a separator: `*.txt` must not match
+            // `notas/x.txt`, or a person deleting `*` in one folder would reach
+            // into every folder below it.
+            if name[retry] == '/' {
+                return false;
+            }
+            p = at + 1;
+            retry += 1;
+            n = retry;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '*')
+}
+
+/// Everything in `folder` whose name matches, in listing order.
+///
+/// Empty when nothing matches, and that is the answer rather than an error: the
+/// caller is the one that knows whether zero results is a problem.
+pub fn expand(folder: &Path, pattern: &str) -> Result<Vec<PathBuf>, FileError> {
+    let listing = list(folder)?;
+    Ok(listing
+        .entries
+        .iter()
+        .filter(|entry| {
+            let name = entry.name.to_string_lossy();
+            // A pattern that does not itself begin with a dot never matches a
+            // hidden name — the same rule as `ls`, and the one that keeps
+            // `rm *` from deleting somebody's configuration.
+            (!is_hidden(&entry.name) || pattern.starts_with('.')) && matches(pattern, &name)
+        })
+        .map(|entry| folder.join(&entry.name))
+        .collect())
 }

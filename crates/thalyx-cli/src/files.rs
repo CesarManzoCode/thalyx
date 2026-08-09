@@ -17,6 +17,8 @@
 //! disk, because a path is not language.
 
 use std::path::{Path, PathBuf};
+
+type Fallible = Result<(), Box<dyn std::error::Error>>;
 use thalyx_files::{Excerpt, FileError, Kind, Listing, Size};
 
 /// Where the person is, carried by the session across one line and the next.
@@ -401,6 +403,138 @@ fn print_excerpt(target: &Path, excerpt: &Excerpt) {
         println!();
         println!("  … cut here. The rest of the file is on the disk, unread.");
     }
+}
+
+// ──────────────────────────────────────────────────────────── changing what is there
+//
+// The objective is that an LLM works better here than anywhere else, so every
+// one of these prints from the same [`thalyx_files::Done`] the operation
+// returned. One fact, two faces — a second code path that composes its own
+// sentence is a second version of events.
+
+/// Turn what was typed into the paths it names, expanding `*` and `?`.
+///
+/// A pattern that matches nothing comes back as **the pattern itself**, so the
+/// error a person reads names what they typed. Silently doing nothing is the
+/// one outcome that leaves them believing something happened.
+fn targets(here: &Where, word: &str) -> Vec<PathBuf> {
+    if !word.contains('*') && !word.contains('?') {
+        return vec![thalyx_files::resolve(here.at(), word)];
+    }
+    let resolved = thalyx_files::resolve(here.at(), word);
+    let (folder, pattern) = match (resolved.parent(), resolved.file_name()) {
+        (Some(folder), Some(name)) => (folder.to_path_buf(), name.to_string_lossy().to_string()),
+        _ => return vec![resolved],
+    };
+    match thalyx_files::expand(&folder, &pattern) {
+        Ok(found) if !found.is_empty() => found,
+        _ => vec![resolved],
+    }
+}
+
+fn report(done: &thalyx_files::Done) {
+    match (done.what, &done.to) {
+        (thalyx_files::Did::Removed, _) => println!("  removed {}", done.path.display()),
+        (what, Some(to)) => println!(
+            "  {} {} -> {}",
+            what.word().replace('_', " "),
+            done.path.display(),
+            to.display()
+        ),
+        (what, None) => println!(
+            "  {} {}",
+            what.word().replace('_', " "),
+            done.path.display()
+        ),
+    }
+}
+
+/// `mkdir <carpeta>` / `crear <archivo>`.
+pub fn make(here: &Where, rest: &str, directory: bool) -> Fallible {
+    if rest.is_empty() {
+        println!("\n  Which one.\n");
+        return Ok(());
+    }
+    println!();
+    for word in rest.split_whitespace() {
+        let path = thalyx_files::resolve(here.at(), word);
+        let made = if directory {
+            thalyx_files::make_directory(&path)
+        } else {
+            thalyx_files::make_file(&path)
+        };
+        match made {
+            Ok(done) => report(&done),
+            Err(error) => println!("  {error}"),
+        }
+    }
+    println!();
+    Ok(())
+}
+
+/// `cp <de> <a>` and `mv <de> <a>`.
+pub fn transfer(here: &Where, rest: &str, moving: bool) -> Fallible {
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    if words.len() != 2 {
+        println!("\n  Two names: what to take, and where it goes.\n");
+        return Ok(());
+    }
+    let from = thalyx_files::resolve(here.at(), words[0]);
+    let mut to = thalyx_files::resolve(here.at(), words[1]);
+    // Naming a folder as the destination means "inside it", which is what both
+    // a person and an agent mean and what every other system does.
+    if to.is_dir()
+        && let Some(name) = from.file_name()
+    {
+        to = to.join(name);
+    }
+
+    println!();
+    let done = if moving {
+        thalyx_files::move_to(&from, &to)
+    } else {
+        thalyx_files::copy(&from, &to)
+    };
+    match done {
+        Ok(done) => report(&done),
+        Err(error) => println!("  {error}"),
+    }
+    println!();
+    Ok(())
+}
+
+/// `rm <cosa>...`, which is the one verb here that cannot be taken back.
+pub fn erase(here: &Where, rest: &str) -> Fallible {
+    if rest.is_empty() {
+        println!("\n  Which one.\n");
+        return Ok(());
+    }
+
+    let mut chosen = Vec::new();
+    for word in rest.split_whitespace() {
+        chosen.extend(targets(here, word));
+    }
+
+    println!();
+    // Shown before anything is touched, and counted. A pattern is the one thing
+    // a person types without knowing what it caught, and `/home` is decreed to
+    // be the one place no rollback of ours can put back — so this listing is the
+    // only warning there is.
+    if chosen.len() > 1 {
+        println!("  {} things:", chosen.len());
+        for path in &chosen {
+            println!("    {}", path.display());
+        }
+        println!();
+    }
+    for path in &chosen {
+        match thalyx_files::remove(path) {
+            Ok(done) => report(&done),
+            Err(error) => println!("  {error}"),
+        }
+    }
+    println!();
+    Ok(())
 }
 
 #[cfg(test)]
