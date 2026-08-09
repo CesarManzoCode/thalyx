@@ -1293,6 +1293,12 @@ para complacer, o que la negación sea comprensión y no estructura —y los cas
 16, 17 y 18 sí son de negación o de pregunta—. Lo que la distingue es que
 explica por qué el resultado **no se mueve con el tamaño**, y las otras no.
 
+> [!warning] Quedó refutada para la gama media el 2026-08-09
+> La medición está más abajo, en «El veredicto». Sin ninguna gramática, el 3B
+> inventó igual. Se conserva completa porque tenía mecanismo, porque explicaba
+> lo que las otras no, y porque haberla escrito así es lo que permitió
+> construir el experimento que la tumbó.
+
 #### El instrumento: `thalyx agent grammar-effect`
 
 El primer plan era un `sed` sobre el `command` guardado y tres lecturas a ojo.
@@ -1387,10 +1393,126 @@ prueba afirmaciones de Thalyx, y esto es un experimento que contesta una pregunt
 una vez. Cuarenta inferencias son cinco minutos que toda verificación pagaría
 para siempre.
 
-Si resultara confirmada, el arreglo tiene forma conocida —una operación que
-signifique «nada que hacer», elegible en el primer campo— y **cambia la gramática,
-el enum y el contrato**, así que rompe la comparabilidad con las seis corridas de
-línea base. No se toca sin antes/después.
+#### El veredicto — 2026-08-09
+
+Con el instrumento corregido, Cesar corrió las dos gamas. **Los dos brazos, mismo
+prompt, un flag de diferencia.**
+
+##### Gama media (Qwen2.5-3B): la hipótesis queda refutada
+
+```
+abstention cases measured on both arms   9
+  with the grammar, invented             3
+  without it, invented                   4
+  without it, named only real ids        5
+  without it, generated nothing at all   0
+
+control — acting cases measured          11
+  without the grammar, found the module  9
+
+IT INVENTS EITHER WAY
+```
+
+**El control se sostiene**: sin gramática el 3B encontró el módulo correcto en 9
+de 11 casos donde sí había uno. Su comportamiento en los casos de rechazo es una
+decisión suya, no ruido.
+
+Y en esos nueve casos de rechazo, **sin ninguna gramática**, inventó cuatro veces
+y nombró un módulo real —el equivocado— cinco. Ejemplos textuales del brazo
+libre:
+
+```
+instala algo bueno              → {"targets": ["good-bad-concept"]}
+necesito algo para editar video → {"targets": ["com.mxplayer.editor"], "constraint": "^1.0"}
+ese, el que te dije             → {"targets": ["com.example.module1", "com.example.module2"]}
+```
+
+Quitarle la gramática no lo hizo abstenerse. **La gramática no es la causa.**
+
+##### Gama ligera (Qwen2.5-1.5B): `NOT PROVEN`, y por una razón que vale saber
+
+```
+control — acting cases measured          11
+  without the grammar, found the module  0
+```
+
+Sin gramática, la ligera contestó **17 de 20 casos con un fin de generación
+inmediato**: cero tokens. No es un rechazo, es no contestar. El instrumento se
+negó a dar veredicto —es exactamente lo que la regla 4 pide— y eso no es
+evidencia de que la gramática sea inocente: **es ninguna evidencia**.
+
+Lo que sí enseña es otra cosa, y no es sobre abstención: en la gama ligera **la
+gramática es lo único que hace que el modelo produzca algo**. Forzarle el primer
+carácter es lo que arranca la generación. Sin ese empujón, un 1.5B ante este
+prompt se calla.
+
+##### Lo que queda en pie
+
+- **Causa inmediata**: el modelo emite un id que nadie mencionó.
+- **Causa observada**: lo hace *con y sin* gramática. La estructura no lo
+  obliga; lo elige.
+- **Condición que lo permite**: sigue siendo que la gramática no ofrece una
+  operación «nada que hacer» —pero ya no es lo que lo causa.
+
+Lo que queda por sospechar es **el prompt y el modelo**. El prompt es ahora el
+sospechoso más fuerte, y por una razón concreta: **pide un objeto JSON con campo
+`operation` en los dos brazos**. El brazo «libre» nunca fue libre de esa
+instrucción. La única diferencia era quién obligaba, no si se obligaba.
+
+Eso deja un experimento limpio y todavía sin hacer: un tercer brazo con el prompt
+del sondeo —sin pedir JSON, sin nombrar operaciones— preguntando en prosa qué
+módulo se está pidiendo. **Es la única forma de separar el efecto del prompt del
+efecto del modelo**, y hasta que exista, «el prompt» y «Qwen2.5 complace» siguen
+siendo indistinguibles.
+
+#### El quinto defecto: la abstención estaba ahí y el instrumento la llamó ruido
+
+En esa misma corrida de la gama media, con gramática, ante `instala algo bueno`:
+
+```
+  decline  a wish with no module behind it
+    with grammar     said something, named nothing
+```
+
+Bajo la gramática, la única forma de que una propuesta bien formada no nombre
+nada es `"targets": []` — **que es la abstención**. Es la conducta que seis
+corridas del banco reportaron como cero de cuarenta y seis, y el instrumento la
+imprimió con las mismas palabras que usa para un párrafo que divagó.
+
+Es la tercera vez en este módulo que dos hechos distintos comparten una palabra,
+y esta vez el que se perdió era la respuesta que el experimento buscaba. Ahora
+existe `Named::Abstained`, que se imprime `ABSTAINED — empty target list` y se
+cuenta en columna propia en los dos brazos.
+
+**No se afirma todavía que la gama media se haya abstenido.** La corrida no
+guardó la salida, sólo el prompt y el comando, y hay una segunda lectura posible:
+que la respuesta se haya truncado sin llegar a cerrar el objeto y no haya
+alcanzado a nombrar nada. Se distinguen con una sola inferencia, porque el prompt
+guardado es reproducible byte a byte:
+
+```sh
+caso=$(grep -l 'instala algo bueno' ~/evidencia/efecto-media-2/*-with-grammar/prompt.txt)
+cd "$(dirname "$caso")" && sh command
+```
+
+Si sale `"targets": []`, es la **primera abstención observada del proyecto** y
+cambia lo que el banco viene reportando.
+
+Y un defecto de reporte en la misma corrida: la columna del brazo restringido se
+imprimía bajo el denominador del brazo libre, así que la ligera reportó
+`invented 6` justo debajo de `measured 2`. Seis de dos no es un número sobre el
+que nadie pueda actuar. Ahora cada columna lleva el suyo.
+
+#### El arreglo que ya no se justifica solo
+
+Antes de la medición, el arreglo tenía forma conocida —una operación que
+signifique «nada que hacer», elegible en el primer campo—. **La medición le quitó
+su justificación principal**: el 3B inventa igual sin gramática, así que quitarle
+el compromiso forzado no basta. Sigue siendo defendible por otras razones —una
+abstención que se dice en el primer token es más barata que una que contradice lo
+ya dicho— pero es un cambio a la gramática, al enum y al contrato, rompe la
+comparabilidad con las seis corridas de línea base, y ya no tiene una hipótesis
+viva detrás. **No se toca sin antes/después, y ahora tampoco sin una razón nueva.**
 
 ## Relacionado
 - [[Agente-Conversacional]] — qué es el agente y qué no puede hacer

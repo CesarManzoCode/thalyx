@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-08
+fecha-actualizacion: 2026-08-09
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,77 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El instrumento para la pregunta de la abstención está listo — 2026-08-08
+> ## La gramática no era la causa, y hay una abstención por confirmar — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> `thalyx agent grammar-effect` corrió en las dos gamas con el instrumento
+> corregido, y contestó.
+>
+> ### Gama media: `IT INVENTS EITHER WAY` — la hipótesis queda refutada
+>
+> El control se sostiene: **sin gramática el 3B encontró el módulo correcto en 9
+> de 11 casos** donde sí había uno, así que lo que hace en los casos de rechazo
+> es decisión suya. Y en esos nueve, **sin ninguna gramática**, inventó cuatro
+> veces y nombró el módulo real equivocado cinco:
+>
+> ```
+> instala algo bueno              → {"targets": ["good-bad-concept"]}
+> necesito algo para editar video → {"targets": ["com.mxplayer.editor"], "constraint": "^1.0"}
+> ese, el que te dije             → {"targets": ["com.example.module1", "com.example.module2"]}
+> ```
+>
+> Quitarle la gramática no lo hizo abstenerse. **La gramática no es la causa.**
+> Lo que queda por sospechar es el prompt y el modelo, y el prompt es el
+> sospechoso fuerte por una razón concreta: **pide un objeto JSON en los dos
+> brazos**, así que el brazo «libre» nunca fue libre de esa instrucción.
+>
+> ### Gama ligera: `NOT PROVEN`, y no es lo mismo que inocente
+>
+> Sin gramática, la ligera contestó **17 de 20 casos con cero tokens**. Control
+> 0 de 11. El instrumento se negó a dar veredicto —regla 4— y eso **no es
+> evidencia de que la gramática sea inocente, es ninguna evidencia**.
+>
+> Lo que sí enseña, y no es sobre abstención: en la gama ligera la gramática es
+> lo único que hace que el modelo produzca algo. Sin ese primer carácter forzado,
+> un 1.5B ante este prompt se calla.
+>
+> ### El quinto defecto: la abstención estaba ahí y se imprimió como ruido
+>
+> En la corrida de la media, con gramática, ante `instala algo bueno`, el
+> instrumento dijo `said something, named nothing`. Bajo la gramática la única
+> forma de que una propuesta bien formada no nombre nada es `"targets": []`,
+> **que es la abstención** — la conducta que seis corridas reportaron como cero
+> de cuarenta y seis. Se imprimió con las mismas palabras que un párrafo que
+> divagó.
+>
+> Tercera vez en este módulo que dos hechos comparten una palabra, y esta vez el
+> que se perdió era la respuesta buscada. Ahora existe `ABSTAINED — empty target
+> list`, en columna propia y en los dos brazos.
+>
+> **Falta confirmarlo con una sola inferencia**, porque hay una segunda lectura
+> —que la respuesta se truncara sin cerrar el objeto—. El prompt guardado es
+> reproducible byte a byte:
+>
+> ```sh
+> caso=$(grep -l 'instala algo bueno' ~/evidencia/efecto-media-2/*-with-grammar/prompt.txt)
+> cd "$(dirname "$caso")" && sh command
+> ```
+>
+> Si sale `"targets": []`, es la **primera abstención observada del proyecto**.
+>
+> ### Lo siguiente que hay que decidir
+>
+> El experimento que separa el prompt del modelo: **un tercer brazo sin pedir
+> JSON**, preguntando en prosa qué módulo se está pidiendo. Hasta que exista,
+> «el prompt pesa poco» y «Qwen2.5 complace» son indistinguibles. No se ha
+> construido; es decisión de Cesar.
+>
+> 900 pruebas, `clippy` limpio.
+>
+> ## El instrumento para la pregunta de la abstención está listo — 2026-08-08
+>
+> Cómo se llegó a lo de arriba.
 >
 > La abstención sale **0 de 46** en tres tamaños de modelo y seis corridas, y un
 > resultado que no se mueve cuando la única variable se mueve habla de lo que

@@ -921,9 +921,25 @@ mod tests {
     /// weights path as the program to run. That is not a detail of the fake —
     /// it is the real argument order, and a fake that could not survive it
     /// would be a fake of a different invocation.
+    ///
+    /// Each stand-in gets its **own** file name. It used to be one name per
+    /// directory, and exactly one test writes two stand-ins into the same
+    /// directory — rewriting an executable the previous line has just run. That
+    /// is a race the kernel is entitled to lose, and that one test is the one
+    /// that failed once in twenty-five runs of the suite while this was being
+    /// written. **The failure was not captured and has not been reproduced**,
+    /// so this is not a diagnosis; it removes the only race the harness had,
+    /// which is worth doing whether or not it was the cause. Rule 5: the
+    /// instrument includes the harness.
     fn stand_in(dir: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let path = dir.join("llama-cli");
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+        let path = dir.join(format!(
+            "llama-cli-{}",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path

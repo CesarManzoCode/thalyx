@@ -2543,6 +2543,56 @@ mismo comportamiento cortado en momentos distintos.
 > Cuando la explicación correcta aparece, **suele explicar más de lo que se le
 > preguntó**. Una que explica exactamente un caso y nada más merece desconfianza.
 
+## Regla derivada: una decisión y una ausencia no pueden compartir nombre, y ésta es la tercera vez
+
+**Descubierta el 2026-08-09, leyendo la corrida que sí dio veredicto.**
+
+`grammar_effect` clasificaba lo que una respuesta nombró. Tenía un estado
+`Nothing` — *dijo algo y no había ningún id adentro*—, y ahí caían tres cosas
+que no son la misma:
+
+1. un párrafo que divagó sin nombrar nada,
+2. un modelo que emitió **cero tokens**,
+3. una propuesta bien formada con `"targets": []` — **que es la abstención**.
+
+El segundo ya había costado una corrida entera dos días antes, y se había
+separado en `SaidNothingAtAll`. El tercero seguía adentro. Así que cuando la
+gama media, bajo gramática, ante `instala algo bueno`, emitió una lista de
+objetivos vacía, el instrumento lo imprimió como `said something, named nothing`
+— **la conducta que seis corridas del banco venían reportando como cero de
+cuarenta y seis, escrita como ruido**.
+
+> Un estado que representa una **decisión** del sistema medido no puede
+> compartir nombre con uno que representa una **ausencia**. Si al leer una
+> salida hace falta preguntar «¿esto es que decidió que no, o que no contestó?»,
+> son dos estados y el instrumento tiene uno.
+
+La forma de encontrarlo antes: **por cada estado del instrumento, enumerar todo
+lo que puede producirlo**. `Nothing` tenía tres orígenes y ningún lugar donde eso
+estuviera escrito. La prueba que lo fija ahora es
+`abstaining_is_not_the_same_word_as_generating_nothing_or_as_naming_nothing`, y
+afirma la desigualdad de los tres, no el valor de cada uno.
+
+Hay una señal que estaba a la vista: **una prueba cuyo mensaje contradecía su
+propia aserción**. Decía *«una lista de objetivos vacía es cómo se abstiene una
+propuesta»* mientras afirmaba que el resultado era `Nothing`. El autor sabía la
+distinción y el tipo no la tenía.
+
+> Un mensaje de aserción que dice algo más específico que la aserción es un
+> defecto pendiente escrito por quien lo iba a cometer.
+
+### Y el corolario sobre los denominadores de un reporte
+
+La misma corrida imprimió `with the grammar, invented 6` justo debajo de
+`abstention cases measured on both arms 2`, porque las dos columnas se contaban
+sobre denominadores distintos y sólo uno se imprimía. Seis de dos no es un
+número sobre el que nadie pueda actuar, y en una tabla con menos contraste
+habría pasado como cierto.
+
+> Dos columnas contadas sobre conjuntos distintos necesitan **los dos**
+> denominadores impresos. Un total que no puede acotar a su propia columna está
+> mal etiquetado, y la aserción que lo detecta es `parte <= total`.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
