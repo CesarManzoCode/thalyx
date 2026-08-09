@@ -46,6 +46,43 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [ ] **Qué lleva el store de una máquina recién instalada.** Queda vacío: la imagen no puede llevar el `greeter` —lleva el kernel y un programa— así que una PC recién instalada arranca con un store bueno y **nada que instalar**, y los pasos 2 a 6 del criterio no se pueden hacer *en ella*. En la máquina de desarrollo sí, porque `make -C image store` pone el bundle en el repositorio. Es la pregunta de cómo llega el software a una máquina que no es ésta, o sea la Fase 2. Ver [[Criterio-de-Salida-Fase-1]].
 
 
+## La terminal usable, decidida el 2026-08-09
+
+Cesar preguntó cuánto falta para un sistema en el que se pueda trabajar sin el
+agente, y la respuesta medida contra el código fue que la capa 1 de
+[[Principio-Doble-Ruta]] —no negociable— no tenía ninguna implementación. El
+orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor.
+
+- [x] **1. Dónde estoy y moverme** — `ir`, `donde`. `/home` ya estaba montado
+      desde el subvolumen `user`; lo que faltaban eran los verbos.
+- [x] **2. `ver` y `leer`** — mirar sin tocar. `crates/thalyx-files`.
+- [ ] **3. La terminal como terminal** — flechas, borrar a media línea,
+      historial, tab. Depende del 2 porque el tab completa **nombres de
+      archivo**. Hoy la sesión lee con `read_line` y nada más: un typo a media
+      línea obliga a reescribirla entera.
+- [ ] **4. `crear`, `copiar`, `mover`, `borrar`, `renombrar`.** Depende del 2 —
+      ver antes de destruir. `Coherencia-Doble-Ruta` ya contesta la pregunta de
+      diseño: lo que el humano hace en `/home` **no entra al journal** y el
+      rollback no lo toca, así que estos verbos no escriben journal.
+- [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
+      corregir un archivo de configuración desde la máquina.
+- [ ] **6. `buscar`** por nombre y por contenido.
+- [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
+      va sobre `/proc`.
+- [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
+      red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
+      necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
+      el store de una máquina recién instalada», que es la Fase 2. **Sólo se
+      puede verificar en el hierro de Cesar.**
+- [ ] **9. Decidir si Thalyx tiene lenguaje de shell** — tuberías, redirección,
+      comodines, variables. **Decreto antes que código.** Trece verbos sueltos y
+      un lenguaje que los compone son proyectos distintos, y es la diferencia
+      entre que alguien que viene de Linux sienta que sigue en casa o no.
+- [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Hoy nadie puede
+      ejecutar un programa desde su carpeta personal; en Linux sí se puede, y es
+      de las cosas que un usuario promedio nota. Quitarlo abre la superficie que
+      `HARDENED` existe para cerrar. **Decisión de Cesar, nada tocado.**
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].

@@ -1054,6 +1054,13 @@ pub fn run(store: &Store, once: bool) -> Fallible {
     println!();
     match &standing {
         Standing::TheMachine => {
+            // Files first, and not out of politeness. There is no shell behind
+            // this session, so a verb that is not on this list does not exist
+            // for the person holding the machine — and the first thing anybody
+            // does on a computer is look at what is on it.
+            println!("  `ver` shows what is where you are, `leer <archivo>` shows");
+            println!("  what is in one, `ir <carpeta>` moves and `donde` says where");
+            println!("  you are. `ir` on its own goes home.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1066,6 +1073,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `apagar` turns it off.");
         }
         Standing::AProgram { .. } => {
+            println!("  `ver`, `leer <archivo>`, `ir <carpeta>`, `donde`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1085,6 +1093,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 
     let mut watch = KernelWatch::from_now();
 
+    // Where the person is. Carried across lines because that is what makes a
+    // relative name mean anything — without it every verb would need the whole
+    // path typed out, which is the difference between a system somebody can work
+    // in and one they can only inspect.
+    let mut here = crate::files::Where::start();
+
     loop {
         // Before the prompt and not after it, so the notice never lands on a
         // line the human is in the middle of typing — which is the whole defect
@@ -1092,7 +1106,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         if let Some(notice) = watch.since_last_prompt() {
             println!("{notice}");
         }
-        print!("  > ");
+        // The location is in the prompt rather than only in `donde`, because a
+        // relative name means nothing without it: `leer notas.txt` reads a
+        // different file depending on where the person is standing, and a prompt
+        // that hid that would make the same words do different things with no
+        // warning on screen.
+        print!("  {} > ", here.briefly());
         std::io::stdout().flush()?;
 
         let mut line = String::new();
@@ -1155,6 +1174,39 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "discos" | "disks" => {
                 list_disks();
+            }
+            // ─────────────────────────────────────────── files, layer 1 of the decree
+            //
+            // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
+            // work without the agent. These four are the smallest set that makes
+            // the rest of it possible — a person who cannot see what is there
+            // cannot copy, move or delete it either.
+            "donde" | "dónde" | "where" | "pwd" => {
+                crate::files::where_am_i(&here);
+            }
+            _ if line.starts_with("ir ") || line.starts_with("go ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::go(&mut here, rest);
+            }
+            // Unlike `instalar` and `correr`, the bare verb is not a question:
+            // `ir` with nothing after it means home, which is somewhere a person
+            // always wants to be able to get back to in one word.
+            "ir" | "go" => {
+                crate::files::go(&mut here, "");
+            }
+            _ if line.starts_with("ver ") || line.starts_with("look ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::look(&here, rest);
+            }
+            "ver" | "look" => {
+                crate::files::look(&here, "");
+            }
+            _ if line.starts_with("leer ") || line.starts_with("read ") => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::read(&here, rest);
+            }
+            "leer" | "read" => {
+                crate::files::read(&here, "");
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");

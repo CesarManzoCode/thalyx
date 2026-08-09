@@ -17,6 +17,7 @@ members = [
     "crates/thalyx-watch",
     "crates/thalyx-journal",
     "crates/thalyx-snapshot",
+    "crates/thalyx-files",
     "crates/thalyx-core",
     "crates/thalyx-cli",
     "modules/dev.thalyx.greeter",
@@ -46,6 +47,7 @@ thalyx-memory = { path = "crates/thalyx-memory" }
 thalyx-watch = { path = "crates/thalyx-watch" }
 thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-snapshot = { path = "crates/thalyx-snapshot" }
+thalyx-files = { path = "crates/thalyx-files" }
 thalyx-core = { path = "crates/thalyx-core" }
 
 serde = { version = "1", features = ["derive"] }
