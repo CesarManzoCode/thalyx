@@ -9,6 +9,48 @@ tags: [filosofia, core, no-negociable]
 
 El sistema se llama **Thalyx**. Ver [[Nomenclatura-y-Convenciones]].
 
+## El objetivo, y todo lo demás es medio
+
+**Decretado por Cesar el 2026-08-09.** Es la frase contra la que se juzga
+cualquier decisión de este repositorio:
+
+> todo lo que haremos girará en torno a que un LLM se desenvuelva mejor en
+> nuestro sistema, todo lo demás son medios para lograrlo, y sí, el humano
+> deberá tener todo lo que tiene en Linux, pero no es un objetivo, es una
+> obligación que hay que cumplir.
+
+Dos frases y hay que leerlas juntas:
+
+1. **El objetivo es uno.** Que un LLM trabaje mejor aquí que en cualquier otro
+   sistema. No «también»: es el que hay.
+2. **El camino humano es obligación, no meta.** [[Principio-Doble-Ruta]] se
+   cumple entero — el humano tiene todo lo que tiene en Linux — pero se cumple
+   *porque hay que cumplirlo*, no porque sea hacia dónde va el proyecto.
+
+### Cómo se resuelve un choque entre las dos
+
+**Gana el LLM, y el humano conserva acceso completo aunque sea menos cómodo.**
+Nunca al revés: la comodidad humana no puede costarle capacidad al modelo.
+
+Esto no es teórico y ya ocurrió el mismo día. `ls` salía en columnas, con
+tamaños redondeados a `1.2 kB` y los archivos ocultos escondidos — las tres
+decisiones tomadas para un ojo humano, y **las tres peores para una máquina**:
+las columnas son más difíciles de parsear que una cosa por renglón, `1.2 kB` es
+un número que perdió precisión, y ocultar información a un agente que la pide es
+quitarle capacidad. Se tomaron sin notar siquiera que había una elección, porque
+el objetivo no estaba escrito.
+
+### La consecuencia de ingeniería, y es la que hay que recordar
+
+**Cada cosa que se construya nace con dos caras**: la que ve el humano y una
+forma estructurada que un programa puede pedir y parsear sin ambigüedad. La
+segunda no se agrega después — si se agrega después, no se agrega.
+
+Y lo que hace que la respuesta sea *mejor* y no *igual* ya existe y no está
+expuesto a nadie: el índice semántico ([[FS-en-Grafo]]), el rollback
+([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]]) y
+los permisos por tarea ([[Permisos-JIT]]).
+
 ## Thalyx es el mejor sitio donde un LLM puede trabajar
 
 **Decretado por Cesar el 2026-08-09**, después de que yo lo malinterpretara tres
