@@ -88,6 +88,11 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       definido de un solo lado no es un límite. Encontró dos defectos en la cara
       humana, ver [[Punto-Actual]]. `crates/thalyx-files/src/machine.rs`, etapa
       21 de `verify.sh`.
+> **El catálogo entero está en [[Superficie-para-el-LLM]]** desde el 2026-08-09,
+> con el criterio de cinco costos que decide si algo entra. Lo de aquí abajo son
+> los puntos de ese catálogo que ya tienen orden; los demás siguen ahí sin
+> decidirse, y **estar en el catálogo no autoriza construir nada**.
+
 - [ ] **4c. Las otras cosas que la sesión sabe, con su segunda cara.** Sólo los
       verbos de archivos tienen dos caras. `modulos`, `disponibles`, `permisos`,
       `recuerdos`, `estado`, `nucleo` y `discos` contestan sólo en prosa, y con

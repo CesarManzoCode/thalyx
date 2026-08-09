@@ -108,6 +108,12 @@ tiene con qué; nada de esto existe en otro sistema:
 Eso es la respuesta a *«mejor que cualquier otro»*, y ninguna de las cuatro está
 expuesta todavía a un agente ajeno.
 
+**Cuatro no era el catálogo, era lo que se alcanzó a recordar ese día.** El
+catálogo entero —diecinueve puntos, con el criterio de cinco costos que decide si
+algo entra— está en [[Superficie-para-el-LLM]], decretado por Cesar el mismo
+2026-08-09. Lo que esa nota deja ver y aquí no se veía: **la mayor parte del valor
+no está en construir, está en exponer.**
+
 ## El LLM es para quien se construye, no un consumidor del sistema
 
 **Decretado por Cesar el 2026-08-09**, después de que yo le planteara como
