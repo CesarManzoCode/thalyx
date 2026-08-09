@@ -14,102 +14,78 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La gramática no era la causa, y hay una abstención por confirmar — 2026-08-09
+> ## El prompt gastó su propia señal, y la corrida no midió — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
 >
-> `thalyx agent grammar-effect` corrió en las dos gamas con el instrumento
-> corregido, y contestó.
+> ### Lo que quedó firme
 >
-> ### Gama media: `IT INVENTS EITHER WAY` — la hipótesis queda refutada
+> **La gramática no es la causa.** `IT INVENTS EITHER WAY` en la gama media, con
+> el control sostenido en 9 de 11, y **reproducido en dos corridas**. Sin
+> gramática el 3B sigue inventando en cuatro de los nueve casos de rechazo y
+> nombrando el módulo real equivocado en cinco. Quitarle la restricción no lo
+> hace abstenerse.
 >
-> El control se sostiene: **sin gramática el 3B encontró el módulo correcto en 9
-> de 11 casos** donde sí había uno, así que lo que hace en los casos de rechazo
-> es decisión suya. Y en esos nueve, **sin ninguna gramática**, inventó cuatro
-> veces y nombró el módulo real equivocado cinco:
+> **No hubo primera abstención.** Aquel `said something, named nothing` era la
+> segunda lectura: el comando reprodujo la inferencia y salió
+> `"targets": ["good-luck-module-1234567890123456789…` — 255 tokens de dígitos
+> dentro de un identificador, sin cerrar. Octavo caso de la misma patología. **La
+> abstención sigue en cero, ahora sobre 55 oportunidades.**
+>
+> ### El tercer brazo no pudo medir, y el defecto es del prompt
+>
+> Dio `NOT PROVEN` con `ABSTAINED 8/9` — que era el número que la hipótesis
+> quería. El control lo tumbó (5 de 11), y el motivo está a la vista: **las
+> veinte respuestas empiezan con `NOTHING`**, también las once donde sí había un
+> módulo.
 >
 > ```
-> instala algo bueno              → {"targets": ["good-bad-concept"]}
-> necesito algo para editar video → {"targets": ["com.mxplayer.editor"], "constraint": "^1.0"}
-> ese, el que te dije             → {"targets": ["com.example.module1", "com.example.module2"]}
+> act  a pronoun pointing at the one thing installed
+>   in prose  "NOTHING Identities: dev.thalyx.demo: 1.4.2 dev.thalyx.demo: 1.4.1 …"
+> act  a module named by what it does rather than by its id
+>   in prose  "NOTHING  NOTHING  NOTHING NOTHING NOTHING NOTHING NOTHING …"
 > ```
 >
-> Quitarle la gramática no lo hizo abstenerse. **La gramática no es la causa.**
-> Lo que queda por sospechar es el prompt y el modelo, y el prompt es el
-> sospechoso fuerte por una razón concreta: **pide un objeto JSON en los dos
-> brazos**, así que el brazo «libre» nunca fue libre de esa instrucción.
+> Eso no es declinar. Es un primer token regalado. **Y lo regaló mi prompt**, que
+> usaba la palabra cuatro veces, tres de ellas en otro sentido: *and **nothing**
+> else*, *gains **nothing***, *if **nothing** below names a module*.
 >
-> ### Gama ligera: `NOT PROVEN`, y no es lo mismo que inocente
+> Corregido —*add no other text*, *only costs the request*, *if no module is
+> named below*— con una prueba que cuenta las apariciones sin distinguir
+> mayúsculas y falla si hay más de una.
 >
-> Sin gramática, la ligera contestó **17 de 20 casos con cero tokens**. Control
-> 0 de 11. El instrumento se negó a dar veredicto —regla 4— y eso **no es
-> evidencia de que la gramática sea inocente, es ninguna evidencia**.
+> **No se afirma que la colisión sea la causa**: compite con la degeneración, que
+> está igual de a la vista —las respuestas son `NOTHING NOTHING NOTHING…`, el
+> mismo ciclo que dentro de `module-id`, en otro token—. Lo que sí queda
+> establecido es que el prompt no podía medir.
 >
-> Lo que sí enseña, y no es sobre abstención: en la gama ligera la gramática es
-> lo único que hace que el modelo produzca algo. Sin ese primer carácter forzado,
-> un 1.5B ante este prompt se calla.
+> Y hay que decirlo entero: **corregirlo puede destruir el 8 de 9.** Se corrige
+> igual.
 >
-> ### El quinto defecto: la abstención estaba ahí y se imprimió como ruido
->
-> En la corrida de la media, con gramática, ante `instala algo bueno`, el
-> instrumento dijo `said something, named nothing`. Bajo la gramática la única
-> forma de que una propuesta bien formada no nombre nada es `"targets": []`,
-> **que es la abstención** — la conducta que seis corridas reportaron como cero
-> de cuarenta y seis. Se imprimió con las mismas palabras que un párrafo que
-> divagó.
->
-> Tercera vez en este módulo que dos hechos comparten una palabra, y esta vez el
-> que se perdió era la respuesta buscada. Ahora existe `ABSTAINED — empty target
-> list`, en columna propia y en los dos brazos.
->
-> **Falta confirmarlo con una sola inferencia**, porque hay una segunda lectura
-> —que la respuesta se truncara sin cerrar el objeto—. El prompt guardado es
-> reproducible byte a byte:
->
-> ```sh
-> caso=$(grep -l 'instala algo bueno' ~/evidencia/efecto-media-2/*-with-grammar/prompt.txt)
-> cd "$(dirname "$caso")" && sh command
-> ```
->
-> Si sale `"targets": []`, es la **primera abstención observada del proyecto**.
->
-> ### El tercer brazo está construido y falta correrlo
->
-> Cesar lo aprobó el 2026-08-09. `Prompt::in_prose`: una pregunta, sin objeto,
-> sin nombrar ninguna operación, y la palabra `NOTHING` para declinar. Mismo
-> material literal que el otro prompt —los dos llaman a la misma función, y hay
-> una prueba que lo afirma—, misma advertencia de que inventar se rechaza, misma
-> existencia de una salida. **Lo único que cambia es que nada le dice que va a
-> instalar algo.**
->
-> Sesenta inferencias por corrida en vez de cuarenta.
+> ### Volver a correrlo
 >
 > ```sh
 > git pull && cargo install --path crates/thalyx-cli
 >
 > thalyx agent model use media --weights ~/models/qwen2.5-3b-instruct-q4_k_m.gguf
-> thalyx agent grammar-effect --keep-prompt ~/evidencia/prosa-media 2>&1 | tee prosa-media.log
->
-> thalyx agent model use ligera --weights ~/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
-> thalyx agent grammar-effect --keep-prompt ~/evidencia/prosa-ligera 2>&1 | tee prosa-ligera.log
+> thalyx agent grammar-effect --keep-prompt ~/evidencia/prosa-media-2 2>&1 | tee prosa-media-2.log
 > ```
 >
-> El veredicto de la gramática **no cambia** —sigue comparable con lo ya
-> medido—; el brazo en prosa trae el suyo aparte:
+> La gama ligera ya no aporta a esta pregunta: por **tercera** corrida, sin
+> gramática contesta las veinte con cero tokens, en los dos brazos libres. En un
+> 1.5B forzarle el primer carácter es lo único que arranca la generación.
 >
-> | Veredicto del prompt | Qué significa |
-> |---|---|
-> | `THE PROMPT TAKES THE DECISION` | Pidiendo objeto inventó; en prosa declinó, y aun así encontró el módulo donde lo había. **El fallo es de cómo pregunta Thalyx** |
-> | `IT INVENTS HOWEVER IT IS ASKED` | Ni la restricción ni el encuadre. Lo que queda es el modelo, y eso se contesta con otra familia |
-> | `NOT PROVEN` | El brazo en prosa no encontró el módulo ni donde lo había. Ninguna evidencia, en ninguna dirección |
+> ### Lo que sigue sin decidirse
 >
-> **Este brazo tiene un sesgo declarado**: `NOTHING` se compara exacto y en
-> mayúsculas, así que un modelo que declina con sus propias palabras **no**
-> cuenta como que declinó — cae en `said something else`. Eso subestima la
-> abstención en la dirección que culpa al modelo, que no es la inofensiva. Por
-> eso esa columna va aparte y el texto en prosa de cada caso se imprime entero.
+> **Dónde termina una respuesta en prosa.** El modelo contesta y después divaga
+> 250 tokens; el lector actual busca identificadores en todo el texto, así que
+> `NOTHING Identities: dev.thalyx.demo: 1.4.2 dev.thalyx.demo: 1.4.1 …` —el
+> material devuelto de vuelta— cuenta como haber nombrado el módulo. Eso **infla
+> el control** del brazo en prosa. Decidir dónde corta cambia lo que el
+> instrumento mide, y por eso no se toca sin aprobación. Ver
+> [[Tareas-Pendientes]].
 >
-> 914 pruebas, `clippy` limpio.
+> 915 pruebas, `clippy` limpio.
 >
 > ## El instrumento para la pregunta de la abstención está listo — 2026-08-08
 >

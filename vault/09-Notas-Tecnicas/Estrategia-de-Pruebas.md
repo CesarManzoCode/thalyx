@@ -2593,6 +2593,48 @@ habría pasado como cierto.
 > denominadores impresos. Un total que no puede acotar a su propia columna está
 > mal etiquetado, y la aserción que lo detecta es `parte <= total`.
 
+## Regla derivada: un experimento no puede gastar su propia señal en otra cosa
+
+**Descubierta el 2026-08-09, en la primera corrida del brazo en prosa.**
+
+El brazo existía para preguntar sin pedir un objeto, y ofrecía la palabra
+`NOTHING` como la única forma de declinar. **Las veinte respuestas del 3B
+empezaron con `NOTHING`** — incluidas las once donde sí había un módulo que
+nombrar. El control se cayó y el veredicto salió `NOT PROVEN`.
+
+El prompt usaba la palabra **cuatro veces**, tres de ellas en otro sentido:
+
+> «Answer with its id and **nothing** else» · «gains **nothing**» · «If
+> **nothing** below names a module» · «answer with only this word: **NOTHING**»
+
+> Cuando un experimento designa un token como su señal, ese token no puede
+> aparecer en el estímulo en ningún otro sentido. Vale para una palabra clave en
+> un prompt, para un delimitador en una salida y para un valor centinela en una
+> estructura.
+
+Se comprueba contando: la aparición sin distinguir mayúsculas debe ser
+**exactamente una**. La prueba es `the_abstention_word_appears_in_the_prose_
+prompt_once_and_in_one_sense`, y existe porque **el defecto es invisible leyendo
+la propia prosa** — uno lee lo que quiso decir, no las palabras que puso.
+
+Es pariente de la regla del delimitador que el sistema medido puede escribir, y
+la diferencia vale anotarla: allá el sistema medido podía **falsificar** la
+señal; aquí el instrumento se la **regaló**.
+
+### Y lo que salvó la corrida fue el control, no la revisión
+
+`ABSTAINED 8/9` era exactamente el número que la hipótesis quería. Sin brazo de
+control se habría leído como `THE PROMPT TAKES THE DECISION` y habría cerrado la
+investigación con un resultado fabricado por su propio prompt.
+
+> Un resultado favorable es cuando más hace falta el control, y es cuando menos
+> ganas dan de mirarlo. La regla 4 no es sobre pruebas de denegación: es sobre
+> cualquier medición cuyo resultado alguien prefiera.
+
+Corolario incómodo, y por eso se escribe: **corregir el defecto puede destruir el
+8 de 9.** Se corrige igual. Un instrumento que falló por su construcción no
+adquiere validez porque el número que produjo agrade.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
