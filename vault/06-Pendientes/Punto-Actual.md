@@ -14,9 +14,68 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La corrida en hierro: 26 pasó, 27 no llegó a correr, y una prueba que se peleaba consigo misma — 2026-08-10
+> ## `intento` alcanzó `/`, y el contenedor no podía verlo — 2026-08-10
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Lo primero, y hay que correrlo
+>
+> Dos snapshots de sólo lectura de tu sistema de archivos raíz quedaron en
+> `/.thalyx-snapshots/`. Los dejó la corrida de pruebas, no un `intento` que
+> hayas escrito, y **nada se destruyó** — esas pruebas nunca abandonan. Pero
+> quedaron huérfanos y anclan bloques:
+>
+> ```
+> sudo btrfs subvolume list -o / | grep thalyx-snapshots
+> sudo btrfs subvolume delete /.thalyx-snapshots/*
+> ```
+>
+> ### El defecto
+>
+> `subvolume_at_or_above` caminaba hacia arriba buscando el subvolumen más
+> cercano. Desde un directorio temporal bajo `/tmp` la caminata pasó por todos
+> los niveles y se detuvo en el primero que sí lo era: **`/`**. La respuesta dijo
+> que abandonar borraría 1 343 582 archivos, `/boot` entre ellos.
+>
+> El argumento para caminar hacia arriba —«un intento es sobre el árbol en el que
+> alguien está trabajando»— era exactamente al revés: caminar hacia arriba
+> **abandona en silencio** el alcance que quien llama tenía en mente, y en toda
+> instalación Btrfs ordinaria la caminata termina en la respuesta más peligrosa
+> que existe.
+>
+> Ahora: **donde estás parado, o nada.** Y `/` se niega aunque estés parado en
+> él, porque abandonarlo significa cambiar la raíz del sistema en marcha por
+> debajo de cada proceso de la máquina, incluido el que lo pidió.
+>
+> ### Por qué el contenedor no podía encontrarlo
+>
+> Aquí no hay Btrfs ni un solo subvolumen, así que *todos* los caminos se niegan
+> y la prueba no podía distinguir una negativa correcta de un accidente del
+> sistema de archivos. **Pasaba por la razón equivocada**, que es peor que
+> faltar: ocupa el lugar donde alguien buscaría la que sí sirve.
+>
+> La guarda vive ahora en una prueba unitaria contra un falso donde **todo** es
+> un subvolumen —la máquina donde la respuesta peligrosa sí aparece— y la etapa
+> 26 tiene una columna nueva que se para en `/` y exige la negativa.
+>
+> ### Y por qué la 27 no llegó a correr
+>
+> `make -C lsm load` falló con `Operation not permitted` al escribir su propio
+> `.o`. `sudo ./dev/verify.sh` compila los objetos BPF dentro del árbol de
+> fuentes **como root**, así que el siguiente `make` como tú no puede
+> sobrescribirlos. `verify.sh` ahora devuelve lo que escribió.
+>
+> ### Qué correr
+>
+> ```
+> sudo btrfs subvolume delete /.thalyx-snapshots/*
+> git pull && cargo install --path crates/thalyx-cli
+> sudo chown -R "$USER" lsm
+> make -C lsm unload && make -C lsm load
+> sudo ./dev/verify.sh
+> ```
+
+> ## La corrida en hierro: 26 pasó, 27 no llegó a correr, y una prueba que se peleaba consigo misma — 2026-08-10
 >
 > Cesar corrió `verify.sh` en su máquina: **143 comprobadas, 2 no comprobadas,
 > 1 fallida**.

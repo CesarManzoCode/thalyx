@@ -47,25 +47,54 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 
 const OP: &str = "attempt";
 
-/// The nearest subvolume at or above where the session is standing.
+/// Why a place cannot be attempted on.
+enum NotHere {
+    /// Where the session stands is not itself a subvolume.
+    NotASubvolume,
+    /// It is a subvolume, and it is the root of the running system.
+    TheWholeSystem,
+}
+
+/// The subvolume an attempt would be about: **exactly** where the session
+/// stands, and never an ancestor of it.
 ///
-/// Walked upwards rather than assumed to be `/home`, because an attempt is
-/// about the tree somebody is working in and Thalyx has more than one
-/// subvolume. Returning `None` is an answer: on a filesystem with no subvolumes
-/// there is nothing to snapshot, and the honest response is to say so instead of
-/// copying a directory and calling it a snapshot — a copy is not atomic, takes
-/// time proportional to the data, and something that took twenty minutes is a
-/// picture of twenty minutes rather than of an instant.
-fn subvolume_at_or_above(volumes: &Btrfs, from: &Path) -> Option<PathBuf> {
-    let mut here = from.to_path_buf();
-    loop {
-        if volumes.is_subvolume(&here).unwrap_or(false) {
-            return Some(here);
-        }
-        if !here.pop() {
-            return None;
-        }
+/// ## The defect this replaced, which is the worst one this project has had
+///
+/// This walked upwards. The argument was that an attempt is about the tree
+/// somebody is working in and Thalyx has more than one subvolume, so finding
+/// the nearest one above seemed helpful. On 2026-08-10 it ran on Cesar's Fedora
+/// machine from a directory under `/tmp`, walked past every level of it, and
+/// stopped at the first subvolume it found — **`/`**. It took a read-only
+/// snapshot of his entire root filesystem and reported that abandoning would
+/// delete 1,343,582 files, including `/boot`.
+///
+/// Nothing was destroyed, because that test never abandoned. What it destroyed
+/// was the argument: walking upwards leaves the scope the caller had in mind
+/// **silently**, and on every ordinary Btrfs install the walk terminates at the
+/// most dangerous possible answer. A verb that can replace a whole subvolume
+/// must never choose which one by searching.
+///
+/// So: where you stand, or nothing. It costs a `cd` and it cannot surprise
+/// anybody.
+///
+/// ## And `/` is refused even when you stand in it
+///
+/// Not because the snapshot would fail — it succeeds, which is the problem —
+/// but because abandoning it means swapping the root of the running system out
+/// from under every process on the machine, this one included. That is not a
+/// thing Thalyx should be able to be asked for by a session verb, whoever asks.
+fn subvolume_to_attempt<V: Volumes>(volumes: &V, here: &Path) -> Result<PathBuf, NotHere> {
+    if !volumes.is_subvolume(here).unwrap_or(false) {
+        return Err(NotHere::NotASubvolume);
     }
+    // Compared after canonicalising, so `/.` and `/home/..` are the same refusal
+    // as `/`. A check on the string alone is a check somebody gets around by
+    // accident.
+    let real = here.canonicalize().unwrap_or_else(|_| here.to_path_buf());
+    if real == Path::new("/") {
+        return Err(NotHere::TheWholeSystem);
+    }
+    Ok(real)
 }
 
 fn declined(face: Face, word: &str, why: &str) {
@@ -204,20 +233,33 @@ fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str)
     let label = if label.is_empty() { "attempt" } else { label };
 
     let volumes = Btrfs::new();
-    let Some(subvolume) = subvolume_at_or_above(&volumes, here.at()) else {
-        // Named rather than approximated. A copy of a directory is not a
-        // snapshot, and a caller told "started" would make thirty changes
-        // believing it could take them back.
-        declined(
-            face,
-            "not_a_subvolume",
-            &format!(
-                "nothing at or above {} is a Btrfs subvolume, so there is nothing to \
-                 come back to and no attempt was started",
-                here.at().display()
-            ),
-        );
-        return Ok(());
+    let subvolume = match subvolume_to_attempt(&volumes, here.at()) {
+        Ok(subvolume) => subvolume,
+        // Named rather than approximated, and never widened. A copy of a
+        // directory is not a snapshot, and a caller told "started" would make
+        // thirty changes believing it could take them back.
+        Err(NotHere::NotASubvolume) => {
+            declined(
+                face,
+                "not_a_subvolume",
+                &format!(
+                    "{} is not itself a Btrfs subvolume, so there is nothing to come back \
+                     to and no attempt was started. An attempt is about the subvolume you \
+                     are standing in — it never looks upwards for one",
+                    here.at().display()
+                ),
+            );
+            return Ok(());
+        }
+        Err(NotHere::TheWholeSystem) => {
+            declined(
+                face,
+                "the_whole_system",
+                "an attempt on / would mean swapping the root of the running system out \
+                 from under every process on it, this one included. No attempt was started",
+            );
+            return Ok(());
+        }
     };
 
     let snapshots = Snapshots::of(volumes, &subvolume);
@@ -401,5 +443,101 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
             declined(face, "unreadable", &error.to_string());
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use thalyx_snapshot::Result as SnapshotResult;
+
+    /// A filesystem where **everything** is a subvolume.
+    ///
+    /// Not a Btrfs emulator and not trying to be: what is under test is the one
+    /// decision this file makes before touching anything — which path an attempt
+    /// is allowed to be about — and the only input that decision takes from the
+    /// filesystem is "is this a subvolume". Rule 8: the fake models the property
+    /// under test, which here is the refusal and not the snapshot.
+    struct EverythingIsOne;
+
+    impl Volumes for EverythingIsOne {
+        fn is_subvolume(&self, _: &Path) -> SnapshotResult<bool> {
+            Ok(true)
+        }
+        fn snapshot(&self, _: &Path, _: &Path) -> SnapshotResult<()> {
+            unreachable!("nothing here gets as far as taking one")
+        }
+        fn restore_from(&self, _: &Path, _: &Path) -> SnapshotResult<()> {
+            unreachable!("nothing here gets as far as restoring")
+        }
+        fn delete(&self, _: &Path) -> SnapshotResult<()> {
+            unreachable!("nothing here gets as far as deleting")
+        }
+    }
+
+    struct NothingIsOne;
+
+    impl Volumes for NothingIsOne {
+        fn is_subvolume(&self, _: &Path) -> SnapshotResult<bool> {
+            Ok(false)
+        }
+        fn snapshot(&self, _: &Path, _: &Path) -> SnapshotResult<()> {
+            unreachable!()
+        }
+        fn restore_from(&self, _: &Path, _: &Path) -> SnapshotResult<()> {
+            unreachable!()
+        }
+        fn delete(&self, _: &Path) -> SnapshotResult<()> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn the_root_of_the_running_system_is_refused_even_though_it_is_a_subvolume() {
+        // On every ordinary Fedora Btrfs install `/` *is* a subvolume, so the
+        // snapshot succeeds — which is the problem and not the safeguard.
+        // Abandoning it means swapping the root of the running system out from
+        // under every process on it, this one included.
+        assert!(matches!(
+            subvolume_to_attempt(&EverythingIsOne, Path::new("/")),
+            Err(NotHere::TheWholeSystem)
+        ));
+    }
+
+    #[test]
+    fn a_path_that_only_spells_its_way_to_the_root_is_refused_too() {
+        // A check on the string alone is a check somebody gets around by
+        // accident, on the verb that can replace a whole subvolume.
+        for spelling in ["/.", "/home/..", "//"] {
+            assert!(
+                matches!(
+                    subvolume_to_attempt(&EverythingIsOne, Path::new(spelling)),
+                    Err(NotHere::TheWholeSystem)
+                ),
+                "{spelling} was not recognised as the root"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subvolume_that_is_not_the_root_is_allowed() {
+        // The control. Without it, a guard that refused everything would pass
+        // both tests above and `intento` would never work anywhere.
+        let scratch = tempfile::tempdir().expect("somewhere real to point at");
+        assert!(subvolume_to_attempt(&EverythingIsOne, scratch.path()).is_ok());
+    }
+
+    #[test]
+    fn a_place_that_is_not_a_subvolume_is_refused_without_looking_upwards() {
+        // The defect of 2026-08-10, as a test. This used to walk up until it
+        // found a subvolume, and on Cesar's machine that walk started under
+        // `/tmp` and ended at `/` — a read-only snapshot of his whole root
+        // filesystem, and an answer saying that abandoning would delete
+        // 1,343,582 files. Nothing was destroyed; the argument for walking was.
+        let scratch = tempfile::tempdir().expect("somewhere real to point at");
+        assert!(matches!(
+            subvolume_to_attempt(&NothingIsOne, scratch.path()),
+            Err(NotHere::NotASubvolume)
+        ));
     }
 }

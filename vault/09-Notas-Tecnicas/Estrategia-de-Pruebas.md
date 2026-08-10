@@ -2886,6 +2886,57 @@ volvió a fallar donde alguien mirara. Lo que la resolvió no fue pensar mejor:
 fue una máquina con más núcleos, que es lo mismo que decir que el instrumento
 tenía que cambiar antes de que la pregunta se pudiera contestar.
 
+## Una prueba de que algo se niega vale lo que valen las máquinas donde corrió — 2026-08-10
+
+`without_a_subvolume_it_refuses_instead_of_copying_a_directory` pasaba en el
+contenedor y **falló en la máquina de Cesar**. No porque la prueba estuviera
+mal: porque `intento empezar` no se negaba allá.
+
+`subvolume_at_or_above` caminaba hacia arriba buscando el subvolumen más cercano.
+Corrida desde un directorio temporal bajo `/tmp`, la caminata pasó por todos los
+niveles y se detuvo en el primero que sí lo era: **`/`**. Tomó un snapshot de
+sólo lectura del sistema de archivos raíz entero y contestó que abandonar
+borraría 1 343 582 archivos, `/boot` entre ellos. Nada se destruyó porque esa
+prueba nunca abandona.
+
+**El contenedor no podía encontrarlo, y ésa es la parte que hay que escribir.**
+Aquí no hay Btrfs ni un solo subvolumen en ninguna parte, así que *todos* los
+caminos se niegan — y la prueba no podía distinguir una negativa correcta de un
+accidente del sistema de archivos donde corre. Pasaba por la razón equivocada, y
+una prueba que pasa por la razón equivocada es peor que una que falta: ocupa el
+lugar donde alguien buscaría la que sí sirve.
+
+Dos reglas:
+
+**Una prueba de que algo se niega tiene que correr donde el sí es posible.** Si
+en esta máquina la operación no puede tener éxito de ninguna manera, la negativa
+no se está comprobando. El arreglo fue mover la guarda a una prueba unitaria
+contra un falso donde **todo** es un subvolumen — la máquina donde la respuesta
+peligrosa sí aparece — y agregarle a la etapa 26 una columna que se para en `/`
+y exige la negativa.
+
+**Un verbo que puede reemplazar un árbol entero no elige cuál buscando.** El
+argumento para caminar hacia arriba —«un intento es sobre el árbol en el que
+alguien está trabajando»— sonaba razonable y era exactamente al revés: caminar
+hacia arriba **abandona en silencio** el alcance que quien llama tenía en mente,
+y en toda instalación Btrfs ordinaria la caminata termina en la respuesta más
+peligrosa que existe. Donde estás parado, o nada.
+
+## Lo que este script deja en el repositorio es del humano, no de root — 2026-08-10
+
+`sudo ./dev/verify.sh` compila los objetos BPF dentro del árbol de fuentes, como
+root. El siguiente `make -C lsm load` que la persona escribe como ella misma no
+puede sobrescribir su propio `.o`, y clang dice únicamente
+`Operation not permitted` sobre una ruta en su propio directorio personal.
+
+Costó una corrida entera: la carga falló, el watcher quedó descargado, y la
+etapa 27 reportó correctamente que nada estaba anclado — una afirmación
+verdadera sobre una máquina que este mismo script había dejado así.
+
+La regla: **una herramienta que corre con privilegios y escribe en el árbol de
+trabajo devuelve lo que escribió.** Un `chown` al final cuesta una línea; el
+fallo que evita se ve como un defecto del kernel.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

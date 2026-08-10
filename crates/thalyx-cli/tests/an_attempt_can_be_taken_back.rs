@@ -13,15 +13,28 @@
 //! that is never exercised*.
 //!
 //! What is here is the half that has to be driven through a session: that the
-//! verb is reachable, that both faces answer, and that on a filesystem with no
-//! subvolumes it **refuses**. That last one is not a lesser test. A copy of a
-//! directory is not a snapshot — not atomic, and proportional to the data — so
-//! an implementation that quietly fell back to copying would pass every check
-//! that only asked whether `intento empezar` reported success, and would hand a
-//! caller a way back that is not there. This container has no Btrfs at all,
-//! which makes it exactly the machine that can prove the refusal.
+//! verb is reachable, that both faces answer, and that where it must refuse it
+//! refuses. That last one is not a lesser test, and 2026-08-10 is why.
 //!
-//! On Cesar's machine, `dev/verify.sh` stage 26 runs the other half.
+//! `without_a_subvolume_it_refuses_instead_of_copying_a_directory` passed here
+//! and **failed on Cesar's machine** — because `intento empezar` did not refuse
+//! there. It walked up from the scratch directory looking for a subvolume,
+//! found `/`, and took a read-only snapshot of his entire root filesystem. The
+//! answer said abandoning would delete 1,343,582 files, `/boot` among them.
+//! Nothing was destroyed, because that test never abandons. What it destroyed
+//! was the idea that a verb which can replace a whole subvolume may choose
+//! which one by searching.
+//!
+//! The lesson for this file: a test that a refusal happens is only as good as
+//! the machines it has run on. This container has no Btrfs and no subvolume
+//! anywhere, so *every* path refuses here for the wrong reason, and the test
+//! could not tell a correct refusal from an accident of the filesystem. The
+//! guard itself is now unit-tested in `crate::attempt` against a fake where
+//! everything is a subvolume, which is the machine where the dangerous answer
+//! actually comes up.
+//!
+//! On Cesar's machine, `dev/verify.sh` stage 26 runs the other half — including
+//! standing at `/` and requiring a refusal.
 
 use std::io::Write;
 use std::path::Path;

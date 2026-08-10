@@ -284,6 +284,7 @@ pub const VERBS: &[Verb] = &[
         changes: true,
         errors: &[
             "not_a_subvolume",
+            "the_whole_system",
             "already_open",
             "none_open",
             "snapshot_gone",
