@@ -1126,6 +1126,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
+            println!("  `intento empezar <etiqueta>` opens something that can be");
+            println!("  taken back whole — `intento abandonar` puts the tree back");
+            println!("  as it was, `intento confirmar` keeps it.");
+            println!("  `estado` re-reads the");
             println!("  machine, `historia` says what has been done here and");
             println!("  what came of it, `nucleo` shows what the kernel has been saying");
             println!("  and `nucleo lento` where the boot spent its time,");
@@ -1136,7 +1140,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
-            println!("  `buscar <nombre>`, `historia`,");
+            println!("  `buscar <nombre>`, `historia`, `intento`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1348,6 +1352,14 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "historia" | "history" => {
                 crate::history::show(store, "", face)?;
+            }
+            // D2: begin something, and be able to take all of it back.
+            _ if starts_any(line, &["intento ", "attempt "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::attempt::run(store, &here, rest, face, &crate::new_request_id())?;
+            }
+            "intento" | "attempt" => {
+                crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

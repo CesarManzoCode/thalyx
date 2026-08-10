@@ -810,6 +810,26 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .map(|path| thalyx_files::foresee_remove(path))
                 .collect()
         }
+        // `intento` is the one changing verb that already answers this, and it
+        // answers it better than a rehearsal could: `intento` alone says what
+        // abandoning would cost right now, and `intento abandonar` without the
+        // confirming word says it again before doing anything. Sending the
+        // caller there is A2 applied to a rehearsal — name the way out rather
+        // than only refuse.
+        "attempt" => {
+            let why = "`attempt` says what it would cost by itself: `intento` alone, \
+                       or `intento abandonar` without confirming";
+            if face.machine() {
+                face.say(thalyx_files::machine::declined(
+                    "rehearse",
+                    "ask_attempt_itself",
+                    why,
+                ));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return Ok(());
+        }
         // `instalar`, `correr`, `revertir`, `instalar-en`, `apagar`. Each one
         // changes the machine and none of them has a check half yet, so the
         // honest answer is that this cannot be rehearsed — not a rehearsal that

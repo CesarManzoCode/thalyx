@@ -273,6 +273,26 @@ pub const VERBS: &[Verb] = &[
         summary: "What this machine did and what came of it. Not everything that happened to it.",
     },
     Verb {
+        id: "attempt",
+        names: &["intento", "attempt"],
+        takes: &["empezar <label> | confirmar | abandonar [si]"],
+        flags: &["si", "yes"],
+        answers: Some("attempt"),
+        // The one verb whose whole purpose is that what it wraps can be
+        // undone — and it changes the machine itself: a snapshot is taken,
+        // and abandoning replaces a whole subvolume.
+        changes: true,
+        errors: &[
+            "not_a_subvolume",
+            "already_open",
+            "none_open",
+            "snapshot_gone",
+            "unreadable",
+            "unknown_argument",
+        ],
+        summary: "Open something that can be taken back whole, then keep it or undo all of it.",
+    },
+    Verb {
         id: "clear",
         names: &["clear", "limpiar", "cls"],
         takes: &[],
@@ -557,6 +577,10 @@ mod tests {
                 "rollback",
                 "install_onto",
                 "power_off",
+                // It changes the machine even though its purpose is that what
+                // it wraps can be undone: opening one takes a snapshot, and
+                // abandoning one replaces a whole subvolume.
+                "attempt",
             ])
         );
     }

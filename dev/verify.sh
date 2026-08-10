@@ -3489,6 +3489,118 @@ else:
     fi
 fi
 
+# ─────────────── 26. the named attempt: begin, change things, and take all of it back
+
+step "26. intenta esto y si sale mal deshazlo"
+
+# `Superficie-para-el-LLM.md`, punto D2, and the sentence
+# `Filosofia-Fundacional.md` uses for the advantage no other operating system
+# has. It is the fourth of the five costs — what an error costs — and the decree
+# is blunt about why that one changes behaviour more than the others: in a system
+# where everything is irreversible a rational agent becomes timid, and that does
+# not read as prudence, it reads as incapacity.
+#
+# ## What this stage proves that no test in the repository can
+#
+# Btrfs. The policy is covered against a directory fake in `thalyx-core`, which
+# is the right split — policy that can only be exercised on Btrfs is policy that
+# is never exercised — but the fake copies where Btrfs shares blocks. What only
+# this machine can establish is that a real subvolume snapshot is taken, that
+# abandoning really returns the tree, and that a file made during the attempt is
+# gone afterwards rather than merely reverted.
+#
+# ## The three columns
+#
+# A file that existed before, changed during the attempt: must be back to its
+# old contents. A file made during the attempt: must be gone. And the control —
+# the same sequence settled with `confirmar` instead — where both must survive.
+# Without the control, an implementation that reverted on every path would pass
+# the first two and be useless.
+
+# The scratch path probed at the top of this script, which was proven by making
+# a subvolume rather than by reading a filesystem type — `stat -f` says btrfs for
+# a read-only mount too. Rule 3: the skip becomes a failure under the variable
+# for *this* requirement and no other, so a machine that has Btrfs cannot pass
+# this stage by staying quiet about it.
+ATTEMPT_STORE="$WORK/attempt-store"
+ATTEMPT_TREE="$BTRFS_SCRATCH/.thalyx-verify-attempt"
+mkdir -p "$ATTEMPT_STORE"
+rm -rf "$ATTEMPT_TREE" 2>/dev/null || btrfs subvolume delete "$ATTEMPT_TREE" > /dev/null 2>&1 || true
+
+ATTEMPT_GAP=""
+if [ ! -x "$THALYX" ]; then
+    ATTEMPT_GAP="there is no thalyx binary, so the named attempt could not be driven"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    ATTEMPT_GAP="there is nowhere on Btrfs here, so a named attempt cannot take a real snapshot"
+elif ! btrfs subvolume create "$ATTEMPT_TREE" > "$WORK/attempt-subvol.log" 2>&1; then
+    ATTEMPT_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/attempt-subvol.log"
+fi
+
+if [ -n "$ATTEMPT_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$ATTEMPT_GAP"; else unproven "$ATTEMPT_GAP"; fi
+else
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+
+    attempt_run() {
+        printf '%s\n' "structured on" "cd $ATTEMPT_TREE" "$@" salir | \
+            THALYX_ROOT="$ATTEMPT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # Abandoned. The file that existed is changed, and a new one is made.
+    attempt_run "intento empezar demo" > "$WORK/attempt-begin.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento abandonar si" > "$WORK/attempt-abandon.log"
+
+    A_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    A_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && A_MADE=yes
+
+    # The control: the same sequence, kept instead of abandoned.
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+    rm -f "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento empezar control" > "$WORK/attempt-begin2.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento confirmar" > "$WORK/attempt-keep.log"
+
+    K_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    K_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && K_MADE=yes
+
+    # And that the machine said it did it, parsed rather than grepped.
+    SAID=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "attempt" and value.get("abandoned"):
+        print("%s %s" % (value.get("atomic"), value.get("would_delete")))
+        break
+else:
+    print("none none")
+' "$WORK/attempt-abandon.log")
+    set -- $SAID
+    A_ATOMIC=$1; A_WOULD_DELETE=$2
+
+    if [ "$A_KEPT" = "before" ] && [ "$A_MADE" = "no" ] \
+       && [ "$K_KEPT" = "changed during the attempt" ] && [ "$K_MADE" = "yes" ] \
+       && [ "$A_WOULD_DELETE" = "1" ]; then
+        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, and the kept control lost neither (atomic swap: $A_ATOMIC)"
+    elif [ "$A_KEPT" != "before" ] || [ "$A_MADE" != "no" ]; then
+        failed "abandoning did not put the tree back (kept.txt='$A_KEPT', made.txt present=$A_MADE); see $WORK/attempt-abandon.log"
+    elif [ "$K_MADE" != "yes" ]; then
+        failed "confirming an attempt destroyed the work it was supposed to keep; see $WORK/attempt-keep.log"
+    else
+        failed "the machine reported would_delete=$A_WOULD_DELETE for one file made during the attempt; see $WORK/attempt-abandon.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
