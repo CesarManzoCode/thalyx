@@ -14,9 +14,44 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Tres de las cuatro fallas de la cuarta corrida eran el instrumento — 2026-08-10
+> ## El verbo que se colgaba era `indexar`, y el hierro quedó en verde — 2026-08-10
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La quinta corrida en hierro dio **143 probadas, 2 no probadas, 1 falla**, y por
+> primera vez todo el lado del kernel quedó probado: la protección deniega de
+> verdad, el módulo corrió confinado, Thalyx enganchó su propio LSM sin
+> `bpftool`, y el canal del módulo sobrevivió al sandbox. `make unload` antes de
+> `make load` fue todo lo que hacía falta.
+>
+> ### El reloj sirvió: era `indexar`
+>
+> La prueba nombró el verbo en la primera corrida. `indexar` sin argumento indexa
+> el árbol donde está parada la sesión, y una sesión empieza en `/home` — que en
+> tu máquina incluye `.cargo/registry` y `.rustup`. Aquí son 329 archivos y dos
+> segundos; allá es cada fuente de cada crate que has bajado más la biblioteca
+> estándar entera.
+>
+> Dos reglas nuevas, ambas en [[Estrategia-de-Pruebas]]:
+>
+> - **No se entra a carpetas que empiecen con punto.** La lista vieja
+>   —`.git`, `target`, `node_modules`— era una lista de las cosas que ya habían
+>   salido mal. El árbol que se nombra explícitamente nunca se filtra.
+> - **Techo de 20 000 archivos, y arriba de eso se niega en lugar de empezar.**
+>   `tree_too_large`, dentro de la transacción, así que el índice que había sigue
+>   ahí. Etapa 28 de `dev/verify.sh`, con su control.
+>
+> ### Lo que sigue abierto
+>
+> La etapa 27 dijo que nada estaba anclado, y era cierto **por culpa de la etapa
+> 14**, trescientas líneas más arriba: desengancha el watcher y no lo devolvía.
+> Ya lo devuelve. El ring buffer no se ha vuelto a ejercer desde entonces.
+>
+> Y `grammar_check` corre el binario dos veces por dentro; los seis sitios que
+> pasan por ahí nunca estuvieron envueltos contra `ETXTBSY`. El comentario decía
+> que *toda prueba de este archivo* llamaba al envoltorio, y era falso.
+>
+> ## Tres de las cuatro fallas de la cuarta corrida eran el instrumento — 2026-08-10
 >
 > La corrida en hierro dio 127 probadas, 7 no probadas y 3 fallas. De las tres,
 > dos eran de `dev/verify.sh` y la tercera se quedó sin diagnosticar a propósito.

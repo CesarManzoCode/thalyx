@@ -45,7 +45,29 @@ pub enum GraphError {
          invalidate the index it just wrote."
     )]
     DatabaseInsideTree { database: PathBuf, root: PathBuf },
+
+    #[error(
+        "`{root}` holds more than {ceiling} files worth indexing.\n  \
+         Indexing it would take long enough that nobody would wait for the \
+         answer. Name a smaller tree."
+    )]
+    TreeTooLarge { root: PathBuf, ceiling: usize },
 }
+
+/// How many files an index will build over before it refuses.
+///
+/// A refusal and not a longer wait. `indexar` with nothing after it indexes the
+/// tree the session stands in, and a session starts at `/home` — which on an
+/// ordinary developer's machine contains `.cargo/registry` and `.rustup`, every
+/// source file of every crate they have downloaded plus the whole Rust standard
+/// library. On 2026-08-10 that ran for more than three minutes and was killed;
+/// what it cost was a verification run.
+///
+/// The number is not tuned. It is far above any tree somebody means — this
+/// repository is 179 files, its whole vault included — and far below the point
+/// where an answer stops being worth waiting for. An answer that never arrives
+/// is worse than a refusal, and the refusal says what to do instead.
+pub const CEILING: usize = 20_000;
 
 pub type Result<T> = std::result::Result<T, GraphError>;
 
@@ -213,11 +235,7 @@ impl Index {
         transaction.execute("DELETE FROM mentions", [])?;
 
         let mut files = Vec::new();
-        for entry in walkdir::WalkDir::new(&self.root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| !is_ignored(e.path()))
-        {
+        for entry in walk(&self.root) {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
@@ -235,6 +253,21 @@ impl Index {
                 entry.path().to_path_buf(),
                 relative.to_string_lossy().into_owned(),
             ));
+            // Refused here rather than after the walk, so a tree of a million
+            // files costs a moment and not a minute. The count that comes back
+            // is therefore "more than the ceiling" and never a total — which is
+            // all a caller needs to do the one useful thing, name something
+            // smaller, and is the only number this stopped early enough to know.
+            //
+            // The transaction has already emptied the tables and has not been
+            // committed; dropping it here rolls that back, so a refused rebuild
+            // leaves the index that was there exactly as it was.
+            if files.len() > CEILING {
+                return Err(GraphError::TreeTooLarge {
+                    root: self.root.clone(),
+                    ceiling: CEILING,
+                });
+            }
         }
         files.sort_by(|a, b| a.1.cmp(&b.1));
 
@@ -790,11 +823,46 @@ fn normalise(path: &Path) -> Option<String> {
 ///
 /// Build outputs and version control internals would swamp the graph with
 /// nodes no one asks about, and `.git` alone can be larger than the project.
+///
+/// **Anything beginning with a dot**, and that rule is the one that matters.
+/// The named list was a list of the things that had gone wrong so far, and it
+/// went wrong again on 2026-08-10: a session starts at `/home`, `indexar` with
+/// nothing after it indexes where it stands, and on Cesar's machine that walked
+/// into `.cargo/registry` and `.rustup` — every source file of every crate he
+/// has ever downloaded, plus the whole Rust standard library. The run never
+/// finished.
+///
+/// A hidden directory is where a machine keeps what it manages for itself. A
+/// person indexing their work does not mean their caches, and adding `.cargo`
+/// to a list of names would only have waited for `.local/share` to be next.
 fn is_ignored(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|n| n.to_str()),
-        Some(".git" | "target" | "node_modules" | ".venv" | "__pycache__" | "dist" | "build")
-    )
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("target" | "node_modules" | "__pycache__" | "dist" | "build") => true,
+        Some(name) => name.starts_with('.'),
+        None => false,
+    }
+}
+
+/// The walk, in one place, because two of them have to agree exactly.
+///
+/// The build records the set of files a tree holds and the freshness check
+/// counts that set again. If the two ever disagree about which files belong,
+/// **every index is stale the moment it is written** — and it looks like a
+/// staleness bug rather than like two walks. That is what happened the first
+/// time the hidden-directory rule was added to only one of them: eleven tests
+/// failed, none of them about hidden directories, because `tempfile` names its
+/// directories `.tmpXXXXXX`.
+///
+/// The root itself is never filtered. A person who names `~/.config` has named
+/// it on purpose, and a filter that refused the tree it was handed would answer
+/// "nothing here" about a directory full of files.
+pub(crate) fn walk(
+    root: &Path,
+) -> walkdir::FilterEntry<walkdir::IntoIter, fn(&walkdir::DirEntry) -> bool> {
+    walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path()))
 }
 
 #[cfg(test)]
@@ -1094,6 +1162,58 @@ mod tests {
             ("node_modules/pkg/index.js", "\n"),
         ]);
         let index = indexed(&dir);
+        assert_eq!(index.node_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_hidden_directory_is_where_a_machine_keeps_its_own_things_and_is_not_read() {
+        // The three that were actually walked into on Cesar's machine, plus a
+        // control: the same names without the dot are ordinary directories and
+        // must still be read, or this rule would have hidden his source.
+        let dir = tree(&[
+            ("src/main.rs", "\n"),
+            (".cargo/registry/src/serde/lib.rs", "\n"),
+            (".rustup/toolchains/stable/lib/rustlib/src/x.rs", "\n"),
+            (".cache/something/y.rs", "\n"),
+            ("cargo/mine.rs", "\n"),
+        ]);
+        let index = indexed(&dir);
+        assert_eq!(index.node_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_tree_named_on_purpose_is_read_even_though_its_own_name_is_hidden() {
+        // The rule is about descending, not about what was asked for. Somebody
+        // who names `~/.config` has named it; answering "nothing here" about a
+        // directory full of files would be the rule eating its own argument.
+        let dir = tree(&[(".config/app/main.rs", "\n")]);
+        let mut index = Index::in_memory(&dir.path().join(".config")).unwrap();
+        index.build().unwrap();
+        assert_eq!(index.node_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_tree_too_big_to_wait_for_is_refused_and_the_index_that_was_there_survives() {
+        let dir = tree(&[("src/main.rs", "fn a() {}\n")]);
+        let mut index = Index::in_memory(dir.path()).unwrap();
+        index.build().unwrap();
+        assert_eq!(index.node_count().unwrap(), 1);
+
+        // Past the ceiling by one file, so this is a test of the boundary and
+        // not of a number far away from it.
+        let big = dir.path().join("many");
+        std::fs::create_dir_all(&big).unwrap();
+        for n in 0..=CEILING {
+            std::fs::write(big.join(format!("f{n:07}.txt")), "").unwrap();
+        }
+
+        let refused = index.build().unwrap_err();
+        assert!(
+            matches!(refused, GraphError::TreeTooLarge { .. }),
+            "a tree past the ceiling was reported as {refused:?}"
+        );
+        // The control, and the reason the refusal happens inside a transaction:
+        // a rebuild that refused must not be a rebuild that emptied the index.
         assert_eq!(index.node_count().unwrap(), 1);
     }
 

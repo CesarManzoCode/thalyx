@@ -229,8 +229,10 @@ pub const VERBS: &[Verb] = &[
         flags: &[],
         answers: Some("index_build"),
         changes: false,
-        errors: &["unreadable"],
-        summary: "Read a tree and record what refers to what. Defaults to where you are.",
+        errors: &["unreadable", "tree_too_large"],
+        summary: "Read a tree and record what refers to what. Defaults to where you are. \
+                  Hidden directories and build outputs are not read, and a tree too big to \
+                  wait for is refused rather than started.",
     },
     Verb {
         id: "depends_on",
