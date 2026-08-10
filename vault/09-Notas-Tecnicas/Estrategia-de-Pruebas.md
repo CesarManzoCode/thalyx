@@ -2937,6 +2937,74 @@ La regla: **una herramienta que corre con privilegios y escribe en el árbol de
 trabajo devuelve lo que escribió.** Un `chown` al final cuesta una línea; el
 fallo que evita se ve como un defecto del kernel.
 
+## Un control que pide silencio no se puede cumplir en una máquina viva — 2026-08-10
+
+La etapa 27 comprobaba que el ring buffer se consume así: hacer una mutación,
+leerla, y leer otra vez — **la segunda lectura tiene que venir vacía**. La idea
+era buena; lo que medía no era lo que decía.
+
+Los hooks del watcher son de máquina entera. La etapa 7 lo dice con todas sus
+letras: *nada en esta máquina puede cambiar un archivo sin que el contador se
+mueva*. Entre dos lecturas, una laptop con Fedora cambia muchísimos archivos —
+empezando por el diario que escribió la sesión de la primera lectura. La segunda
+lectura trajo dos registros y el reporte acusó: «la posición del consumidor no
+se está escribiendo de vuelta». No se había demostrado nada de eso.
+
+**Una lectura vacía no es una propiedad de un consumidor correcto; es una
+propiedad de una máquina donde no pasa nada, y esa máquina no existe.**
+
+El arreglo no es bajar el umbral ni repetir la medición: es cambiar de pregunta.
+La mutación la hace ahora un programa llamado `thalyx-ringmark` —quince
+caracteres, exactamente lo que cabe en el `comm` del kernel— y las dos columnas
+son sobre ese nombre y no sobre el total:
+
+- **base**: la primera lectura trae al menos un registro de `thalyx-ringmark`,
+  así que el ring sí cargó una mutación que esta etapa causó.
+- **control**: la segunda no trae ninguno, y la máquina queda libre de haber
+  seguido cambiando lo que se le antoje.
+
+La regla: **cuando el ruido ambiental no se puede apagar, no se mide el total,
+se marca lo que se busca.** Un identificador que el ruido no puede falsificar
+convierte una medición imposible en una trivial.
+
+## Un `load` que se niega porque ya está cargado no es un `load` que falló — 2026-08-10
+
+`make -C lsm load` se niega cuando ya hay algo enganchado, y hace bien: cargar
+dos veces dejaría uno de los dos inalcanzable. Pero `dev/verify.sh` usaba ese
+estado de salida para contestar **dos preguntas distintas** — «¿lo enganchó este
+script?» y «¿está enganchado?»— y no son la misma.
+
+Cesar cargó el LSM a mano antes de correr el script, exactamente como se le había
+pedido. El script reportó `FAILED thalyx-lsm did not attach` y otras cuatro
+etapas dijeron NOT PROVEN sobre una protección que estuvo corriendo todo el
+tiempo. La contradicción estaba impresa en la misma corrida: tres pantallas más
+abajo, la etapa 7 imprimió *all 10 hooks attached*.
+
+La regla: **un script que se apodera de un recurso de la máquina empieza
+desapoderándola.** `make unload` antes de `make load`, siempre, pase lo que pase.
+Sólo así el reporte habla de Thalyx y no de lo que alguien dejó corriendo.
+
+## Una prueba que se cuelga tiene que decir dónde — 2026-08-10
+
+`every_verb_the_catalogue_advertises_is_understood_at_the_prompt` escribe los 33
+verbos, uno por línea, en una sola sesión. En la máquina de Cesar dejó de
+contestar. Lo único que quedó fue la línea que imprime `cargo test` a los sesenta
+segundos: *has been running for over 60 seconds*. Mató la corrida, y la
+verificación entera se perdió sin aprender qué verbo era.
+
+Aquí corre en 1.7 segundos, así que el contenedor no puede reproducirlo.
+
+La regla: **una prueba que puede colgarse lleva su propio reloj, y al vencerse
+nombra dónde estaba.** No basta con que falle; una falla que no nombra nada
+cuesta una corrida y no enseña nada. La sesión imprime su prompt antes de leer
+cada línea, así que contar prompts en lo que alcanzó a decir da el verbo — y esa
+aritmética es una función con prueba propia, porque equivocarse por uno mandaría
+a alguien a leer el código del verbo vecino.
+
+Y el reloj tiene que leer la salida en otro hilo. Un vigilante que se duerme
+esperando mientras la tubería de salida se llena cuelga al proceso que vigila:
+sería la regla 5 otra vez, el instrumento causando lo que mide.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
