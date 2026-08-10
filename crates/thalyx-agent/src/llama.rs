@@ -974,15 +974,34 @@ mod tests {
     /// it is the real argument order, and a fake that could not survive it
     /// would be a fake of a different invocation.
     ///
-    /// Each stand-in gets its **own** file name. It used to be one name per
-    /// directory, and exactly one test writes two stand-ins into the same
-    /// directory — rewriting an executable the previous line has just run. That
-    /// is a race the kernel is entitled to lose, and that one test is the one
-    /// that failed once in twenty-five runs of the suite while this was being
-    /// written. **The failure was not captured and has not been reproduced**,
-    /// so this is not a diagnosis; it removes the only race the harness had,
-    /// which is worth doing whether or not it was the cause. Rule 5: the
-    /// instrument includes the harness.
+    /// Each stand-in gets its **own** file name, and that was not enough.
+    ///
+    /// ## The diagnosis, which took two runs a year apart to get
+    ///
+    /// The first time, this failed once in twenty-five runs, the failure was not
+    /// captured, and the fix written here — one file name per stand-in — was a
+    /// guess that said so. On 2026-08-10 Cesar's twelve-core machine failed it
+    /// **twice in one run** and the errors were captured:
+    ///
+    /// ```text
+    /// could not start /tmp/.tmpf0elxc/llama-cli-7: Text file busy (os error 26)
+    /// ```
+    ///
+    /// `ETXTBSY` is the kernel refusing to `execve` a file **any** process holds
+    /// open for writing. The count it checks lives on the inode, not in a file
+    /// table, so `O_CLOEXEC` does not help and unique names do not either. The
+    /// mechanism is the fork window: `Command::spawn` forks, and between that
+    /// fork and the child's `execve` the child holds a copy of every descriptor
+    /// its parent had — including a write descriptor another test thread was
+    /// using at that instant to create *this* file. Twelve test threads make
+    /// that window ordinary; two make it once in twenty-five runs.
+    ///
+    /// So the helper does not return a path, it returns a path **that has been
+    /// run**. Waiting for the window to close is the only thing that closes it,
+    /// and doing it here means no test has to know the window exists.
+    ///
+    /// Rule 5, ninth time: the instrument includes the harness. Nothing about
+    /// Thalyx was wrong in that run.
     fn stand_in(dir: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -995,6 +1014,80 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// Run a stand-in, waiting out a fork window that is not what any test here
+    /// is about.
+    ///
+    /// Every test in this file calls this instead of [`LlamaModel::run`]. What
+    /// it adds is one thing: `ETXTBSY` is retried instead of failing the test.
+    ///
+    /// It is **not** in the production path, deliberately. If the real
+    /// `llama-completion` on somebody's machine is busy, that is a fact about
+    /// their machine that Thalyx should report rather than paper over. What is
+    /// being papered over here is this process racing with itself, which is a
+    /// property of running twelve test threads and of nothing else.
+    fn run_past_the_fork_window(
+        model: &LlamaModel,
+        transcript: &Transcript,
+    ) -> std::result::Result<Run, LlamaError> {
+        for attempt in 0..100 {
+            match model.run(transcript) {
+                Err(LlamaError::Spawn { source, .. })
+                    if source.kind() == std::io::ErrorKind::ExecutableFileBusy =>
+                {
+                    // Another thread's child, between its fork and its exec,
+                    // holding a write descriptor to this file. Short, and not
+                    // ours to shorten.
+                    std::thread::sleep(std::time::Duration::from_millis(1 + attempt / 10));
+                }
+                other => return other,
+            }
+        }
+        panic!("the stand-in stayed busy for a hundred attempts")
+    }
+
+    #[test]
+    fn a_binary_something_else_is_still_writing_is_waited_for_and_not_reported_as_broken() {
+        // The defect that failed Cesar's run of 2026-08-10, reproduced on
+        // purpose instead of waited for. Holding the file open for writing is
+        // exactly the state `execve` refuses — the kernel checks a count on the
+        // inode, so it does not matter which process holds it or whether the
+        // descriptor is close-on-exec.
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = weights(scratch.path());
+        let binary = stand_in(
+            scratch.path(),
+            r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": ["dev.thalyx.demo"]}'"#,
+        );
+        let model = LlamaModel::new(Invocation::new(&binary, &weights));
+
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&binary)
+            .unwrap();
+
+        // The baseline. Without it this test could pass on a kernel that never
+        // returns ETXTBSY at all, and would be proving nothing about the retry.
+        let refused = model.run(&transcript());
+        assert!(
+            matches!(
+                &refused,
+                Err(LlamaError::Spawn { source, .. })
+                    if source.kind() == std::io::ErrorKind::ExecutableFileBusy
+            ),
+            "the kernel did not refuse a binary held open for writing: {refused:?}"
+        );
+
+        // And the claim: the harness waits it out rather than failing whatever
+        // test happened to be running when another thread forked.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            drop(held);
+        });
+        let run = run_past_the_fork_window(&model, &transcript())
+            .expect("the stand-in should have been waited for");
+        assert!(run.answer.contains("install_module"), "{}", run.answer);
     }
 
     fn weights(dir: &Path) -> PathBuf {
@@ -1042,9 +1135,11 @@ mod tests {
             r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": ["dev.thalyx.demo"]}'"#,
         );
 
-        let run = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect("the stand-in exits cleanly");
+        let run = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect("the stand-in exits cleanly");
 
         let proposal = crate::proposal::Proposal::parse(&run.answer)
             .expect("the echoed prompt was not stripped back off");
@@ -1077,9 +1172,11 @@ cat <<'CAPTURED'
 CAPTURED"#,
         );
 
-        let run = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect("a correct proposal, followed by llama.cpp's own suffix");
+        let run = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect("a correct proposal, followed by llama.cpp's own suffix");
 
         let proposal = crate::proposal::Proposal::parse(&run.answer)
             .expect("the tool's suffix was left on the model's answer");
@@ -1120,9 +1217,11 @@ CAPTURED"#,
         let weights = weights(scratch.path());
         let binary = interactive_stand_in(scratch.path());
 
-        let error = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect_err("a chat session is not a completion");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect_err("a chat session is not a completion");
 
         let LlamaError::NotOneShot { sample, .. } = &error else {
             panic!("a tool that never completed the prompt was reported as {error}");
@@ -1146,9 +1245,11 @@ CAPTURED"#,
         let weights = weights(scratch.path());
         let binary = stand_in(scratch.path(), "exit 0");
 
-        let error = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect_err("no output means no completion");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect_err("no output means no completion");
         assert!(
             matches!(error, LlamaError::NotOneShot { .. }),
             "got {error}"
@@ -1164,9 +1265,11 @@ CAPTURED"#,
         let weights = weights(scratch.path());
         let binary = stand_in(scratch.path(), r#"cat "$4""#);
 
-        let run = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect("the prompt was read; the completion was empty");
+        let run = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect("the prompt was read; the completion was empty");
 
         assert_eq!(run.answer, "");
         assert_eq!(
@@ -1190,9 +1293,11 @@ CAPTURED"#,
             scratch.path(),
             r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": ["dev.thalyx.aaaa'"#,
         );
-        let error = LlamaModel::new(Invocation::new(&truncated, &weights))
-            .run(&transcript())
-            .expect_err("an unclosed object is not an answer");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&truncated, &weights)),
+            &transcript(),
+        )
+        .expect_err("an unclosed object is not an answer");
         assert!(
             matches!(error, LlamaError::Truncated { .. }),
             "an obedient answer that ran out of budget was reported as {error}"
@@ -1208,9 +1313,11 @@ CAPTURED"#,
             scratch.path(),
             r#"cat "$4"; printf '%s' 'Sure, I can install that for you'"#,
         );
-        let error = LlamaModel::new(Invocation::new(&unconstrained, &weights))
-            .run(&transcript())
-            .expect_err("prose is not an answer");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&unconstrained, &weights)),
+            &transcript(),
+        )
+        .expect_err("prose is not an answer");
         assert!(
             matches!(error, LlamaError::GrammarNotInForce { .. }),
             "an answer the grammar never shaped was reported as {error}"
@@ -1229,9 +1336,11 @@ CAPTURED"#,
             r#"cat "$4"; printf '%s' 'Sure! I can help you install that module.'"#,
         );
 
-        let error = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect_err("prose is not a proposal and not the model's fault");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect_err("prose is not a proposal and not the model's fault");
         assert!(
             matches!(error, LlamaError::GrammarNotInForce { .. }),
             "got {error}"
@@ -1491,9 +1600,11 @@ esac"#,
             "echo 'error: unknown argument: --no-display-prompt' >&2; exit 1",
         );
 
-        let error = LlamaModel::new(Invocation::new(&binary, &weights))
-            .run(&transcript())
-            .expect_err("a non-zero exit is not an answer");
+        let error = run_past_the_fork_window(
+            &LlamaModel::new(Invocation::new(&binary, &weights)),
+            &transcript(),
+        )
+        .expect_err("a non-zero exit is not an answer");
         let LlamaError::Exited { stderr, .. } = &error else {
             panic!("expected a non-zero exit, got {error}");
         };
@@ -1513,8 +1624,7 @@ esac"#,
         invocation.timeout = Duration::from_millis(300);
 
         let started = Instant::now();
-        let error = LlamaModel::new(invocation)
-            .run(&transcript())
+        let error = run_past_the_fork_window(&LlamaModel::new(invocation), &transcript())
             .expect_err("a process that never answers is not an answer");
 
         assert!(matches!(error, LlamaError::TimedOut(_)), "got {error}");
@@ -1539,8 +1649,7 @@ esac"#,
         let mut invocation = Invocation::new(&binary, &weights);
         invocation.timeout = Duration::from_secs(20);
 
-        let error = LlamaModel::new(invocation)
-            .run(&transcript())
+        let error = run_past_the_fork_window(&LlamaModel::new(invocation), &transcript())
             .expect_err("200 kB of output is a runaway, not an answer");
         assert!(matches!(error, LlamaError::Runaway), "got {error}");
     }
@@ -1600,8 +1709,7 @@ esac"#,
 
         let mut invocation = Invocation::new(&binary, &weights);
         invocation.keep_prompt = Some(kept.clone());
-        LlamaModel::new(invocation)
-            .run(&transcript())
+        run_past_the_fork_window(&LlamaModel::new(invocation), &transcript())
             .expect("the stand-in answers");
 
         let dirs: Vec<_> = std::fs::read_dir(&kept)

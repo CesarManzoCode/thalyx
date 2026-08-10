@@ -46,10 +46,25 @@ struct mutation {
     char  comm[16];
 };
 
+/* `thalyx_mut_ring` and not `thalyx_mutations`, and the difference is fifteen
+ * characters.
+ *
+ * BPF_OBJ_NAME_LEN is 16 including the terminator, so the kernel keeps the
+ * first fifteen characters of a map's name and nothing more. `thalyx_mutations`
+ * and `thalyx_mutation_count` both truncate to `thalyx_mutation`, so the kernel
+ * held two maps of this object under one name — and anything that identified a
+ * map by asking the kernel got whichever came first.
+ *
+ * That is the state Cesar's machine of 2026-08-10 was in: the counter pinned,
+ * the ring not, and a report that could only say "nothing is pinned there".
+ * Whether the collision is what stopped the pin was never established; what is
+ * established is that two maps sharing one kernel name makes the question
+ * unanswerable, and a name nobody can ask about is worse than a long one.
+ */
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1024 * 1024);
-} thalyx_mutations SEC(".maps");
+} thalyx_mut_ring SEC(".maps");
 
 /* A count of every mutation this program has seen, and nothing else.
  *
@@ -240,7 +255,7 @@ static __always_inline void report(__u32 kind, bool quiet, struct dentry *where)
     if (quiet)
         return;
 
-    struct mutation *event = bpf_ringbuf_reserve(&thalyx_mutations, sizeof(*event), 0);
+    struct mutation *event = bpf_ringbuf_reserve(&thalyx_mut_ring, sizeof(*event), 0);
     if (!event)
         return;   /* ring full: the count still moved, so the worker falls back
                      to the full sweep rather than pretending it saw everything */

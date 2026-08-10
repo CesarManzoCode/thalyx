@@ -3606,7 +3606,7 @@ fi
 step "27. what the kernel saw change, and who did it"
 
 # `Superficie-para-el-LLM.md`, punto B3. The producing half has existed since
-# `thalyx_watch.bpf.c` was written, and the comment above `thalyx_mutations` has
+# `thalyx_watch.bpf.c` was written, and the comment above `thalyx_mut_ring` has
 # said since that day that reading it needs a consumer that mmaps the map and
 # follows the ring protocol. `Tareas-Pendientes` listed it as a ring that says
 # what changed and that nobody consumes.
@@ -3626,15 +3626,34 @@ step "27. what the kernel saw change, and who did it"
 # consumer that never advanced the consumer position would return the same
 # record forever and look like a machine where a great deal is happening.
 
-RING_PIN="/sys/fs/bpf/thalyx/maps/thalyx_mutations"
+RING_PIN="/sys/fs/bpf/thalyx/maps/thalyx_mut_ring"
 RING_STORE="$WORK/ring-store"
 mkdir -p "$RING_STORE"
 
+# Rule 5, and the reason this block is longer than the check it guards: on the
+# first run of this stage the answer was "nothing is pinned there", and that
+# sentence is true of two completely different machines — one where the watcher
+# is not loaded, and one where it is loaded and something did not pin one of its
+# maps. Cesar's run was the second, and the report could not say so because it
+# had only looked at one path. So it looks at three things now, and says which.
+RING_DIR="$(dirname "$RING_PIN")"
 RING_GAP=""
 if [ ! -x "$THALYX" ]; then
     RING_GAP="there is no thalyx binary, so the mutation ring could not be read"
 elif [ ! -e "$RING_PIN" ]; then
-    RING_GAP="nothing is pinned at $RING_PIN, so thalyx-watch is not loaded and there is no ring to read"
+    RING_PINNED="$(sudo ls "$RING_DIR" 2>/dev/null | tr '\n' ' ')"
+    # Asked of the kernel and not of the filesystem: a map that exists and is
+    # not pinned is a `make -C lsm load` that did not finish its job, and it
+    # sends somebody somewhere completely different from a watcher that is not
+    # there at all.
+    RING_EXISTS="$(sudo bpftool map show 2>/dev/null | grep -cE 'name (thalyx_mut_ring|thalyx_mutation) ' || true)"
+    if [ "${RING_EXISTS:-0}" -gt 0 ]; then
+        RING_GAP="the mutation ring exists in the kernel and is not pinned at $RING_PIN.\n      What is pinned in $RING_DIR: ${RING_PINNED:-nothing}.\n      \`make -C lsm unload && make -C lsm load\` re-pins it."
+    elif [ -n "$RING_PINNED" ]; then
+        RING_GAP="thalyx-watch is loaded but no ring is pinned. What is in $RING_DIR: $RING_PINNED"
+    else
+        RING_GAP="nothing is pinned in $RING_DIR, so thalyx-watch is not loaded and there is no ring to read"
+    fi
 fi
 
 if [ -n "$RING_GAP" ]; then

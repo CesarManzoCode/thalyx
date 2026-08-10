@@ -2833,6 +2833,59 @@ cierta, y hay que comprobar dónde es cierta.** Aquí la propiedad era del flujo
 —tubería sí, terminal no— y se aplicó según la cara, que es otra cosa. Ninguna
 prueba lo iba a encontrar, porque ninguna prueba tiene ojos.
 
+## Un nombre que el kernel corta es un nombre que nadie puede preguntar — 2026-08-10
+
+La etapa 27 reportó «nada está anclado en `/sys/fs/bpf/thalyx/maps/thalyx_mutations`,
+así que thalyx-watch no está cargado». Era falso: la etapa 3 de la misma corrida
+decía que el contador **sí** estaba anclado, y la 7 leyó 36 872 mutaciones con
+los diez ganchos puestos. El watcher estaba cargado y el reporte no podía
+decirlo, porque sólo había mirado una ruta.
+
+`BPF_OBJ_NAME_LEN` es 16 contando el terminador, así que el kernel se queda con
+**quince** caracteres del nombre de un mapa. `thalyx_mutations` (16) y
+`thalyx_mutation_count` (21) se vuelven los dos `thalyx_mutation`, y el kernel
+tenía dos mapas del mismo objeto bajo un solo nombre. Si eso fue lo que impidió
+el anclaje nunca se estableció; lo que sí está establecido es que dos mapas con
+un solo nombre en el kernel vuelven la pregunta incontestable.
+
+Dos reglas, y la segunda es la que se repite:
+
+**Un identificador que la capa de abajo trunca es un identificador que hay que
+mantener corto de este lado.** Hay una prueba ahora que corta cada nombre de
+mapa de los dos objetos BPF a quince caracteres y falla si dos coinciden.
+
+**Un mensaje de «no encontré» tiene que decir dónde buscó y qué había ahí.**
+«Nada está anclado en X» describe dos máquinas completamente distintas —una
+donde el watcher no está y otra donde está y algo no ancló uno de sus mapas— y
+manda a quien lo lee a dos lugares distintos. Es la regla 10 aplicada al reporte
+y no al dato: una falla al leer no es una falla al existir, y **decir en cuál de
+las dos se está también es parte de la respuesta**.
+
+## Nueve veces, y la que tardó un año — 2026-08-10
+
+Regla 5, novena instancia, y la que más vale la pena leer porque el arreglo
+anterior admitía por escrito que era una adivinanza.
+
+Dos pruebas de `llama.rs` fallaron en la máquina de Cesar con `Text file busy`.
+Un año antes, una de ellas había fallado **una vez en veinticinco corridas**, no
+se capturó el error, y se arregló dándole a cada falso su propio nombre de
+archivo — con un comentario que decía, honestamente, *«esto no es un
+diagnóstico»*. Doce hilos de prueba la hicieron fallar dos veces en una corrida
+y el error por fin quedó capturado.
+
+`ETXTBSY` es el kernel negándose a ejecutar un archivo que **cualquier** proceso
+tiene abierto para escritura. El conteo que revisa vive en el inodo, no en una
+tabla de descriptores, así que `O_CLOEXEC` no ayuda y los nombres únicos tampoco.
+El mecanismo es la ventana del `fork`: entre que `Command::spawn` bifurca y el
+hijo ejecuta, el hijo tiene copia de cada descriptor del padre — incluido el de
+escritura que otro hilo estaba usando en ese instante para crear ese archivo.
+
+**Una falla que ocurre una vez en veinticinco no es una falla menor, es una
+falla sin capturar.** El arreglo por adivinanza sobrevivió un año porque nunca
+volvió a fallar donde alguien mirara. Lo que la resolvió no fue pensar mejor:
+fue una máquina con más núcleos, que es lo mismo que decir que el instrumento
+tenía que cambiar antes de que la pregunta se pudiera contestar.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
