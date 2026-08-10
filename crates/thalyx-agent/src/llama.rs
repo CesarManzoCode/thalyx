@@ -1031,15 +1031,36 @@ mod tests {
         model: &LlamaModel,
         transcript: &Transcript,
     ) -> std::result::Result<Run, LlamaError> {
-        for attempt in 0..100 {
-            match model.run(transcript) {
+        past_the_fork_window(|| model.run(transcript))
+    }
+
+    /// The same, for the check that runs the stand-in twice inside one call.
+    ///
+    /// Added on 2026-08-10, after the run above went green and this one did
+    /// not. The comment on `run_past_the_fork_window` claimed *every test in
+    /// this file calls this instead of `LlamaModel::run`*, and it was not true:
+    /// three tests reach `run` through [`LlamaModel::grammar_check`], which
+    /// spawns the binary twice and was never wrapped. A comment claiming a
+    /// property is not the property — the same lesson `list_disks` learned, in
+    /// the same repository, for the same reason.
+    fn grammar_check_past_the_fork_window(
+        model: &LlamaModel,
+    ) -> std::result::Result<GrammarCheck, LlamaError> {
+        past_the_fork_window(|| model.grammar_check())
+    }
+
+    fn past_the_fork_window<T>(
+        mut attempt: impl FnMut() -> std::result::Result<T, LlamaError>,
+    ) -> std::result::Result<T, LlamaError> {
+        for round in 0..100 {
+            match attempt() {
                 Err(LlamaError::Spawn { source, .. })
                     if source.kind() == std::io::ErrorKind::ExecutableFileBusy =>
                 {
                     // Another thread's child, between its fork and its exec,
                     // holding a write descriptor to this file. Short, and not
                     // ours to shorten.
-                    std::thread::sleep(std::time::Duration::from_millis(1 + attempt / 10));
+                    std::thread::sleep(std::time::Duration::from_millis(1 + round / 10));
                 }
                 other => return other,
             }
@@ -1376,9 +1397,10 @@ esac"#,
         let weights = weights(scratch.path());
         let binary = obeys_the_grammar(scratch.path());
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
 
         let GrammarCheck::InForce { unconstrained, .. } = &check else {
             panic!("a tool that plainly obeys the grammar was reported as {check:?}");
@@ -1415,9 +1437,10 @@ case "$*" in
 esac"#,
         );
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
 
         assert!(
             matches!(check, GrammarCheck::InForce { .. }),
@@ -1431,9 +1454,10 @@ esac"#,
         let weights = weights(scratch.path());
         let binary = stand_in(scratch.path(), r#"cat "$4"; printf '%s' 'BANANA'"#);
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
         assert!(
             matches!(check, GrammarCheck::NotInForce { .. }),
             "a tool ignoring --grammar-file was reported as {check:?}"
@@ -1453,9 +1477,10 @@ esac"#,
             r#"cat "$4"; printf '%s' '{"operation": "install_module", "targets": []}'"#,
         );
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
         assert!(
             matches!(check, GrammarCheck::Inconclusive { .. }),
             "a probe that measured nothing was reported as {check:?}"
@@ -1489,9 +1514,10 @@ case "$*" in
 esac"#,
         );
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
 
         assert!(
             matches!(check, GrammarCheck::Inconclusive { .. }),
@@ -1516,9 +1542,10 @@ case "$*" in
 esac"#,
         );
 
-        let check = LlamaModel::new(Invocation::new(&binary, &weights))
-            .grammar_check()
-            .expect("both arms ran");
+        let check = grammar_check_past_the_fork_window(&LlamaModel::new(Invocation::new(
+            &binary, &weights,
+        )))
+        .expect("both arms ran");
 
         assert!(
             matches!(check, GrammarCheck::Inconclusive { .. }),
@@ -1746,7 +1773,7 @@ esac"#,
 
         let mut invocation = Invocation::new(&binary, &weights);
         invocation.keep_prompt = Some(kept.clone());
-        let _ = LlamaModel::new(invocation).grammar_check();
+        let _ = grammar_check_past_the_fork_window(&LlamaModel::new(invocation));
 
         let mut names: Vec<String> = std::fs::read_dir(&kept)
             .expect("the kept directory exists")
