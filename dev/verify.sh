@@ -370,6 +370,23 @@ if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
         chown -R "$SUDO_USER" "$ROOT/lsm" 2>/dev/null || true
     fi
 
+    # Detach before attaching, always, whatever was there.
+    #
+    # `make load` refuses when something is already attached, and it is right to
+    # — loading twice would leave one of the two unreachable. But on 2026-08-10
+    # that refusal was reported here as «thalyx-lsm did not attach» on a machine
+    # where it was attached and working: stage 7 of the same run printed *all 10
+    # hooks attached* three screens further down, and four other stages said NOT
+    # PROVEN about enforcement that was running the whole time. One `make load`
+    # exit status was made to answer two different questions — «did this script
+    # attach it» and «is it attached» — and they are not the same question.
+    #
+    # This script takes the machine's enforcement over for the length of the run
+    # and detaches it on the way out; that is in the header. Starting from a
+    # known state is what makes the report about Thalyx rather than about
+    # whatever the human happened to leave loaded.
+    make -C lsm unload > "$WORK/lsm-unload.log" 2>&1 || true
+
     if make -C lsm load > "$WORK/lsm-load.log" 2>&1; then
         LOADED=1
         proven "thalyx-lsm attached (observe mode)"
@@ -3661,12 +3678,35 @@ step "27. what the kernel saw change, and who did it"
 # in the repository can touch is `bpf_obj_get` on a real pin, two `mmap` calls
 # the kernel accepts, and a consumer position the kernel actually reads.
 #
-# ## The control, and why it is a second read and not a second machine
+# ## The control, and why it is about one named record and not about a count
 #
-# Draining consumes. So the check is: make a mutation, read it, then read again
-# with nothing new in between — the second must be empty. Without that column, a
-# consumer that never advanced the consumer position would return the same
-# record forever and look like a machine where a great deal is happening.
+# Draining consumes: what one pass reads is gone. So the property to check is
+# that a record read once does not come back — a consumer that never advanced
+# the consumer position would hand out the same records forever and look like a
+# machine where a great deal is happening.
+#
+# The first way this was written asked for that as a count: make a mutation,
+# read it, read again, and demand the second read be **empty**. On 2026-08-10
+# that reported «the consumer position is not being written back» on a machine
+# where nothing of the sort had been shown. The watcher's hooks are machine
+# wide — *nothing on this machine can change a file without the count moving*,
+# as stage 7 puts it — and between two reads a Fedora laptop changes a great
+# many files, starting with the journal the first read's own session wrote. An
+# empty second read is not a property of a correct consumer; it is a property of
+# a machine where nothing is happening, and there is no such machine.
+#
+# So the mutation is made by a program named `thalyx-ringmark` — fifteen
+# characters, which is exactly what fits in the kernel's `comm` — and the two
+# columns are about that name and not about the total:
+#
+#   baseline  the first read contains at least one `thalyx-ringmark` record,
+#             so the ring really did carry a mutation this stage caused
+#   control   the second read contains none of them, while the machine is free
+#             to have gone on changing whatever else it likes
+#
+# Rule 5 for the tenth time, and the most instructive of the ten: the check was
+# not wrong about what it measured, it was wrong about what that measurement
+# could mean.
 
 RING_PIN="/sys/fs/bpf/thalyx/maps/thalyx_mut_ring"
 RING_STORE="$WORK/ring-store"
@@ -3701,26 +3741,53 @@ fi
 if [ -n "$RING_GAP" ]; then
     if [ "${THALYX_REQUIRE_LSM_TESTS:-0}" = 1 ]; then failed "$RING_GAP"; else unproven "$RING_GAP"; fi
 else
+    # Every record, not the first two hundred. The default window is a mercy to
+    # a caller with a context window; here it would hide the one record this
+    # stage is looking for behind whatever else the machine did in the meantime.
     ring_ask() {
-        printf '%s\n' "structured on" "cambios" salir | \
+        printf '%s\n' "structured on" "cambios limite=1000000" salir | \
             THALYX_ROOT="$RING_STORE" "$THALYX" session 2>&1 | tr -d '\r'
     }
 
-    # Drain whatever was already queued, so the count below is about the
-    # mutation this stage makes and not about the rest of the machine.
-    ring_ask > /dev/null 2>&1
+    # The marker: `touch`, `mv` and `rm`, each copied under the same name the
+    # kernel will keep whole. `comm` is sixteen bytes including the NUL and
+    # `thalyx-ringmark` is fifteen characters, so a record carries the name
+    # exactly and nothing else on the machine can be mistaken for it.
+    #
+    # Three of them rather than one because the watcher hooks create, unlink and
+    # rename separately, and a stage that only ever made a file would go on
+    # passing after two of those three hooks stopped firing.
+    RING_MARK_NAME="thalyx-ringmark"
+    RING_MARK_DIR="$WORK/ringmark"
+    RING_MARKED=1
+    for tool in touch mv rm; do
+        mkdir -p "$RING_MARK_DIR/$tool"
+        cp "$(command -v "$tool")" "$RING_MARK_DIR/$tool/$RING_MARK_NAME" 2>/dev/null
+        [ -x "$RING_MARK_DIR/$tool/$RING_MARK_NAME" ] || RING_MARKED=0
+    done
 
-    RING_TOUCHED="$WORK/ring-touched-$$"
-    : > "$RING_TOUCHED"
-    mv "$RING_TOUCHED" "$RING_TOUCHED.moved"
-    rm -f "$RING_TOUCHED.moved"
+    if [ "$RING_MARKED" = 0 ]; then
+        unproven "touch, mv and rm could not all be copied, so no mutation could be marked"
+    else
+        # Drain whatever was already queued, so what follows is about the marked
+        # mutations and not about the backlog.
+        ring_ask > /dev/null 2>&1
 
-    ring_ask > "$WORK/ring-first.log"
-    ring_ask > "$WORK/ring-second.log"
+        RING_MADE="$WORK/ring-marked-$$"
+        "$RING_MARK_DIR/touch/$RING_MARK_NAME" "$RING_MADE"
+        "$RING_MARK_DIR/mv/$RING_MARK_NAME" "$RING_MADE" "$RING_MADE.moved"
+        "$RING_MARK_DIR/rm/$RING_MARK_NAME" -f "$RING_MADE.moved"
 
-    ring_count() {
-        python3 -c '
+        ring_ask > "$WORK/ring-first.log"
+        ring_ask > "$WORK/ring-second.log"
+
+        # How many records name the marker, and what the answer says about
+        # itself. Both read off the same object, so a refusal is reported as a
+        # refusal rather than as zero records.
+        ring_marked() {
+            python3 -c '
 import json, sys
+marker = sys.argv[2]
 for line in open(sys.argv[1]):
     line = line.strip()
     if not line.startswith("{"):
@@ -3731,35 +3798,37 @@ for line in open(sys.argv[1]):
         continue
     if value.get("op") == "changes":
         if not value.get("ok"):
-            print("refused %s 0" % value.get("error"))
+            print("refused %s none" % value.get("error"))
         else:
-            print("%s %s %s" % (
-                value.get("total"),
+            rows = value.get("mutations") or []
+            print("%d %s %s" % (
+                sum(1 for row in rows if row.get("program") == marker),
                 value.get("names_paths"),
                 value.get("is_a_history")))
         break
 else:
     print("none none none")
-' "$1"
-    }
+' "$1" "$RING_MARK_NAME"
+        }
 
-    set -- $(ring_count "$WORK/ring-first.log")
-    R_FIRST=$1; R_PATHS=$2; R_HISTORY=$3
-    set -- $(ring_count "$WORK/ring-second.log")
-    R_SECOND=$1
+        set -- $(ring_marked "$WORK/ring-first.log")
+        R_FIRST=$1; R_PATHS=$2; R_HISTORY=$3
+        set -- $(ring_marked "$WORK/ring-second.log")
+        R_SECOND=$1
 
-    if [ "$R_FIRST" != "none" ] && [ "$R_FIRST" != "refused" ] && [ "$R_FIRST" -ge 1 ] \
-       && [ "$R_SECOND" != "none" ] && [ "$R_SECOND" = "0" ] \
-       && [ "$R_PATHS" = "False" ] && [ "$R_HISTORY" = "False" ]; then
-        proven "the mutation ring was mapped and read: $R_FIRST record(s) from a file made, moved and deleted, and the second read was empty"
-    elif [ "$R_FIRST" = "refused" ]; then
-        failed "reading the ring was refused with '$R_PATHS'; see $WORK/ring-first.log"
-    elif [ "$R_FIRST" = "none" ] || [ "$R_FIRST" -lt 1 ]; then
-        failed "the ring returned $R_FIRST records for three mutations this stage made; see $WORK/ring-first.log"
-    elif [ "$R_SECOND" != "0" ]; then
-        failed "a second read returned $R_SECOND records with nothing new — the consumer position is not being written back; see $WORK/ring-second.log"
-    else
-        failed "the answer claimed paths=$R_PATHS history=$R_HISTORY, neither of which a ring buffer can give; see $WORK/ring-first.log"
+        if [ "$R_FIRST" != "none" ] && [ "$R_FIRST" != "refused" ] && [ "$R_FIRST" -ge 1 ] \
+           && [ "$R_SECOND" != "none" ] && [ "$R_SECOND" != "refused" ] && [ "$R_SECOND" = "0" ] \
+           && [ "$R_PATHS" = "False" ] && [ "$R_HISTORY" = "False" ]; then
+            proven "the mutation ring was mapped and read: $R_FIRST record(s) named $RING_MARK_NAME, and a second read had none of them left"
+        elif [ "$R_FIRST" = "refused" ]; then
+            failed "reading the ring was refused with '$R_PATHS'; see $WORK/ring-first.log"
+        elif [ "$R_FIRST" = "none" ] || [ "$R_FIRST" -lt 1 ]; then
+            failed "the ring named no record from $RING_MARK_NAME, which made a file while it was running; see $WORK/ring-first.log"
+        elif [ "$R_SECOND" != "0" ]; then
+            failed "a record already read came back $R_SECOND time(s) — the consumer position is not being written back; see $WORK/ring-second.log"
+        else
+            failed "the answer claimed paths=$R_PATHS history=$R_HISTORY, neither of which a ring buffer can give; see $WORK/ring-first.log"
+        fi
     fi
 fi
 

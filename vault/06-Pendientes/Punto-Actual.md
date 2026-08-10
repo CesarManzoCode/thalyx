@@ -14,9 +14,52 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## `intento` alcanzó `/`, y el contenedor no podía verlo — 2026-08-10
+> ## Tres de las cuatro fallas de la cuarta corrida eran el instrumento — 2026-08-10
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida en hierro dio 127 probadas, 7 no probadas y 3 fallas. De las tres,
+> dos eran de `dev/verify.sh` y la tercera se quedó sin diagnosticar a propósito.
+>
+> ### El ring buffer sí funciona
+>
+> Ésta es la noticia buena y hay que decirla primero: con el mapa renombrado a
+> `thalyx_mut_ring`, el pin apareció, `cambios` **mapeó el ring y leyó
+> registros reales del kernel**. `bpf_obj_get` sobre un pin de verdad, dos
+> `mmap` que el kernel aceptó y el protocolo corriendo sobre memoria compartida
+> — nada de eso se puede tocar desde el contenedor.
+>
+> Lo que falló fue el control, no el consumidor. Ver
+> [[Estrategia-de-Pruebas]]: *un control que pide silencio no se puede cumplir
+> en una máquina viva*. Ahora la mutación la hace un programa llamado
+> `thalyx-ringmark` y las dos columnas son sobre ese nombre.
+>
+> ### El LSM estaba enganchado y el script dijo que no
+>
+> Cesar cargó el LSM a mano antes de correr el script. `make load` se negó
+> —correctamente— y `verify.sh` leyó esa negativa como «no está enganchado»,
+> perdiendo la etapa 4 y cuatro NOT PROVEN más sobre protección que estuvo
+> corriendo toda la corrida. Ahora `make unload` va antes de `make load`,
+> siempre.
+>
+> ### La suite se colgó y no se sabe en qué verbo
+>
+> `every_verb_the_catalogue_advertises_is_understood_at_the_prompt` dejó de
+> contestar. Aquí corre en 1.7 segundos, así que **no se pudo reproducir y no se
+> arregló** — adivinar cuál de los 33 verbos fue habría sido exactamente lo que
+> la regla 5 prohíbe.
+>
+> Lo que sí se hizo: la prueba lleva ahora su propio reloj de tres minutos y al
+> vencerse **nombra el verbo** en el que se quedó. Una corrida de
+> `cargo test -p thalyx-cli --test catalogue_is_true` lo dice.
+>
+> La sospecha, sin prueba: `discos` abre cada disco entero con `File::open` para
+> leer su tamaño, y abrir un lector de tarjetas vacío o una unidad óptica sin
+> medio es lo clásico que se cuelga. El tamaño se puede leer de
+> `/sys/class/block/<n>/size` sin abrir nada. **No se cambió**, porque cambiarlo
+> antes de saber habría borrado la evidencia.
+>
+> ## `intento` alcanzó `/`, y el contenedor no podía verlo — 2026-08-10
 >
 > ### Lo primero, y hay que correrlo
 >
