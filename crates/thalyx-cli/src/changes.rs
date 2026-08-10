@@ -2,7 +2,7 @@
 //!
 //! `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **B3**. The
 //! producing half has existed since `thalyx_watch.bpf.c` was written: every
-//! mutation the hooks see is pushed into `thalyx_mutations`, and the comment
+//! mutation the hooks see is pushed into `thalyx_mut_ring`, and the comment
 //! above that map has said since the day it was written that reading it needs a
 //! consumer nobody had built. [[Tareas-Pendientes]] listed it as a ring buffer
 //! that says *what* changed and that **nadie consume**.

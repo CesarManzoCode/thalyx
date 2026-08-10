@@ -14,9 +14,76 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Seis puntos más del catálogo, y el prompt que Cesar encontró — 2026-08-10
+> ## La corrida en hierro: 26 pasó, 27 no llegó a correr, y una prueba que se peleaba consigo misma — 2026-08-10
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `verify.sh` en su máquina: **143 comprobadas, 2 no comprobadas,
+> 1 fallida**.
+>
+> ### Lo que quedó probado en hierro
+>
+> **Etapa 26 — el intento con nombre, sobre Btrfs de verdad.** Abandonar
+> devolvió un archivo a su contenido viejo, borró el que se hizo durante el
+> intento, y el control cerrado con `confirmar` no perdió ninguno de los dos. El
+> intercambio fue **atómico**.
+>
+> Y las etapas 23, 24 y 25: el listado acotado con su cursor, el índice de
+> símbolos encontrando **3 989** nombres sobre las fuentes de este repo, y la
+> historia leída desde la sesión.
+>
+> ### La prueba que fallaba: novena instancia de la regla 5
+>
+> Dos pruebas de `llama.rs` fallaron con `Text file busy`. **Nada de Thalyx
+> estaba mal.** `ETXTBSY` es el kernel negándose a ejecutar un archivo que
+> cualquier proceso tiene abierto para escritura, y el conteo que revisa vive en
+> el inodo — así que `O_CLOEXEC` no ayuda. El mecanismo es la ventana del
+> `fork`: entre que `Command::spawn` bifurca y el hijo ejecuta, el hijo tiene
+> copia del descriptor de escritura que otro hilo estaba usando para crear ese
+> mismo archivo.
+>
+> Lo que hace que valga la pena escribirlo: **esto ya había fallado hace un
+> año**, una vez en veinticinco corridas, y el arreglo de entonces —un nombre de
+> archivo por falso— venía con un comentario que decía que era una adivinanza.
+> Sobrevivió un año porque nunca volvió a fallar donde alguien mirara. Lo que la
+> resolvió no fue pensar mejor: fue una máquina de doce núcleos.
+>
+> Arreglado con un reintento en el arnés y **no** en el código de producción: si
+> el `llama-completion` de alguien está ocupado, eso es un hecho de su máquina
+> que Thalyx debe reportar, no tapar. Y con una prueba que **reproduce la falla a
+> propósito** —sostiene el archivo abierto para escritura, comprueba que el
+> kernel de verdad se niega, y luego que el arnés lo espera.
+>
+> ### La etapa 27: el reporte no podía decir lo que pasaba
+>
+> Dijo «nada está anclado en `…/thalyx_mutations`, así que thalyx-watch no está
+> cargado». **Era falso**: la etapa 3 de la misma corrida decía que el contador
+> sí estaba anclado y la 7 leyó 36 872 mutaciones con los diez ganchos puestos.
+>
+> `BPF_OBJ_NAME_LEN` es 16 contando el terminador, así que el kernel se queda
+> con **quince** caracteres. `thalyx_mutations` (16) y `thalyx_mutation_count`
+> (21) se vuelven **los dos** `thalyx_mutation`, y el kernel tenía dos mapas del
+> mismo objeto bajo un solo nombre. Si eso fue lo que impidió el anclaje no está
+> establecido — lo que sí lo está es que dos mapas con un nombre vuelven la
+> pregunta incontestable.
+>
+> El anillo se llama ahora `thalyx_mut_ring`, quince caracteres, y hay una prueba
+> que corta cada nombre de mapa de los dos objetos BPF a quince y falla si dos
+> coinciden. Y la etapa 27 ya no dice sólo «no está»: dice qué **sí** hay en el
+> directorio y si el mapa existe en el kernel sin estar anclado.
+>
+> ### Lo que hay que correr
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> make -C lsm unload && make -C lsm load
+> sudo ./dev/verify.sh
+> ```
+>
+> El `unload`/`load` es lo que hace falta para que el anillo se ancle con su
+> nombre nuevo. Si la 27 sigue sin pasar, ahora el mensaje dice qué hay ahí.
+
+> ## Seis puntos más del catálogo, y el prompt que Cesar encontró — 2026-08-10
 >
 > Cesar corrió lo del día anterior en su máquina, encontró un defecto de verdad,
 > y sobre los tres puntos que quedaron nombrados como negociación dijo: *«me

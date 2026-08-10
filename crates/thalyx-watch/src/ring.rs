@@ -2,7 +2,7 @@
 //!
 //! `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **B3**. Half of it
 //! has existed since `thalyx_watch.bpf.c` was written: every mutation the hooks
-//! see is pushed into `thalyx_mutations`, a `BPF_MAP_TYPE_RINGBUF`, and the
+//! see is pushed into `thalyx_mut_ring`, a `BPF_MAP_TYPE_RINGBUF`, and the
 //! comment above that map says in as many words that reading it *«needs a
 //! consumer that mmaps the map and follows the ring protocol»*. Nothing has ever
 //! consumed it.
@@ -51,7 +51,12 @@
 use std::path::{Path, PathBuf};
 
 /// Where the loader pins the ring the watcher writes detail into.
-pub const DEFAULT_RING: &str = "/sys/fs/bpf/thalyx/maps/thalyx_mutations";
+///
+/// `thalyx_mut_ring` and not `thalyx_mutations`: the kernel keeps fifteen
+/// characters of a map's name, and the longer spelling collided with
+/// `thalyx_mutation_count` under that limit. See the comment on the map in
+/// `lsm/thalyx_watch.bpf.c`.
+pub const DEFAULT_RING: &str = "/sys/fs/bpf/thalyx/maps/thalyx_mut_ring";
 
 /// The top bit: reserved and not yet submitted.
 const BUSY: u32 = 1 << 31;
@@ -393,6 +398,73 @@ pub fn default_ring() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every BPF map name in the two objects, as the *kernel* sees it.
+    ///
+    /// `BPF_OBJ_NAME_LEN` is 16 including the terminator, so the kernel keeps
+    /// fifteen characters and drops the rest. This is a fact about the kernel
+    /// and not about the source, which is why reading the source and truncating
+    /// is the whole check.
+    fn kernel_map_names() -> Vec<(String, String)> {
+        let mut names = Vec::new();
+        for source in [
+            include_str!("../../../lsm/thalyx_watch.bpf.c"),
+            include_str!("../../../lsm/thalyx_lsm.bpf.c"),
+        ] {
+            for line in source.lines() {
+                let line = line.trim();
+                let Some(rest) = line.strip_prefix("} ") else {
+                    continue;
+                };
+                let Some(name) = rest.strip_suffix(" SEC(\".maps\");") else {
+                    continue;
+                };
+                names.push((name.to_string(), name.chars().take(15).collect()));
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn no_two_bpf_maps_share_a_name_once_the_kernel_has_cut_it_to_fifteen() {
+        // The defect of 2026-08-10, made impossible to reintroduce.
+        // `thalyx_mutations` and `thalyx_mutation_count` both became
+        // `thalyx_mutation` in the kernel, so `bpftool map show` listed two maps
+        // under one name and nothing that asked the kernel for "the mutation
+        // map" could say which it got. A name nobody can ask about is worse
+        // than a long one.
+        let names = kernel_map_names();
+        assert!(
+            names.len() >= 5,
+            "the map declarations were not found at all, so this test proves nothing: {names:?}"
+        );
+
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for (full, cut) in &names {
+            if let Some(other) = seen.insert(cut, full) {
+                panic!(
+                    "`{full}` and `{other}` are both `{cut}` to the kernel; \
+                     one of them has to be shorter"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ring_this_reads_is_the_one_the_watcher_declares() {
+        // Two files compiled by two compilers, and nothing holds them together
+        // except that somebody wrote the same name in both. This is that
+        // somebody, checked.
+        let declared: Vec<String> = kernel_map_names()
+            .into_iter()
+            .map(|(full, _)| full)
+            .collect();
+        let pinned = DEFAULT_RING.rsplit('/').next().unwrap();
+        assert!(
+            declared.iter().any(|name| name == pinned),
+            "this reads a pin called `{pinned}` and no BPF object declares it: {declared:?}"
+        );
+    }
 
     /// A ring the way the kernel lays one out, built by hand.
     struct Ring {

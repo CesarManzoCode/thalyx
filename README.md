@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 1164 of them**, across unit tests, fault injection
+**Built and covered by tests: 1167 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -317,7 +317,7 @@ object, so a command that touched three files is still one answer. `structured
 off` brings the sentences back, and the acknowledgement carries those words for
 anyone who turned it on by accident.
 
-**The machine also describes itself.** `describe` answers with all 32 verbs —
+**The machine also describes itself.** `describe` answers with all 33 verbs —
 names, arguments, flags, which `op` each answers with, whether it can change
 anything, and the errors it can give. Nothing on Linux can do that: `--help` is
 prose, written once per tool, inconsistent between any two, and often absent.
