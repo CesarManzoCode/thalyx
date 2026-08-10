@@ -253,6 +253,16 @@ pub const VERBS: &[Verb] = &[
         summary: "What refers to this file. No directory walk can answer this one.",
     },
     Verb {
+        id: "symbol",
+        names: &["buscar", "symbol"],
+        takes: &["name"],
+        flags: WINDOW_FLAGS,
+        answers: Some("symbol"),
+        changes: false,
+        errors: &["unreadable", "incomplete", "bad_cursor"],
+        summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
+    },
+    Verb {
         id: "clear",
         names: &["clear", "limpiar", "cls"],
         takes: &[],

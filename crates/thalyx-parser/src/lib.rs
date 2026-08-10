@@ -80,6 +80,52 @@ impl Language {
     }
 }
 
+/// A name this file declares, as opposed to one it mentions.
+///
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **C2**: *`grep`
+/// contesta con renglones porque no sabe qué es un símbolo*. This is the part
+/// that knows. A definition is a fact about the text — that this line is where
+/// the name comes from — and it is what makes "where is `login` defined" a
+/// one-row answer instead of two hundred lines of matches.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Definition {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// 1-indexed, so the answer can send somebody straight to it.
+    pub line: usize,
+}
+
+/// What kind of thing a name is, at the coarseness five languages share.
+///
+/// Three and not fifteen, deliberately. A Rust `trait`, a Go `interface` and a
+/// TypeScript `interface` are the same idea for the purpose of finding one, and
+/// a caller that had to learn each language's vocabulary before it could ask a
+/// question would be paying the discovery cost this whole catalogue exists to
+/// lower. The language is a separate field, so nothing is lost by the caller
+/// that does care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolKind {
+    /// Something callable: `fn`, `def`, `function`, `func`, a C function body.
+    Function,
+    /// Something that names a shape: `struct`, `enum`, `trait`, `class`,
+    /// `interface`, `type`, `union`.
+    Type,
+    /// A value with a name: `const`, `static`, `#define`, a JavaScript `const`.
+    Constant,
+}
+
+impl SymbolKind {
+    /// The word a program matches on. Stable, never translated.
+    pub fn word(self) -> &'static str {
+        match self {
+            SymbolKind::Function => "function",
+            SymbolKind::Type => "type",
+            SymbolKind::Constant => "constant",
+        }
+    }
+}
+
 /// Extract every dependency reference from a source file.
 pub fn parse(language: Language, source: &str) -> Vec<Reference> {
     let mut references = Vec::new();
@@ -111,8 +157,348 @@ pub fn parse(language: Language, source: &str) -> Vec<Reference> {
 
 fn is_comment(language: Language, line: &str) -> bool {
     match language {
+        // `#include` and `#define` are not comments in C, and treating every
+        // `#` line as one there would throw away half of what the C half of
+        // this parser is for.
         Language::Python => line.starts_with('#'),
         _ => line.starts_with("//"),
+    }
+}
+
+/// Every name this file declares.
+///
+/// Line-oriented like [`parse`], and for the same reason: it is deterministic,
+/// it is testable against real files, and the contract does not change when this
+/// becomes tree-sitter. What it costs is that a definition split across lines —
+/// a Rust `fn` whose arguments start on the next line — is still found, because
+/// the name is on the first line, while one written in a way this does not
+/// recognise is **missing rather than wrong**. That asymmetry is deliberate:
+/// `Estrategia-de-Pruebas` rule 9 says the cautious answer, and a name reported
+/// in the wrong place would send somebody to edit the wrong line.
+pub fn definitions(language: Language, source: &str) -> Vec<Definition> {
+    let mut found = Vec::new();
+
+    for (index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim();
+        let number = index + 1;
+        if is_comment(language, line) {
+            continue;
+        }
+        match language {
+            Language::Rust => rust_definition(line, number, &mut found),
+            Language::Python => python_definition(line, number, &mut found),
+            Language::JavaScript => javascript_definition(line, number, &mut found),
+            Language::C => c_definition(line, number, &mut found),
+            Language::Go => go_definition(line, number, &mut found),
+        }
+    }
+
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every identifier the file mentions, outside comments and outside strings.
+///
+/// This is the other half of C2 — *«llamada desde estos tres sitios»* — and the
+/// reason it is here rather than done with `grep` at the far end is the one the
+/// decree names: `grep` cannot tell a call from the same word inside a comment,
+/// and a caller that has to filter those itself is paying the ambiguity cost the
+/// system was supposed to absorb.
+///
+/// String contents are dropped as well as comments. A log line that happens to
+/// contain the word `login` is not a use of `login`, and an answer that counted
+/// it would be confidently wrong in a way a caller cannot check without opening
+/// the file — which is exactly the trip this saves.
+pub fn identifiers(language: Language, source: &str) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
+
+    for (index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim();
+        if is_comment(language, line) {
+            continue;
+        }
+        let line = without_strings(line);
+
+        let mut word = String::new();
+        for character in line.chars() {
+            if character.is_alphanumeric() || character == '_' {
+                word.push(character);
+                continue;
+            }
+            if !word.is_empty() {
+                found.push((std::mem::take(&mut word), index + 1));
+            }
+        }
+        if !word.is_empty() {
+            found.push((word, index + 1));
+        }
+    }
+
+    found
+}
+
+/// The line with everything between quotes removed.
+///
+/// One line at a time, so a string that spans lines is only half removed. That
+/// is the honest limit of a line-oriented parser and it fails in the safe
+/// direction: the extra identifiers it lets through are reported as mentions,
+/// which is a row too many, never a definition in the wrong place.
+fn without_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut inside: Option<char> = None;
+    let mut escaped = false;
+
+    for character in line.chars() {
+        match inside {
+            Some(quote) => {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == quote {
+                    inside = None;
+                    out.push(' ');
+                }
+            }
+            None => {
+                if character == '"' || character == '\'' {
+                    inside = Some(character);
+                    out.push(' ');
+                } else {
+                    out.push(character);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// The name that follows a keyword, up to whatever ends it.
+fn name_after<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(keyword)?;
+    let name: &str = rest
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .find(|piece| !piece.is_empty())?;
+    // A name has to start where the keyword ended, or `fn` would match `fnord`
+    // and `type` would match `typedef`.
+    if !rest.starts_with(name) {
+        return None;
+    }
+    Some(name)
+}
+
+/// Rust visibility, stripped so `pub fn` and `fn` are one case.
+fn without_visibility(line: &str) -> &str {
+    let line = line.trim_start();
+    if let Some(rest) = line.strip_prefix("pub") {
+        let rest = rest.trim_start();
+        // `pub(crate)`, `pub(super)`, `pub(in path)`.
+        if let Some(rest) = rest.strip_prefix('(') {
+            if let Some((_, after)) = rest.split_once(')') {
+                return after.trim_start();
+            }
+            return line;
+        }
+        return rest;
+    }
+    line
+}
+
+fn rust_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    let mut line = without_visibility(line);
+    // `const fn` is a function and not a constant, and it is the one prefix
+    // where the order matters: stripped in the wrong order it becomes a
+    // constant named `fn`.
+    if line.starts_with("const fn ") || line.starts_with("const unsafe fn ") {
+        line = line.strip_prefix("const ").unwrap_or(line);
+    }
+    for prefix in ["default ", "async ", "unsafe ", "extern \"C\" ", "extern "] {
+        line = line.strip_prefix(prefix).unwrap_or(line);
+    }
+    let line = line;
+
+    let cases: [(&str, SymbolKind); 8] = [
+        ("fn ", SymbolKind::Function),
+        ("struct ", SymbolKind::Type),
+        ("enum ", SymbolKind::Type),
+        ("trait ", SymbolKind::Type),
+        ("union ", SymbolKind::Type),
+        ("type ", SymbolKind::Type),
+        ("const ", SymbolKind::Constant),
+        ("static ", SymbolKind::Constant),
+    ];
+
+    for (keyword, kind) in cases {
+        if let Some(name) = name_after(line, keyword) {
+            out.push(Definition {
+                name: name.to_string(),
+                kind,
+                line: number,
+            });
+            return;
+        }
+    }
+
+    if let Some(name) = name_after(line, "macro_rules! ") {
+        out.push(Definition {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            line: number,
+        });
+    }
+}
+
+fn python_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    let line = line.strip_prefix("async ").unwrap_or(line);
+    let cases: [(&str, SymbolKind); 2] =
+        [("def ", SymbolKind::Function), ("class ", SymbolKind::Type)];
+    for (keyword, kind) in cases {
+        if let Some(name) = name_after(line, keyword) {
+            out.push(Definition {
+                name: name.to_string(),
+                kind,
+                line: number,
+            });
+            return;
+        }
+    }
+}
+
+fn javascript_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    let line = line.strip_prefix("export default ").unwrap_or(line);
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let line = line.strip_prefix("async ").unwrap_or(line);
+
+    let cases: [(&str, SymbolKind); 6] = [
+        ("function ", SymbolKind::Function),
+        ("class ", SymbolKind::Type),
+        ("interface ", SymbolKind::Type),
+        ("type ", SymbolKind::Type),
+        ("const ", SymbolKind::Constant),
+        ("let ", SymbolKind::Constant),
+    ];
+
+    for (keyword, kind) in cases {
+        if let Some(name) = name_after(line, keyword) {
+            // A `const` that is not assigned is a declaration of nothing; a
+            // `const` inside a call argument list is not a top-level name. The
+            // `=` is what separates the two, cheaply.
+            if kind == SymbolKind::Constant && !line.contains('=') {
+                return;
+            }
+            out.push(Definition {
+                name: name.to_string(),
+                kind,
+                line: number,
+            });
+            return;
+        }
+    }
+}
+
+/// Words that begin a C statement and are never a function being defined.
+///
+/// Without this, `if (ready) {` is read as a function called `if`, and the index
+/// fills with control flow — which does not merely add rows, it makes the answer
+/// to "where is this defined" useless by burying it.
+const C_NOT_A_DEFINITION: &[&str] = &[
+    "if", "for", "while", "switch", "return", "else", "do", "case", "sizeof",
+];
+
+fn c_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    if let Some(name) = name_after(line, "#define ") {
+        out.push(Definition {
+            name: name.to_string(),
+            kind: SymbolKind::Constant,
+            line: number,
+        });
+        return;
+    }
+
+    for keyword in ["struct ", "union ", "enum "] {
+        if let Some(name) = name_after(line, keyword) {
+            // `struct foo bar;` is a variable, not a definition of `foo`. The
+            // brace is what says the shape is being given here.
+            if line.ends_with('{') {
+                out.push(Definition {
+                    name: name.to_string(),
+                    kind: SymbolKind::Type,
+                    line: number,
+                });
+            }
+            return;
+        }
+    }
+
+    // A function body: `something name(args) {`. Only with the brace, so a
+    // prototype in a header is not reported as the place the code lives.
+    if !line.ends_with('{') {
+        return;
+    }
+    let Some(open) = line.find('(') else { return };
+    let before = line[..open].trim_end();
+    let name: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    if name.is_empty()
+        || name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || C_NOT_A_DEFINITION.contains(&name.as_str())
+        // Something has to precede the name, or this is a call statement and
+        // not a definition — `setup() {` is not C, `void setup() {` is.
+        || before.len() == name.len()
+    {
+        return;
+    }
+
+    out.push(Definition {
+        name,
+        kind: SymbolKind::Function,
+        line: number,
+    });
+}
+
+fn go_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    if let Some(rest) = line.strip_prefix("func ") {
+        // A method: `func (r *Thing) Name(`. The receiver is not the name.
+        let rest = match rest.strip_prefix('(') {
+            Some(after) => match after.split_once(')') {
+                Some((_, tail)) => tail.trim_start(),
+                None => return,
+            },
+            None => rest,
+        };
+        if let Some(name) = name_after(rest, "") {
+            out.push(Definition {
+                name: name.to_string(),
+                kind: SymbolKind::Function,
+                line: number,
+            });
+        }
+        return;
+    }
+
+    let cases: [(&str, SymbolKind); 3] = [
+        ("type ", SymbolKind::Type),
+        ("const ", SymbolKind::Constant),
+        ("var ", SymbolKind::Constant),
+    ];
+    for (keyword, kind) in cases {
+        if let Some(name) = name_after(line, keyword) {
+            out.push(Definition {
+                name: name.to_string(),
+                kind,
+                line: number,
+            });
+            return;
+        }
     }
 }
 
@@ -400,6 +786,204 @@ mod harness;
             Language::from_path(Path::new("src/lib.rs")),
             Some(Language::Rust)
         );
+    }
+
+    // ─────────────────────────────────────────────── the names a file declares
+
+    fn names(language: Language, source: &str) -> Vec<(String, &'static str)> {
+        definitions(language, source)
+            .into_iter()
+            .map(|found| (found.name, found.kind.word()))
+            .collect()
+    }
+
+    /// The one sample that was not invented here.
+    ///
+    /// Rule 6 of `Estrategia-de-Pruebas.md`: a parser for somebody else's format
+    /// needs one captured real sample, verbatim, because a hand-written fixture
+    /// proves the parser matches its author's model of the format and nothing
+    /// else. That rule was written after a parser was tested only against
+    /// fixtures its author invented — twice, and the second time it accused
+    /// llama.cpp of ignoring a grammar it had just obeyed.
+    ///
+    /// This file is the sample: real Rust, written for another purpose, never
+    /// adjusted to make a test pass. The C half has one too, further down. The
+    /// Python, JavaScript and Go halves have **none**, and that is stated here
+    /// rather than left to be discovered: what those three have below are
+    /// fixtures, and what a fixture proves is smaller than it looks.
+    #[test]
+    fn the_names_in_this_very_file_are_found_in_it() {
+        let source = include_str!("lib.rs");
+        let found: Vec<String> = definitions(Language::Rust, source)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+
+        for expected in [
+            "parse",              // pub fn
+            "definitions",        // pub fn
+            "identifiers",        // pub fn
+            "without_strings",    // a private fn
+            "rust_definition",    // a private fn
+            "Reference",          // pub struct
+            "ReferenceKind",      // pub enum
+            "Language",           // pub enum
+            "SymbolKind",         // pub enum
+            "C_NOT_A_DEFINITION", // a const
+        ] {
+            assert!(
+                found.contains(&expected.to_string()),
+                "`{expected}` is defined in this file and the parser did not find it"
+            );
+        }
+
+        // And nothing that is plainly not a definition. `use` lines and match
+        // arms are the two shapes most likely to be read as one.
+        for wrong in ["use", "match", "if", "for", "std", "Some"] {
+            assert!(
+                !found.contains(&wrong.to_string()),
+                "`{wrong}` is not a definition and the parser reported one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_const_fn_is_a_function_and_not_a_constant() {
+        // The one prefix where stripping in the wrong order silently produces a
+        // constant named `fn`.
+        assert_eq!(
+            names(Language::Rust, "pub const fn width() -> usize { 4 }"),
+            vec![("width".to_string(), "function")]
+        );
+    }
+
+    #[test]
+    fn visibility_does_not_change_what_a_name_is() {
+        for line in [
+            "fn one() {}",
+            "pub fn one() {}",
+            "pub(crate) fn one() {}",
+            "pub(super) fn one() {}",
+        ] {
+            assert_eq!(
+                names(Language::Rust, line),
+                vec![("one".to_string(), "function")],
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyword_that_only_starts_a_name_is_not_that_keyword() {
+        // `fnord` is not `fn ord`, and `typedef` is not `type def`. Without the
+        // check that the name begins where the keyword ends, both become
+        // definitions of things that do not exist.
+        assert!(names(Language::Rust, "let fnord = 3;").is_empty());
+        assert!(names(Language::Rust, "structural();").is_empty());
+    }
+
+    #[test]
+    fn a_commented_out_definition_is_not_a_definition() {
+        // The same rule the references half already has, and for the same
+        // reason: a symbol the code cannot reach is worse than a missing one,
+        // because it sends somebody to a line that does nothing.
+        assert!(names(Language::Rust, "// fn ghost() {}").is_empty());
+        assert!(names(Language::Python, "# def ghost(): pass").is_empty());
+    }
+
+    #[test]
+    fn python_definitions_are_found_at_any_indentation() {
+        // Hand-written, and what that proves is that the parser matches its
+        // author's model of Python. There is no real Python in this repository
+        // to capture, and rule 6 says to say so rather than imply otherwise.
+        let found = names(
+            Language::Python,
+            "class Session:\n    def login(self):\n        pass\n    async def logout(self):\n        pass\n",
+        );
+        assert_eq!(
+            found,
+            vec![
+                ("Session".to_string(), "type"),
+                ("login".to_string(), "function"),
+                ("logout".to_string(), "function"),
+            ]
+        );
+    }
+
+    #[test]
+    fn javascript_declares_names_in_four_shapes() {
+        let found = names(
+            Language::JavaScript,
+            "export function login(u) {}\nclass Session {}\nconst LIMIT = 5;\nexport const parse = (x) => x;\n",
+        );
+        assert!(found.contains(&("login".to_string(), "function")));
+        assert!(found.contains(&("Session".to_string(), "type")));
+        assert!(found.contains(&("LIMIT".to_string(), "constant")));
+        assert!(found.contains(&("parse".to_string(), "constant")));
+    }
+
+    #[test]
+    fn go_methods_are_named_by_the_method_and_not_by_the_receiver() {
+        let found = names(
+            Language::Go,
+            "func Login(u string) {}\nfunc (s *Session) Close() {}\ntype Session struct {}\n",
+        );
+        assert!(found.contains(&("Login".to_string(), "function")));
+        // The failure this prevents: every method in the file indexed under the
+        // name of its receiver, so `Close` cannot be found at all and `Session`
+        // has forty definitions.
+        assert!(found.contains(&("Close".to_string(), "function")));
+        assert!(found.contains(&("Session".to_string(), "type")));
+    }
+
+    /// The second captured sample, and the only real C in this repository.
+    #[test]
+    fn the_real_bpf_watcher_yields_its_functions_and_not_its_control_flow() {
+        let source = include_str!("../../../lsm/thalyx_watch.bpf.c");
+        let found = definitions(Language::C, source);
+        let named: Vec<&str> = found.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(
+            !named.is_empty(),
+            "real C yielded no definitions at all: the C half is not working"
+        );
+        // Control flow read as functions is the failure that makes this useless
+        // rather than merely incomplete: it does not add a few wrong rows, it
+        // buries the right one.
+        for wrong in C_NOT_A_DEFINITION {
+            assert!(
+                !named.contains(wrong),
+                "`{wrong}` was read as a C function definition"
+            );
+        }
+    }
+
+    // ──────────────────────────────────────────── the names a file merely uses
+
+    #[test]
+    fn a_name_inside_a_string_is_not_a_use_of_it() {
+        // The failure this prevents is the one that makes `grep` expensive to
+        // read: a log line mentioning `login` counted as a call site, which a
+        // caller cannot tell apart from a real one without opening the file —
+        // exactly the trip this is supposed to save.
+        let mentions: Vec<String> = identifiers(Language::Rust, "println!(\"login failed\");")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!mentions.contains(&"login".to_string()), "{mentions:?}");
+        assert!(mentions.contains(&"println".to_string()));
+    }
+
+    #[test]
+    fn a_name_inside_a_comment_is_not_a_use_of_it() {
+        assert!(identifiers(Language::Rust, "// login happens here").is_empty());
+        assert!(identifiers(Language::Python, "# login happens here").is_empty());
+    }
+
+    #[test]
+    fn a_mention_carries_the_line_it_was_on() {
+        let mentions = identifiers(Language::Rust, "\n\nlogin();\n");
+        assert!(mentions.contains(&("login".to_string(), 3)));
     }
 
     #[test]

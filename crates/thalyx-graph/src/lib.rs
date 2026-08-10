@@ -96,6 +96,39 @@ pub struct BuildReport {
     pub edges: usize,
     pub edges_resolved: usize,
     pub skipped: usize,
+    /// Names this tree declares.
+    pub symbols: usize,
+    /// Places one of those names is used, not counting where it was declared.
+    pub mentions: usize,
+}
+
+/// A name, and where it comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Symbol {
+    pub name: String,
+    /// `function`, `type` or `constant`.
+    pub kind: String,
+    pub path: String,
+    pub line: usize,
+}
+
+/// A place a name is used.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Use {
+    pub path: String,
+    pub line: usize,
+}
+
+/// Everything the index knows about one name.
+///
+/// The two lists are kept apart rather than merged into "occurrences", because
+/// *where this comes from* and *where this is used* are different questions and
+/// a caller that got one list has to guess which rows answer which. That guess
+/// is the ambiguity cost `Superficie-para-el-LLM.md` names third.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Found {
+    pub definitions: Vec<Symbol>,
+    pub uses: Vec<Use>,
 }
 
 pub struct Index {
@@ -176,6 +209,8 @@ impl Index {
 
         transaction.execute("DELETE FROM edges", [])?;
         transaction.execute("DELETE FROM nodes", [])?;
+        transaction.execute("DELETE FROM symbols", [])?;
+        transaction.execute("DELETE FROM mentions", [])?;
 
         let mut files = Vec::new();
         for entry in walkdir::WalkDir::new(&self.root)
@@ -206,6 +241,12 @@ impl Index {
         // Two passes: every node has to exist before edges can resolve against
         // them, otherwise resolution would depend on directory traversal order.
         let mut pending_edges = Vec::new();
+        // Every name this tree declares, and exactly where. The first decides
+        // which identifiers are worth recording at all; the second keeps a
+        // declaration from being counted as a use of itself.
+        let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut declared_at: std::collections::HashSet<(String, String, usize)> =
+            std::collections::HashSet::new();
 
         for (absolute, relative) in &files {
             let metadata = match std::fs::metadata(absolute) {
@@ -240,6 +281,57 @@ impl Index {
             report.files_parsed += 1;
             for reference in thalyx_parser::parse(language, &source) {
                 pending_edges.push((relative.clone(), reference));
+            }
+
+            for found in thalyx_parser::definitions(language, &source) {
+                transaction.execute(
+                    "INSERT INTO symbols (name, kind, path, line) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![found.name, found.kind.word(), relative, found.line as i64],
+                )?;
+                report.symbols += 1;
+                defined.insert(found.name.clone());
+                declared_at.insert((relative.clone(), found.name, found.line));
+            }
+        }
+
+        // The second read of every file, and the reason it is a second read
+        // rather than a second use of what pass one held: recording which names
+        // are *used* needs to know which names this tree *defines*, and that set
+        // is only complete once every file has been seen. Keeping every
+        // identifier of every file in memory until then would make indexing a
+        // large tree a memory question, which is a worse trade than reading the
+        // files again out of the page cache.
+        for (absolute, relative) in &files {
+            let Some(language) = Language::from_path(absolute) else {
+                continue;
+            };
+            let Ok(source) = std::fs::read_to_string(absolute) else {
+                continue;
+            };
+
+            let mut seen_here = std::collections::HashSet::new();
+            for (name, line) in thalyx_parser::identifiers(language, &source) {
+                if !defined.contains(&name) {
+                    continue;
+                }
+                // The line a name is declared on mentions it too, and counting
+                // that as a use would make every symbol look like it has one
+                // more caller than it has — including the ones that have none,
+                // which is the answer somebody deletes code on.
+                if declared_at.contains(&(relative.clone(), name.clone(), line)) {
+                    continue;
+                }
+                // Once per line. A name used three times on one line is one
+                // place to look, and three rows would cost a caller three times
+                // the tokens to learn the same thing.
+                if !seen_here.insert((name.clone(), line)) {
+                    continue;
+                }
+                transaction.execute(
+                    "INSERT INTO mentions (name, path, line) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![name, relative, line as i64],
+                )?;
+                report.mentions += 1;
             }
         }
 
@@ -357,6 +449,63 @@ impl Index {
     }
 
     /// Attach a tag to a file.
+    /// Everything the index knows about one name.
+    ///
+    /// `Superficie-para-el-LLM.md`, punto **C2**. The two lists arrive together
+    /// because they are one thought — *where does this come from and who uses
+    /// it* — and a caller that had to ask twice would pay two round trips for a
+    /// question it asked once.
+    ///
+    /// Exact and case-sensitive. A search that also matched `Login` and
+    /// `login_user` would be a different service: it would answer a question
+    /// nobody asked with rows the caller then has to filter, which is the
+    /// context cost this exists to lower rather than move.
+    pub fn symbol(&self, name: &str) -> Result<Answer<Found>> {
+        let freshness = self.freshness()?;
+
+        let mut statement = self.connection.prepare(
+            "SELECT name, kind, path, line FROM symbols WHERE name = ?1 \
+             ORDER BY path, line",
+        )?;
+        let definitions = statement
+            .query_map([name], |row| {
+                Ok(Symbol {
+                    name: row.get(0)?,
+                    kind: row.get(1)?,
+                    path: row.get(2)?,
+                    line: row.get::<_, i64>(3)? as usize,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut statement = self
+            .connection
+            .prepare("SELECT path, line FROM mentions WHERE name = ?1 ORDER BY path, line")?;
+        let uses = statement
+            .query_map([name], |row| {
+                Ok(Use {
+                    path: row.get(0)?,
+                    line: row.get::<_, i64>(1)? as usize,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(Answer {
+            rows: Found { definitions, uses },
+            freshness,
+        })
+    }
+
+    /// How many names this tree declares, for a caller checking the index is
+    /// worth asking.
+    pub fn symbol_count(&self) -> Result<usize> {
+        Ok(self
+            .connection
+            .query_row("SELECT COUNT(*) FROM symbols", [], |row| {
+                row.get::<_, i64>(0)
+            })? as usize)
+    }
+
     pub fn tag(&self, path: &str, tag: &str) -> Result<()> {
         self.connection.execute(
             "INSERT OR IGNORE INTO tags (path, tag) VALUES (?1, ?2)",
@@ -666,6 +815,138 @@ mod tests {
         let mut index = Index::in_memory(dir.path()).unwrap();
         index.build().unwrap();
         index
+    }
+
+    // ─────────────────────────────────────────── symbols, which is punto C2
+
+    #[test]
+    fn a_name_is_found_where_it_is_defined_and_where_it_is_used() {
+        let dir = tree(&[
+            ("src/auth.rs", "pub fn login() {}\n"),
+            ("src/one.rs", "use crate::auth;\nfn a() { login(); }\n"),
+            ("src/two.rs", "use crate::auth;\nfn b() { login(); }\n"),
+        ]);
+        let index = indexed(&dir);
+        let found = index.symbol("login").unwrap().regardless_of_freshness();
+
+        // The whole claim of C2 in one answer: one row saying where it comes
+        // from, two saying who uses it. The `grep` that answers the same
+        // question returns three lines of which one is the definition and the
+        // caller has to work out which.
+        assert_eq!(found.definitions.len(), 1);
+        assert_eq!(found.definitions[0].path, "src/auth.rs");
+        assert_eq!(found.definitions[0].kind, "function");
+        assert_eq!(found.definitions[0].line, 1);
+
+        let where_used: Vec<&str> = found.uses.iter().map(|u| u.path.as_str()).collect();
+        assert_eq!(where_used, vec!["src/one.rs", "src/two.rs"]);
+    }
+
+    #[test]
+    fn the_line_a_name_is_declared_on_is_not_counted_as_a_use_of_it() {
+        // The failure this prevents is the one somebody deletes code on: every
+        // symbol looking like it has one more caller than it has, including the
+        // ones that have none.
+        let dir = tree(&[("src/lonely.rs", "pub fn unused() {}\n")]);
+        let index = indexed(&dir);
+        let found = index.symbol("unused").unwrap().regardless_of_freshness();
+
+        assert_eq!(found.definitions.len(), 1);
+        assert!(
+            found.uses.is_empty(),
+            "a definition counted itself as a use: {:?}",
+            found.uses
+        );
+    }
+
+    #[test]
+    fn a_mention_inside_a_comment_is_not_a_use() {
+        // The difference from `grep`, stated as a test. `grep -r login` cannot
+        // tell these apart, and the caller pays for the rows and then pays
+        // again to work out which are real.
+        let dir = tree(&[
+            ("src/auth.rs", "pub fn login() {}\n"),
+            ("src/talk.rs", "// login is handled elsewhere\nfn c() {}\n"),
+        ]);
+        let index = indexed(&dir);
+        let found = index.symbol("login").unwrap().regardless_of_freshness();
+
+        assert!(
+            found.uses.is_empty(),
+            "a comment counted as a use: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_name_nothing_defines_is_not_recorded_as_a_mention_of_anything() {
+        // Only names the tree declares are kept. Without that the table is
+        // mostly vocabulary — `println`, `let`, `self` — and an index that is
+        // mostly vocabulary is one nobody can afford to keep.
+        let dir = tree(&[("src/a.rs", "pub fn f() { println!(\"x\"); }\n")]);
+        let index = indexed(&dir);
+
+        let found = index.symbol("println").unwrap().regardless_of_freshness();
+        assert!(found.definitions.is_empty());
+        assert!(found.uses.is_empty());
+    }
+
+    #[test]
+    fn the_search_is_exact_rather_than_helpfully_wider() {
+        let dir = tree(&[(
+            "src/a.rs",
+            "pub fn login() {}\npub fn login_user() {}\npub fn Login() {}\n",
+        )]);
+        let index = indexed(&dir);
+        let found = index.symbol("login").unwrap().regardless_of_freshness();
+
+        // A wider match would answer a question nobody asked with rows the
+        // caller then has to filter — which moves the context cost rather than
+        // lowering it.
+        assert_eq!(found.definitions.len(), 1);
+        assert_eq!(found.definitions[0].line, 1);
+    }
+
+    #[test]
+    fn a_rebuild_does_not_leave_the_symbols_of_the_previous_one_behind() {
+        let dir = tree(&[("src/a.rs", "pub fn gone() {}\n")]);
+        let mut index = Index::in_memory(dir.path()).unwrap();
+        index.build().unwrap();
+        assert_eq!(
+            index
+                .symbol("gone")
+                .unwrap()
+                .regardless_of_freshness()
+                .definitions
+                .len(),
+            1
+        );
+
+        std::fs::write(dir.path().join("src/a.rs"), "pub fn stayed() {}\n").unwrap();
+        index.build().unwrap();
+
+        // A stale row here is worse than a missing one: it sends somebody to a
+        // line where the function is not, and nothing in the answer says so.
+        let found = index.symbol("gone").unwrap().regardless_of_freshness();
+        assert!(found.definitions.is_empty(), "{found:?}");
+        assert_eq!(
+            index
+                .symbol("stayed")
+                .unwrap()
+                .regardless_of_freshness()
+                .definitions
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_symbol_answer_carries_the_freshness_like_every_other_one() {
+        let dir = tree(&[("src/a.rs", "pub fn f() {}\n")]);
+        let index = indexed(&dir);
+        // The decreed rule of `FS-en-Grafo`: the rows and the caveat are one
+        // object, because separating them is how a cache starts being mistaken
+        // for the truth.
+        assert!(index.symbol("f").unwrap().freshness.is_current());
     }
 
     #[test]

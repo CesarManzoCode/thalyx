@@ -1116,7 +1116,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar` reads a tree and records what refers to what;");
             println!("  then `depende <archivo>` says what it refers to and");
             println!("  `usan <archivo>` says what refers to it — which no");
-            println!("  amount of looking through folders can answer.");
+            println!("  amount of looking through folders can answer. `buscar");
+            println!("  <nombre>` says where a name is defined and everywhere it");
+            println!("  is used, without the comments a search for text catches.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1133,6 +1135,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
+            println!("  `buscar <nombre>`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1326,6 +1329,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "usan" | "dependents" => {
                 crate::index::edges(store.root(), &here, "", true, face)?;
+            }
+            // C2: a symbol, not a line. The question `grep` answers with two
+            // hundred matches of which one is the definition.
+            _ if starts_any(line, &["buscar ", "symbol "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::index::symbol(store.root(), &here, rest, face)?;
+            }
+            "buscar" | "symbol" => {
+                crate::index::symbol(store.root(), &here, "", face)?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

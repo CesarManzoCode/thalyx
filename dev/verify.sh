@@ -3353,6 +3353,77 @@ else:
     fi
 fi
 
+# ──────────────────────── 24. a name, not a line: the symbol index over real code
+
+step "24. asking where a name comes from, over this repository's own source"
+
+# `Superficie-para-el-LLM.md`, punto C2. `grep` answers with lines because it
+# does not know what a symbol is; the mechanical parser does, in five languages,
+# so the answer is "function `page`, crates/thalyx-files/src/window.rs, line N"
+# and the places it is used — with neither comments nor strings in the list.
+#
+# ## Why this indexes the repository and not a fixture
+#
+# Rule 6: a parser needs one captured real sample, and a fixture proves the
+# parser matches its author's model of the format. This tree is thirty thousand
+# lines of Rust nobody wrote to make a test pass, and it is the only sample this
+# check could use that its author did not invent.
+#
+# The control is a word that appears in comments and strings all over this
+# repository and is defined nowhere in it. If that word comes back with uses,
+# the answer is a text search wearing a symbol's clothes.
+
+SYMBOL_STORE="$WORK/symbol-store"
+mkdir -p "$SYMBOL_STORE"
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so the symbol index could not be driven"
+else
+    printf '%s\n' "structured on" "cd $ROOT/crates" "indexar" \
+        "buscar window_fields" "buscar deliberately" salir | \
+        THALYX_ROOT="$SYMBOL_STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/symbol.log"
+
+    # Both answers out of one parse, so a run that got one right and the other
+    # wrong cannot pass by being read twice.
+    SYMBOLS=$(python3 -c '
+import json, sys
+built = defined = used = "none"
+control = "none"
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "index_build":
+        built = value.get("symbols")
+    if value.get("op") == "symbol" and value.get("name") == "window_fields":
+        rows = value.get("definitions") or []
+        defined = rows[0]["path"] if rows else "nowhere"
+        used = value.get("total")
+    if value.get("op") == "symbol" and value.get("name") == "deliberately":
+        control = len(value.get("definitions") or []) + (value.get("total") or 0)
+print("%s %s %s %s" % (built, defined, used, control))
+' "$WORK/symbol.log")
+
+    set -- $SYMBOLS
+    S_BUILT=$1; S_DEFINED=$2; S_USED=$3; S_CONTROL=$4
+
+    if [ "$S_DEFINED" = "thalyx-files/src/machine.rs" ] && [ "$S_CONTROL" = "0" ] \
+       && [ "$S_BUILT" != "none" ] && [ "$S_BUILT" -gt 100 ] \
+       && [ "$S_USED" != "none" ] && [ "$S_USED" -ge 1 ]; then
+        proven "the index found where a name is declared in $S_BUILT real ones, and a word that is only ever prose has no symbol"
+    elif [ "$S_DEFINED" != "thalyx-files/src/machine.rs" ]; then
+        failed "\`window_fields\` was reported as declared in '$S_DEFINED'; see $WORK/symbol.log"
+    elif [ "$S_CONTROL" != "0" ]; then
+        failed "a word that appears only in prose came back with $S_CONTROL symbol rows — this is a text search; see $WORK/symbol.log"
+    else
+        failed "the index reported $S_BUILT symbols and $S_USED uses; see $WORK/symbol.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

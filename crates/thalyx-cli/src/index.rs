@@ -106,6 +106,12 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
                             // and a caller that read the second would conclude
                             // things about a tree it has not actually seen.
                             ("skipped", json!(report.skipped)),
+                            // What C2 rests on. A tree with zero symbols is one
+                            // the parser has no language for, and a caller that
+                            // only learned that by searching and finding nothing
+                            // would blame its own spelling.
+                            ("symbols", json!(report.symbols)),
+                            ("mentions", json!(report.mentions)),
                         ],
                     )
                 );
@@ -118,6 +124,10 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
                 println!(
                     "  {} references, {} of them inside the tree",
                     report.edges, report.edges_resolved
+                );
+                println!(
+                    "  {} names declared, used in {} places",
+                    report.symbols, report.mentions
                 );
                 if report.skipped > 0 {
                     println!("  {} skipped — not a language I can read", report.skipped);
@@ -254,6 +264,140 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     }
     println!();
     Ok(())
+}
+
+/// `buscar <nombre>` — where a name comes from, and everywhere it is used.
+///
+/// `Superficie-para-el-LLM.md`, punto **C2**. `grep` answers with lines because
+/// it does not know what a symbol is; the [[Parser-Mecanico]] does, in five
+/// languages, so this answers with the definition and the call sites separately
+/// and with neither comments nor strings in either list.
+///
+/// The two lists are one answer and not two questions, because *where does this
+/// come from and who uses it* is one thought — and a caller that had to ask
+/// twice would pay two round trips for it.
+pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallible {
+    let op = "symbol";
+
+    let (name, window) = match asked_of(rest) {
+        Ok(both) => both,
+        Err(why) => {
+            declined(face, op, "bad_cursor", &why.to_string());
+            return Ok(());
+        }
+    };
+    if name.is_empty() {
+        declined(face, op, "incomplete", "which name");
+        return Ok(());
+    }
+
+    let tree = tree_of(here, "");
+    let index = match open(store_root, &tree) {
+        Ok(index) => index,
+        Err(error) => {
+            declined(face, op, "unreadable", &error.to_string());
+            return Ok(());
+        }
+    };
+
+    let answer = match index.symbol(&name) {
+        Ok(answer) => answer,
+        Err(error) => {
+            declined(face, op, "unreadable", &error.to_string());
+            return Ok(());
+        }
+    };
+
+    if face == Face::Machine {
+        // Only the uses are paged. Definitions are few by nature — a name with
+        // two hundred definitions is a fact worth seeing whole — and paging a
+        // list of one would put a cursor in every answer for nothing.
+        let uses = answer.rows.uses;
+        let page = match thalyx_files::window::page(uses, use_key, &window) {
+            Ok(page) => page,
+            Err(why) => {
+                declined(face, op, "unordered", &why.to_string());
+                return Ok(());
+            }
+        };
+
+        let definitions: Vec<serde_json::Value> = answer
+            .rows
+            .definitions
+            .iter()
+            .map(|found| {
+                json!({
+                    "path": found.path,
+                    "line": found.line,
+                    "kind": found.kind,
+                })
+            })
+            .collect();
+        let uses: Vec<serde_json::Value> = page
+            .rows
+            .iter()
+            .map(|used| json!({ "path": used.path, "line": used.line }))
+            .collect();
+
+        let mut carried = vec![
+            ("name", json!(name)),
+            ("tree", json!(tree.display().to_string())),
+            ("definitions", json!(definitions)),
+            ("uses", json!(uses)),
+            // Which list the window is about. Two lists and one set of paging
+            // fields would otherwise be a guess, and a caller that guessed the
+            // wrong one would page a list that was never cut.
+            ("window_of", json!("uses")),
+        ];
+        carried.extend(thalyx_files::machine::window_fields(&page));
+        carried.extend(freshness_fields(&answer.freshness));
+        println!("{}", thalyx_files::machine::answer(op, carried));
+        return Ok(());
+    }
+
+    println!();
+    if !answer.freshness.is_current() {
+        println!("  [{}]", answer.freshness.describe());
+        println!();
+    }
+    if answer.rows.definitions.is_empty() && answer.rows.uses.is_empty() {
+        // Two facts and not one. Nothing in the index is not the same as
+        // nothing in the tree, and a person told the second would stop looking.
+        println!("  nothing in the index declares or uses `{name}`.");
+        println!("  `indexar` reads the tree; a name from outside it is not in here.");
+        println!();
+        return Ok(());
+    }
+
+    for found in &answer.rows.definitions {
+        println!(
+            "  {} {}  —  {}:{}",
+            found.kind, name, found.path, found.line
+        );
+    }
+    if answer.rows.definitions.is_empty() {
+        println!("  `{name}` is used here but nothing in this tree declares it.");
+    }
+    if !answer.rows.uses.is_empty() {
+        println!();
+        println!("  used in {} places:", answer.rows.uses.len());
+        for used in &answer.rows.uses {
+            println!("    {}:{}", used.path, used.line);
+        }
+    }
+    println!();
+    Ok(())
+}
+
+/// What a cursor into a list of uses names.
+fn use_key(used: &thalyx_graph::Use) -> Vec<u8> {
+    let mut key = used.path.as_bytes().to_vec();
+    key.push(0);
+    // Fixed-width and big-endian, so byte order and numeric order agree. As
+    // decimal text, line 10 sorts before line 9 and the window would refuse the
+    // whole answer as unordered.
+    key.extend_from_slice(&(used.line as u64).to_be_bytes());
+    key
 }
 
 /// Split what was typed into the file being asked about and the window asked for.
