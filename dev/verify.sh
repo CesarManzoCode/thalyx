@@ -356,6 +356,20 @@ if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
         tail -20 "$WORK/lsm-build.log"
     fi
 
+    # This script runs as root, so everything it just built into the source tree
+    # belongs to root. The next `make -C lsm load` the human types as themselves
+    # then cannot overwrite its own object file, and clang says only
+    # `Operation not permitted` about a path in their own home directory.
+    #
+    # That happened on 2026-08-10 and cost a whole verification run: the load
+    # failed, the watcher stayed unloaded, and stage 27 correctly reported that
+    # nothing was pinned — a true statement about a machine this script had put
+    # in that state. Anything this script leaves behind in the repository is the
+    # human's, not root's.
+    if [ -n "${SUDO_USER:-}" ]; then
+        chown -R "$SUDO_USER" "$ROOT/lsm" 2>/dev/null || true
+    fi
+
     if make -C lsm load > "$WORK/lsm-load.log" 2>&1; then
         LOADED=1
         proven "thalyx-lsm attached (observe mode)"
@@ -3588,10 +3602,38 @@ else:
     set -- $SAID
     A_ATOMIC=$1; A_WOULD_DELETE=$2
 
+    # The control that matters most, and the one this stage did not have on the
+    # day it was written: standing at `/` — which is a subvolume on every
+    # ordinary Fedora install — must be **refused**. Without this column, a
+    # version of `intento` that will snapshot the root of the running system
+    # passes every check above, because every check above is about a scratch
+    # subvolume where the dangerous answer never comes up.
+    printf '%s\n' "structured on" "cd /" "intento empezar loquesea" salir | \
+        THALYX_ROOT="$ATTEMPT_STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/attempt-root.log"
+    ROOT_REFUSED=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "attempt":
+        print("%s:%s" % (value.get("ok"), value.get("error")))
+        break
+else:
+    print("none:none")
+' "$WORK/attempt-root.log")
+
     if [ "$A_KEPT" = "before" ] && [ "$A_MADE" = "no" ] \
        && [ "$K_KEPT" = "changed during the attempt" ] && [ "$K_MADE" = "yes" ] \
-       && [ "$A_WOULD_DELETE" = "1" ]; then
-        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, and the kept control lost neither (atomic swap: $A_ATOMIC)"
+       && [ "$A_WOULD_DELETE" = "1" ] \
+       && [ "$ROOT_REFUSED" = "False:the_whole_system" ]; then
+        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, and / was refused (atomic swap: $A_ATOMIC)"
+    elif [ "$ROOT_REFUSED" != "False:the_whole_system" ]; then
+        failed "standing at / and asking for an attempt answered '$ROOT_REFUSED' instead of refusing; see $WORK/attempt-root.log"
     elif [ "$A_KEPT" != "before" ] || [ "$A_MADE" != "no" ]; then
         failed "abandoning did not put the tree back (kept.txt='$A_KEPT', made.txt present=$A_MADE); see $WORK/attempt-abandon.log"
     elif [ "$K_MADE" != "yes" ]; then
