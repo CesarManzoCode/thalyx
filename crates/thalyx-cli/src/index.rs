@@ -406,7 +406,7 @@ fn use_key(used: &thalyx_graph::Use) -> Vec<u8> {
 /// that has to learn a second spelling of "give me the next page" pays the
 /// discovery cost twice for one idea, and `Superficie-para-el-LLM.md` exists to
 /// stop exactly that.
-fn asked_of(
+pub(crate) fn asked_of(
     rest: &str,
 ) -> Result<(String, thalyx_files::window::Asked), thalyx_files::window::Cut> {
     let mut window = thalyx_files::window::Asked::default();

@@ -263,6 +263,16 @@ pub const VERBS: &[Verb] = &[
         summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
     },
     Verb {
+        id: "history",
+        names: &["historia", "history"],
+        takes: &[],
+        flags: WINDOW_FLAGS,
+        answers: Some("history"),
+        changes: false,
+        errors: &["unreadable", "bad_cursor", "unknown_argument"],
+        summary: "What this machine did and what came of it. Not everything that happened to it.",
+    },
+    Verb {
         id: "clear",
         names: &["clear", "limpiar", "cls"],
         takes: &[],

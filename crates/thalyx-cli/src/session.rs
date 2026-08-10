@@ -1126,7 +1126,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
-            println!("  machine, `nucleo` shows what the kernel has been saying");
+            println!("  machine, `historia` says what has been done here and");
+            println!("  what came of it, `nucleo` shows what the kernel has been saying");
             println!("  and `nucleo lento` where the boot spent its time,");
             println!("  `apagar` turns it off.");
         }
@@ -1135,7 +1136,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
-            println!("  `buscar <nombre>`,");
+            println!("  `buscar <nombre>`, `historia`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1338,6 +1339,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "buscar" | "symbol" => {
                 crate::index::symbol(store.root(), &here, "", face)?;
+            }
+            // F2: what this machine did, said by the machine rather than
+            // reconstructed from a conversation that ended.
+            _ if starts_any(line, &["historia ", "history "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::history::show(store, rest, face)?;
+            }
+            "historia" | "history" => {
+                crate::history::show(store, "", face)?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

@@ -11,6 +11,7 @@ mod dev;
 mod enforce;
 mod files;
 mod graph;
+mod history;
 mod image;
 mod index;
 mod init;

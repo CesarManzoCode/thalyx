@@ -3424,6 +3424,71 @@ print("%s %s %s %s" % (built, defined, used, control))
     fi
 fi
 
+# ───────────────────── 25. the journal, asked from a session instead of a subcommand
+
+step "25. what this machine did, answered by the machine"
+
+# `Superficie-para-el-LLM.md`, punto F2. The journal has been written since
+# `Journal-y-Snapshots` and read by exactly one thing — `thalyx journal` — which
+# is a subcommand, not something a caller living in a session can reach.
+#
+# ## Why it uses the store the earlier stages installed into
+#
+# So the history under test is one this script actually produced, rather than
+# lines written to make a check pass. If stage 15 installed a module, this must
+# be able to say so; if it did not, there is nothing here to prove and the check
+# says that instead of passing on an empty file.
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so the journal could not be read from a session"
+elif [ ! -f "$STORE/journal.jsonl" ]; then
+    unproven "nothing earlier in this run installed anything, so there is no history to read"
+else
+    printf '%s\n' "structured on" "historia" salir | \
+        THALYX_ROOT="$STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/history.log"
+
+    HISTORY=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "history":
+        rows = value.get("entries") or []
+        operations = {row.get("operation") for row in rows}
+        print("%s %s %s %s" % (
+            value.get("total"),
+            "install_module" in operations,
+            value.get("covers"),
+            value.get("complete_record_of_the_machine")))
+        break
+else:
+    print("none none none none")
+' "$WORK/history.log")
+
+    set -- $HISTORY
+    H_TOTAL=$1; H_INSTALL=$2; H_COVERS=$3; H_COMPLETE=$4
+
+    # The caveat is checked as hard as the rows are. A history that reads as
+    # "everything that happened here" is one a caller will use to conclude that
+    # nothing else did — and a person with a shell can move a file without
+    # anything in this file knowing.
+    if [ "$H_INSTALL" = "True" ] && [ "$H_COVERS" = "operations_thalyx_performed" ] \
+       && [ "$H_COMPLETE" = "False" ]; then
+        proven "a session can read the $H_TOTAL things this machine recorded doing, and is told what that does not cover"
+    elif [ "$H_TOTAL" = "none" ]; then
+        failed "the session answered nothing to \`historia\`; see $WORK/history.log"
+    elif [ "$H_INSTALL" != "True" ]; then
+        failed "the history does not mention the install this script performed; see $WORK/history.log"
+    else
+        failed "the history did not say what it does not cover (covers=$H_COVERS complete=$H_COMPLETE); see $WORK/history.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
