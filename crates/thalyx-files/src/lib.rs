@@ -318,6 +318,34 @@ pub struct Excerpt {
     /// instead of leaving a person believing they saw the file.
     pub of_bytes: u64,
     pub truncated: bool,
+    /// SHA-256 of the **whole** file, not of the excerpt.
+    ///
+    /// `Superficie-para-el-LLM.md`, punto **B2**: the second cost an LLM pays is
+    /// context, and the commonest way it pays it is re-reading a file to find
+    /// out whether what it read twenty steps ago is still true. With this, that
+    /// question is a comparison instead of a second read.
+    ///
+    /// Of the whole file **because a hash of the excerpt would be a hash of
+    /// Thalyx's answer rather than of the machine**: two different files that
+    /// share their first 64 kB would hash the same, and the caller would carry
+    /// on believing nothing had changed.
+    pub digest: String,
+}
+
+/// SHA-256, lowercase hex.
+///
+/// The same algorithm the rest of Thalyx already verifies artefacts with, so a
+/// caller that has one of these can compare it against anything else the system
+/// says about the same bytes without converting between two families of hash.
+fn digest_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Read a file as text, refusing rather than spraying a terminal with bytes.
@@ -365,6 +393,7 @@ pub fn read(path: &Path) -> Result<Excerpt, FileError> {
             text: text.to_string(),
             of_bytes,
             truncated,
+            digest: digest_of(&bytes),
         }),
         Err(_) => Err(FileError::NotText {
             path: path.to_path_buf(),
@@ -944,6 +973,96 @@ mod tests {
         assert!(!dir.path().join("a").exists());
     }
 
+    // ─────────────────────────────────────────── rehearsing before doing (D1)
+
+    #[test]
+    fn a_rehearsal_leaves_the_disk_exactly_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("origen"), "doce bytes").unwrap();
+        std::fs::create_dir(dir.path().join("carpeta")).unwrap();
+
+        let before: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        foresee_make_directory(&dir.path().join("nueva")).unwrap();
+        foresee_make_file(&dir.path().join("nuevo.txt")).unwrap();
+        foresee_copy(&dir.path().join("origen"), &dir.path().join("destino")).unwrap();
+        foresee_move(&dir.path().join("origen"), &dir.path().join("otro")).unwrap();
+        foresee_remove(&dir.path().join("carpeta")).unwrap();
+
+        let after: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        // The whole promise of a rehearsal, and the one that cannot be assumed:
+        // five of them, including one that rehearses deleting a folder.
+        assert_eq!(before.len(), after.len(), "{before:?} became {after:?}");
+        assert!(dir.path().join("origen").exists());
+        assert!(dir.path().join("carpeta").exists());
+        assert!(!dir.path().join("destino").exists());
+    }
+
+    #[test]
+    fn a_rehearsal_and_the_operation_report_the_same_thing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("origen"), "doce bytes!").unwrap();
+
+        let foreseen =
+            foresee_copy(&dir.path().join("origen"), &dir.path().join("destino")).unwrap();
+        let done = copy(&dir.path().join("origen"), &dir.path().join("destino")).unwrap();
+
+        // Not a coincidence and not two implementations agreeing: `copy` calls
+        // `foresee_copy`. A rehearsal that said "this would work" while the real
+        // operation refused would be worse than having no rehearsal at all.
+        assert_eq!(foreseen, done);
+    }
+
+    #[test]
+    fn a_rehearsal_refuses_exactly_where_the_operation_would() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ya-esta"), "x").unwrap();
+
+        let foreseen = foresee_make_file(&dir.path().join("ya-esta")).unwrap_err();
+        let real = make_file(&dir.path().join("ya-esta")).unwrap_err();
+        assert_eq!(foreseen.word(), real.word());
+
+        let foreseen = foresee_remove(&dir.path().join("fantasma")).unwrap_err();
+        let real = remove(&dir.path().join("fantasma")).unwrap_err();
+        assert_eq!(foreseen.word(), real.word());
+    }
+
+    #[test]
+    fn removing_a_folder_says_how_much_it_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/uno.txt"), "12345").unwrap();
+        std::fs::write(dir.path().join("a/dos.txt"), "123").unwrap();
+
+        // It used to report 0 for a folder, which tells a person nothing about
+        // what they just lost and tells an agent rehearsing an `rm` nothing at
+        // all about how much is at stake.
+        assert_eq!(remove(&dir.path().join("a")).unwrap().bytes, 8);
+    }
+
+    #[test]
+    fn weighing_a_tree_does_not_follow_a_link_out_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("carpeta")).unwrap();
+        std::fs::write(dir.path().join("grande"), vec![b'x'; 5000]).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("grande"), dir.path().join("carpeta/enlace"))
+            .unwrap();
+
+        // Following it would report somebody else's file as part of what is
+        // about to be destroyed — and on a link to an ancestor, forever.
+        assert_eq!(
+            foresee_remove(&dir.path().join("carpeta")).unwrap().bytes,
+            0
+        );
+    }
+
     #[test]
     fn removing_something_that_is_not_there_says_so() {
         let dir = tempfile::tempdir().unwrap();
@@ -1094,12 +1213,57 @@ impl Did {
     }
 }
 
-/// Make a directory, and every parent it needs.
+// ───────────────────────────────────────────────────── rehearsing before doing
+//
+// `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **D1**. The fourth
+// cost an LLM pays is what a mistake costs, and it is the one that changes
+// behaviour rather than efficiency: in a system where everything is
+// irreversible a rational agent turns timid — it asks too much, tries too
+// little — and that does not read as prudence, it reads as incapacity.
+//
+// Today the only way anything can find out what a command does is to run it.
+//
+// ## Why these are not a second implementation
+//
+// Each `foresee_*` is **the check half of the real operation**, and the real
+// operation calls it. There is no path where a rehearsal and the thing it
+// rehearses can disagree about whether something is allowed, because there is
+// one piece of code deciding — a second copy that answered "this would work"
+// while the real one refused would be worse than having no rehearsal at all.
+//
+// What a rehearsal cannot promise is the future. It reports what is true now,
+// and the machine can change between the two — a rehearsal is a **prediction**
+// and it is named `foresee` rather than `check` for that reason.
+
+/// The weight of something, following nothing.
 ///
-/// Making the parents is what a person and an agent both mean by "make this
-/// folder": failing on a missing parent forces a loop that recreates exactly
-/// this, one level at a time.
-pub fn make_directory(path: &Path) -> Result<Done, FileError> {
+/// A directory is the sum of what is under it. Both the rehearsal and the real
+/// operation use this, so `rm` can say how much it destroyed instead of the `0`
+/// it used to report for a folder — which told a person nothing about what they
+/// had just lost.
+fn weigh(path: &Path) -> u64 {
+    let Ok(meta) = path.symlink_metadata() else {
+        return 0;
+    };
+    if meta.file_type().is_symlink() {
+        // A link weighs nothing of its own, and following it would report
+        // somebody else's file as part of what is about to go.
+        return 0;
+    }
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    let Ok(reader) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    reader
+        .filter_map(Result::ok)
+        .map(|entry| weigh(&entry.path()))
+        .sum()
+}
+
+/// What [`make_directory`] would do, without doing it.
+pub fn foresee_make_directory(path: &Path) -> Result<Done, FileError> {
     // Checked first so that an existing directory is refused rather than
     // reported as made. "It is already there" and "I made it" are different
     // facts, and an agent that cannot tell them apart cannot tell whether it is
@@ -1107,7 +1271,6 @@ pub fn make_directory(path: &Path) -> Result<Done, FileError> {
     if path.symlink_metadata().is_ok() {
         return Err(FileError::Exists(path.to_path_buf()));
     }
-    std::fs::create_dir_all(path).map_err(|error| classify(path, error))?;
     Ok(Done {
         what: Did::MadeDirectory,
         path: path.to_path_buf(),
@@ -1116,19 +1279,11 @@ pub fn make_directory(path: &Path) -> Result<Done, FileError> {
     })
 }
 
-/// Make an empty file, refusing to flatten one that is already there.
-pub fn make_file(path: &Path) -> Result<Done, FileError> {
+/// What [`make_file`] would do, without doing it.
+pub fn foresee_make_file(path: &Path) -> Result<Done, FileError> {
     if path.symlink_metadata().is_ok() {
         return Err(FileError::Exists(path.to_path_buf()));
     }
-    // `create_new`, not `create`: the check above and the creation are two
-    // moments, and between them something else can appear. The kernel deciding
-    // is the only version with no gap in it.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| classify(path, error))?;
     Ok(Done {
         what: Did::MadeFile,
         path: path.to_path_buf(),
@@ -1137,26 +1292,90 @@ pub fn make_file(path: &Path) -> Result<Done, FileError> {
     })
 }
 
-/// Copy a file or a whole directory.
-pub fn copy(from: &Path, to: &Path) -> Result<Done, FileError> {
-    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
+/// What [`copy`] would do, without doing it.
+pub fn foresee_copy(from: &Path, to: &Path) -> Result<Done, FileError> {
+    from.symlink_metadata().map_err(|e| classify(from, e))?;
     // Refused rather than merged or flattened. Overwriting is a separate
     // request, and one that costs somebody a file when it is assumed.
     if to.symlink_metadata().is_ok() {
         return Err(FileError::Exists(to.to_path_buf()));
     }
+    Ok(Done {
+        what: Did::Copied,
+        path: from.to_path_buf(),
+        to: Some(to.to_path_buf()),
+        bytes: weigh(from),
+    })
+}
+
+/// What [`move_to`] would do, without doing it.
+pub fn foresee_move(from: &Path, to: &Path) -> Result<Done, FileError> {
+    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
+    if to.symlink_metadata().is_ok() {
+        return Err(FileError::Exists(to.to_path_buf()));
+    }
+    Ok(Done {
+        what: Did::Moved,
+        path: from.to_path_buf(),
+        to: Some(to.to_path_buf()),
+        bytes: if meta.is_dir() { 0 } else { meta.len() },
+    })
+}
+
+/// What [`remove`] would do, without doing it.
+///
+/// The one worth rehearsing most, and the only one whose rehearsal cannot be
+/// checked afterwards: `/home` is decreed to be the one place no rollback of
+/// ours can put back.
+pub fn foresee_remove(path: &Path) -> Result<Done, FileError> {
+    path.symlink_metadata().map_err(|e| classify(path, e))?;
+    Ok(Done {
+        what: Did::Removed,
+        path: path.to_path_buf(),
+        to: None,
+        bytes: weigh(path),
+    })
+}
+
+/// Make a directory, and every parent it needs.
+///
+/// Making the parents is what a person and an agent both mean by "make this
+/// folder": failing on a missing parent forces a loop that recreates exactly
+/// this, one level at a time.
+pub fn make_directory(path: &Path) -> Result<Done, FileError> {
+    let done = foresee_make_directory(path)?;
+    std::fs::create_dir_all(path).map_err(|error| classify(path, error))?;
+    Ok(done)
+}
+
+/// Make an empty file, refusing to flatten one that is already there.
+pub fn make_file(path: &Path) -> Result<Done, FileError> {
+    let done = foresee_make_file(path)?;
+    // `create_new`, not `create`: the check above and the creation are two
+    // moments, and between them something else can appear. The kernel deciding
+    // is the only version with no gap in it.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| classify(path, error))?;
+    Ok(done)
+}
+
+/// Copy a file or a whole directory.
+pub fn copy(from: &Path, to: &Path) -> Result<Done, FileError> {
+    let foreseen = foresee_copy(from, to)?;
+    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
 
     let bytes = if meta.is_dir() {
         copy_tree(from, to)?
     } else {
         std::fs::copy(from, to).map_err(|error| classify(from, error))?
     };
-    Ok(Done {
-        what: Did::Copied,
-        path: from.to_path_buf(),
-        to: Some(to.to_path_buf()),
-        bytes,
-    })
+    // The measured count, not the predicted one. They agree in every ordinary
+    // case; when they do not, something changed between the two moments and the
+    // truth is what landed on the disk.
+    Ok(Done { bytes, ..foreseen })
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<u64, FileError> {
@@ -1186,11 +1405,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<u64, FileError> {
 
 /// Move something, across filesystems if it has to.
 pub fn move_to(from: &Path, to: &Path) -> Result<Done, FileError> {
-    let meta = from.symlink_metadata().map_err(|e| classify(from, e))?;
-    if to.symlink_metadata().is_ok() {
-        return Err(FileError::Exists(to.to_path_buf()));
-    }
-    let bytes = if meta.is_dir() { 0 } else { meta.len() };
+    let done = foresee_move(from, to)?;
 
     match std::fs::rename(from, to) {
         Ok(()) => {}
@@ -1204,12 +1419,7 @@ pub fn move_to(from: &Path, to: &Path) -> Result<Done, FileError> {
         }
         Err(error) => return Err(classify(from, error)),
     }
-    Ok(Done {
-        what: Did::Moved,
-        path: from.to_path_buf(),
-        to: Some(to.to_path_buf()),
-        bytes,
-    })
+    Ok(done)
 }
 
 /// `EXDEV`, spelled out rather than linked: this crate has no libc dependency
@@ -1220,22 +1430,17 @@ fn libc_exdev() -> i32 {
 
 /// Delete a file, a link, or a directory and what is under it.
 pub fn remove(path: &Path) -> Result<Done, FileError> {
+    let done = foresee_remove(path)?;
     let meta = path.symlink_metadata().map_err(|e| classify(path, e))?;
-    let bytes = if meta.is_dir() { 0 } else { meta.len() };
 
-    if meta.is_dir() {
+    if meta.is_dir() && !meta.file_type().is_symlink() {
         std::fs::remove_dir_all(path).map_err(|error| classify(path, error))?;
     } else {
         // `remove_file` on a symlink deletes the link. Anything that resolved it
         // first would delete what it points at, which is somebody else's file.
         std::fs::remove_file(path).map_err(|error| classify(path, error))?;
     }
-    Ok(Done {
-        what: Did::Removed,
-        path: path.to_path_buf(),
-        to: None,
-        bytes,
-    })
+    Ok(done)
 }
 
 // ──────────────────────────────────────────────────────────────────── `*.txt`

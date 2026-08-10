@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 1040 of them**, across unit tests, fault injection
+**Built and covered by tests: 1075 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -317,11 +317,30 @@ object, so a command that touched three files is still one answer. `structured
 off` brings the sentences back, and the acknowledgement carries those words for
 anyone who turned it on by accident.
 
-What is **not** exposed yet is everything else the session knows. `modulos`,
-`permisos`, `recuerdos`, `estado` and the rest still answer only in prose, so
-the four things that would make this better rather than merely different — the
-semantic index, the rollback, the per-field provenance, the per-task permissions
-— remain unreachable to any program.
+**The machine also describes itself.** `describe` answers with all 29 verbs —
+names, arguments, flags, which `op` each answers with, whether it can change
+anything, and the errors it can give. Nothing on Linux can do that: `--help` is
+prose, written once per tool, inconsistent between any two, and often absent.
+
+**And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
+would go and touches nothing, built so the rehearsal *is* the check half of the
+real operation rather than a second implementation that could disagree with it.
+Every action that changed something says how to undo it — and a delete says
+plainly that it cannot be undone, because inside `/home` no rollback of ours
+reaches.
+
+**The semantic index is reachable from a session.** `indexar`, then `depende
+<file>` and `usan <file>` — *what refers to this*, which no amount of walking
+directories can answer, because dependency is not a property of location. Every
+answer carries the index's freshness in the same object as the rows, so a tree
+that changed behind Thalyx's back is reported as stale rather than answered as
+though it had not.
+
+What is **not** exposed yet: the journal, module listing, and the three things
+that need hardware this container does not have — a named attempt that can be
+abandoned whole, "what changed since I looked", and a foreign agent running as a
+task with a grant that expires. Those are tracked in
+`vault/02-Arquitectura/Superficie-para-el-LLM.md` with what each one costs.
 
 **Verified on real hardware**: 110 checks, on one machine with a BPF LSM, cgroup
 v2 and Btrfs — `sudo ./dev/verify.sh`, on 2026-08-07 — including the kernel

@@ -14,9 +14,119 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La cara estructurada existe, y encontró dos defectos en la humana — 2026-08-09
+> ## La máquina se describe a sí misma, ensaya antes de hacer, y el índice ya es alcanzable — 2026-08-09
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar pidió cerrar [[Superficie-para-el-LLM]] hasta donde el trade-off fuera
+> claro. **Ocho de los diecinueve puntos quedaron hechos**, tres quedaron
+> nombrados como negociación —los tres necesitan hierro que este contenedor no
+> tiene— y tres más quedaron sin hacer por tiempo y no por riesgo.
+>
+> ### A1: la máquina se describe a sí misma, y era la llave
+>
+> `describe` contesta los **29 verbos**: nombres, argumentos, banderas, con qué
+> `op` responde cada uno, si puede cambiar la máquina y qué errores da. Un agente
+> que llega no necesita que nadie le pegue una lista en el prompt: pregunta.
+> Ningún sistema operativo puede hacer esto — en Linux `--help` es prosa, es por
+> herramienta, no es consistente y a veces no está.
+>
+> **Y arregló una duplicación real.** La lista de verbos vivía en **tres** sitios
+> —el `match` de la sesión, el banner y las completaciones— y ya había divergido
+> una vez. Ahora los nombres viven una vez, las completaciones se **generan**, y
+> dos pruebas atan las otras dos copias **corriendo la sesión**:
+>
+> - cada nombre del catálogo se teclea en un prompt de verdad y tiene que ser
+>   entendido;
+> - cada nombre del catálogo tiene que aparecer en el banner.
+>
+> La segunda encontró algo el mismo día: **bajo un programa, `apagar` existía y
+> el banner no lo nombraba**, así que quien lo tecleaba recibía una negativa por
+> un verbo del que nunca se le habló.
+>
+> ### D1: ensayar, que es lo que cambia el comportamiento
+>
+> `ensayo rm *.log` dice qué se iría y no toca nada. Lo importante es **cómo está
+> construido**: cada `foresee_*` es *la mitad de comprobación de la operación
+> real*, y la operación real la llama. No hay camino donde el ensayo y lo
+> ensayado puedan discrepar sobre si algo se permite, porque hay **un solo
+> código** decidiendo — un ensayo que dijera «esto funcionaría» mientras la
+> operación se niega sería peor que no tener ensayo.
+>
+> Es prefijo y no modo, a propósito: un modo se queda encendido y entonces un
+> `rm` de verdad no hace nada mientras quien lo pidió cree que sí.
+>
+> Los cinco verbos que cambian la máquina y **no** tienen mitad de comprobación
+> —`instalar`, `correr`, `revertir`, `instalar-en`, `apagar`— contestan que no se
+> pueden ensayar. Un plan vacío se leería como «esto no haría nada», que es lo
+> contrario de la verdad.
+>
+> ### C1: el índice semántico, alcanzable por fin
+>
+> `indexar`, `depende <archivo>`, `usan <archivo>`. **La pregunta que ningún
+> recorrido de carpetas contesta** —quién se refiere a esto— por primera vez al
+> alcance de algo que vive en una sesión. Era el ejemplo que Cesar usó al pedir
+> el catálogo, y [[FS-en-Grafo]] se llama a sí mismo el ejemplo fundacional; lo
+> había sido durante meses sin que nada fuera de `thalyx graph` pudiera
+> preguntarle nada.
+>
+> Cada respuesta trae **la vigencia del índice en el mismo objeto que las filas**
+> — la regla de honestidad de [[FS-en-Grafo]], que es decreto precisamente porque
+> separar el aviso de los datos es cómo un caché empieza a confundirse con la
+> verdad. Un árbol que cambió por detrás contesta `stale` y **devuelve las filas
+> igual**: no están mal, están incompletas, y quien lee decide.
+>
+> ### Lo demás que quedó hecho
+>
+> - **A2 — el error nombra su remedio.** `remove_or_rename`, `look_first`,
+>   `use_list`, y **`cannot` cuando no hay salida**: inventar un remedio
+>   alentador manda a quien lee a un ciclo reintentando algo que nunca va a
+>   funcionar.
+> - **A3 — `estado` en un objeto**, con los tres estados de la regla 10 sin
+>   colapsar: `found`, `absent`, `unreadable`. Quien lee `absent` va a arreglar
+>   algo; quien lee `unreadable` sabe que la máquina no contestó, que es otro
+>   trabajo.
+> - **B2 — cada lectura trae el `sha256` del archivo entero.** «¿Sigue siendo
+>   cierto lo que leí?» pasa de ser una relectura a ser una comparación. Del
+>   archivo **entero** y no del extracto, porque dos archivos que comparten sus
+>   primeros 64 kB darían el mismo hash y quien mira seguiría creyendo que nada
+>   cambió. Hay prueba con exactamente ese par.
+> - **D3 — cada acción dice cómo se deshace.** Lo hecho se deshace borrando lo
+>   que se hizo —**el destino de una copia y nunca el original**, que es un error
+>   que costaría el archivo del que se copió— y un `mv` se deshace moviendo de
+>   vuelta. Un borrado trae `undo: null`, porque `/home` no lo devuelve ningún
+>   rollback nuestro y **eso hay que saberlo antes, no después**.
+> - **F1 — `recuerdos` estructurado**, con las tres listas separadas: lo dicho,
+>   lo que sigue comprobando, y lo que ya no se puede confirmar. Juntarlas
+>   entregaría lo tercero como si fuera lo segundo, que es la única cosa que la
+>   memoria está construida para no hacer.
+> - **`rm` de una carpeta ya dice cuánto destruyó.** Reportaba `0`, que no le
+>   dice nada a una persona sobre lo que acaba de perder ni a un agente sobre lo
+>   que está en juego. Y el peso **no sigue enlaces**: seguirlos reportaría el
+>   archivo de alguien más como parte de lo que va a desaparecer.
+>
+> **1075 pruebas** (1040 antes), `clippy` limpio. Etapa **22** en `verify.sh`,
+> cada comprobación con su control.
+>
+> ### Los tres que no construí, y por qué — esto es lo que hay que negociar
+>
+> Cesar dijo: *«si en alguno perdemos demasiado, entonces dime y lo
+> negociamos»*. Aquí se perdería, y los tres se pierden por la misma razón —
+> **este contenedor no tiene con qué comprobarlos**:
+>
+> | Punto | Qué necesita | Por qué no se hizo a ciegas |
+> |---|---|---|
+> | **D2** el intento con nombre | Btrfs | Es el de mayor valor que queda. Un falso de un snapshot que no falla como falla un snapshot **no es un falso, es otro sistema** — regla 8 |
+> | **B3** qué cambió desde X | BPF | Consumir el ringbuf es código BPF, y uno que falla el verificador tumba al watcher entero. Va solo, en su corrida |
+> | **E1** el agente como tarea con concesión | LSM y cgroups delegados | Lo único del catálogo que toca **seguridad**: una equivocación no cuesta una prueba roja, cuesta una concesión mal puesta |
+>
+> Los otros tres que quedan —**B1** acotar respuestas, **C2** búsqueda por
+> símbolos, **F2** el journal— **sí se pueden comprobar aquí** y quedaron sin
+> hacer por tiempo, no por riesgo.
+>
+> ## La cara estructurada existe, y encontró dos defectos en la humana — 2026-08-09
+>
+> Cómo se llegó a lo de arriba.
 >
 > El punto 4b está hecho: **un programa ya puede pedir los hechos en vez de las
 > frases.** `structured on` en la sesión, y de ahí en adelante cada verbo de

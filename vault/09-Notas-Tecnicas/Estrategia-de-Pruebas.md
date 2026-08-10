@@ -2659,6 +2659,56 @@ Corolario incómodo, y por eso se escribe: **corregir el defecto puede destruir 
 8 de 9.** Se corrige igual. Un instrumento que falló por su construcción no
 adquiere validez porque el número que produjo agrade.
 
+## Regla derivada: un catálogo se prueba corriéndolo, nunca comparándolo con otra lista
+
+**2026-08-09.** `describe` dice qué verbos tiene la máquina, y un agente que
+llega lo lee en vez de que alguien se los pegue en el prompt. Eso sólo vale si
+la respuesta es cierta, y una tabla de verbos es justo lo que se queda atrás en
+silencio: la lista vivía en **tres** sitios —el `match` de la sesión, el banner y
+las completaciones— y una de las tres ya había divergido.
+
+La tentación es probar que las tres listas coinciden. **Eso no prueba nada**: dos
+tablas iguales pueden estar las dos equivocadas, y una prueba que compara
+constantes pasa para siempre en cuanto alguien copia el error a los dos lados.
+
+> **Un catálogo se comprueba contra la máquina, no contra otra copia de sí
+> mismo.** Cada nombre que el catálogo anuncia se **teclea en un prompt de
+> verdad** y tiene que ser entendido; cada nombre tiene que **aparecer en el
+> banner** de la sesión que arranca. Lo que se lee es la salida del binario
+> corriendo, nunca la tabla enlazada dentro de la prueba — enlazarla dejaría que
+> las dos se equivoquen juntas.
+
+Encontró un defecto el mismo día que se escribió: bajo un programa, `apagar`
+existía y el banner no lo nombraba, así que quien lo tecleaba recibía una
+negativa por un verbo del que nadie le había hablado.
+
+## Regla derivada: un ensayo no es una segunda implementación
+
+**2026-08-09.** `ensayo rm *.log` dice qué se iría sin tocar nada. La forma
+obvia de construirlo —una función que comprueba lo mismo que la operación real—
+es la forma equivocada, y el motivo es la regla 8 con otra ropa:
+
+> **Un ensayo que dijera «esto funcionaría» mientras la operación real se niega
+> es peor que no tener ensayo.** Un ensayo que se equivoca en la dirección
+> optimista es exactamente la trampa que se construyó para evitar.
+
+Así que cada `foresee_*` es **la mitad de comprobación de la operación real**, y
+la operación real la llama. No hay camino donde las dos discrepen sobre si algo
+se permite, porque hay un solo código decidiendo. La prueba que lo fija no
+compara dos listas de errores esperados: pide el mismo caso a las dos y exige la
+**misma palabra**.
+
+Y hay una honestidad que el ensayo no puede evitar y sí puede declarar: reporta
+lo que es cierto **ahora**, y la máquina puede cambiar entre los dos momentos. Se
+llama `foresee` y no `check` por eso — es una predicción, y llamarla de otro modo
+sería prometer lo que no puede.
+
+Corolario, y es lo que decide qué hacer con lo que no tiene mitad de
+comprobación: los cinco verbos que cambian la máquina y no la tienen
+—`instalar`, `correr`, `revertir`, `instalar-en`, `apagar`— **contestan que no
+se pueden ensayar**. Un plan vacío se leería como «esto no haría nada», que es
+lo contrario de la verdad, y es la regla 10 otra vez.
+
 ## Regla derivada: el primer renglón de un modo nuevo lo escribió el modo anterior
 
 **2026-08-09.** La cara estructurada contesta un objeto JSON por renglón, y

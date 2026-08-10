@@ -475,6 +475,296 @@ fn a_verb_typed_alone_is_a_verb_and_not_a_sentence_for_the_agent() {
     );
 }
 
+// ──────────────────────────────────────── rehearsing, and saying how to undo (D1, D3)
+
+#[test]
+fn a_rehearsed_delete_says_what_would_go_and_leaves_it_there() {
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("uno.log"), "12345").expect("a file");
+    std::fs::write(home.path().join("dos.log"), "123").expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "ensayo rm *.log",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+    let rehearsed = answer_to(&objects, "rehearse");
+
+    assert_eq!(rehearsed["count"], serde_json::json!(2));
+    assert_eq!(rehearsed["ok"], serde_json::json!(true));
+
+    // Against the disk, from outside. This is the whole claim: it worked out
+    // what would happen and nothing happened.
+    assert!(home.path().join("uno.log").exists());
+    assert!(home.path().join("dos.log").exists());
+}
+
+#[test]
+fn a_rehearsal_refuses_where_the_real_thing_would_and_gives_the_same_word() {
+    let home = a_home_with_things_in_it();
+
+    let rehearsed = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "ensayo rm fantasma",
+            "salir",
+        ],
+    );
+    let real = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "rm fantasma",
+            "salir",
+        ],
+    );
+
+    let rehearsed = objects(&rehearsed);
+    let real = objects(&real);
+    // Not two implementations agreeing — `remove` calls `foresee_remove`. A
+    // rehearsal that said "this would work" where the real one refuses would be
+    // worse than having no rehearsal.
+    assert_eq!(
+        answer_to(&rehearsed, "rehearse")["results"][0]["error"],
+        answer_to(&real, "remove")["results"][0]["error"],
+    );
+}
+
+#[test]
+fn rehearsing_something_harmless_says_so_instead_of_pretending_to_work() {
+    let home = a_home_with_things_in_it();
+    let output = piped(home.path(), &["structured on", "ensayo ls", "salir"]);
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // Rehearsing `ls` is `ls`, and answering it here would be a second and worse
+    // implementation of it. Saying nothing would leave a caller waiting.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["error"], serde_json::json!("harmless"));
+}
+
+#[test]
+fn rehearsing_a_verb_that_has_no_check_half_says_that_rather_than_reporting_nothing() {
+    let home = a_home_with_things_in_it();
+    let output = piped(home.path(), &["structured on", "ensayo revertir", "salir"]);
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // `revertir` changes the machine and has no check half yet. A rehearsal that
+    // quietly reported an empty plan would read as "this would do nothing",
+    // which is the opposite of true.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["error"], serde_json::json!("cannot"));
+}
+
+#[test]
+fn something_that_was_made_says_how_to_unmake_it() {
+    let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "mkdir nueva",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+    let made = &answer_to(&objects, "make_directory")["results"][0];
+
+    let undo = &made["undo"];
+    assert_eq!(undo["op"], serde_json::json!("remove"));
+    assert_eq!(
+        undo["path"],
+        serde_json::json!(home.path().join("nueva").display().to_string())
+    );
+}
+
+#[test]
+fn a_copy_is_undone_by_removing_the_copy_and_never_the_original() {
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("origen"), "x").expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "cp origen destino",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+    let copied = &answer_to(&objects, "copy")["results"][0];
+
+    // The failure this prevents is not subtle: undoing a copy by removing
+    // `path` would delete the file the person copied *from*.
+    assert_eq!(
+        copied["undo"]["path"],
+        serde_json::json!(home.path().join("destino").display().to_string())
+    );
+}
+
+#[test]
+fn a_delete_says_it_cannot_be_undone_instead_of_saying_nothing() {
+    let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "rm notas.txt",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+    let removed = &answer_to(&objects, "remove")["results"][0];
+
+    // Rule 10 applied to what is reversible: *there is no way back* and
+    // *nothing was said about a way back* are two facts, and only one of them
+    // is acceptable to hand a caller. /home is decreed to be the one place no
+    // rollback of ours can reach.
+    assert!(
+        removed.get("undo").is_some(),
+        "nothing was said about undoing a delete: {removed}"
+    );
+    assert_eq!(removed["undo"], serde_json::Value::Null);
+}
+
+// ─────────────────────────────────────────── the error names its remedy (A2)
+
+#[test]
+fn an_error_names_what_would_get_past_it() {
+    let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "cp notas.txt notas.txt",
+            "cat fantasma",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+
+    // A word, not a sentence: the sentence in `message` is English that will be
+    // reworded and anything matching on it breaks when somebody improves it.
+    assert_eq!(
+        answer_to(&objects, "copy")["results"][0]["remedy"],
+        serde_json::json!("remove_or_rename")
+    );
+    assert_eq!(
+        answer_to(&objects, "read")["remedy"],
+        serde_json::json!("look_first")
+    );
+}
+
+#[test]
+fn an_error_with_no_way_out_says_cannot_rather_than_inventing_one() {
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("binario"), [0u8, 1, 2, 3, 0, 255]).expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "cat binario",
+            "salir",
+        ],
+    );
+    let objects = objects(&output);
+    let read = answer_to(&objects, "read");
+
+    // An encouraging remedy here would send a caller into a loop retrying
+    // something that will never work.
+    assert_eq!(read["error"], serde_json::json!("not_text"));
+    assert_eq!(read["remedy"], serde_json::json!("cannot"));
+}
+
+// ─────────────────────────── the identity of what was read, so it need not be re-read (B2)
+
+#[test]
+fn a_read_carries_the_identity_of_the_whole_file() {
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("uno.txt"), "hola\n").expect("a file");
+    std::fs::write(home.path().join("otro.txt"), "hola\n").expect("a file");
+    std::fs::write(home.path().join("distinto.txt"), "adios\n").expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "cat uno.txt",
+            "cat otro.txt",
+            "cat distinto.txt",
+            "salir",
+        ],
+    );
+    let reads: Vec<serde_json::Value> = objects(&output)
+        .into_iter()
+        .filter(|value| value["op"] == serde_json::json!("read"))
+        .collect();
+
+    let digest = |value: &serde_json::Value| value["sha256"].as_str().unwrap().to_string();
+
+    // Same bytes, same answer: this is what makes "is what I read still true" a
+    // comparison instead of a second read.
+    assert_eq!(digest(&reads[0]), digest(&reads[1]));
+    assert_ne!(digest(&reads[0]), digest(&reads[2]));
+    assert_eq!(
+        digest(&reads[0]).len(),
+        64,
+        "not a sha256: {}",
+        digest(&reads[0])
+    );
+}
+
+#[test]
+fn the_identity_is_of_the_file_and_not_of_the_answer() {
+    let home = tempfile::tempdir().expect("a store");
+    // Two files that share their first 64 kB and differ after it. The excerpt
+    // cuts at 64 kB, so hashing what was shown would call these the same file.
+    let shared = vec![b'x'; 64 * 1024];
+    let mut uno = shared.clone();
+    uno.extend_from_slice(b"final uno\n");
+    let mut dos = shared;
+    dos.extend_from_slice(b"final dos\n");
+    std::fs::write(home.path().join("uno"), &uno).expect("a file");
+    std::fs::write(home.path().join("dos"), &dos).expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            "structured on",
+            &inside(home.path()),
+            "cat uno",
+            "cat dos",
+            "salir",
+        ],
+    );
+    let reads: Vec<serde_json::Value> = objects(&output)
+        .into_iter()
+        .filter(|value| value["op"] == serde_json::json!("read"))
+        .collect();
+
+    assert_eq!(reads[0]["truncated"], serde_json::json!(true));
+    // The failure this prevents: a caller compares the two answers, sees the
+    // same hash, and carries on believing the file it is watching never changed
+    // — because everything that differs is past the cut.
+    assert_ne!(reads[0]["sha256"], reads[1]["sha256"]);
+}
+
 // ────────────────────────────────────────────────────── facts, checked against disk
 
 #[test]

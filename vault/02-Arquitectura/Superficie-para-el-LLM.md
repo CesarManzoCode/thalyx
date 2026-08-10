@@ -356,28 +356,62 @@ derecha está decidido**; es el catálogo, no un plan.
 
 | | Punto | Estado |
 |---|---|---|
-| A1 | Catálogo de verbos legible por máquina | Propuesto |
-| A2 | El error nombra su remedio | Propuesto |
-| A3 | El estado de la máquina en un objeto | Propuesto |
+| A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 29 verbos |
+| A2 | El error nombra su remedio | **Hecho** — `remedy` como palabra estable |
+| A3 | El estado de la máquina en un objeto | **Hecho** — `estado`, con los tres estados de la regla 10 |
 | B1 | Respuestas acotadas con total y cursor | Propuesto |
-| B2 | Identidad exacta de lo leído | Propuesto |
-| B3 | Qué cambió desde X | Medio construido: el ringbuf existe y nadie lo consume |
-| C1 | Índice semántico expuesto | **Construido, sin exponer** |
+| B2 | Identidad exacta de lo leído | **Hecho** — `sha256` del archivo entero en cada lectura |
+| B3 | Qué cambió desde X | Medio construido: el ringbuf existe y nadie lo consume. **Sólo hierro** |
+| C1 | Índice semántico expuesto | **Hecho** — `indexar`, `depende`, `usan` |
 | C2 | Búsqueda por símbolos | Medio construido: el parser existe |
-| C3 | Vigencia en toda respuesta | Decretado para el índice, sin generalizar |
-| D1 | Ensayo en todo verbo que cambia | Propuesto |
-| D2 | El intento con nombre | Medio construido: snapshots y journal existen |
-| D3 | Cada acción dice cómo se deshace | Propuesto |
-| E1 | El agente ajeno como tarea con concesión | **Construido para módulos**, sin extender |
-| E2 | Pedir permiso en caliente | Fuera de la v1 de la API por decreto, con fecha de llegada |
-| E3 | Procedencia de lo que hizo el agente | **Construido para contratos**, sin extender |
-| F1 | Memoria persistente accesible | **Construida, sin exponer** |
-| F2 | Journal legible desde afuera | **Construido, sin exponer** |
+| C3 | Vigencia en toda respuesta | **Hecho donde hay caché**: cada respuesta del índice trae `fresh` |
+| D1 | Ensayo en todo verbo que cambia | **Hecho para los verbos de archivos** — `ensayo`; los otros cinco dicen que no pueden |
+| D2 | El intento con nombre | Medio construido: snapshots y journal existen. **Sólo hierro** |
+| D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
+| E1 | El agente ajeno como tarea con concesión | Construido para módulos, sin extender. **Sólo hierro** |
+| E2 | Pedir permiso en caliente | Fuera de la v1 de la API por decreto |
+| E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
+| F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
+| F2 | Journal legible desde afuera | Propuesto: no es verbo de la sesión todavía |
 | G1–G4 | El piso | No construido, y es lo que bloquea la vara |
 
-**Lo que esa tabla dice, y es lo importante:** la mayor parte del valor de este
-catálogo no está en construir, está en **exponer**. Seis de los diecinueve puntos
-ya existen y no son alcanzables por nadie.
+**Lo que esa tabla decía el 2026-08-09 y ya no dice:** que seis de los
+diecinueve puntos existían y no eran alcanzables por nadie. Cinco de esos seis
+ya lo son. Lo que queda sin exponer se parte limpio en dos, y la línea entre las
+dos partes **no es de dificultad, es de dónde se puede comprobar**:
+
+- **B3, D2 y E1** necesitan BPF, Btrfs o cgroups delegados. El contenedor donde
+  se escribe este proyecto **no tiene ninguno de los tres**, así que construirlos
+  aquí produce código que nadie puede ejercer hasta que Cesar lo corra. Ver
+  «Los tres que no se construyeron, y por qué» abajo.
+- **B1, C2 y F2** se pueden comprobar aquí y no se construyeron por tiempo, no
+  por riesgo.
+
+## Los tres que no se construyeron, y por qué — 2026-08-09
+
+Escrito porque el decreto pide que se diga cuándo se pierde demasiado, y aquí se
+perdería:
+
+**D2, el intento con nombre.** Es el punto de mayor valor que queda —
+*«intenta esto y si sale mal deshazlo»*— y se apoya entero en snapshots de
+Btrfs. El contenedor no tiene Btrfs, así que la única prueba posible aquí sería
+contra un falso, y la **regla 8** dice que un falso tiene que modelar la
+propiedad bajo prueba: un falso de un snapshot que no puede fallar como falla un
+snapshot no es un falso, es otro sistema. Se construye cuando haya una corrida
+en la máquina de Cesar dedicada a ejercerlo.
+
+**B3, qué cambió desde X.** La mitad existe: `thalyx-watch` cuenta las
+mutaciones en el kernel y el ringbuf `thalyx_mutations` dice cuáles. Consumirlo
+es código BPF, y `CLAUDE.md` es explícito: un programa que falla el verificador
+tumba al watcher entero, y no se apilan dos cambios sin verificar. Va solo, en
+su propia corrida.
+
+**E1, el agente ajeno como tarea con concesión.** Necesita el LSM y cgroups
+delegados. Además es el punto donde una equivocación no cuesta una prueba roja,
+cuesta una concesión mal puesta — y esto es lo único del catálogo que toca
+seguridad. No se toca sin que Cesar lo decida aparte.
+
+
 
 ---
 

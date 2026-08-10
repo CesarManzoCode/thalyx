@@ -49,7 +49,7 @@
 //! something else parses. The wire shape is a decision, and decisions in this
 //! project are written down where they can be read and tested.
 
-use crate::{Done, Entry, Excerpt, FileError, Kind, Listing};
+use crate::{Did, Done, Entry, Excerpt, FileError, Kind, Listing};
 use serde_json::{Map, Value, json};
 use std::ffi::OsStr;
 use std::path::Path;
@@ -67,6 +67,30 @@ impl FileError {
             FileError::NotText { .. } => "not_text",
             FileError::Unreadable { .. } => "unreadable",
             FileError::Exists(_) => "exists",
+        }
+    }
+
+    /// What would get past this, as a word.
+    ///
+    /// `Superficie-para-el-LLM.md`, punto **A2**. An error that only says what
+    /// went wrong costs the caller a whole cycle of reasoning and trying; one
+    /// that names the way out is documentation delivered at the exact moment it
+    /// is useful, and it costs one field.
+    ///
+    /// A word rather than a sentence, for the same reason as [`Self::word`] —
+    /// the sentence in `message` is English that will be reworded, and anything
+    /// matching on it breaks the first time somebody improves it.
+    ///
+    /// **`cannot` is an answer.** An unreadable path and a binary file have no
+    /// remedy inside Thalyx, and inventing an encouraging one would send a
+    /// caller into a loop retrying something that will never work.
+    pub fn remedy(&self) -> &'static str {
+        match self {
+            FileError::Absent(_) => "look_first",
+            FileError::IsDirectory(_) => "use_list",
+            FileError::NotText { .. } => "cannot",
+            FileError::Unreadable { .. } => "cannot",
+            FileError::Exists(_) => "remove_or_rename",
         }
     }
 }
@@ -197,6 +221,10 @@ pub fn excerpt(path: &Path, excerpt: &Excerpt) -> String {
             // file.
             ("bytes", json!(excerpt.of_bytes)),
             ("truncated", json!(excerpt.truncated)),
+            // Of the whole file even when the text above is a piece of it, so
+            // that "is what I read still true" is a comparison instead of a
+            // second read of the same bytes.
+            ("sha256", json!(excerpt.digest)),
             ("text", json!(excerpt.text)),
         ]),
     )
@@ -232,11 +260,49 @@ pub fn fact(done: &Done) -> Value {
         exact &= to_exact;
         out.insert("to".into(), json!(destination));
     }
+    out.insert("undo".into(), undo_for(done));
     if !exact {
         out.insert("exact".into(), json!(false));
     }
 
     Value::Object(out)
+}
+
+/// How to put this back, or `null` and the reason there is no way.
+///
+/// `Superficie-para-el-LLM.md`, punto **D3**. It is the same idea as
+/// [`FileError::remedy`] pointed at a success instead of a failure, and the
+/// `null` case is the one that earns it: `/home` is decreed to be the one place
+/// no rollback of ours can put back, so a delete there is final — and an agent
+/// has to know that **before**, not after.
+///
+/// Rule 10 applied to what can be reversed: *no way to undo this* and *nothing
+/// said about undoing this* are two different facts, and only one of them is
+/// acceptable to leave a caller holding.
+fn undo_for(done: &Done) -> Value {
+    let made = match done.what {
+        // What a copy created is the destination, not the source it was read
+        // from. Undoing a copy by removing `path` would delete the original.
+        Did::Copied => done.to.as_ref(),
+        Did::MadeDirectory | Did::MadeFile => Some(&done.path),
+        _ => None,
+    };
+
+    if let Some(made) = made {
+        let (path, _) = as_text(made.as_os_str());
+        return json!({ "op": "remove", "path": path });
+    }
+
+    if done.what == Did::Moved
+        && let Some(to) = &done.to
+    {
+        let (from, _) = as_text(done.path.as_os_str());
+        let (landed, _) = as_text(to.as_os_str());
+        return json!({ "op": "move", "from": landed, "to": from });
+    }
+
+    // A delete. Nothing here can put it back, and saying so is the point.
+    Value::Null
 }
 
 /// One element of a [`batch`] that did not happen, and why.
@@ -248,6 +314,7 @@ pub fn problem(error: &FileError) -> Value {
     let mut out = Map::new();
     out.insert("ok".into(), json!(false));
     out.insert("error".into(), json!(error.word()));
+    out.insert("remedy".into(), json!(error.remedy()));
     out.insert("message".into(), json!(error.to_string()));
 
     if let Some(raw) = path_in(error) {
@@ -334,6 +401,28 @@ pub fn state(on: bool) -> String {
     )
 }
 
+/// An answer from a part of the system that is not the file verbs.
+///
+/// This module started as the structured face of `thalyx-files` and is now the
+/// structured face of the session, which is why this exists: the shape of an
+/// answer — `op`, `ok`, `exact` — is one decision and must have one
+/// implementation, and a second builder somewhere else would be a second shape
+/// three months later. When a third crate needs it, this moves out to its own;
+/// until then, moving it would be churn for a caller that does not exist.
+pub fn answer(op: &str, carried: Vec<(&'static str, Value)>) -> String {
+    object(op, true, true, fields(carried))
+}
+
+/// The same, for something that did not work and is not a [`FileError`].
+pub fn declined(op: &str, word: &str, message: &str) -> String {
+    object(
+        op,
+        false,
+        true,
+        fields([("error", json!(word)), ("message", json!(message))]),
+    )
+}
+
 /// Something the session refused to attempt, which is not a file error.
 ///
 /// `rm` with nothing after it never reaches the filesystem, so there is no
@@ -351,7 +440,6 @@ pub fn refusal(op: &str, why: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Did;
     use serde_json::Value;
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -681,6 +769,7 @@ mod tests {
                 text: "he said \"hola\"\nand left\t— ñ".to_string(),
                 of_bytes: 30,
                 truncated: false,
+                digest: String::new(),
             },
         ));
         // Escaping is the reason this is JSON and not a line of fields: a file
@@ -697,6 +786,7 @@ mod tests {
                 text: "abc".to_string(),
                 of_bytes: 900_000,
                 truncated: true,
+                digest: String::new(),
             },
         ));
         // Reporting 3 here would leave a caller believing it has the file.
