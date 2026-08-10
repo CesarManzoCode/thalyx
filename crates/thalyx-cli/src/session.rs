@@ -794,6 +794,44 @@ const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
 /// `Coherencia-Doble-Ruta.md` is why it is not written twice: the two routes
 /// have to agree about a memory, and the way they stop agreeing is one of them
 /// being edited.
+/// The machine, re-read, in one object.
+///
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **A3**. It is the
+/// first cost — discovery — answered in one call: what an agent would otherwise
+/// find out by running six commands and reading six paragraphs.
+///
+/// **The three states are the point and they never collapse into two.** Rule 10
+/// of `Estrategia-de-Pruebas.md` on the wire: `found`, `absent` and `unreadable`
+/// are three different facts about the machine, and every version of anything in
+/// this project that merged the last two has been a defect. A caller that reads
+/// `absent` goes and fixes something; one that reads `unreadable` knows the
+/// machine did not answer, which is a different job.
+fn state_object(readings: &[Reading]) -> String {
+    let carried: Vec<serde_json::Value> = readings
+        .iter()
+        .map(|reading| {
+            let (state, detail) = match &reading.outcome {
+                Outcome::Found(detail) => ("found", detail),
+                Outcome::Absent(detail) => ("absent", detail),
+                Outcome::Unreadable(detail) => ("unreadable", detail),
+            };
+            serde_json::json!({
+                "subject": reading.subject,
+                "state": state,
+                "detail": detail,
+            })
+        })
+        .collect();
+
+    thalyx_files::machine::answer(
+        "state",
+        vec![
+            ("count", serde_json::json!(carried.len())),
+            ("readings", serde_json::json!(carried)),
+        ],
+    )
+}
+
 fn show_memory(store: &Store) {
     println!();
     if let Err(error) = crate::agent::recall(store, SESSION_TASK, "  ") {
@@ -1069,9 +1107,16 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  includes hidden names and `ls -l` shows sizes.");
             println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
             println!("  `rm <cosa>` change what is there. `*` and `?` work.");
+            println!("  `ensayo <verbo> …` says what one of those would do");
+            println!("  without doing any of it.");
             println!("  `structured on` makes every one of those answer in JSON");
             println!("  instead, for a program reading them; `structured off`");
-            println!("  brings the sentences back.");
+            println!("  brings the sentences back, and `describe` lists every");
+            println!("  verb this machine has, for a person or for a program.");
+            println!("  `indexar` reads a tree and records what refers to what;");
+            println!("  then `depende <archivo>` says what it refers to and");
+            println!("  `usan <archivo>` says what refers to it — which no");
+            println!("  amount of looking through folders can answer.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1086,10 +1131,13 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         Standing::AProgram { .. } => {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
+            println!("  `ensayo <verbo> …`, `describe`,");
+            println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
-            println!("  `salir` to leave.");
+            println!("  `salir` to leave. `apagar` exists and refuses here,");
+            println!("  because this machine is not mine to turn off.");
         }
     }
     // Said wherever it is true, and nowhere it is not. Both standings hit the
@@ -1167,13 +1215,18 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 }
             },
             "estado" | "status" => {
-                for reading in &gather(store) {
-                    println!(
-                        "{} {:<12} {}",
-                        reading.mark(),
-                        reading.subject,
-                        reading.text()
-                    );
+                let readings = gather(store);
+                if face == crate::files::Face::Machine {
+                    println!("{}", state_object(&readings));
+                } else {
+                    for reading in &readings {
+                        println!(
+                            "{} {:<12} {}",
+                            reading.mark(),
+                            reading.subject,
+                            reading.text()
+                        );
+                    }
                 }
             }
             "apagar" | "poweroff" => {
@@ -1192,7 +1245,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 revert(store, line);
             }
             "recuerdos" | "recordar" | "memory" | "recall" => {
-                show_memory(store);
+                if face == crate::files::Face::Machine {
+                    let _ = crate::agent::recall_object(store, SESSION_TASK);
+                } else {
+                    show_memory(store);
+                }
             }
             _ if line.starts_with("instalar ") || line.starts_with("install ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1224,6 +1281,46 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "structured" | "estructurado" => {
                 crate::files::structured(&mut face, "");
+            }
+            // A1: the machine reading itself out loud, so that something that
+            // arrived knowing nothing about Thalyx can ask instead of guessing.
+            _ if starts_any(line, &["describe ", "describir "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::catalogue::describe(face, rest);
+            }
+            "describe" | "describir" => {
+                crate::catalogue::describe(face, "");
+            }
+            // C1: the semantic index, reachable by something that is not
+            // Thalyx's own CLI for the first time.
+            _ if starts_any(line, &["indexar ", "index "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::index::build(store.root(), &here, rest, face)?;
+            }
+            "indexar" | "index" => {
+                crate::index::build(store.root(), &here, "", face)?;
+            }
+            _ if starts_any(line, &["depende ", "depends "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::index::edges(store.root(), &here, rest, false, face)?;
+            }
+            "depende" | "depends" => {
+                crate::index::edges(store.root(), &here, "", false, face)?;
+            }
+            _ if starts_any(line, &["usan ", "dependents "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::index::edges(store.root(), &here, rest, true, face)?;
+            }
+            "usan" | "dependents" => {
+                crate::index::edges(store.root(), &here, "", true, face)?;
+            }
+            // D1: what a verb would do, without doing any of it.
+            _ if starts_any(line, &["ensayo ", "rehearse "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::files::rehearse(&here, rest, face)?;
+            }
+            "ensayo" | "rehearse" => {
+                crate::files::rehearse(&here, "", face)?;
             }
             "pwd" | "donde" | "dónde" | "where" => {
                 crate::files::where_am_i(&here, face);
@@ -1356,46 +1453,17 @@ pub fn run(store: &Store, once: bool) -> Fallible {
 /// honest arrangement: a name here that the dispatch does not have completes and
 /// then fails, which is visible immediately, while the reverse — a working verb
 /// missing from here — costs nobody anything.
-const VERBS: &[&str] = &[
-    "ls",
-    "cat",
-    "cd",
-    "pwd",
-    "clear",
-    "modules",
-    "available",
-    "install",
-    "run",
-    "permissions",
-    "rollback",
-    "memory",
-    "status",
-    "kernel",
-    "disks",
-    "install-onto",
-    "structured",
-    "exit",
-    "poweroff",
-    "ver",
-    "leer",
-    "ir",
-    "donde",
-    "limpiar",
-    "modulos",
-    "disponibles",
-    "instalar",
-    "correr",
-    "permisos",
-    "revertir",
-    "recuerdos",
-    "estado",
-    "nucleo",
-    "discos",
-    "instalar-en",
-    "estructurado",
-    "salir",
-    "apagar",
-];
+/// The verbs offered when tab is pressed at the start of a line.
+///
+/// Generated from [`crate::catalogue`] rather than listed again here. It used to
+/// be a second copy of the same fact, and a verb added to one and not the other
+/// is a verb tab could never find.
+fn verbs() -> Vec<String> {
+    crate::catalogue::every_name()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
 
 /// What could follow what has been typed so far.
 ///
@@ -1404,7 +1472,7 @@ const VERBS: &[&str] = &[
 /// at the start of a line, where nothing can run it.
 fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
     if !before.contains(' ') {
-        return VERBS.iter().map(|verb| verb.to_string()).collect();
+        return verbs();
     }
 
     let fragment = before.rsplit(' ').next().unwrap_or("");

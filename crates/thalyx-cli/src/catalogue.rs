@@ -1,0 +1,571 @@
+//! What this machine can be asked to do, in a form a program can read.
+//!
+//! `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **A1**. It is the
+//! first item of that catalogue and the cheapest, and it is the one no other
+//! operating system can offer: on Linux `--help` is prose, it is written once per
+//! tool by whoever wrote that tool, it is not consistent between any two of them,
+//! and often it is not installed. Thalyx has **one** surface and knows all of it.
+//!
+//! What it buys is the first of the five costs — discovery. An agent that arrives
+//! here does not need to have been trained on Thalyx and does not need somebody
+//! to paste a list of verbs into its prompt. It asks.
+//!
+//! ## Why this is a table and not a document
+//!
+//! Before this file the list of verbs was written in **three** places: the match
+//! arms of the session, the banner, and the completion list. Three copies of one
+//! fact is three chances to drift, and this project has already paid for one of
+//! them — new verbs were built and left out of the banner, and on a machine with
+//! no shell a verb that is not in the banner does not exist for the person at it.
+//!
+//! So the names live here once. The completion list is **generated** from this
+//! table, and two tests bind the other two copies to it:
+//!
+//! - every name here is typed at a real prompt and must be understood, which is
+//!   what keeps the table from advertising a verb the session does not have;
+//! - every name here must appear in the banner, which is what keeps a verb from
+//!   existing without anybody being told.
+//!
+//! Neither is a check that the strings match. Both run the thing.
+
+/// One verb, described the way a caller needs it rather than the way it is
+/// implemented.
+#[derive(Debug, Clone, Copy)]
+pub struct Verb {
+    /// The stable machine name. Never translated, never reworded: this is what a
+    /// program matches on, and it is deliberately not the same string as any of
+    /// `names`, so that renaming what a person types cannot break a program.
+    pub id: &'static str,
+
+    /// Every spelling that reaches this verb. The standard name comes first
+    /// because it is the one the banner teaches and the one a model has seen a
+    /// billion times.
+    pub names: &'static [&'static str],
+
+    /// What may follow it, in the order it is expected. Empty means the verb
+    /// takes nothing.
+    pub takes: &'static [&'static str],
+
+    /// Words that may appear instead of an argument, both spellings.
+    pub flags: &'static [&'static str],
+
+    /// The `op` its structured answer carries, or `None` when this verb has no
+    /// structured face yet.
+    ///
+    /// Said rather than omitted, because "this verb answers only in prose" is a
+    /// fact a caller needs before it tries to parse the answer. An absent field
+    /// and an unbuilt face are the same shape and different facts.
+    pub answers: Option<&'static str>,
+
+    /// Whether it can change the machine. What `ensayo` applies to, and what a
+    /// caller must treat as consequential.
+    pub changes: bool,
+
+    /// The stable error words it can produce. A caller can write its handling
+    /// before it has ever seen one fail.
+    pub errors: &'static [&'static str],
+
+    /// One line, in English, of what it is for.
+    pub summary: &'static str,
+}
+
+/// The errors every verb that touches a path can produce.
+const PATH_ERRORS: &[&str] = &["absent", "unreadable", "incomplete"];
+/// The same, plus the refusal to write over something.
+const WRITE_ERRORS: &[&str] = &["absent", "unreadable", "exists", "incomplete"];
+
+/// Every verb the session has.
+///
+/// Ordered the way a person meets them: look around, move, change, then the
+/// things that are about the machine rather than about files.
+pub const VERBS: &[Verb] = &[
+    Verb {
+        id: "list",
+        names: &["ls", "ver", "look"],
+        takes: &["path"],
+        flags: &["-a", "-l", "todo", "detalles"],
+        answers: Some("list"),
+        changes: false,
+        errors: PATH_ERRORS,
+        summary: "What is in a directory, or about one thing that is not one.",
+    },
+    Verb {
+        id: "read",
+        names: &["cat", "leer", "read"],
+        takes: &["path"],
+        flags: &[],
+        answers: Some("read"),
+        changes: false,
+        errors: &[
+            "absent",
+            "is_directory",
+            "not_text",
+            "unreadable",
+            "incomplete",
+        ],
+        summary: "The contents of a file, refused rather than printed when it is not text.",
+    },
+    Verb {
+        id: "go",
+        names: &["cd", "ir", "go"],
+        takes: &["path"],
+        flags: &[],
+        answers: Some("go"),
+        changes: false,
+        errors: PATH_ERRORS,
+        summary: "Move somewhere. With nothing after it, home.",
+    },
+    Verb {
+        id: "where",
+        names: &["pwd", "donde", "dónde", "where"],
+        takes: &[],
+        flags: &[],
+        answers: Some("where"),
+        changes: false,
+        errors: &[],
+        summary: "Where this session is standing, exactly and never shortened.",
+    },
+    Verb {
+        id: "make_directory",
+        names: &["mkdir", "crear-carpeta", "nueva-carpeta"],
+        takes: &["path..."],
+        flags: &[],
+        answers: Some("make_directory"),
+        changes: true,
+        errors: WRITE_ERRORS,
+        summary: "Make a directory and every parent it needs.",
+    },
+    Verb {
+        id: "make_file",
+        names: &["touch", "crear"],
+        takes: &["path..."],
+        flags: &[],
+        answers: Some("make_file"),
+        changes: true,
+        errors: WRITE_ERRORS,
+        summary: "Make an empty file, refusing to flatten one that is there.",
+    },
+    Verb {
+        id: "copy",
+        names: &["cp", "copiar"],
+        takes: &["from", "to"],
+        flags: &[],
+        answers: Some("copy"),
+        changes: true,
+        errors: WRITE_ERRORS,
+        summary: "Copy a file or a whole directory. A link is copied as a link.",
+    },
+    Verb {
+        id: "move",
+        names: &["mv", "mover", "renombrar"],
+        takes: &["from", "to"],
+        flags: &[],
+        answers: Some("move"),
+        changes: true,
+        errors: WRITE_ERRORS,
+        summary: "Move or rename, falling back to copy-and-delete across filesystems.",
+    },
+    Verb {
+        id: "remove",
+        names: &["rm", "borrar", "eliminar"],
+        takes: &["path..."],
+        flags: &[],
+        answers: Some("remove"),
+        changes: true,
+        errors: PATH_ERRORS,
+        summary: "Delete. Inside /home this cannot be undone.",
+    },
+    Verb {
+        id: "structured",
+        names: &["structured", "estructurado"],
+        takes: &["on|off"],
+        flags: &[],
+        answers: Some("structured"),
+        changes: false,
+        errors: &["incomplete"],
+        summary: "Answer in JSON objects a program can parse, or back in sentences.",
+    },
+    Verb {
+        id: "rehearse",
+        names: &["ensayo", "rehearse"],
+        takes: &["verb", "arguments..."],
+        flags: &[],
+        answers: Some("rehearse"),
+        changes: false,
+        errors: &["incomplete", "unknown_verb"],
+        summary: "What a verb would do, worked out without doing any of it.",
+    },
+    Verb {
+        id: "describe",
+        names: &["describe", "describir"],
+        takes: &["verb"],
+        flags: &[],
+        answers: Some("describe"),
+        changes: false,
+        errors: &["unknown_verb"],
+        summary: "Every verb this machine has, its arguments and the errors it can give.",
+    },
+    Verb {
+        id: "index_build",
+        names: &["indexar", "index"],
+        takes: &["path"],
+        flags: &[],
+        answers: Some("index_build"),
+        changes: false,
+        errors: &["unreadable"],
+        summary: "Read a tree and record what refers to what. Defaults to where you are.",
+    },
+    Verb {
+        id: "depends_on",
+        names: &["depende", "depends"],
+        takes: &["path"],
+        flags: &[],
+        answers: Some("depends_on"),
+        changes: false,
+        errors: &["unreadable", "incomplete"],
+        summary: "What this file refers to, from the index rather than by reading it.",
+    },
+    Verb {
+        id: "depended_on_by",
+        names: &["usan", "dependents"],
+        takes: &["path"],
+        flags: &[],
+        answers: Some("depended_on_by"),
+        changes: false,
+        errors: &["unreadable", "incomplete"],
+        summary: "What refers to this file. No directory walk can answer this one.",
+    },
+    Verb {
+        id: "clear",
+        names: &["clear", "limpiar", "cls"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "Wipe the screen. Nothing on the machine changes.",
+    },
+    Verb {
+        id: "available",
+        names: &["disponibles", "available", "repo"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "What is in this machine's repository and could be installed.",
+    },
+    Verb {
+        id: "install",
+        names: &["instalar", "install"],
+        takes: &["module-id"],
+        flags: &[],
+        answers: None,
+        changes: true,
+        errors: &[],
+        summary: "Install a signed module, showing what it asks for first.",
+    },
+    Verb {
+        id: "modules",
+        names: &["modulos", "módulos", "modules"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "What is installed on this machine.",
+    },
+    Verb {
+        id: "run",
+        names: &["correr", "run"],
+        takes: &["module-id"],
+        flags: &["sin-confinar"],
+        answers: None,
+        changes: true,
+        errors: &[],
+        summary: "Run an installed module, confined to what it was granted.",
+    },
+    Verb {
+        id: "permissions",
+        names: &["permisos", "permissions"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "What is granted right now, and to whom.",
+    },
+    Verb {
+        id: "rollback",
+        names: &["revertir", "rollback"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: true,
+        errors: &[],
+        summary: "Undo the last install, refusing when the disk no longer matches.",
+    },
+    Verb {
+        id: "memory",
+        names: &["recuerdos", "recordar", "memory", "recall"],
+        takes: &[],
+        flags: &[],
+        answers: Some("memory"),
+        changes: false,
+        errors: &[],
+        summary: "What this machine will still know after a restart.",
+    },
+    Verb {
+        id: "state",
+        names: &["estado", "status"],
+        takes: &[],
+        flags: &[],
+        answers: Some("state"),
+        changes: false,
+        errors: &[],
+        summary: "The machine re-read: store, enforcement, index, model.",
+    },
+    Verb {
+        id: "kernel",
+        names: &["nucleo", "núcleo", "kernel", "dmesg"],
+        takes: &["todo|lento"],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "What the kernel has been saying. There is no dmesg in here.",
+    },
+    Verb {
+        id: "disks",
+        names: &["discos", "disks"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "The disks this machine can see, and which one it booted from.",
+    },
+    Verb {
+        id: "install_onto",
+        names: &["instalar-en", "install-onto"],
+        takes: &["disk"],
+        flags: &[],
+        answers: None,
+        changes: true,
+        errors: &[],
+        summary: "Put this machine onto a disk. Everything on that disk is lost.",
+    },
+    Verb {
+        id: "leave",
+        names: &["salir", "exit", "quit"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "Leave the session. On the machine itself there is nowhere to go.",
+    },
+    Verb {
+        id: "power_off",
+        names: &["apagar", "poweroff"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: true,
+        errors: &[],
+        summary: "Turn the machine off.",
+    },
+];
+
+/// The verb a typed line names, if any.
+///
+/// Matches the first word only. Everything after it is arguments, which is the
+/// rule the completion list is built on too — offering a file name where a verb
+/// belongs would put a path at the start of a line, where nothing can run it.
+pub fn verb_named(word: &str) -> Option<&'static Verb> {
+    VERBS.iter().find(|verb| verb.names.contains(&word.trim()))
+}
+
+/// Every spelling of every verb, for tab completion.
+///
+/// Generated rather than listed, which removes the second of the three copies.
+/// The third — the match arms of the session — is bound by a test that types
+/// each of these at a real prompt.
+pub fn every_name() -> Vec<&'static str> {
+    VERBS
+        .iter()
+        .flat_map(|verb| verb.names.iter().copied())
+        .collect()
+}
+
+// ─────────────────────────────────────────────────── answering `describe`
+
+use crate::files::Face;
+use serde_json::json;
+
+/// `describe [verbo]` — the machine reading itself out loud.
+pub fn describe(face: Face, rest: &str) {
+    let asked = rest.trim();
+
+    let chosen: Vec<&Verb> = if asked.is_empty() {
+        VERBS.iter().collect()
+    } else {
+        match verb_named(asked) {
+            Some(verb) => vec![verb],
+            None => {
+                let why = format!("`{asked}` is not a verb of this machine");
+                if face == Face::Machine {
+                    println!(
+                        "{}",
+                        thalyx_files::machine::declined("describe", "unknown_verb", &why)
+                    );
+                } else {
+                    println!("\n  {why}. `describe` alone lists them all.\n");
+                }
+                return;
+            }
+        }
+    };
+
+    if face == Face::Machine {
+        let verbs: Vec<serde_json::Value> = chosen.iter().map(|verb| as_object(verb)).collect();
+        println!(
+            "{}",
+            thalyx_files::machine::answer(
+                "describe",
+                vec![("count", json!(verbs.len())), ("verbs", json!(verbs))],
+            )
+        );
+        return;
+    }
+
+    println!();
+    for verb in chosen {
+        // The names on one line and the summary under it, because a person
+        // scanning this is looking for a word and then for what it does.
+        println!("  {}", verb.names.join(", "));
+        println!("      {}", verb.summary);
+    }
+    println!();
+}
+
+fn as_object(verb: &Verb) -> serde_json::Value {
+    json!({
+        "id": verb.id,
+        "names": verb.names,
+        "takes": verb.takes,
+        "flags": verb.flags,
+        // `null` rather than absent, because "this verb only speaks prose" is
+        // something a caller has to know *before* it tries to parse the answer.
+        "answers": verb.answers,
+        "changes": verb.changes,
+        "errors": verb.errors,
+        "summary": verb.summary,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn no_two_verbs_answer_to_the_same_word() {
+        let mut seen = BTreeSet::new();
+        for verb in VERBS {
+            for name in verb.names {
+                assert!(
+                    seen.insert(*name),
+                    "`{name}` reaches two verbs, so the catalogue cannot say which"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_verb_has_an_id_nobody_types() {
+        for verb in VERBS {
+            // The id is what a program matches on and the names are what a
+            // person types. Letting them be the same string means renaming the
+            // human word silently renames the machine one.
+            assert!(!verb.id.is_empty());
+            assert!(
+                !verb.id.contains(' '),
+                "`{}` is a sentence, not an identifier",
+                verb.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_verb_that_can_change_the_machine_says_so() {
+        // Read as a claim: these and only these are consequential. A caller
+        // reads `changes` to decide whether to rehearse first, so a verb that
+        // lied here would be rehearsed by nobody.
+        let changing: BTreeSet<&str> = VERBS
+            .iter()
+            .filter(|verb| verb.changes)
+            .map(|verb| verb.id)
+            .collect();
+        assert_eq!(
+            changing,
+            BTreeSet::from([
+                "make_directory",
+                "make_file",
+                "copy",
+                "move",
+                "remove",
+                "install",
+                "run",
+                "rollback",
+                "install_onto",
+                "power_off",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_verb_with_a_structured_face_names_the_op_it_answers_with() {
+        for verb in VERBS.iter().filter(|verb| verb.answers.is_some()) {
+            let op = verb.answers.unwrap();
+            assert!(!op.is_empty(), "{} answers with an empty op", verb.id);
+        }
+    }
+
+    #[test]
+    fn a_verb_that_has_no_structured_face_says_none_rather_than_pretending() {
+        // The point of `answers: None` is that "this one only speaks prose" is a
+        // fact a caller needs *before* it tries to parse. Rule 10 on the wire: a
+        // failure to have a face is not a face that failed.
+        let prose_only: Vec<&str> = VERBS
+            .iter()
+            .filter(|verb| verb.answers.is_none())
+            .map(|verb| verb.id)
+            .collect();
+        assert!(
+            prose_only.contains(&"modules"),
+            "the catalogue stopped admitting which verbs are prose-only: {prose_only:?}"
+        );
+    }
+
+    #[test]
+    fn a_word_finds_its_verb_by_any_of_its_spellings() {
+        assert_eq!(verb_named("ls").unwrap().id, "list");
+        assert_eq!(verb_named("ver").unwrap().id, "list");
+        assert_eq!(verb_named("look").unwrap().id, "list");
+        assert!(verb_named("no-such-verb").is_none());
+    }
+
+    #[test]
+    fn every_name_is_offered_for_completion() {
+        let offered = every_name();
+        for verb in VERBS {
+            for name in verb.names {
+                assert!(
+                    offered.contains(name),
+                    "`{name}` exists and tab would never find it"
+                );
+            }
+        }
+    }
+}

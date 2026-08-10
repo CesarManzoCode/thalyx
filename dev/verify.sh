@@ -3130,6 +3130,124 @@ else:
     fi
 fi
 
+# ──────────────── 22. the machine describes itself, rehearses, and answers by structure
+
+step "22. a program can ask what this machine does, try it dry, and ask the index"
+
+# `Superficie-para-el-LLM.md`, puntos A1, D1 and C1 — the three that a program
+# can reach without any of the hardware the rest of this script needs.
+#
+# ## Why these three and why here
+#
+# `cargo test` drives all of them. What it cannot do is drive them on the
+# machine the session is actually for, and the distance between those two has
+# caught this project before: installed modules were correct, tested, and
+# unexecutable for weeks.
+#
+# Each check has the control that makes it mean something. Without them: a
+# `describe` that answered with an empty list would pass a check that only asked
+# whether it answered; a rehearsal that did nothing at all would pass one that
+# only asked whether the file survived.
+
+SURFACE_STORE="$WORK/surface-store"
+mkdir -p "$SURFACE_STORE/proyecto/src"
+printf 'mod dos;\n\npub fn arranca() { dos::hace(); }\n' > "$SURFACE_STORE/proyecto/src/uno.rs"
+printf 'pub fn hace() {}\n' > "$SURFACE_STORE/proyecto/src/dos.rs"
+printf 'se queda\n' > "$SURFACE_STORE/no-tocar.txt"
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary, so the structured surface could not be driven"
+else
+    surface() {
+        printf '%s\n' "$@" | \
+            THALYX_ROOT="$SURFACE_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # --- A1: the machine describes itself ----------------------------------
+    surface "structured on" describe salir > "$WORK/surface-describe.log"
+    VERB_COUNT=$(grep '^{' "$WORK/surface-describe.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and value.get("op") == "describe":
+        print(len(value.get("verbs", [])))
+        break
+else:
+    print(0)
+' 2>/dev/null || echo 0)
+
+    if [ "$VERB_COUNT" -ge 20 ]; then
+        proven "the machine describes its own $VERB_COUNT verbs to something that asks"
+    else
+        failed "\`describe\` reported $VERB_COUNT verbs; see $WORK/surface-describe.log"
+    fi
+
+    # --- D1: a rehearsal works out the answer and touches nothing -----------
+    #
+    # Two halves, and the second is the control: without it, a rehearsal that
+    # errored out would leave the file alone and look like a success.
+    surface "structured on" "cd $SURFACE_STORE" "ensayo rm no-tocar.txt" salir \
+        > "$WORK/surface-rehearse.log"
+    REHEARSED=$(grep '^{' "$WORK/surface-rehearse.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and value.get("op") == "rehearse":
+        print("yes" if value.get("ok") and value.get("count") == 1 else "no")
+        break
+else:
+    print("none")
+' 2>/dev/null || echo none)
+
+    if [ "$REHEARSED" = "yes" ] && [ -f "$SURFACE_STORE/no-tocar.txt" ]; then
+        proven "a rehearsed delete worked out what would go and the file is still there"
+    elif [ ! -f "$SURFACE_STORE/no-tocar.txt" ]; then
+        failed "the rehearsal deleted the file; see $WORK/surface-rehearse.log"
+    else
+        failed "the rehearsal did not work out an answer ($REHEARSED); see $WORK/surface-rehearse.log"
+    fi
+
+    # --- C1: the semantic index, asked by the session -----------------------
+    #
+    # The question no directory walk can answer. Nothing about the name or the
+    # location of `dos.rs` says that `uno.rs` refers to it.
+    surface "structured on" "cd $SURFACE_STORE/proyecto" indexar "usan src/dos.rs" salir \
+        > "$WORK/surface-index.log"
+    FOUND=$(grep '^{' "$WORK/surface-index.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        answer = json.loads(line)
+    except Exception:
+        continue
+    if not isinstance(answer, dict) or answer.get("op") != "depended_on_by":
+        continue
+    referring = ",".join(edge.get("from", "?") for edge in answer.get("edges", []))
+    print(answer.get("fresh", "?") + ":" + referring)
+    break
+else:
+    print("none:")
+' 2>/dev/null || echo "none:")
+
+    case "$FOUND" in
+        current:src/uno.rs)
+            proven "the semantic index answers 'what refers to this' from the session, with its freshness"
+            ;;
+        none:*)
+            failed "the index answered nothing; see $WORK/surface-index.log"
+            ;;
+        *)
+            failed "the index answered '$FOUND'; see $WORK/surface-index.log"
+            ;;
+    esac
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

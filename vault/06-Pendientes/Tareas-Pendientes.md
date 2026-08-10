@@ -93,15 +93,22 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 > los puntos de ese catálogo que ya tienen orden; los demás siguen ahí sin
 > decidirse, y **estar en el catálogo no autoriza construir nada**.
 
-- [ ] **4c. Las otras cosas que la sesión sabe, con su segunda cara.** Sólo los
-      verbos de archivos tienen dos caras. `modulos`, `disponibles`, `permisos`,
-      `recuerdos`, `estado`, `nucleo` y `discos` contestan sólo en prosa, y con
-      ellos siguen **sin exponerse a nadie las cuatro ventajas** que hacen que la
-      vara sea *mejor* y no *igual*: el índice semántico, el rollback, la
-      procedencia por campo y los permisos por tarea. Un agente ajeno que llegue
-      a Thalyx hoy puede trabajar con archivos y no puede ver nada de lo que
-      distingue a este sistema de Linux. Ver [[Filosofia-Fundacional]], «Que un
-      agente ajeno pueda trabajar aquí».
+- [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** — hecho en
+      parte el 2026-08-09. `estado` y `recuerdos` tienen su objeto, y el índice
+      semántico llegó entero a la sesión (`indexar`, `depende`, `usan`). Falta
+      el journal (**F2** del catálogo) y los verbos de módulos. Ver
+      [[Superficie-para-el-LLM]].
+- [ ] **Los tres que necesitan hierro, y hay que correrlos de uno en uno.** Del
+      catálogo de [[Superficie-para-el-LLM]], y ninguno se puede comprobar en el
+      contenedor: **D2** el intento con nombre (Btrfs — un falso de un snapshot
+      que no falla como falla un snapshot no es un falso, es otro sistema),
+      **B3** qué cambió desde X (BPF — un programa que falla el verificador
+      tumba al watcher entero), y **E1** el agente ajeno como tarea con
+      concesión (LSM y cgroups delegados, y es lo único del catálogo que toca
+      seguridad). **Decisión de Cesar**, uno por corrida.
+- [ ] **Los tres que se pueden hacer aquí y quedaron por tiempo.** **B1** acotar
+      toda respuesta larga con su total, **C2** búsqueda por símbolos sobre el
+      parser que ya existe, y **F2** el journal legible desde afuera.
 - [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
       corregir un archivo de configuración desde la máquina.
 - [ ] **6. `buscar`** por nombre y por contenido.

@@ -240,6 +240,47 @@ fn transcript(context: Context, utterance: &str, foreign: &[String]) -> Transcri
 /// after a reboot, and two versions of it would eventually say different things
 /// about the same memory, on the two routes `Principio-Doble-Ruta.md` requires
 /// to agree.
+/// The same memory, for something that parses instead of reads.
+///
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **F1**. An agent
+/// that resumes tomorrow pays the discovery cost again, entire, every time —
+/// and this machine already knows what it was doing.
+///
+/// The three lists stay three lists, because that separation is the whole
+/// decree of [[Memoria-Persistente]]: what the person said, what still checks
+/// out against the machine now, and what is remembered but can no longer be
+/// confirmed. Handing a caller one merged list would hand it the third kind as
+/// though it were the second, which is the one thing the memory is built not to
+/// do.
+pub(crate) fn recall_object(store: &Store, task: &str) -> Fallible {
+    let context = match thalyx_agent::recollection::context(&memory_path(store), task) {
+        Ok(context) => context,
+        // Rule 10, and the memory's own version of it: an unreadable memory and
+        // an empty one are different facts about the machine.
+        Err(error) => {
+            println!(
+                "{}",
+                thalyx_files::machine::declined("memory", "unreadable", &error.to_string())
+            );
+            return Ok(());
+        }
+    };
+
+    println!(
+        "{}",
+        thalyx_files::machine::answer(
+            "memory",
+            vec![
+                ("task", serde_json::json!(task)),
+                ("said", serde_json::json!(context.said)),
+                ("holds", serde_json::json!(context.holds)),
+                ("unconfirmable", serde_json::json!(context.unconfirmable)),
+            ],
+        )
+    );
+    Ok(())
+}
+
 pub(crate) fn recall(store: &Store, task: &str, indent: &str) -> Fallible {
     let context = thalyx_agent::recollection::context(&memory_path(store), task)?;
 

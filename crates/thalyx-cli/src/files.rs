@@ -640,6 +640,152 @@ fn incomplete(face: Face, op: &str, machine_why: &str, human_why: &str) {
     println!("\n  {human_why}\n");
 }
 
+/// `ensayo <verbo> <argumentos>` — what it would do, without doing any of it.
+///
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md`, punto **D1**. Today the
+/// only way anything can find out what a command does is to run it, and in a
+/// system where that cannot be taken back a careful caller stops trying things.
+///
+/// A **prefix and not a mode**, deliberately. A mode that rehearses can be left
+/// on — and then a real `rm` does nothing while the caller believes it worked —
+/// or left off, which is worse. Written in front of the command, it is a fact
+/// about that one line and cannot be forgotten in either direction.
+pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
+    let rest = rest.trim();
+    let (word, arguments) = match rest.split_once(' ') {
+        Some((word, arguments)) => (word, arguments.trim()),
+        None => (rest, ""),
+    };
+
+    if word.is_empty() {
+        incomplete(
+            face,
+            "rehearse",
+            "which verb to rehearse",
+            "Which verb. `ensayo rm notas.txt` says what that would do.",
+        );
+        return Ok(());
+    }
+
+    let Some(verb) = crate::catalogue::verb_named(word) else {
+        let why = format!("`{word}` is not a verb of this machine");
+        if face.machine() {
+            face.say(thalyx_files::machine::declined(
+                "rehearse",
+                "unknown_verb",
+                &why,
+            ));
+        } else {
+            println!("\n  {why}. `describe` lists them.\n");
+        }
+        return Ok(());
+    };
+
+    // Only the ones that can change something. Rehearsing `ls` is `ls`, and
+    // answering it here would be a second, worse implementation of it.
+    if !verb.changes {
+        let why = format!(
+            "`{}` changes nothing, so there is nothing to rehearse",
+            verb.id
+        );
+        if face.machine() {
+            face.say(thalyx_files::machine::declined(
+                "rehearse", "harmless", &why,
+            ));
+        } else {
+            println!("\n  {why}.\n");
+        }
+        return Ok(());
+    }
+
+    let outcomes: Outcomes = match verb.id {
+        "make_directory" | "make_file" => {
+            let directory = verb.id == "make_directory";
+            if arguments.is_empty() {
+                incomplete(face, "rehearse", "which one", "Which one.");
+                return Ok(());
+            }
+            arguments
+                .split_whitespace()
+                .map(|word| {
+                    let path = thalyx_files::resolve(here.at(), word);
+                    if directory {
+                        thalyx_files::foresee_make_directory(&path)
+                    } else {
+                        thalyx_files::foresee_make_file(&path)
+                    }
+                })
+                .collect()
+        }
+        "copy" | "move" => {
+            let words: Vec<&str> = arguments.split_whitespace().collect();
+            if words.len() != 2 {
+                incomplete(
+                    face,
+                    "rehearse",
+                    "two names are needed: what to take, and where it goes",
+                    "Two names: what to take, and where it goes.",
+                );
+                return Ok(());
+            }
+            let from = thalyx_files::resolve(here.at(), words[0]);
+            let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
+            vec![if verb.id == "move" {
+                thalyx_files::foresee_move(&from, &to)
+            } else {
+                thalyx_files::foresee_copy(&from, &to)
+            }]
+        }
+        "remove" => {
+            if arguments.is_empty() {
+                incomplete(face, "rehearse", "which one", "Which one.");
+                return Ok(());
+            }
+            let mut chosen = Vec::new();
+            for word in arguments.split_whitespace() {
+                chosen.extend(targets(here, word));
+            }
+            chosen
+                .iter()
+                .map(|path| thalyx_files::foresee_remove(path))
+                .collect()
+        }
+        // `instalar`, `correr`, `revertir`, `instalar-en`, `apagar`. Each one
+        // changes the machine and none of them has a check half yet, so the
+        // honest answer is that this cannot be rehearsed — not a rehearsal that
+        // quietly reports nothing.
+        _ => {
+            let why = format!(
+                "`{}` changes the machine and cannot be rehearsed yet",
+                verb.id
+            );
+            if face.machine() {
+                face.say(thalyx_files::machine::declined("rehearse", "cannot", &why));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return Ok(());
+        }
+    };
+
+    speak(face, "rehearse", &outcomes);
+    Ok(())
+}
+
+/// Naming a folder as the destination means "inside it", which is what both a
+/// person and an agent mean and what every other system does.
+///
+/// Shared by the real operation and its rehearsal, because a rehearsal that
+/// worked out a different destination would be answering a different question.
+fn destination(from: &Path, mut to: PathBuf) -> PathBuf {
+    if to.is_dir()
+        && let Some(name) = from.file_name()
+    {
+        to = to.join(name);
+    }
+    to
+}
+
 /// `mkdir <carpeta>` / `crear <archivo>`.
 pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
     let op = if directory {
@@ -683,14 +829,7 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
     }
 
     let from = thalyx_files::resolve(here.at(), words[0]);
-    let mut to = thalyx_files::resolve(here.at(), words[1]);
-    // Naming a folder as the destination means "inside it", which is what both
-    // a person and an agent mean and what every other system does.
-    if to.is_dir()
-        && let Some(name) = from.file_name()
-    {
-        to = to.join(name);
-    }
+    let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
 
     let outcome = if moving {
         thalyx_files::move_to(&from, &to)
