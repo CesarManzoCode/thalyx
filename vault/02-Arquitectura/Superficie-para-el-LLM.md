@@ -425,6 +425,26 @@ mezcla se resolvió a favor de no construir nada.
 
 ## Revisiones
 
+### 2026-08-10 — El costo de equivocarse incluye la respuesta que nunca llega
+Lo que construir enseñó y el decreto no anticipaba.
+
+El cuarto costo estaba escrito como *qué cuesta un error y si se puede deshacer*,
+y se leía como si los errores fueran acciones. Hay uno que no lo es: **una
+pregunta que se contesta después de veinte minutos, o nunca.** Le cuesta al que
+preguntó todo lo que tenía planeado y no le deja nada que deshacer.
+
+`indexar` sin argumento indexa donde está parada la sesión, y una sesión empieza
+en `/home`. En la máquina de Cesar eso incluye `.cargo/registry` y `.rustup`.
+Corrió más de tres minutos y lo mataron. Ningún verbo estaba mal escrito: el
+alcance por omisión heredó lo que había, y lo que había no era decisión de quien
+lo escribió.
+
+Se agrega al criterio: **un verbo cuyo alcance por omisión es «donde estás» lleva
+un techo, y arriba del techo se niega diciendo qué hacer en su lugar.** Una
+negativa inmediata con una salida es más barata que cualquier respuesta lenta,
+porque el que pregunta puede actuar sobre ella. `indexar` se niega arriba de
+20 000 archivos con `tree_too_large`, y no entra a carpetas ocultas.
+
 ### 2026-08-10 — Catorce de diecinueve, y dos «sólo hierro» que no lo eran
 B1, C2, F2, D2 y B3 construidos. Los dos últimos estaban en la lista de lo que
 no se podía comprobar aquí, y esa lista estaba mal por dos razones distintas —

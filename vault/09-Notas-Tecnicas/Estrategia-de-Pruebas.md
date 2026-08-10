@@ -3005,6 +3005,48 @@ Y el reloj tiene que leer la salida en otro hilo. Un vigilante que se duerme
 esperando mientras la tubería de salida se llena cuelga al proceso que vigila:
 sería la regla 5 otra vez, el instrumento causando lo que mide.
 
+## Un verbo sin argumento hereda el árbol más grande que hay — 2026-08-10
+
+`indexar` sin nada atrás indexa el árbol donde está parada la sesión, y una
+sesión siempre empieza en `/home`. En el contenedor eso son 329 archivos y
+tarda dos segundos. En la máquina de Cesar `/home` incluye `.cargo/registry` y
+`.rustup`: cada fuente de cada crate que ha bajado más la biblioteca estándar
+entera. Corrió más de tres minutos, lo mató, y costó la corrida de verificación
+completa.
+
+La lista de carpetas ignoradas —`.git`, `target`, `node_modules`— era una lista
+de las cosas que ya habían salido mal. Ahora la regla es **cualquier carpeta que
+empiece con punto**, porque una carpeta oculta es donde una máquina guarda lo que
+administra para sí misma, y agregar `.cargo` a una lista de nombres sólo habría
+esperado a que `.local/share` fuera la siguiente. El árbol que se nombra
+explícitamente nunca se filtra: quien escribe `~/.config` lo escribió a
+propósito.
+
+Y hay un techo: **20 000 archivos, y arriba de eso se niega en lugar de
+empezar.** Una respuesta que nunca llega es peor que una negativa, y la negativa
+dice qué hacer en su lugar. La negativa ocurre dentro de la transacción, así que
+una reconstrucción que se niega no es una reconstrucción que vació el índice.
+
+La regla general: **un verbo cuyo alcance por omisión es «donde estás» hereda lo
+que haya ahí, y lo que hay ahí no es una decisión de quien lo escribió.** Ese
+verbo necesita un techo, no confianza.
+
+## Dos caminatas que tienen que coincidir viven en una sola función — 2026-08-10
+
+Al agregar la regla de carpetas ocultas fallaron once pruebas, ninguna de ellas
+sobre carpetas ocultas. `Index::build` y el chequeo de frescura caminan el mismo
+árbol y cada uno tenía su propio `filter_entry`. Al cambiar sólo uno, la
+construcción registraba un conjunto de archivos y el chequeo contaba otro, así
+que **todo índice quedaba obsoleto en el instante en que se escribía** — y se
+veía como un defecto de frescura, no como dos caminatas.
+
+Lo que lo destapó fue que `tempfile` nombra sus directorios `.tmpXXXXXX`. Sin esa
+casualidad, el desacuerdo habría llegado a la máquina de Cesar en vez de a la
+suite.
+
+La regla: **cuando dos lugares tienen que estar de acuerdo sobre qué archivos
+son, no hay dos lugares.** Una sola función, y las dos la llaman.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

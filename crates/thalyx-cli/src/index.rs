@@ -135,7 +135,17 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
                 println!();
             }
         }
-        Err(error) => declined(face, "index_build", "unreadable", &error.to_string()),
+        // Told apart, because they are different things to do next. Rule 10:
+        // a tree nobody should wait for is not a tree that could not be read,
+        // and a caller that heard `unreadable` about `/home` would go looking
+        // for a permission problem that does not exist.
+        Err(error) => {
+            let word = match &error {
+                thalyx_graph::GraphError::TreeTooLarge { .. } => "tree_too_large",
+                _ => "unreadable",
+            };
+            declined(face, "index_build", word, &error.to_string());
+        }
     }
     Ok(())
 }

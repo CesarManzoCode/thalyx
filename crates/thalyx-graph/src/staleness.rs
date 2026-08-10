@@ -106,11 +106,7 @@ pub(crate) fn check(connection: &Connection, root: &Path) -> crate::Result<Fresh
     let mut staleness = Staleness::default();
     let mut seen = std::collections::HashSet::new();
 
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !crate::is_ignored(e.path()))
-    {
+    for entry in crate::walk(root) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {

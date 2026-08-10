@@ -3853,6 +3853,84 @@ else:
     fi
 fi
 
+# ──────────────────────── 28. a tree nobody would wait for is refused, not started
+
+step "28. an answer that never arrives, refused instead"
+
+# `Superficie-para-el-LLM.md`: the fourth cost is the cost of getting it wrong.
+# On 2026-08-10 `indexar`, typed with nothing after it, walked out of `/home`
+# into `.cargo/registry` and `.rustup` — every source file of every crate on the
+# machine, plus the whole Rust standard library. It ran for over three minutes
+# and was killed, and what it cost was a verification run.
+#
+# Two rules came out of it and both are checked here, on a real filesystem,
+# because both are about what a walk finds and a walk is not a pure function.
+#
+# The control matters more than usual: a rule that skipped hidden directories
+# and a ceiling that refused everything would both look exactly like this stage
+# passing, so a small ordinary tree has to still index.
+
+BIG="$WORK/too-big"
+SMALL="$WORK/small"
+INDEX_STORE="$WORK/index-store"
+mkdir -p "$BIG/many" "$SMALL/src" "$SMALL/.cache/junk" "$INDEX_STORE"
+
+# One past the ceiling the binary carries, so this is the boundary and not a
+# number far away from it.
+python3 -c '
+import pathlib, sys
+d = pathlib.Path(sys.argv[1])
+for n in range(20001):
+    (d / ("f%07d.txt" % n)).write_text("")
+' "$BIG/many"
+
+printf 'fn a() {}\n' > "$SMALL/src/main.rs"
+printf 'fn b() {}\n' > "$SMALL/.cache/junk/cached.rs"
+
+index_ask() {
+    printf '%s\n' "structured on" "indexar $1" salir | \
+        THALYX_ROOT="$INDEX_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+}
+
+index_ask "$BIG"   > "$WORK/index-big.log"
+index_ask "$SMALL" > "$WORK/index-small.log"
+
+index_said() {
+    python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "index_build":
+        if not value.get("ok"):
+            print("refused %s" % value.get("error"))
+        else:
+            print("indexed %s" % value.get("files_indexed"))
+        break
+else:
+    print("nothing none")
+' "$1"
+}
+
+set -- $(index_said "$WORK/index-big.log");   BIG_SAID=$1;   BIG_WHY=$2
+set -- $(index_said "$WORK/index-small.log"); SMALL_SAID=$1; SMALL_COUNT=$2
+
+if [ "$BIG_SAID" = "refused" ] && [ "$BIG_WHY" = "tree_too_large" ] \
+   && [ "$SMALL_SAID" = "indexed" ] && [ "$SMALL_COUNT" = "1" ]; then
+    proven "20001 files were refused as tree_too_large, and a two-file tree indexed the one that is not in a hidden directory"
+elif [ "$BIG_SAID" != "refused" ] || [ "$BIG_WHY" != "tree_too_large" ]; then
+    failed "a tree of 20001 files answered '$BIG_SAID $BIG_WHY' instead of refusing; see $WORK/index-big.log"
+elif [ "$SMALL_SAID" != "indexed" ]; then
+    failed "the control tree answered '$SMALL_SAID $SMALL_COUNT' — the ceiling or the hidden rule is refusing everything; see $WORK/index-small.log"
+else
+    failed "the control tree indexed $SMALL_COUNT files instead of 1: a hidden directory was read, or the ordinary one was not; see $WORK/index-small.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
