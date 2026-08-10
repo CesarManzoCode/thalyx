@@ -1097,7 +1097,9 @@ version = "0.1.0"
 name = "thalyx-watch"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "thalyx-graph",
+ "thalyx-syscall",
  "thiserror",
 ]
 

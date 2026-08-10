@@ -1129,7 +1129,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `intento empezar <etiqueta>` opens something that can be");
             println!("  taken back whole — `intento abandonar` puts the tree back");
             println!("  as it was, `intento confirmar` keeps it.");
-            println!("  `estado` re-reads the");
+            println!("  `cambios` says what the kernel has seen change and who");
+            println!("  did it — reading it empties the queue, so it is not a");
+            println!("  history. `estado` re-reads the");
             println!("  machine, `historia` says what has been done here and");
             println!("  what came of it, `nucleo` shows what the kernel has been saying");
             println!("  and `nucleo lento` where the boot spent its time,");
@@ -1140,7 +1142,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
-            println!("  `buscar <nombre>`, `historia`, `intento`,");
+            println!("  `buscar <nombre>`, `historia`, `intento`, `cambios`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1357,6 +1359,14 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             _ if starts_any(line, &["intento ", "attempt "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 crate::attempt::run(store, &here, rest, face, &crate::new_request_id())?;
+            }
+            // B3: what the kernel has seen change, and who did it.
+            _ if starts_any(line, &["cambios ", "changes "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::changes::show(rest, face)?;
+            }
+            "cambios" | "changes" => {
+                crate::changes::show("", face)?;
             }
             "intento" | "attempt" => {
                 crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;

@@ -30,6 +30,7 @@
 //!   [`thalyx_graph::Trust::Counter`] stays an explicit choice and
 //!   `Watcher::verify` has to agree first.
 
+pub mod ring;
 pub mod scope;
 
 pub use scope::WatchedRoot;

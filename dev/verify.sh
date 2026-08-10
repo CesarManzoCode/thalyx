@@ -3601,6 +3601,107 @@ else:
     fi
 fi
 
+# ──────────────── 27. the ring buffer the watcher fills, read by something at last
+
+step "27. what the kernel saw change, and who did it"
+
+# `Superficie-para-el-LLM.md`, punto B3. The producing half has existed since
+# `thalyx_watch.bpf.c` was written, and the comment above `thalyx_mutations` has
+# said since that day that reading it needs a consumer that mmaps the map and
+# follows the ring protocol. `Tareas-Pendientes` listed it as a ring that says
+# what changed and that nobody consumes.
+#
+# ## What only this machine can establish
+#
+# The mapping. The protocol is a pure function over bytes and is covered
+# exhaustively in `thalyx_watch::ring` — a byte array models the kernel's side of
+# that contract exactly, because the contract *is* the byte layout. What no test
+# in the repository can touch is `bpf_obj_get` on a real pin, two `mmap` calls
+# the kernel accepts, and a consumer position the kernel actually reads.
+#
+# ## The control, and why it is a second read and not a second machine
+#
+# Draining consumes. So the check is: make a mutation, read it, then read again
+# with nothing new in between — the second must be empty. Without that column, a
+# consumer that never advanced the consumer position would return the same
+# record forever and look like a machine where a great deal is happening.
+
+RING_PIN="/sys/fs/bpf/thalyx/maps/thalyx_mutations"
+RING_STORE="$WORK/ring-store"
+mkdir -p "$RING_STORE"
+
+RING_GAP=""
+if [ ! -x "$THALYX" ]; then
+    RING_GAP="there is no thalyx binary, so the mutation ring could not be read"
+elif [ ! -e "$RING_PIN" ]; then
+    RING_GAP="nothing is pinned at $RING_PIN, so thalyx-watch is not loaded and there is no ring to read"
+fi
+
+if [ -n "$RING_GAP" ]; then
+    if [ "${THALYX_REQUIRE_LSM_TESTS:-0}" = 1 ]; then failed "$RING_GAP"; else unproven "$RING_GAP"; fi
+else
+    ring_ask() {
+        printf '%s\n' "structured on" "cambios" salir | \
+            THALYX_ROOT="$RING_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # Drain whatever was already queued, so the count below is about the
+    # mutation this stage makes and not about the rest of the machine.
+    ring_ask > /dev/null 2>&1
+
+    RING_TOUCHED="$WORK/ring-touched-$$"
+    : > "$RING_TOUCHED"
+    mv "$RING_TOUCHED" "$RING_TOUCHED.moved"
+    rm -f "$RING_TOUCHED.moved"
+
+    ring_ask > "$WORK/ring-first.log"
+    ring_ask > "$WORK/ring-second.log"
+
+    ring_count() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "changes":
+        if not value.get("ok"):
+            print("refused %s 0" % value.get("error"))
+        else:
+            print("%s %s %s" % (
+                value.get("total"),
+                value.get("names_paths"),
+                value.get("is_a_history")))
+        break
+else:
+    print("none none none")
+' "$1"
+    }
+
+    set -- $(ring_count "$WORK/ring-first.log")
+    R_FIRST=$1; R_PATHS=$2; R_HISTORY=$3
+    set -- $(ring_count "$WORK/ring-second.log")
+    R_SECOND=$1
+
+    if [ "$R_FIRST" != "none" ] && [ "$R_FIRST" != "refused" ] && [ "$R_FIRST" -ge 1 ] \
+       && [ "$R_SECOND" != "none" ] && [ "$R_SECOND" = "0" ] \
+       && [ "$R_PATHS" = "False" ] && [ "$R_HISTORY" = "False" ]; then
+        proven "the mutation ring was mapped and read: $R_FIRST record(s) from a file made, moved and deleted, and the second read was empty"
+    elif [ "$R_FIRST" = "refused" ]; then
+        failed "reading the ring was refused with '$R_PATHS'; see $WORK/ring-first.log"
+    elif [ "$R_FIRST" = "none" ] || [ "$R_FIRST" -lt 1 ]; then
+        failed "the ring returned $R_FIRST records for three mutations this stage made; see $WORK/ring-first.log"
+    elif [ "$R_SECOND" != "0" ]; then
+        failed "a second read returned $R_SECOND records with nothing new — the consumer position is not being written back; see $WORK/ring-second.log"
+    else
+        failed "the answer claimed paths=$R_PATHS history=$R_HISTORY, neither of which a ring buffer can give; see $WORK/ring-first.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

@@ -293,6 +293,19 @@ pub const VERBS: &[Verb] = &[
         summary: "Open something that can be taken back whole, then keep it or undo all of it.",
     },
     Verb {
+        id: "changes",
+        names: &["cambios", "changes"],
+        takes: &[],
+        flags: WINDOW_FLAGS,
+        answers: Some("changes"),
+        // It empties the kernel's queue, which nothing can put back. It changes
+        // no file, and a caller deciding whether to be careful must still be
+        // told: asking twice is not the same as asking once.
+        changes: false,
+        errors: &["not_loaded", "unreadable", "bad_cursor", "unknown_argument"],
+        summary: "What the kernel saw change and who did it. Reading empties the queue; never paths.",
+    },
+    Verb {
         id: "clear",
         names: &["clear", "limpiar", "cls"],
         takes: &[],
