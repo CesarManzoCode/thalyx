@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-09
+fecha-actualizacion: 2026-08-10
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,121 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La máquina se describe a sí misma, ensaya antes de hacer, y el índice ya es alcanzable — 2026-08-09
+> ## Seis puntos más del catálogo, y el prompt que Cesar encontró — 2026-08-10
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió lo del día anterior en su máquina, encontró un defecto de verdad,
+> y sobre los tres puntos que quedaron nombrados como negociación dijo: *«me
+> parece que ahí no hay costo real, más bien es costo de dificultad… si realmente
+> aportan un beneficio real y claro a los LLMs, entonces hazlos»*.
+>
+> **Catorce de los diecinueve puntos están hechos.** Queda **E1**, que no es
+> difícil sino que le falta el piso, y ésa es la decisión que sigue.
+>
+> ### El defecto: una pantalla en blanco que parecía colgada
+>
+> Escribió `structured on`, recibió su objeto, y se quedó frente a una pantalla
+> en blanco. Nada en ella distinguía una sesión esperando una línea de una
+> colgada, así que abrió otra ventana para escribir el siguiente comando.
+>
+> El prompt se suprimía en la cara estructurada para cumplir la promesa de un
+> objeto por renglón. **En una terminal esa promesa nunca se estaba cumpliendo**:
+> el modo crudo hace eco de cada carácter, así que el flujo de un pty nunca fue
+> un objeto por renglón — y las pruebas ya lo decían en su propio comentario.
+> Suprimir el prompt ahí no compraba nada y costaba eso. Ahora lo decide **el
+> flujo y no la cara**: por tubería no hay prompt, en terminal sí, con llaves
+> —`  {/home} > `— porque cuál cara está encendida es invisible hasta que uno
+> escribe algo, y quien no ve el modo en el que está no puede salir de él.
+>
+> ### B1: ninguna respuesta larga sin límite
+>
+> La falla es la callada de los cinco costos. `ls` sobre cuarenta mil archivos no
+> falla, no avisa, y no parece un defecto: produce un agente que gastó su ventana
+> entera en nombres y olvidó su tarea.
+>
+> **Un cursor por llave y no un desplazamiento**, y ésa es la decisión entera.
+> Con `skip(200)`, borrar un archivo anterior corre todo un lugar y el renglón
+> que estaba en 200 no se le manda a nadie — sin error, sin hueco, y quien lee
+> concluye que ese archivo no existe. Lo que un cursor por llave sí no puede
+> ocultar —que la colección se movió— lo dice, en el mismo objeto que las filas.
+>
+> La cara humana **no** se acota: una ventana es un hecho sobre una ventana de
+> contexto, y una persona no tiene una.
+>
+> ### C2: símbolos, no renglones
+>
+> El decreto decía «medio construido: el parser existe», y era menos que eso — el
+> parser sabía leer importaciones, no declaraciones. Ahora `buscar <nombre>`
+> contesta dónde se declara un nombre, de qué tipo es, y en qué renglón de qué
+> archivo se usa. **Sin comentarios y sin cadenas**, que es lo que `grep` no
+> puede hacer.
+>
+> La tabla de menciones sólo registra identificadores que el árbol declara. Sin
+> eso la tabla es en su mayoría vocabulario —`println`, `let`, `self`— y un
+> índice que es vocabulario es uno que nadie puede permitirse guardar.
+>
+> La etapa 24 de `verify.sh` corre sobre las fuentes de este repositorio y
+> encuentra **3 869 nombres declarados**. Su control es una palabra que sólo
+> aparece en prosa: si volviera con usos, esto sería una búsqueda de texto
+> disfrazada.
+>
+> ### F2: `historia`
+>
+> El journal se escribía desde [[Journal-y-Snapshots]] y lo leía exactamente una
+> cosa, un subcomando. Ahora lo lee la sesión, el más nuevo primero, con la
+> advertencia que la cara humana ya imprimía convertida en campo: **esto es lo
+> que Thalyx hizo, no todo lo que pasó**.
+>
+> ### D2: `intento`, y una corrección mía
+>
+> El 2026-08-09 escribí que D2 sólo se podía construir en el hierro porque la
+> única prueba posible aquí sería contra un falso. **Eso confundió dos cosas.**
+> `thalyx-snapshot` ya tenía el corte hecho y escrito: *«la política que sólo se
+> puede ejercer en un sistema de archivos Btrfs es política que nunca se
+> ejerce»*. Cuál intento está abierto, qué hace un segundo, a qué árbol apunta un
+> abandono, qué pasa cuando el snapshot ya no está — ninguna es una pregunta de
+> Btrfs.
+>
+> Así que la política vive en `thalyx-core::attempt` con once pruebas que corren
+> aquí, y para el hierro queda sólo lo que de verdad es Btrfs: que el snapshot
+> sea atómico y que el intercambio sea un `RENAME_EXCHANGE`. **Etapa 26**, con su
+> control — la misma secuencia cerrada con `confirmar`, donde nada debe perderse.
+>
+> ### B3: `cambios`, y otra corrección mía
+>
+> Escribí que consumir el ringbuf era código BPF y que por eso tumbaría al
+> watcher. **No aplica**: el productor ya está escrito y no se toca; el
+> consumidor es código de usuario. El protocolo del anillo es una función pura
+> sobre bytes, y un arreglo de bytes lo modela exactamente — regla 8 cumplida,
+> diez pruebas aquí, incluido el registro que cruza el final del anillo. Para el
+> hierro queda **sólo el mapeo**: etapa 27.
+>
+> Dos cosas que el decreto esperaba y un anillo no puede dar, dichas en la
+> respuesta: **no es una historia** (leerlo lo vacía) y **no nombra archivos**
+> (trae cgroup, pid, tipo y programa). Para lo que sirve es para separar lo que
+> hizo el agente de lo que hizo la persona.
+>
+> ### Lo que hay que correr, en este orden
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Tres etapas nuevas sólo tuyas: **26** (Btrfs, el intento), **27** (BPF, el
+> anillo) y las que ya estaban. Si algo se rompe, las tres son cambios distintos
+> en commits distintos, así que se sabe cuál.
+>
+> ### Lo que queda, y es una decisión tuya
+>
+> **E1 — el agente ajeno como tarea con concesión.** No es difícil. Le falta el
+> piso: G1 (ejecutar procesos) y G2 (un runtime donde un agente ajeno pueda
+> correr) no existen, así que no hay a qué darle la concesión. Construirla ahora
+> produce código que no se puede ejercer **ni siquiera en tu máquina**, que es
+> distinto de D2 y B3. Y la pregunta de fondo es tuya: hoy Thalyx sólo corre
+> módulos firmados, y un agente ajeno por definición no lo es.
+
+> ## La máquina se describe a sí misma, ensaya antes de hacer, y el índice ya es alcanzable — 2026-08-09
 >
 > Cesar pidió cerrar [[Superficie-para-el-LLM]] hasta donde el trade-off fuera
 > claro. **Ocho de los diecinueve puntos quedaron hechos**, tres quedaron

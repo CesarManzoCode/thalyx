@@ -296,7 +296,7 @@ Every claim in this section is either checkable with a command in this
 repository or marked as not yet checked. That distinction is the project's
 main working rule.
 
-**Built and covered by tests: 1075 of them**, across unit tests, fault injection
+**Built and covered by tests: 1164 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -317,7 +317,7 @@ object, so a command that touched three files is still one answer. `structured
 off` brings the sentences back, and the acknowledgement carries those words for
 anyone who turned it on by accident.
 
-**The machine also describes itself.** `describe` answers with all 29 verbs —
+**The machine also describes itself.** `describe` answers with all 32 verbs —
 names, arguments, flags, which `op` each answers with, whether it can change
 anything, and the errors it can give. Nothing on Linux can do that: `--help` is
 prose, written once per tool, inconsistent between any two, and often absent.
@@ -328,6 +328,32 @@ real operation rather than a second implementation that could disagree with it.
 Every action that changed something says how to undo it — and a delete says
 plainly that it cannot be undone, because inside `/home` no rollback of ours
 reaches.
+
+**No answer can eat a context window.** A listing, an index query, a search, the
+history — each comes back with how many there are, how many were sent, and a
+cursor for the rest. The cursor names the last row rather than an offset, so a
+file deleted between two pages changes *what comes next* and never quietly skips
+something; when the tree moved underneath it, the answer says so in the same
+object as the rows. A person is never cut off: a window is a fact about a
+*context* window, and on the image there is no pager to get the rest back with.
+
+**Searching returns symbols, not lines.** `buscar login` says where the name is
+declared, what kind of thing it is, and every place it is used — with neither
+comments nor strings in the list, which is the half `grep` cannot do. Over this
+repository's own sources it finds 3,869 declared names.
+
+**Something can be attempted and taken back whole.** `intento empezar <label>`
+takes a Btrfs snapshot, and after any amount of work `intento abandonar` returns
+the tree exactly as it was while `intento confirmar` keeps it. Both faces are
+shown what abandoning would cost — which files would be *deleted* rather than
+reverted — before anything moves.
+
+**The machine says what it did, and what the kernel saw.** `historia` reads the
+journal from inside a session, newest first, saying in a field that it covers
+what Thalyx did and not everything that happened. `cambios` drains the BPF ring
+buffer the watcher fills: who changed something and how, with the two things a
+ring cannot give said plainly — it is not a history, because reading empties it,
+and it names no files.
 
 **The semantic index is reachable from a session.** `indexar`, then `depende
 <file>` and `usan <file>` — *what refers to this*, which no amount of walking
