@@ -1707,6 +1707,27 @@ else
             failed "Thalyx did not detach cleanly; see $WORK/loader-detach.log"
             "$THALYX" enforce attached --any 2>&1 | sed 's/^/     /'
         fi
+
+        # Put back what this stage took down, because a later stage needs it.
+        #
+        # This stage detaches `make -C lsm load`'s work on the way in and its
+        # own on the way out, and both are correct in isolation. What was not
+        # correct was leaving the machine bare afterwards: stage 27 reads the
+        # watcher's ring buffer, and on 2026-08-10 it reported *thalyx-watch is
+        # not loaded* — true, and true because of this stage, three hundred
+        # lines above it. The stage that had actually shown the ring working was
+        # the run where this one was skipped.
+        #
+        # A stage that borrows the machine gives it back. Reported rather than
+        # silent: if the reload fails, everything after it is about a machine
+        # that lost its watcher here and not about Thalyx.
+        if make -C "$ROOT/lsm" load > "$WORK/lsm-reload.log" 2>&1; then
+            LOADED=1
+        else
+            LOADED=0
+            failed "thalyx-lsm could not be put back after stage 14; see $WORK/lsm-reload.log"
+            tail -10 "$WORK/lsm-reload.log"
+        fi
     fi
 fi
 
