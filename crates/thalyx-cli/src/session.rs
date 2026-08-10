@@ -1116,7 +1116,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar` reads a tree and records what refers to what;");
             println!("  then `depende <archivo>` says what it refers to and");
             println!("  `usan <archivo>` says what refers to it — which no");
-            println!("  amount of looking through folders can answer.");
+            println!("  amount of looking through folders can answer. `buscar");
+            println!("  <nombre>` says where a name is defined and everywhere it");
+            println!("  is used, without the comments a search for text catches.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1124,7 +1126,14 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
-            println!("  machine, `nucleo` shows what the kernel has been saying");
+            println!("  `intento empezar <etiqueta>` opens something that can be");
+            println!("  taken back whole — `intento abandonar` puts the tree back");
+            println!("  as it was, `intento confirmar` keeps it.");
+            println!("  `cambios` says what the kernel has seen change and who");
+            println!("  did it — reading it empties the queue, so it is not a");
+            println!("  history. `estado` re-reads the");
+            println!("  machine, `historia` says what has been done here and");
+            println!("  what came of it, `nucleo` shows what the kernel has been saying");
             println!("  and `nucleo lento` where the boot spent its time,");
             println!("  `apagar` turns it off.");
         }
@@ -1133,6 +1142,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
+            println!("  `buscar <nombre>`, `historia`, `intento`, `cambios`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1182,12 +1192,25 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // different file depending on where the person is standing, and a prompt
         // that hid that would make the same words do different things with no
         // warning on screen.
-        // Nothing at all in the structured face. A prompt is for somebody who is
-        // waiting; a program reading the stream has been promised one object per
-        // line, and `  /home > {"op":…}` is not one object per line — the answer
-        // would have to be found inside the line before it could be parsed.
+        // Nothing at all in the structured face **down a pipe**. A program
+        // reading the stream has been promised one object per line, and
+        // `  /home > {"op":…}` is not one object per line — the answer would
+        // have to be found inside the line before it could be parsed.
+        //
+        // On a terminal that promise is already not what is on the stream: raw
+        // mode echoes every character the caller types, so the pty face has
+        // never been one object per line and the tests say so. What suppressing
+        // the prompt there bought was nothing, and what it cost is what Cesar
+        // hit on the first real run — he typed `structured on`, got his object,
+        // and then a blank screen with no way to tell a session waiting for a
+        // line from one that had hung. He opened a second window.
+        //
+        // The braces are the whole difference from the human prompt: which face
+        // is on is otherwise invisible until something is typed, and a person
+        // who cannot see the mode they are in cannot leave it.
         let prompt = match face {
-            crate::files::Face::Machine => String::new(),
+            crate::files::Face::Machine if !terminal.on_a_terminal() => String::new(),
+            crate::files::Face::Machine => format!("  {{{}}} > ", here.briefly()),
             crate::files::Face::Human => format!("  {} > ", here.briefly()),
         };
         let at = here.at().to_path_buf();
@@ -1313,6 +1336,40 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "usan" | "dependents" => {
                 crate::index::edges(store.root(), &here, "", true, face)?;
+            }
+            // C2: a symbol, not a line. The question `grep` answers with two
+            // hundred matches of which one is the definition.
+            _ if starts_any(line, &["buscar ", "symbol "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::index::symbol(store.root(), &here, rest, face)?;
+            }
+            "buscar" | "symbol" => {
+                crate::index::symbol(store.root(), &here, "", face)?;
+            }
+            // F2: what this machine did, said by the machine rather than
+            // reconstructed from a conversation that ended.
+            _ if starts_any(line, &["historia ", "history "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::history::show(store, rest, face)?;
+            }
+            "historia" | "history" => {
+                crate::history::show(store, "", face)?;
+            }
+            // D2: begin something, and be able to take all of it back.
+            _ if starts_any(line, &["intento ", "attempt "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::attempt::run(store, &here, rest, face, &crate::new_request_id())?;
+            }
+            // B3: what the kernel has seen change, and who did it.
+            _ if starts_any(line, &["cambios ", "changes "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::changes::show(rest, face)?;
+            }
+            "cambios" | "changes" => {
+                crate::changes::show("", face)?;
+            }
+            "intento" | "attempt" => {
+                crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

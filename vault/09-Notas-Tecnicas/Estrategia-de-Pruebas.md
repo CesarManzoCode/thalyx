@@ -2783,6 +2783,56 @@ Lo que hay que hacer en su lugar: `git fetch` primero, y comparar contra
 qué tiene el remoto», que es la regla 10 — una falla al leer no es una falla al
 existir.
 
+## «Sólo hierro» es una afirmación sobre qué propiedad se prueba — 2026-08-10
+
+Tres puntos de [[Superficie-para-el-LLM]] quedaron sin construir con el
+argumento de que este contenedor no puede ejercerlos. **Dos de los tres estaban
+mal**, y las dos equivocaciones son distintas y las dos vale la pena escribirlas.
+
+**La primera fue mezclar dos propiedades en una.** El intento con nombre se
+apoya en snapshots de Btrfs, y de ahí salió «no se puede probar aquí». Pero lo
+que había que probar era: cuál intento está abierto, qué hace un segundo, a qué
+árbol apunta un abandono, qué pasa cuando el snapshot ya no está. Ninguna de
+ésas es una pregunta de Btrfs. `thalyx-snapshot` ya llevaba escrito el criterio
+correcto en el comentario de su propio falso —*«la política que sólo se puede
+ejercer en un sistema de archivos Btrfs es política que nunca se ejerce»*— y no
+se leyó.
+
+La regla 8 dice que un falso tiene que modelar **la propiedad bajo prueba**. Eso
+se leyó al revés: como si dijera que un falso tiene que modelar *el sistema*.
+Antes de decir que algo sólo se prueba en el hardware, hay que nombrar la
+propiedad. Si la propiedad se puede escribir sin nombrar el hardware, no era
+sólo hierro.
+
+**La segunda fue un hecho falso, dicho con seguridad.** «Consumir el ringbuf es
+código BPF, y un programa que falla el verificador tumba al watcher.» El
+productor ya estaba escrito y no se tocaba; el consumidor es código de usuario.
+El verificador no entraba en esto en ningún momento. Un impedimento heredado de
+otra parte del sistema, aplicado a ésta sin comprobarlo.
+
+Las dos comparten la forma: **una razón para no construir algo es una
+afirmación, y se comprueba como cualquier otra.** Es más barato de comprobar que
+casi todo lo demás de este proyecto —basta leer el código que ya está— y es la
+que menos se comprueba, porque una razón para no hacer algo no produce una
+prueba roja.
+
+## Un prompt que se suprime para un programa se le suprime a una persona — 2026-08-10
+
+Cesar escribió `structured on`, recibió su objeto, y se quedó frente a una
+pantalla en blanco sin nada que distinguiera una sesión esperando de una
+colgada. Abrió otra ventana.
+
+El prompt se suprimía para cumplir «un objeto por renglón». En una terminal esa
+promesa **nunca se estaba cumpliendo** —el modo crudo hace eco de cada carácter—
+y el comentario de la propia prueba lo decía: *«con un pty hay eco, así que el
+flujo del pty no es un objeto por renglón»*. La supresión no compraba nada donde
+se aplicaba y costaba todo.
+
+La regla: **una restricción se aplica donde la propiedad que la justifica es
+cierta, y hay que comprobar dónde es cierta.** Aquí la propiedad era del flujo
+—tubería sí, terminal no— y se aplicó según la cara, que es otra cosa. Ninguna
+prueba lo iba a encontrar, porque ninguna prueba tiene ojos.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -46,6 +46,7 @@
 //! name.
 
 pub mod machine;
+pub mod window;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -180,6 +181,48 @@ pub struct Listing {
     pub entries: Vec<Entry>,
     /// Name, and what went wrong when it was asked about.
     pub unreadable: Vec<(OsString, String)>,
+}
+
+/// A listing after the window has been applied: one page of entries, and every
+/// name that could not be read.
+///
+/// The second half is never paged, which is why it travels beside the page
+/// rather than inside it. It is short, and it is the half rule 10 exists for — a
+/// directory whose unreadable entries fell off the end of page one would report
+/// itself as fully understood.
+pub type Paged = (window::Page<Entry>, Vec<(OsString, String)>);
+
+impl Listing {
+    /// The bytes a cursor names for one entry.
+    ///
+    /// The same key the entries are already sorted by — the group first, then
+    /// the name — flattened into bytes so a cursor can carry it verbatim. Bytes
+    /// and not text on purpose: a name on Linux is bytes, and a cursor that
+    /// could only carry valid UTF-8 would stop paging at the first badly named
+    /// file in a directory and leave the caller with no way past it.
+    ///
+    /// It must agree with [`Entry::ordering_key`] or a cursor would name a
+    /// position that moves between calls, which is why it is here next to it
+    /// rather than wherever paging happens to be wanted.
+    pub fn key_of(entry: &Entry) -> Vec<u8> {
+        use std::os::unix::ffi::OsStrExt;
+        let (group, name) = entry.ordering_key();
+        let mut key = Vec::with_capacity(1 + name.len());
+        key.push(group);
+        key.extend_from_slice(name.as_bytes());
+        key
+    }
+
+    /// Cut the entries to a window, keeping everything unreadable.
+    ///
+    /// `Superficie-para-el-LLM.md`, punto **B1**. What could not be read is
+    /// never paged: it is short, and it is the half of a listing rule 10 exists
+    /// for — a directory whose unreadable entries fell off the end of page one
+    /// would report itself as fully understood.
+    pub fn paged(self, asked: &window::Asked) -> Result<Paged, window::Cut> {
+        let page = window::page(self.entries, Self::key_of, asked)?;
+        Ok((page, self.unreadable))
+    }
 }
 
 /// Everything looking at a file can fail with, kept apart from what it can say.

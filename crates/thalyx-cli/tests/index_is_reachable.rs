@@ -124,7 +124,7 @@ fn the_question_no_directory_walk_can_answer_is_answered() {
     // refers to it. That is the whole reason the index exists, and until now
     // nothing living in a session could ask it.
     assert_eq!(answer["ok"], serde_json::json!(true));
-    assert_eq!(answer["count"], serde_json::json!(1));
+    assert_eq!(answer["total"], serde_json::json!(1));
     assert_eq!(answer["edges"][0]["from"], serde_json::json!("src/uno.rs"));
 }
 
@@ -143,7 +143,7 @@ fn the_other_direction_works_too_and_says_where_the_reference_is() {
     );
     let answer = answer_to(&objects(&output), "depends_on");
 
-    assert_eq!(answer["count"], serde_json::json!(1));
+    assert_eq!(answer["total"], serde_json::json!(1));
     // The line number is what makes this cheaper than reading the file: a
     // caller that wants the context knows exactly which line to ask for.
     assert_eq!(answer["edges"][0]["line"], serde_json::json!(1));

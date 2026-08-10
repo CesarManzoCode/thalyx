@@ -9,6 +9,7 @@
 //! See `vault/11-Seguridad/Modelo-de-Amenaza.md` and `vault/02-Arquitectura/Core.md`.
 
 pub mod api;
+pub mod attempt;
 pub mod bundle;
 pub mod commit;
 pub mod fault;
@@ -88,6 +89,9 @@ pub enum CoreError {
 
     #[error(transparent)]
     Journal(#[from] thalyx_journal::JournalError),
+
+    #[error(transparent)]
+    Attempt(#[from] crate::attempt::AttemptError),
 
     #[error("bundle is malformed: {0}")]
     MalformedBundle(String),

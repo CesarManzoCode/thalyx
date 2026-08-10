@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 thalyx-graph.workspace = true
+thalyx-syscall.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [lints]

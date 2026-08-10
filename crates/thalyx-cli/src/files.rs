@@ -273,6 +273,20 @@ pub struct Asked {
     pub long: bool,
     /// What is left after the flags: the place, or nothing.
     pub place: String,
+    /// How many entries to answer with, when the caller said.
+    ///
+    /// `Superficie-para-el-LLM.md`, punto **B1**, and it is read in both faces
+    /// and obeyed in one — the same rule as `-a` and `-l`, pointed the other
+    /// way. A window is a fact about a context window, and a person does not
+    /// have one: cutting the human listing would be taking something away, and
+    /// on the image there is no pager to get it back with.
+    pub limit: Option<usize>,
+    /// Where to resume, exactly as the previous answer handed it over.
+    ///
+    /// Kept as the text that was typed rather than parsed here, so that a cursor
+    /// this machine did not write is refused by the one piece of code that knows
+    /// what a cursor is, with a word the caller can match on.
+    pub cursor: Option<String>,
 }
 
 impl Asked {
@@ -285,6 +299,24 @@ impl Asked {
         let mut place = Vec::new();
 
         for word in rest.split_whitespace() {
+            // `nombre=valor` before anything else, and only when the value is
+            // one this understands. A file really named `limite=x` is
+            // vanishingly rare and a mis-typed number is not — so a value that
+            // does not parse falls through to being a place, and the caller is
+            // told "limite=dos is not there" instead of silently getting a
+            // default window they did not ask for.
+            match word.split_once('=') {
+                Some(("limite" | "limit", count)) if count.parse::<usize>().is_ok() => {
+                    asked.limit = count.parse().ok();
+                    continue;
+                }
+                Some(("cursor" | "desde", token)) if !token.is_empty() => {
+                    asked.cursor = Some(token.to_string());
+                    continue;
+                }
+                _ => {}
+            }
+
             match word {
                 "todo" | "todos" | "ocultos" => asked.all = true,
                 "detalles" | "largo" => asked.long = true,
@@ -331,7 +363,22 @@ pub fn screen_width() -> usize {
         .unwrap_or(ASSUMED_WIDTH)
 }
 
-/// `ls [-a] [-l] [ruta]` — what is here, or what is there.
+/// What the caller asked for, in the words `thalyx-files` pages by.
+///
+/// The default limit is applied here and not in the parser, so that "the caller
+/// said nothing" and "the caller said two hundred" stay distinguishable all the
+/// way down — and so there is exactly one place that decides what nothing means.
+fn window_asked(asked: &Asked) -> Result<thalyx_files::window::Asked, thalyx_files::window::Cut> {
+    Ok(thalyx_files::window::Asked {
+        limit: asked.limit.unwrap_or(thalyx_files::window::DEFAULT_LIMIT),
+        after: match &asked.cursor {
+            Some(text) => Some(thalyx_files::window::Cursor::parse(text)?),
+            None => None,
+        },
+    })
+}
+
+/// `ls [-a] [-l] [limite=N] [cursor=…] [ruta]` — what is here, or what is there.
 ///
 /// The flags are read in both faces and **obeyed in only one**. `-a` and `-l`
 /// are about how much of the truth reaches a person; the structured face always
@@ -366,10 +413,23 @@ pub fn look(here: &Where, rest: &str, face: Face) {
     };
 
     if face.machine() {
-        face.say(match &found {
-            Ok(listing) => machine::listing(&target, listing),
-            Err(error) => machine::failure("list", error),
-        });
+        match found {
+            Ok(listing) => match window_asked(&asked) {
+                Ok(window) => match listing.paged(&window) {
+                    Ok((page, unreadable)) => {
+                        face.say(machine::listing(&target, &page, &unreadable))
+                    }
+                    // Unreachable unless the listing stopped being sorted, and
+                    // said rather than swallowed for exactly that reason: a
+                    // cursor into unordered rows means something different on
+                    // every call, and a page produced anyway would be wrong
+                    // quietly.
+                    Err(why) => face.say(machine::declined("list", "unordered", &why.to_string())),
+                },
+                Err(why) => face.say(machine::declined("list", "bad_cursor", &why.to_string())),
+            },
+            Err(error) => face.say(machine::failure("list", &error)),
+        }
         return;
     }
 
@@ -749,6 +809,26 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .iter()
                 .map(|path| thalyx_files::foresee_remove(path))
                 .collect()
+        }
+        // `intento` is the one changing verb that already answers this, and it
+        // answers it better than a rehearsal could: `intento` alone says what
+        // abandoning would cost right now, and `intento abandonar` without the
+        // confirming word says it again before doing anything. Sending the
+        // caller there is A2 applied to a rehearsal — name the way out rather
+        // than only refuse.
+        "attempt" => {
+            let why = "`attempt` says what it would cost by itself: `intento` alone, \
+                       or `intento abandonar` without confirming";
+            if face.machine() {
+                face.say(thalyx_files::machine::declined(
+                    "rehearse",
+                    "ask_attempt_itself",
+                    why,
+                ));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return Ok(());
         }
         // `instalar`, `correr`, `revertir`, `instalar-en`, `apagar`. Each one
         // changes the machine and none of them has a check half yet, so the

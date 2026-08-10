@@ -49,7 +49,7 @@
 //! something else parses. The wire shape is a decision, and decisions in this
 //! project are written down where they can be read and tested.
 
-use crate::{Did, Done, Entry, Excerpt, FileError, Kind, Listing};
+use crate::{Did, Done, Entry, Excerpt, FileError, Kind};
 use serde_json::{Map, Value, json};
 use std::ffi::OsStr;
 use std::path::Path;
@@ -134,14 +134,50 @@ fn fields(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String,
         .collect()
 }
 
+/// How much of a long answer this is, and how to ask for the rest.
+///
+/// `Superficie-para-el-LLM.md`, punto **B1**. The same six keys on every answer
+/// that can be long, because a caller that has to learn a different paging shape
+/// per verb pays the discovery cost again for each one — and the point of the
+/// catalogue is that it pays it once.
+///
+/// All six are always present, including the two that are `null` or `false` on
+/// the ordinary day. A key that only appears when a directory is enormous is a
+/// key nobody writes the branch for, and then the branch is missing on exactly
+/// the day it was needed.
+pub fn window_fields<T>(page: &crate::window::Page<T>) -> Vec<(&'static str, Value)> {
+    vec![
+        ("total", json!(page.total)),
+        ("sent", json!(page.rows.len())),
+        // Where this page starts inside the total, so a caller can say how far
+        // through it is without keeping a running count of its own.
+        ("before", json!(page.before)),
+        ("more", json!(page.more)),
+        ("cursor", json!(page.next)),
+        // The rule of honesty of `FS-en-Grafo`, generalised: whether the
+        // collection is still the one this cursor came from travels in the same
+        // object as the rows, because a caveat sent separately is one that gets
+        // dropped.
+        ("continuity", json!(page.continuity.word())),
+    ]
+}
+
 /// A directory, whole: nothing filtered, sizes exact, and what could not be read
 /// kept apart from what is not there.
-pub fn listing(path: &Path, listing: &Listing) -> String {
+///
+/// The entries arrive already cut to a window. What could not be read does not:
+/// it is short by nature and it is the half of the answer rule 10 is about, so
+/// paging it away would be turning "I could not tell" into silence.
+pub fn listing(
+    path: &Path,
+    page: &crate::window::Page<Entry>,
+    unreadable: &[(std::ffi::OsString, String)],
+) -> String {
     let (place, place_exact) = as_text(path.as_os_str());
     let mut exact = place_exact;
 
-    let entries: Vec<Value> = listing
-        .entries
+    let entries: Vec<Value> = page
+        .rows
         .iter()
         .map(|entry| {
             let (value, entry_exact) = entry_object(entry);
@@ -150,8 +186,7 @@ pub fn listing(path: &Path, listing: &Listing) -> String {
         })
         .collect();
 
-    let unreadable: Vec<Value> = listing
-        .unreadable
+    let unreadable: Vec<Value> = unreadable
         .iter()
         .map(|(name, why)| {
             let (name, name_exact) = as_text(name);
@@ -160,19 +195,17 @@ pub fn listing(path: &Path, listing: &Listing) -> String {
         })
         .collect();
 
-    object(
-        "list",
-        true,
-        exact,
-        fields([
-            ("path", json!(place)),
-            ("entries", json!(entries)),
-            // Always present, even empty. A caller that only sees the key when
-            // something failed is a caller that never wrote the branch — and
-            // rule 10 says a failure to read must not arrive as an absence.
-            ("unreadable", json!(unreadable)),
-        ]),
-    )
+    let mut carried = vec![
+        ("path", json!(place)),
+        ("entries", json!(entries)),
+        // Always present, even empty. A caller that only sees the key when
+        // something failed is a caller that never wrote the branch — and
+        // rule 10 says a failure to read must not arrive as an absence.
+        ("unreadable", json!(unreadable)),
+    ];
+    carried.extend(window_fields(page));
+
+    object("list", true, exact, fields(carried))
 }
 
 fn entry_object(entry: &Entry) -> (Value, bool) {
@@ -448,6 +481,15 @@ mod tests {
         serde_json::from_str(line).unwrap_or_else(|error| panic!("{line:?} is not JSON: {error}"))
     }
 
+    /// A whole listing, through the window, which is the only way one is
+    /// answered now.
+    fn shown(path: &str, listing_of: crate::Listing) -> Value {
+        let (page, unreadable) = listing_of
+            .paged(&crate::window::Asked::default())
+            .expect("a listing is sorted");
+        parse(&listing(Path::new(path), &page, &unreadable))
+    }
+
     // ─────────────────────────────────────── the shape every answer has in common
 
     #[test]
@@ -483,7 +525,7 @@ mod tests {
 
     #[test]
     fn the_machine_face_hides_nothing_a_person_would_not_be_shown() {
-        let listing_of = Listing {
+        let listing_of = crate::Listing {
             entries: vec![
                 Entry {
                     name: OsString::from(".bashrc"),
@@ -497,7 +539,7 @@ mod tests {
             unreadable: Vec::new(),
         };
 
-        let answer = parse(&listing(Path::new("/home"), &listing_of));
+        let answer = shown("/home", listing_of);
         let names: Vec<&str> = answer["entries"]
             .as_array()
             .unwrap()
@@ -513,7 +555,7 @@ mod tests {
 
     #[test]
     fn sizes_come_through_exact_and_never_in_the_rounded_form() {
-        let listing_of = Listing {
+        let listing_of = crate::Listing {
             entries: vec![Entry {
                 name: OsString::from("big"),
                 kind: Kind::File { bytes: 1536 },
@@ -521,7 +563,7 @@ mod tests {
             unreadable: Vec::new(),
         };
 
-        let answer = parse(&listing(Path::new("/home"), &listing_of));
+        let answer = shown("/home", listing_of);
         // A person is shown `1.5 kB`. Two programs comparing two rounded numbers
         // compare two lies.
         assert_eq!(answer["entries"][0]["bytes"], json!(1536));
@@ -530,7 +572,7 @@ mod tests {
 
     #[test]
     fn a_broken_link_arrives_as_broken_and_not_as_missing() {
-        let listing_of = Listing {
+        let listing_of = crate::Listing {
             entries: vec![Entry {
                 name: OsString::from("dangling"),
                 kind: Kind::Link {
@@ -541,7 +583,7 @@ mod tests {
             unreadable: Vec::new(),
         };
 
-        let answer = parse(&listing(Path::new("/home"), &listing_of));
+        let answer = shown("/home", listing_of);
         assert_eq!(answer["entries"][0]["kind"], json!("link"));
         assert_eq!(answer["entries"][0]["to"], json!("/gone"));
         assert_eq!(answer["entries"][0]["broken"], json!(true));
@@ -549,12 +591,12 @@ mod tests {
 
     #[test]
     fn a_name_that_could_not_be_read_is_not_dropped_from_the_listing() {
-        let listing_of = Listing {
+        let listing_of = crate::Listing {
             entries: Vec::new(),
             unreadable: vec![(OsString::from("locked"), "Permission denied".to_string())],
         };
 
-        let answer = parse(&listing(Path::new("/home"), &listing_of));
+        let answer = shown("/home", listing_of);
         // Rule 10, on the wire. A listing that dropped it would report a smaller
         // directory than the one on the disk.
         assert_eq!(answer["unreadable"][0]["name"], json!("locked"));
@@ -563,13 +605,13 @@ mod tests {
 
     #[test]
     fn the_unreadable_list_is_present_even_when_it_is_empty() {
-        let answer = parse(&listing(
-            Path::new("/home"),
-            &Listing {
+        let answer = shown(
+            "/home",
+            crate::Listing {
                 entries: Vec::new(),
                 unreadable: Vec::new(),
             },
-        ));
+        );
         // Present-when-empty is what makes a caller write the branch. A key that
         // appears only on the bad day is a key nobody handles on the bad day.
         assert_eq!(answer["unreadable"], json!([]));
@@ -580,7 +622,7 @@ mod tests {
     #[test]
     fn a_name_that_is_not_text_is_flagged_rather_than_quietly_mangled() {
         use std::os::unix::ffi::OsStringExt;
-        let listing_of = Listing {
+        let listing_of = crate::Listing {
             entries: vec![Entry {
                 // Invalid UTF-8, which a Linux filename is allowed to be.
                 name: OsString::from_vec(vec![b'a', 0xff, b'b']),
@@ -589,7 +631,7 @@ mod tests {
             unreadable: Vec::new(),
         };
 
-        let answer = parse(&listing(Path::new("/home"), &listing_of));
+        let answer = shown("/home", listing_of);
         // The failure this prevents: an agent takes the name out of a listing,
         // passes it back to `rm`, and removes a different file or none — with
         // nothing anywhere saying the name it was handed was not the name.

@@ -57,7 +57,12 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
 | Montajes idmapped para lo concedido | `crates/thalyx-sandbox/idmap.rs` | Verificado: escritura concedida funciona y aterriza a nombre del dueño |
-| Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go |
+| Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go. Importaciones **y declaraciones**; identificadores fuera de comentarios y cadenas |
+| Símbolos en el índice | `crates/thalyx-graph`, verbo `buscar` | Dónde se declara un nombre y dónde se usa. 3 869 nombres sobre las fuentes de este repo |
+| Respuestas acotadas con cursor | `crates/thalyx-files/window.rs` | Total, cursor por llave y continuidad; en seis verbos |
+| El intento con nombre | `crates/thalyx-core/attempt.rs`, verbo `intento` | Política probada contra el falso de directorios; el Btrfs lo ejerce la etapa 26 |
+| Consumidor del ringbuf de mutaciones | `crates/thalyx-watch/src/ring.rs`, verbo `cambios` | Protocolo probado sobre bytes; el mapeo lo ejerce la etapa 27 |
+| El journal desde la sesión | `crates/thalyx-cli/history.rs`, verbo `historia` | El más nuevo primero, con lo que no cubre dicho en un campo |
 | Índice en grafo (SQLite) | `crates/thalyx-graph` | Nodos, aristas, etiquetas, obsolescencia |
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |

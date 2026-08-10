@@ -6,11 +6,14 @@
 
 mod agent;
 mod agent_model;
+mod attempt;
 mod catalogue;
+mod changes;
 mod dev;
 mod enforce;
 mod files;
 mod graph;
+mod history;
 mod image;
 mod index;
 mod init;

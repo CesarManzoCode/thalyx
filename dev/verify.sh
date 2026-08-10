@@ -3248,6 +3248,460 @@ else:
     esac
 fi
 
+# ─────────────────────── 23. a long answer is cut, counted, and can be resumed
+
+step "23. a directory too big for a context window arrives bounded"
+
+# `Superficie-para-el-LLM.md`, punto B1. The failure is the quiet one of the
+# five costs: `ls` on a directory of forty thousand files does not fail and does
+# not warn, it produces a caller that spent its whole window on names it did not
+# ask about and then forgot the task.
+#
+# ## What the control is for
+#
+# The human half of `Principio-Doble-Ruta`: a window is a fact about a *context*
+# window, which a person does not have, and on the image there is no pager to
+# get a cut listing back with. So the same directory is listed twice — once by a
+# program, which must be cut, and once by a person, who must get all of it. With
+# only the first column, a session that had broken listing entirely would look
+# like one that pages correctly.
+
+WINDOW_STORE="$WORK/window-store"
+mkdir -p "$WINDOW_STORE/crowd"
+python3 - "$WINDOW_STORE/crowd" <<'EOF'
+import pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+for n in range(500):
+    (folder / f"file-{n:05}.txt").write_text("x")
+EOF
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so bounded answers could not be driven"
+else
+    window_ask() {
+        printf '%s\n' "structured on" "cd $WINDOW_STORE/crowd" "$1" salir | \
+            THALYX_ROOT="$WINDOW_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    window_ask "ls" > "$WORK/window-first.log"
+
+    # Every number out of the answer at once, so a page that is right about one
+    # of them and wrong about another cannot pass. Parsed, never grepped: a
+    # `grep` for `"total":500` matches a line that is not an object at all.
+    FIRST=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "list":
+        print("%s %s %s %s %s" % (
+            value.get("total"), value.get("sent"), value.get("more"),
+            len(value.get("entries") or []), value.get("cursor") or "none"))
+        break
+else:
+    print("none none none none none")
+' "$WORK/window-first.log")
+
+    set -- $FIRST
+    W_TOTAL=$1; W_SENT=$2; W_MORE=$3; W_ROWS=$4; W_CURSOR=$5
+
+    # The second page, asked for the way a caller asks: with the token it was
+    # handed, carried out of one session and back into another. A cursor that
+    # only worked inside one process would pass a weaker check than this.
+    RESUMED=none
+    if [ "$W_CURSOR" != "none" ]; then
+        window_ask "ls limite=5 cursor=$W_CURSOR" > "$WORK/window-second.log"
+        RESUMED=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "list":
+        names = [entry.get("name") for entry in value.get("entries") or []]
+        print(names[0] if names else "empty")
+        break
+else:
+    print("none")
+' "$WORK/window-second.log")
+    fi
+
+    # The control. Same directory, nobody asking for JSON.
+    printf '%s\n' "cd $WINDOW_STORE/crowd" "ls" salir | \
+        THALYX_ROOT="$WINDOW_STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/window-human.log"
+    LAST_NAME=$(grep -c 'file-00499.txt' "$WORK/window-human.log" || true)
+
+    if [ "$W_TOTAL" = "500" ] && [ "$W_SENT" = "200" ] && [ "$W_MORE" = "True" ] \
+       && [ "$W_ROWS" = "200" ] && [ "$RESUMED" = "file-00200.txt" ] \
+       && [ "$LAST_NAME" -ge 1 ]; then
+        proven "a 500-file directory answers a program with 200 rows, the true total, and a cursor that resumes"
+    elif [ "$W_TOTAL" != "500" ] || [ "$W_SENT" != "200" ] || [ "$W_ROWS" != "200" ]; then
+        failed "the window reported total=$W_TOTAL sent=$W_SENT rows=$W_ROWS; see $WORK/window-first.log"
+    elif [ "$RESUMED" != "file-00200.txt" ]; then
+        failed "the cursor resumed at '$RESUMED' instead of file-00200.txt; see $WORK/window-second.log"
+    else
+        failed "the person was cut off from their own directory; see $WORK/window-human.log"
+    fi
+fi
+
+# ──────────────────────── 24. a name, not a line: the symbol index over real code
+
+step "24. asking where a name comes from, over this repository's own source"
+
+# `Superficie-para-el-LLM.md`, punto C2. `grep` answers with lines because it
+# does not know what a symbol is; the mechanical parser does, in five languages,
+# so the answer is "function `page`, crates/thalyx-files/src/window.rs, line N"
+# and the places it is used — with neither comments nor strings in the list.
+#
+# ## Why this indexes the repository and not a fixture
+#
+# Rule 6: a parser needs one captured real sample, and a fixture proves the
+# parser matches its author's model of the format. This tree is thirty thousand
+# lines of Rust nobody wrote to make a test pass, and it is the only sample this
+# check could use that its author did not invent.
+#
+# The control is a word that appears in comments and strings all over this
+# repository and is defined nowhere in it. If that word comes back with uses,
+# the answer is a text search wearing a symbol's clothes.
+
+SYMBOL_STORE="$WORK/symbol-store"
+mkdir -p "$SYMBOL_STORE"
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so the symbol index could not be driven"
+else
+    printf '%s\n' "structured on" "cd $ROOT/crates" "indexar" \
+        "buscar window_fields" "buscar deliberately" salir | \
+        THALYX_ROOT="$SYMBOL_STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/symbol.log"
+
+    # Both answers out of one parse, so a run that got one right and the other
+    # wrong cannot pass by being read twice.
+    SYMBOLS=$(python3 -c '
+import json, sys
+built = defined = used = "none"
+control = "none"
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "index_build":
+        built = value.get("symbols")
+    if value.get("op") == "symbol" and value.get("name") == "window_fields":
+        rows = value.get("definitions") or []
+        defined = rows[0]["path"] if rows else "nowhere"
+        used = value.get("total")
+    if value.get("op") == "symbol" and value.get("name") == "deliberately":
+        control = len(value.get("definitions") or []) + (value.get("total") or 0)
+print("%s %s %s %s" % (built, defined, used, control))
+' "$WORK/symbol.log")
+
+    set -- $SYMBOLS
+    S_BUILT=$1; S_DEFINED=$2; S_USED=$3; S_CONTROL=$4
+
+    if [ "$S_DEFINED" = "thalyx-files/src/machine.rs" ] && [ "$S_CONTROL" = "0" ] \
+       && [ "$S_BUILT" != "none" ] && [ "$S_BUILT" -gt 100 ] \
+       && [ "$S_USED" != "none" ] && [ "$S_USED" -ge 1 ]; then
+        proven "the index found where a name is declared in $S_BUILT real ones, and a word that is only ever prose has no symbol"
+    elif [ "$S_DEFINED" != "thalyx-files/src/machine.rs" ]; then
+        failed "\`window_fields\` was reported as declared in '$S_DEFINED'; see $WORK/symbol.log"
+    elif [ "$S_CONTROL" != "0" ]; then
+        failed "a word that appears only in prose came back with $S_CONTROL symbol rows — this is a text search; see $WORK/symbol.log"
+    else
+        failed "the index reported $S_BUILT symbols and $S_USED uses; see $WORK/symbol.log"
+    fi
+fi
+
+# ───────────────────── 25. the journal, asked from a session instead of a subcommand
+
+step "25. what this machine did, answered by the machine"
+
+# `Superficie-para-el-LLM.md`, punto F2. The journal has been written since
+# `Journal-y-Snapshots` and read by exactly one thing — `thalyx journal` — which
+# is a subcommand, not something a caller living in a session can reach.
+#
+# ## Why it uses the store the earlier stages installed into
+#
+# So the history under test is one this script actually produced, rather than
+# lines written to make a check pass. If stage 15 installed a module, this must
+# be able to say so; if it did not, there is nothing here to prove and the check
+# says that instead of passing on an empty file.
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so the journal could not be read from a session"
+elif [ ! -f "$STORE/journal.jsonl" ]; then
+    unproven "nothing earlier in this run installed anything, so there is no history to read"
+else
+    printf '%s\n' "structured on" "historia" salir | \
+        THALYX_ROOT="$STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/history.log"
+
+    HISTORY=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "history":
+        rows = value.get("entries") or []
+        operations = {row.get("operation") for row in rows}
+        print("%s %s %s %s" % (
+            value.get("total"),
+            "install_module" in operations,
+            value.get("covers"),
+            value.get("complete_record_of_the_machine")))
+        break
+else:
+    print("none none none none")
+' "$WORK/history.log")
+
+    set -- $HISTORY
+    H_TOTAL=$1; H_INSTALL=$2; H_COVERS=$3; H_COMPLETE=$4
+
+    # The caveat is checked as hard as the rows are. A history that reads as
+    # "everything that happened here" is one a caller will use to conclude that
+    # nothing else did — and a person with a shell can move a file without
+    # anything in this file knowing.
+    if [ "$H_INSTALL" = "True" ] && [ "$H_COVERS" = "operations_thalyx_performed" ] \
+       && [ "$H_COMPLETE" = "False" ]; then
+        proven "a session can read the $H_TOTAL things this machine recorded doing, and is told what that does not cover"
+    elif [ "$H_TOTAL" = "none" ]; then
+        failed "the session answered nothing to \`historia\`; see $WORK/history.log"
+    elif [ "$H_INSTALL" != "True" ]; then
+        failed "the history does not mention the install this script performed; see $WORK/history.log"
+    else
+        failed "the history did not say what it does not cover (covers=$H_COVERS complete=$H_COMPLETE); see $WORK/history.log"
+    fi
+fi
+
+# ─────────────── 26. the named attempt: begin, change things, and take all of it back
+
+step "26. intenta esto y si sale mal deshazlo"
+
+# `Superficie-para-el-LLM.md`, punto D2, and the sentence
+# `Filosofia-Fundacional.md` uses for the advantage no other operating system
+# has. It is the fourth of the five costs — what an error costs — and the decree
+# is blunt about why that one changes behaviour more than the others: in a system
+# where everything is irreversible a rational agent becomes timid, and that does
+# not read as prudence, it reads as incapacity.
+#
+# ## What this stage proves that no test in the repository can
+#
+# Btrfs. The policy is covered against a directory fake in `thalyx-core`, which
+# is the right split — policy that can only be exercised on Btrfs is policy that
+# is never exercised — but the fake copies where Btrfs shares blocks. What only
+# this machine can establish is that a real subvolume snapshot is taken, that
+# abandoning really returns the tree, and that a file made during the attempt is
+# gone afterwards rather than merely reverted.
+#
+# ## The three columns
+#
+# A file that existed before, changed during the attempt: must be back to its
+# old contents. A file made during the attempt: must be gone. And the control —
+# the same sequence settled with `confirmar` instead — where both must survive.
+# Without the control, an implementation that reverted on every path would pass
+# the first two and be useless.
+
+# The scratch path probed at the top of this script, which was proven by making
+# a subvolume rather than by reading a filesystem type — `stat -f` says btrfs for
+# a read-only mount too. Rule 3: the skip becomes a failure under the variable
+# for *this* requirement and no other, so a machine that has Btrfs cannot pass
+# this stage by staying quiet about it.
+ATTEMPT_STORE="$WORK/attempt-store"
+ATTEMPT_TREE="$BTRFS_SCRATCH/.thalyx-verify-attempt"
+mkdir -p "$ATTEMPT_STORE"
+rm -rf "$ATTEMPT_TREE" 2>/dev/null || btrfs subvolume delete "$ATTEMPT_TREE" > /dev/null 2>&1 || true
+
+ATTEMPT_GAP=""
+if [ ! -x "$THALYX" ]; then
+    ATTEMPT_GAP="there is no thalyx binary, so the named attempt could not be driven"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    ATTEMPT_GAP="there is nowhere on Btrfs here, so a named attempt cannot take a real snapshot"
+elif ! btrfs subvolume create "$ATTEMPT_TREE" > "$WORK/attempt-subvol.log" 2>&1; then
+    ATTEMPT_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/attempt-subvol.log"
+fi
+
+if [ -n "$ATTEMPT_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$ATTEMPT_GAP"; else unproven "$ATTEMPT_GAP"; fi
+else
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+
+    attempt_run() {
+        printf '%s\n' "structured on" "cd $ATTEMPT_TREE" "$@" salir | \
+            THALYX_ROOT="$ATTEMPT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # Abandoned. The file that existed is changed, and a new one is made.
+    attempt_run "intento empezar demo" > "$WORK/attempt-begin.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento abandonar si" > "$WORK/attempt-abandon.log"
+
+    A_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    A_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && A_MADE=yes
+
+    # The control: the same sequence, kept instead of abandoned.
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+    rm -f "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento empezar control" > "$WORK/attempt-begin2.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    attempt_run "intento confirmar" > "$WORK/attempt-keep.log"
+
+    K_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    K_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && K_MADE=yes
+
+    # And that the machine said it did it, parsed rather than grepped.
+    SAID=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "attempt" and value.get("abandoned"):
+        print("%s %s" % (value.get("atomic"), value.get("would_delete")))
+        break
+else:
+    print("none none")
+' "$WORK/attempt-abandon.log")
+    set -- $SAID
+    A_ATOMIC=$1; A_WOULD_DELETE=$2
+
+    if [ "$A_KEPT" = "before" ] && [ "$A_MADE" = "no" ] \
+       && [ "$K_KEPT" = "changed during the attempt" ] && [ "$K_MADE" = "yes" ] \
+       && [ "$A_WOULD_DELETE" = "1" ]; then
+        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, and the kept control lost neither (atomic swap: $A_ATOMIC)"
+    elif [ "$A_KEPT" != "before" ] || [ "$A_MADE" != "no" ]; then
+        failed "abandoning did not put the tree back (kept.txt='$A_KEPT', made.txt present=$A_MADE); see $WORK/attempt-abandon.log"
+    elif [ "$K_MADE" != "yes" ]; then
+        failed "confirming an attempt destroyed the work it was supposed to keep; see $WORK/attempt-keep.log"
+    else
+        failed "the machine reported would_delete=$A_WOULD_DELETE for one file made during the attempt; see $WORK/attempt-abandon.log"
+    fi
+fi
+
+# ──────────────── 27. the ring buffer the watcher fills, read by something at last
+
+step "27. what the kernel saw change, and who did it"
+
+# `Superficie-para-el-LLM.md`, punto B3. The producing half has existed since
+# `thalyx_watch.bpf.c` was written, and the comment above `thalyx_mutations` has
+# said since that day that reading it needs a consumer that mmaps the map and
+# follows the ring protocol. `Tareas-Pendientes` listed it as a ring that says
+# what changed and that nobody consumes.
+#
+# ## What only this machine can establish
+#
+# The mapping. The protocol is a pure function over bytes and is covered
+# exhaustively in `thalyx_watch::ring` — a byte array models the kernel's side of
+# that contract exactly, because the contract *is* the byte layout. What no test
+# in the repository can touch is `bpf_obj_get` on a real pin, two `mmap` calls
+# the kernel accepts, and a consumer position the kernel actually reads.
+#
+# ## The control, and why it is a second read and not a second machine
+#
+# Draining consumes. So the check is: make a mutation, read it, then read again
+# with nothing new in between — the second must be empty. Without that column, a
+# consumer that never advanced the consumer position would return the same
+# record forever and look like a machine where a great deal is happening.
+
+RING_PIN="/sys/fs/bpf/thalyx/maps/thalyx_mutations"
+RING_STORE="$WORK/ring-store"
+mkdir -p "$RING_STORE"
+
+RING_GAP=""
+if [ ! -x "$THALYX" ]; then
+    RING_GAP="there is no thalyx binary, so the mutation ring could not be read"
+elif [ ! -e "$RING_PIN" ]; then
+    RING_GAP="nothing is pinned at $RING_PIN, so thalyx-watch is not loaded and there is no ring to read"
+fi
+
+if [ -n "$RING_GAP" ]; then
+    if [ "${THALYX_REQUIRE_LSM_TESTS:-0}" = 1 ]; then failed "$RING_GAP"; else unproven "$RING_GAP"; fi
+else
+    ring_ask() {
+        printf '%s\n' "structured on" "cambios" salir | \
+            THALYX_ROOT="$RING_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # Drain whatever was already queued, so the count below is about the
+    # mutation this stage makes and not about the rest of the machine.
+    ring_ask > /dev/null 2>&1
+
+    RING_TOUCHED="$WORK/ring-touched-$$"
+    : > "$RING_TOUCHED"
+    mv "$RING_TOUCHED" "$RING_TOUCHED.moved"
+    rm -f "$RING_TOUCHED.moved"
+
+    ring_ask > "$WORK/ring-first.log"
+    ring_ask > "$WORK/ring-second.log"
+
+    ring_count() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "changes":
+        if not value.get("ok"):
+            print("refused %s 0" % value.get("error"))
+        else:
+            print("%s %s %s" % (
+                value.get("total"),
+                value.get("names_paths"),
+                value.get("is_a_history")))
+        break
+else:
+    print("none none none")
+' "$1"
+    }
+
+    set -- $(ring_count "$WORK/ring-first.log")
+    R_FIRST=$1; R_PATHS=$2; R_HISTORY=$3
+    set -- $(ring_count "$WORK/ring-second.log")
+    R_SECOND=$1
+
+    if [ "$R_FIRST" != "none" ] && [ "$R_FIRST" != "refused" ] && [ "$R_FIRST" -ge 1 ] \
+       && [ "$R_SECOND" != "none" ] && [ "$R_SECOND" = "0" ] \
+       && [ "$R_PATHS" = "False" ] && [ "$R_HISTORY" = "False" ]; then
+        proven "the mutation ring was mapped and read: $R_FIRST record(s) from a file made, moved and deleted, and the second read was empty"
+    elif [ "$R_FIRST" = "refused" ]; then
+        failed "reading the ring was refused with '$R_PATHS'; see $WORK/ring-first.log"
+    elif [ "$R_FIRST" = "none" ] || [ "$R_FIRST" -lt 1 ]; then
+        failed "the ring returned $R_FIRST records for three mutations this stage made; see $WORK/ring-first.log"
+    elif [ "$R_SECOND" != "0" ]; then
+        failed "a second read returned $R_SECOND records with nothing new — the consumer position is not being written back; see $WORK/ring-second.log"
+    else
+        failed "the answer claimed paths=$R_PATHS history=$R_HISTORY, neither of which a ring buffer can give; see $WORK/ring-first.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

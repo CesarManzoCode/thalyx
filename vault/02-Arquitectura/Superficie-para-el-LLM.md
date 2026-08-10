@@ -359,63 +359,77 @@ derecha está decidido**; es el catálogo, no un plan.
 | A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 29 verbos |
 | A2 | El error nombra su remedio | **Hecho** — `remedy` como palabra estable |
 | A3 | El estado de la máquina en un objeto | **Hecho** — `estado`, con los tres estados de la regla 10 |
-| B1 | Respuestas acotadas con total y cursor | Propuesto |
+| B1 | Respuestas acotadas con total y cursor | **Hecho** — `limite=` y `cursor=`, en `ls`, `depende`, `usan`, `buscar`, `historia`, `cambios` |
 | B2 | Identidad exacta de lo leído | **Hecho** — `sha256` del archivo entero en cada lectura |
-| B3 | Qué cambió desde X | Medio construido: el ringbuf existe y nadie lo consume. **Sólo hierro** |
+| B3 | Qué cambió desde X | **Hecho hasta donde un anillo llega** — `cambios`. No es una historia y no nombra archivos, y lo dice |
 | C1 | Índice semántico expuesto | **Hecho** — `indexar`, `depende`, `usan` |
-| C2 | Búsqueda por símbolos | Medio construido: el parser existe |
+| C2 | Búsqueda por símbolos | **Hecho** — `buscar`, con la definición y los usos separados, sin comentarios ni cadenas |
 | C3 | Vigencia en toda respuesta | **Hecho donde hay caché**: cada respuesta del índice trae `fresh` |
 | D1 | Ensayo en todo verbo que cambia | **Hecho para los verbos de archivos** — `ensayo`; los otros cinco dicen que no pueden |
-| D2 | El intento con nombre | Medio construido: snapshots y journal existen. **Sólo hierro** |
+| D2 | El intento con nombre | **Hecho** — `intento empezar/confirmar/abandonar`; la política probada aquí, el Btrfs en la etapa 26 |
 | D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
-| E1 | El agente ajeno como tarea con concesión | Construido para módulos, sin extender. **Sólo hierro** |
+| E1 | El agente ajeno como tarea con concesión | **Bloqueado por G1 y G2**, no por dificultad: no hay a qué darle la concesión |
 | E2 | Pedir permiso en caliente | Fuera de la v1 de la API por decreto |
 | E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
-| F2 | Journal legible desde afuera | Propuesto: no es verbo de la sesión todavía |
+| F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
 | G1–G4 | El piso | No construido, y es lo que bloquea la vara |
 
 **Lo que esa tabla decía el 2026-08-09 y ya no dice:** que seis de los
-diecinueve puntos existían y no eran alcanzables por nadie. Cinco de esos seis
-ya lo son. Lo que queda sin exponer se parte limpio en dos, y la línea entre las
-dos partes **no es de dificultad, es de dónde se puede comprobar**:
+diecinueve puntos existían y no eran alcanzables. Ninguno queda así.
 
-- **B3, D2 y E1** necesitan BPF, Btrfs o cgroups delegados. El contenedor donde
-  se escribe este proyecto **no tiene ninguno de los tres**, así que construirlos
-  aquí produce código que nadie puede ejercer hasta que Cesar lo corra. Ver
-  «Los tres que no se construyeron, y por qué» abajo.
-- **B1, C2 y F2** se pueden comprobar aquí y no se construyeron por tiempo, no
-  por riesgo.
+**Catorce de los diecinueve están hechos.** El único del catálogo propiamente
+dicho que falta es **E1**, y la razón cambió: no es dificultad ni hierro, es que
+le falta el piso. Ver abajo.
 
-## Los tres que no se construyeron, y por qué — 2026-08-09
+## Los tres que se dijeron «sólo hierro», y por qué dos de ellos no lo eran — 2026-08-10
 
-Escrito porque el decreto pide que se diga cuándo se pierde demasiado, y aquí se
-perdería:
+Cesar leyó la sección de abajo y contestó: *«me parece que ahí no hay costo
+real, más bien es costo de dificultad… si realmente aportan un beneficio real y
+claro a los LLMs, entonces hazlos»*. Tenía razón sobre dos de los tres, y la
+razón por la que tenía razón vale más que los dos puntos.
 
-**D2, el intento con nombre.** Es el punto de mayor valor que queda —
-*«intenta esto y si sale mal deshazlo»*— y se apoya entero en snapshots de
-Btrfs. El contenedor no tiene Btrfs, así que la única prueba posible aquí sería
-contra un falso, y la **regla 8** dice que un falso tiene que modelar la
-propiedad bajo prueba: un falso de un snapshot que no puede fallar como falla un
-snapshot no es un falso, es otro sistema. Se construye cuando haya una corrida
-en la máquina de Cesar dedicada a ejercerlo.
+**D2 confundía dos preguntas.** `thalyx-snapshot` ya llevaba escrito el corte
+correcto en el comentario de su propio falso: *«la política que sólo se puede
+ejercer en un sistema de archivos Btrfs es política que nunca se ejerce»*. Cuál
+intento está abierto, qué hace un segundo, a qué árbol apunta un abandono, qué
+pasa cuando el snapshot que nombra ya no está — ninguna de ésas es una pregunta
+de Btrfs, y todas habrían quedado sin probar por tratarlas como si lo fueran. La
+regla 8 pide que el falso modele **la propiedad bajo prueba**, y la propiedad
+bajo prueba era la política.
 
-**B3, qué cambió desde X.** La mitad existe: `thalyx-watch` cuenta las
-mutaciones en el kernel y el ringbuf `thalyx_mutations` dice cuáles. Consumirlo
-es código BPF, y `CLAUDE.md` es explícito: un programa que falla el verificador
-tumba al watcher entero, y no se apilan dos cambios sin verificar. Va solo, en
-su propia corrida.
+**B3 se apoyaba en un hecho falso.** «Consumirlo es código BPF» no es cierto: el
+productor ya está escrito y no se toca, y el consumidor es código de usuario —
+`bpf_obj_get`, dos `mmap`, y aritmética sobre bytes. El verificador no entra en
+esto. Y el protocolo del anillo es una función pura sobre bytes que un arreglo
+de bytes modela exactamente, porque el lado del kernel de ese contrato *es* la
+disposición en bytes.
 
-**E1, el agente ajeno como tarea con concesión.** Necesita el LSM y cgroups
-delegados. Además es el punto donde una equivocación no cuesta una prueba roja,
-cuesta una concesión mal puesta — y esto es lo único del catálogo que toca
-seguridad. No se toca sin que Cesar lo decida aparte.
+**E1 sí queda, y por una razón distinta de la que estaba escrita.** No es que
+toque seguridad —que la toca— ni que necesite el LSM. Es que **no hay a qué
+darle la concesión**: G1 (ejecutar procesos) y G2 (un runtime donde un agente
+ajeno pueda correr) no existen. Construir la concesión ahora produce código que
+no se puede ejercer ni siquiera en la máquina de Cesar, que es una clase de
+riesgo distinta a la de D2 y B3. Y antes que el código hay una decisión suya:
+hoy Thalyx sólo corre módulos firmados, y un agente ajeno por definición no lo
+es.
 
+### La regla que sale de esto
 
+Escrita en [[Estrategia-de-Pruebas]]: **«sólo hierro» es una afirmación sobre
+qué propiedad se está probando, y hay que decir cuál.** Dos de los tres de abajo
+eran mezclas de una propiedad que necesita el hardware y otra que no, y la
+mezcla se resolvió a favor de no construir nada.
 
 ---
 
 ## Revisiones
+
+### 2026-08-10 — Catorce de diecinueve, y dos «sólo hierro» que no lo eran
+B1, C2, F2, D2 y B3 construidos. Los dos últimos estaban en la lista de lo que
+no se podía comprobar aquí, y esa lista estaba mal por dos razones distintas —
+una confusión sobre qué propiedad se prueba, y un hecho falso sobre dónde vive
+el consumidor de un ringbuf. E1 queda, con una razón nueva: le falta G.
 
 ### 2026-08-09 — Nota creada
 Decretada por Cesar el mismo día que la cara estructurada de los verbos de

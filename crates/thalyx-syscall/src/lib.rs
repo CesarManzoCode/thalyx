@@ -2144,6 +2144,134 @@ fn as_bytes_mut<T>(value: &mut T) -> &mut [u8] {
     }
 }
 
+/// A region of another object's memory, mapped into this process.
+///
+/// Held rather than returned as a slice, because the mapping has to be undone
+/// and a slice cannot carry that. `Drop` is the whole reason this is a type: a
+/// consumer that leaked one mapping per read would exhaust the address space of
+/// a long-running session, slowly, in a way that looks like a memory leak in
+/// something else.
+pub struct Mapped {
+    address: *mut libc::c_void,
+    length: usize,
+}
+
+// SAFETY: the pointer is a private view of a shared mapping and is only ever
+// read through `bytes`, which borrows `self`. Nothing here has interior
+// mutability of its own, so moving the handle between threads is no different
+// from moving a raw pointer that nothing else dereferences.
+#[allow(unsafe_code)]
+unsafe impl Send for Mapped {}
+
+impl Mapped {
+    /// The mapped bytes.
+    ///
+    /// **Another process is writing into this.** For the BPF ring buffer that is
+    /// the kernel, and it is the reason the caller must read positions before
+    /// records and must never trust a length it has not bounds-checked — the
+    /// bytes can change between two reads of the same offset.
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: `address` and `length` come from a successful `mmap`, which
+        // returns a mapping of exactly that length, and the mapping lives
+        // exactly as long as `self` because `Drop` is what unmaps it. The
+        // returned slice borrows `self`, so it cannot outlive the mapping.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::slice::from_raw_parts(self.address.cast::<u8>(), self.length)
+        }
+    }
+
+    /// Write eight bytes at the start of the mapping.
+    ///
+    /// Only used for one thing: the BPF ring buffer's consumer position, which
+    /// is the single value a consumer is allowed to write and which the kernel
+    /// reads to know what may be reclaimed. Narrow on purpose — a general
+    /// "write anywhere in this mapping" would be a much larger promise than
+    /// anything here needs.
+    pub fn write_first_u64(&self, value: u64) {
+        if self.length < 8 {
+            return;
+        }
+        // SAFETY: the mapping is at least eight bytes and was created writable
+        // by the only constructor that allows this — `map_shared` with
+        // `writable` set. `write_volatile` because the kernel reads this and the
+        // compiler must not sink or elide the store.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::ptr::write_volatile(self.address.cast::<u64>(), value);
+        }
+    }
+}
+
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        // SAFETY: unmapping exactly what was mapped, once, at the end of this
+        // value's life. Nothing else holds the address: `bytes` borrows `self`.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::munmap(self.address, self.length);
+        }
+    }
+}
+
+/// Map part of an object into this process, shared with whoever else has it.
+///
+/// `MAP_SHARED` and not `MAP_PRIVATE`: the point is to see what the kernel
+/// writes. A private mapping would copy on first write and then quietly show a
+/// snapshot of a ring buffer that is still moving, which is the failure mode
+/// that looks like events disappearing.
+pub fn map_shared(
+    object: BorrowedFd<'_>,
+    offset: u64,
+    length: usize,
+    writable: bool,
+) -> io::Result<Mapped> {
+    use std::os::fd::AsRawFd;
+
+    let protection = if writable {
+        libc::PROT_READ | libc::PROT_WRITE
+    } else {
+        libc::PROT_READ
+    };
+
+    // SAFETY: a null hint lets the kernel choose the address; `length` and
+    // `offset` are passed through and validated by the kernel, which returns
+    // MAP_FAILED rather than a bad mapping. The descriptor is borrowed for the
+    // call only — `mmap` does not keep it, the mapping outlives it by design.
+    #[allow(unsafe_code)]
+    let address = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            protection,
+            libc::MAP_SHARED,
+            object.as_raw_fd(),
+            offset as libc::off_t,
+        )
+    };
+
+    if address == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Mapped { address, length })
+}
+
+/// The kernel's page size.
+///
+/// Asked rather than assumed to be 4096. The BPF ring buffer's layout is
+/// expressed in pages — its consumer position is one page, and the data area
+/// begins one page into the producer mapping — so a wrong answer here does not
+/// produce a smaller mapping, it produces one that reads the position where the
+/// data should be.
+pub fn page_size() -> usize {
+    // SAFETY: `sysconf` reads a kernel-provided constant and touches no memory
+    // this side owns. It returns -1 only for an unknown name, which
+    // `_SC_PAGESIZE` is not on any Linux.
+    #[allow(unsafe_code)]
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if size > 0 { size as usize } else { 4096 }
+}
+
 /// Take ownership of a descriptor the kernel just returned.
 fn owned(descriptor: i32) -> OwnedFd {
     use std::os::fd::FromRawFd;

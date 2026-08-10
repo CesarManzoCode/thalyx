@@ -44,6 +44,36 @@ pub fn apply(connection: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS tags_by_tag ON tags (tag);
 
+        -- Where a name comes from. `Superficie-para-el-LLM.md`, punto C2: a
+        -- result that says "function `login`, src/auth.rs, line 40" costs a
+        -- fraction of the tokens of the textual matches for the same word, and
+        -- has no false positives from comments.
+        CREATE TABLE IF NOT EXISTS symbols (
+            id    INTEGER PRIMARY KEY,
+            name  TEXT NOT NULL,
+            -- `function`, `type`, `constant`: the coarseness five languages
+            -- share. The language is on the node, so nothing is lost.
+            kind  TEXT NOT NULL,
+            path  TEXT NOT NULL,
+            line  INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS symbols_by_name ON symbols (name);
+
+        -- Where a name is used, which is the half `grep` gets wrong. Only names
+        -- that are defined somewhere in this tree are recorded: an occurrence of
+        -- `println` is not something anybody will ever ask for, and keeping it
+        -- would trade a table that answers questions for one that is mostly
+        -- vocabulary.
+        CREATE TABLE IF NOT EXISTS mentions (
+            id    INTEGER PRIMARY KEY,
+            name  TEXT NOT NULL,
+            path  TEXT NOT NULL,
+            line  INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS mentions_by_name ON mentions (name);
+
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL

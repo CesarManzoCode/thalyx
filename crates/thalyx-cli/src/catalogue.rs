@@ -69,6 +69,14 @@ pub struct Verb {
     pub summary: &'static str,
 }
 
+/// The words that ask for a window, on every verb whose answer can be long.
+///
+/// `Superficie-para-el-LLM.md`, punto **B1**, and they are one constant rather
+/// than three copies for the reason A1 exists at all: a caller that has to learn
+/// a different spelling of "give me the next page" per verb pays the discovery
+/// cost once per verb instead of once.
+const WINDOW_FLAGS: &[&str] = &["limite=N", "limit=N", "cursor=…", "desde=…"];
+
 /// The errors every verb that touches a path can produce.
 const PATH_ERRORS: &[&str] = &["absent", "unreadable", "incomplete"];
 /// The same, plus the refusal to write over something.
@@ -83,10 +91,19 @@ pub const VERBS: &[Verb] = &[
         id: "list",
         names: &["ls", "ver", "look"],
         takes: &["path"],
-        flags: &["-a", "-l", "todo", "detalles"],
+        flags: &[
+            "-a",
+            "-l",
+            "todo",
+            "detalles",
+            "limite=N",
+            "limit=N",
+            "cursor=…",
+            "desde=…",
+        ],
         answers: Some("list"),
         changes: false,
-        errors: PATH_ERRORS,
+        errors: &["absent", "unreadable", "incomplete", "bad_cursor"],
         summary: "What is in a directory, or about one thing that is not one.",
     },
     Verb {
@@ -219,21 +236,74 @@ pub const VERBS: &[Verb] = &[
         id: "depends_on",
         names: &["depende", "depends"],
         takes: &["path"],
-        flags: &[],
+        flags: WINDOW_FLAGS,
         answers: Some("depends_on"),
         changes: false,
-        errors: &["unreadable", "incomplete"],
+        errors: &["unreadable", "incomplete", "bad_cursor"],
         summary: "What this file refers to, from the index rather than by reading it.",
     },
     Verb {
         id: "depended_on_by",
         names: &["usan", "dependents"],
         takes: &["path"],
-        flags: &[],
+        flags: WINDOW_FLAGS,
         answers: Some("depended_on_by"),
         changes: false,
-        errors: &["unreadable", "incomplete"],
+        errors: &["unreadable", "incomplete", "bad_cursor"],
         summary: "What refers to this file. No directory walk can answer this one.",
+    },
+    Verb {
+        id: "symbol",
+        names: &["buscar", "symbol"],
+        takes: &["name"],
+        flags: WINDOW_FLAGS,
+        answers: Some("symbol"),
+        changes: false,
+        errors: &["unreadable", "incomplete", "bad_cursor"],
+        summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
+    },
+    Verb {
+        id: "history",
+        names: &["historia", "history"],
+        takes: &[],
+        flags: WINDOW_FLAGS,
+        answers: Some("history"),
+        changes: false,
+        errors: &["unreadable", "bad_cursor", "unknown_argument"],
+        summary: "What this machine did and what came of it. Not everything that happened to it.",
+    },
+    Verb {
+        id: "attempt",
+        names: &["intento", "attempt"],
+        takes: &["empezar <label> | confirmar | abandonar [si]"],
+        flags: &["si", "yes"],
+        answers: Some("attempt"),
+        // The one verb whose whole purpose is that what it wraps can be
+        // undone — and it changes the machine itself: a snapshot is taken,
+        // and abandoning replaces a whole subvolume.
+        changes: true,
+        errors: &[
+            "not_a_subvolume",
+            "already_open",
+            "none_open",
+            "snapshot_gone",
+            "unreadable",
+            "unknown_argument",
+        ],
+        summary: "Open something that can be taken back whole, then keep it or undo all of it.",
+    },
+    Verb {
+        id: "changes",
+        names: &["cambios", "changes"],
+        takes: &[],
+        flags: WINDOW_FLAGS,
+        answers: Some("changes"),
+        // It empties the kernel's queue, which nothing can put back. It changes
+        // no file, and a caller deciding whether to be careful must still be
+        // told: asking twice is not the same as asking once.
+        changes: false,
+        errors: &["not_loaded", "unreadable", "bad_cursor", "unknown_argument"],
+        summary: "What the kernel saw change and who did it. Reading empties the queue; never paths.",
     },
     Verb {
         id: "clear",
@@ -520,6 +590,10 @@ mod tests {
                 "rollback",
                 "install_onto",
                 "power_off",
+                // It changes the machine even though its purpose is that what
+                // it wraps can be undone: opening one takes a snapshot, and
+                // abandoning one replaces a whole subvolume.
+                "attempt",
             ])
         );
     }
