@@ -3248,6 +3248,111 @@ else:
     esac
 fi
 
+# ─────────────────────── 23. a long answer is cut, counted, and can be resumed
+
+step "23. a directory too big for a context window arrives bounded"
+
+# `Superficie-para-el-LLM.md`, punto B1. The failure is the quiet one of the
+# five costs: `ls` on a directory of forty thousand files does not fail and does
+# not warn, it produces a caller that spent its whole window on names it did not
+# ask about and then forgot the task.
+#
+# ## What the control is for
+#
+# The human half of `Principio-Doble-Ruta`: a window is a fact about a *context*
+# window, which a person does not have, and on the image there is no pager to
+# get a cut listing back with. So the same directory is listed twice — once by a
+# program, which must be cut, and once by a person, who must get all of it. With
+# only the first column, a session that had broken listing entirely would look
+# like one that pages correctly.
+
+WINDOW_STORE="$WORK/window-store"
+mkdir -p "$WINDOW_STORE/crowd"
+python3 - "$WINDOW_STORE/crowd" <<'EOF'
+import pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+for n in range(500):
+    (folder / f"file-{n:05}.txt").write_text("x")
+EOF
+
+if [ ! -x "$THALYX" ]; then
+    unproven "there is no thalyx binary to ask, so bounded answers could not be driven"
+else
+    window_ask() {
+        printf '%s\n' "structured on" "cd $WINDOW_STORE/crowd" "$1" salir | \
+            THALYX_ROOT="$WINDOW_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    window_ask "ls" > "$WORK/window-first.log"
+
+    # Every number out of the answer at once, so a page that is right about one
+    # of them and wrong about another cannot pass. Parsed, never grepped: a
+    # `grep` for `"total":500` matches a line that is not an object at all.
+    FIRST=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "list":
+        print("%s %s %s %s %s" % (
+            value.get("total"), value.get("sent"), value.get("more"),
+            len(value.get("entries") or []), value.get("cursor") or "none"))
+        break
+else:
+    print("none none none none none")
+' "$WORK/window-first.log")
+
+    set -- $FIRST
+    W_TOTAL=$1; W_SENT=$2; W_MORE=$3; W_ROWS=$4; W_CURSOR=$5
+
+    # The second page, asked for the way a caller asks: with the token it was
+    # handed, carried out of one session and back into another. A cursor that
+    # only worked inside one process would pass a weaker check than this.
+    RESUMED=none
+    if [ "$W_CURSOR" != "none" ]; then
+        window_ask "ls limite=5 cursor=$W_CURSOR" > "$WORK/window-second.log"
+        RESUMED=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "list":
+        names = [entry.get("name") for entry in value.get("entries") or []]
+        print(names[0] if names else "empty")
+        break
+else:
+    print("none")
+' "$WORK/window-second.log")
+    fi
+
+    # The control. Same directory, nobody asking for JSON.
+    printf '%s\n' "cd $WINDOW_STORE/crowd" "ls" salir | \
+        THALYX_ROOT="$WINDOW_STORE" "$THALYX" session 2>&1 | tr -d '\r' > "$WORK/window-human.log"
+    LAST_NAME=$(grep -c 'file-00499.txt' "$WORK/window-human.log" || true)
+
+    if [ "$W_TOTAL" = "500" ] && [ "$W_SENT" = "200" ] && [ "$W_MORE" = "True" ] \
+       && [ "$W_ROWS" = "200" ] && [ "$RESUMED" = "file-00200.txt" ] \
+       && [ "$LAST_NAME" -ge 1 ]; then
+        proven "a 500-file directory answers a program with 200 rows, the true total, and a cursor that resumes"
+    elif [ "$W_TOTAL" != "500" ] || [ "$W_SENT" != "200" ] || [ "$W_ROWS" != "200" ]; then
+        failed "the window reported total=$W_TOTAL sent=$W_SENT rows=$W_ROWS; see $WORK/window-first.log"
+    elif [ "$RESUMED" != "file-00200.txt" ]; then
+        failed "the cursor resumed at '$RESUMED' instead of file-00200.txt; see $WORK/window-second.log"
+    else
+        failed "the person was cut off from their own directory; see $WORK/window-human.log"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

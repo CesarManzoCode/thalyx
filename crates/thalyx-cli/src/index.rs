@@ -142,7 +142,14 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
         "depends_on"
     };
 
-    let path = rest.trim();
+    let (path, window) = match asked_of(rest) {
+        Ok(both) => both,
+        Err(why) => {
+            declined(face, op, "bad_cursor", &why.to_string());
+            return Ok(());
+        }
+    };
+    let path = path.as_str();
     if path.is_empty() {
         declined(face, op, "incomplete", "which file");
         return Ok(());
@@ -171,7 +178,23 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     };
 
     if face == Face::Machine {
-        let rows: Vec<serde_json::Value> = answer
+        // Sorted here and nowhere else, because the window pages by a key and a
+        // key into rows whose order SQLite chose would name a different place on
+        // every call. `thalyx-files` refuses unordered rows rather than paging
+        // them anyway, so this is the sort that makes the refusal impossible
+        // instead of the sort that avoids it by luck.
+        let mut edges = answer.rows;
+        edges.sort_by_key(edge_key);
+
+        let page = match thalyx_files::window::page(edges, edge_key, &window) {
+            Ok(page) => page,
+            Err(why) => {
+                declined(face, op, "unordered", &why.to_string());
+                return Ok(());
+            }
+        };
+
+        let rows: Vec<serde_json::Value> = page
             .rows
             .iter()
             .map(|edge| {
@@ -190,9 +213,9 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
         let mut carried = vec![
             ("path", json!(path)),
             ("tree", json!(tree.display().to_string())),
-            ("count", json!(rows.len())),
             ("edges", json!(rows)),
         ];
+        carried.extend(thalyx_files::machine::window_fields(&page));
         carried.extend(freshness_fields(&answer.freshness));
         println!("{}", thalyx_files::machine::answer(op, carried));
         return Ok(());
@@ -231,6 +254,52 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     }
     println!();
     Ok(())
+}
+
+/// Split what was typed into the file being asked about and the window asked for.
+///
+/// The same two words `ls` takes — `limite=` and `cursor=` — because a caller
+/// that has to learn a second spelling of "give me the next page" pays the
+/// discovery cost twice for one idea, and `Superficie-para-el-LLM.md` exists to
+/// stop exactly that.
+fn asked_of(
+    rest: &str,
+) -> Result<(String, thalyx_files::window::Asked), thalyx_files::window::Cut> {
+    let mut window = thalyx_files::window::Asked::default();
+    let mut named = Vec::new();
+
+    for word in rest.split_whitespace() {
+        match word.split_once('=') {
+            Some(("limite" | "limit", count)) if count.parse::<usize>().is_ok() => {
+                window.limit = count.parse().expect("just checked");
+            }
+            Some(("cursor" | "desde", token)) if !token.is_empty() => {
+                window.after = Some(thalyx_files::window::Cursor::parse(token)?);
+            }
+            _ => named.push(word),
+        }
+    }
+
+    Ok((named.join(" "), window))
+}
+
+/// What a cursor into a list of edges names.
+///
+/// Every field of the edge, because two references that differ only in where
+/// they point are two rows, and a key that collided would page past one of them
+/// without ever sending it. The line number is fixed-width and big-endian so
+/// that byte order and numeric order are the same thing — a decimal `10` sorts
+/// before `9` as text, and the window would refuse the whole answer as
+/// unordered.
+fn edge_key(edge: &thalyx_graph::Edge) -> Vec<u8> {
+    let mut key = Vec::new();
+    key.extend_from_slice(edge.from.as_bytes());
+    key.push(0);
+    key.extend_from_slice(&(edge.line as u64).to_be_bytes());
+    key.extend_from_slice(edge.raw_target.as_bytes());
+    key.push(0);
+    key.extend_from_slice(edge.to.as_deref().unwrap_or("").as_bytes());
+    key
 }
 
 /// The tree a question is about: what was named, or where the session stands.

@@ -216,6 +216,49 @@ fn down_a_pipe_every_line_after_the_switch_is_an_answer_and_nothing_else() {
     }
 }
 
+#[test]
+fn on_a_terminal_the_structured_face_still_shows_a_prompt() {
+    let home = a_home_with_things_in_it();
+    let output = at_the_prompt(home.path(), &["structured on", "pwd", "salir"]);
+    let said = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+
+    // Found by running it, on the first real machine. Cesar turned the face on,
+    // read his object, and then sat in front of a blank screen: nothing on it
+    // could tell a session waiting for a line from one that had hung, so he
+    // opened a second window to type the next command. A prompt suppressed for
+    // a promise that a terminal was never keeping anyway.
+    assert!(
+        said.contains("{/home}"),
+        "the structured face left a person at a terminal with no prompt:\n{said}"
+    );
+    // And the braces are load-bearing: a prompt identical to the human one would
+    // leave the mode invisible, which is the other half of being stranded.
+    assert!(
+        !said.contains("\n  /home > pwd") && said.contains("{/home} > "),
+        "the prompt does not say which face is on:\n{said}"
+    );
+}
+
+#[test]
+fn down_a_pipe_there_is_no_prompt_at_all() {
+    let home = a_home_with_things_in_it();
+    let output = piped(home.path(), &["structured on", "pwd", "salir"]);
+    let said = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+
+    // The control for the test above, and the reason the prompt is decided by
+    // the stream rather than by the face. A program has no eyes to be stranded
+    // and has been promised one object per line; a prompt there is a line that
+    // does not parse, which is the defect the pty prompt must not reintroduce.
+    let stream = said
+        .split_once("{\"off\"")
+        .map(|(_, rest)| format!("{{\"off\"{rest}"))
+        .unwrap_or_else(|| panic!("the face never came on:\n{said}"));
+    assert!(
+        !stream.contains('>'),
+        "a prompt reached a program that cannot parse one:\n{stream}"
+    );
+}
+
 // ─────────────────────────────────────── what the structured face refuses to withhold
 
 #[test]

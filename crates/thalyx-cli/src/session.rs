@@ -1182,12 +1182,25 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // different file depending on where the person is standing, and a prompt
         // that hid that would make the same words do different things with no
         // warning on screen.
-        // Nothing at all in the structured face. A prompt is for somebody who is
-        // waiting; a program reading the stream has been promised one object per
-        // line, and `  /home > {"op":…}` is not one object per line — the answer
-        // would have to be found inside the line before it could be parsed.
+        // Nothing at all in the structured face **down a pipe**. A program
+        // reading the stream has been promised one object per line, and
+        // `  /home > {"op":…}` is not one object per line — the answer would
+        // have to be found inside the line before it could be parsed.
+        //
+        // On a terminal that promise is already not what is on the stream: raw
+        // mode echoes every character the caller types, so the pty face has
+        // never been one object per line and the tests say so. What suppressing
+        // the prompt there bought was nothing, and what it cost is what Cesar
+        // hit on the first real run — he typed `structured on`, got his object,
+        // and then a blank screen with no way to tell a session waiting for a
+        // line from one that had hung. He opened a second window.
+        //
+        // The braces are the whole difference from the human prompt: which face
+        // is on is otherwise invisible until something is typed, and a person
+        // who cannot see the mode they are in cannot leave it.
         let prompt = match face {
-            crate::files::Face::Machine => String::new(),
+            crate::files::Face::Machine if !terminal.on_a_terminal() => String::new(),
+            crate::files::Face::Machine => format!("  {{{}}} > ", here.briefly()),
             crate::files::Face::Human => format!("  {} > ", here.briefly()),
         };
         let at = here.at().to_path_buf();

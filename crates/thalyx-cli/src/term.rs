@@ -107,6 +107,16 @@ impl Terminal {
         }
     }
 
+    /// Whether there is a person's terminal on the other end of the input.
+    ///
+    /// Asked once, when the session opened, and answered from the same fact that
+    /// decides whether raw mode was entered — never re-derived, because two
+    /// places asking this question are two places that can disagree about which
+    /// kind of stream they are writing to.
+    pub fn on_a_terminal(&self) -> bool {
+        self.raw.is_some()
+    }
+
     /// Read one line, drawing it as it is typed.
     ///
     /// `complete_with` is asked for the candidates when Tab is pressed. A
