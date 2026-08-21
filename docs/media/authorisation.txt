@@ -1,0 +1,21 @@
+$ thalyx module install greeter.thmod
+┌─ Thalyx — capability authorisation ──────────────────
+│ Greeter (dev.thalyx.greeter)
+│ version 1.0.0
+│
+│ This module permanently requests:
+│   · read access to /opt/thalyx/data/greeter/notes.txt
+│
+│ These permissions come from the module's signed manifest.
+│ They stay in force until you revoke them by hand.
+└──────────────────────────────────────────────────────
+  Confirm? [y/N] y
+
+dev.thalyx.greeter 1.0.0 installed
+  1 file(s), 1 permission(s) now in force
+  runs as user 700000, which is this module's and no other's
+
+$ thalyx permissions
+dev.thalyx.greeter
+  read /opt/thalyx/data/greeter/notes.txt (persistent) granted 2026-08-21T05:08:41.93440502Z
+

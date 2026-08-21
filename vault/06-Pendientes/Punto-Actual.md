@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-10
+fecha-actualizacion: 2026-08-21
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -13,6 +13,49 @@ tags: [continuidad, punto-actual, sesiones]
 > conversación, esa conversación se pierde y el conocimiento con ella.
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
+
+> ## La portada del repositorio, rehecha — 2026-08-21
+>
+> **Esto no cambió el sistema, cambió cómo se lee.** El estado técnico sigue
+> siendo el bloque de abajo.
+>
+> El README tenía 636 líneas y funcionaba como documentación profunda, no como
+> portada: quien abría el repositorio tardaba en entender qué era. Ahora son
+> ~250, con jerarquía, y el detalle se movió a dos archivos nuevos en inglés que
+> no compiten con el vault:
+>
+> - `docs/BOOT.md` — el recorrido de arranque completo, paso por paso.
+> - `docs/STATUS.md` — la contabilidad honesta: qué está probado, dónde, con qué
+>   fecha, qué sigue abierto y la contradicción que el proyecto publica.
+>
+> `README.es.md` dejó de ser una traducción completa (dos copias grandes se
+> desincronizan; la que miente es la que nadie lee) y es ahora una página corta
+> de orientación que manda al vault, que ya está en español.
+>
+> ### Evidencia visual, capturada de corridas reales
+>
+> `docs/media/` lleva tres imágenes y **el texto crudo de cada una al lado**,
+> para que se puedan comprobar: el recuadro de autorización de capacidades, el
+> commit atómico muerto con `SIGABRT` entre el rename y el symlink, y el
+> autorreporte de `session --once`. No hay maquetas. El diagrama de arquitectura
+> (`docs/media/architecture.svg`) es dibujado y muestra la frontera de confianza:
+> la ruta humana completa, la del agente sólo como propuesta, y el LSM negando
+> desde el kernel.
+>
+> No se pudo capturar un arranque real en QEMU: la política de red del contenedor
+> bloquea `cdn.kernel.org`, así que el kernel no se puede descargar aquí.
+>
+> ### Dos cifras del README estaban viejas
+>
+> Decía «110 comprobaciones, 2026-08-07» — la corrida vigente es la quinta,
+> **2026-08-10: 143 probadas, 2 no probadas, 1 fallida**, con todo el lado del
+> kernel probado por primera vez. Y decía que `thalyx_watch` «nunca se ha cargado
+> sin `bpftool`», cuando lo que sigue abierto es más preciso: **nunca lo ha
+> cargado el cargador propio de Thalyx**; el ring buffer sí se leyó en hierro
+> desde un pin real del kernel.
+>
+> Los conteos que se mueven (pruebas, nombres declarados) quedaron en una forma
+> que no envejece: «más de 1 100 pruebas», «cerca de cuatro mil nombres».
 
 > ## El verbo que se colgaba era `indexar`, y el hierro quedó en verde — 2026-08-10
 >

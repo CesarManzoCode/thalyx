@@ -1,0 +1,225 @@
+# What is actually true right now
+
+Every claim here is either checkable with a command in this repository or
+marked as not yet checked. That distinction is the project's main working rule,
+and the reason this file exists separately from the README: the README says what
+Thalyx is, this file says how much of it has been proven and where.
+
+The short version lives in [the README](../README.md#where-it-actually-stands).
+Everything below is the long one.
+
+> Dates are the day the check was last run. `sudo ./dev/verify.sh` re-runs all
+> of it on a machine that can, and never counts a check it could not make as a
+> pass.
+
+---
+
+## What is built
+
+**Built and covered by tests — over 1,100 of them**, across unit tests, fault injection
+that kills the real binary at each point of the atomic commit, and end-to-end
+runs of the exit criterion. `cargo test --workspace` runs all of it.
+
+**The machine can be worked in without the agent.** `ls`, `cat`, `cd`, `pwd`,
+`clear` to look; `mkdir`, `touch`, `cp`, `mv`, `rm` to change, with `*` and `?`;
+and a terminal that is a terminal — arrows, line editing, a 500-line history,
+and tab completing verbs at the start of a line and file names after it. Every
+one of them is the same Rust inside `thalyx`, so `make -C image count` still
+says one program.
+
+**And those verbs have a second face a program can ask for.** `structured on`,
+and every one of them answers with one JSON object per line instead of a
+sentence — built from the same fact the person is shown, so the two cannot drift
+apart. It hides nothing a person would not be shown, reports exact byte counts
+rather than `1.2 kB`, and answers even where a person is told nothing, because a
+parser cannot tell silence from a hang. One typed line produces exactly one
+object, so a command that touched three files is still one answer. `structured
+off` brings the sentences back, and the acknowledgement carries those words for
+anyone who turned it on by accident.
+
+**The machine also describes itself.** `describe` answers with all 33 verbs —
+names, arguments, flags, which `op` each answers with, whether it can change
+anything, and the errors it can give. Nothing on Linux can do that: `--help` is
+prose, written once per tool, inconsistent between any two, and often absent.
+
+**And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
+would go and touches nothing, built so the rehearsal *is* the check half of the
+real operation rather than a second implementation that could disagree with it.
+Every action that changed something says how to undo it — and a delete says
+plainly that it cannot be undone, because inside `/home` no rollback of ours
+reaches.
+
+**No answer can eat a context window.** A listing, an index query, a search, the
+history — each comes back with how many there are, how many were sent, and a
+cursor for the rest. The cursor names the last row rather than an offset, so a
+file deleted between two pages changes *what comes next* and never quietly skips
+something; when the tree moved underneath it, the answer says so in the same
+object as the rows. A person is never cut off: a window is a fact about a
+*context* window, and on the image there is no pager to get the rest back with.
+
+**Searching returns symbols, not lines.** `buscar login` says where the name is
+declared, what kind of thing it is, and every place it is used — with neither
+comments nor strings in the list, which is the half `grep` cannot do. Over this
+repository's own sources it finds close to four thousand declared names.
+
+**Something can be attempted and taken back whole.** `intento empezar <label>`
+takes a Btrfs snapshot, and after any amount of work `intento abandonar` returns
+the tree exactly as it was while `intento confirmar` keeps it. Both faces are
+shown what abandoning would cost — which files would be *deleted* rather than
+reverted — before anything moves.
+
+**The machine says what it did, and what the kernel saw.** `historia` reads the
+journal from inside a session, newest first, saying in a field that it covers
+what Thalyx did and not everything that happened. `cambios` drains the BPF ring
+buffer the watcher fills: who changed something and how, with the two things a
+ring cannot give said plainly — it is not a history, because reading empties it,
+and it names no files.
+
+**The semantic index is reachable from a session.** `indexar`, then `depende
+<file>` and `usan <file>` — *what refers to this*, which no amount of walking
+directories can answer, because dependency is not a property of location. Every
+answer carries the index's freshness in the same object as the rows, so a tree
+that changed behind Thalyx's back is reported as stale rather than answered as
+though it had not.
+
+What is **not** exposed yet: the journal, module listing, and the three things
+that need hardware this container does not have — a named attempt that can be
+abandoned whole, "what changed since I looked", and a foreign agent running as a
+task with a grant that expires. Those are tracked in
+`vault/02-Arquitectura/Superficie-para-el-LLM.md` with what each one costs.
+
+## What has been proven, and where
+
+**Verified on real hardware.** `sudo ./dev/verify.sh`, on one machine with a BPF
+LSM, cgroup v2 and Btrfs. The fifth and most recent run, on **2026-08-10**,
+reported **143 proven, 2 not proven, 1 failed** — and for the first time the
+whole kernel side came back proven: the LSM denied for real, a module ran
+confined, Thalyx attached its own LSM with no `bpftool`, and the module's channel
+survived the sandbox.
+
+The one failure was the harness, not Thalyx, and it is the ninth instance of the
+project's fifth testing rule. Two tests in `llama.rs` failed with `ETXTBSY`: the
+kernel refusing to execute a file another thread still had open for writing,
+through the window between `fork` and `exec`. It had failed once a year earlier,
+been "fixed" by a guess that said it was a guess, and only became a diagnosis
+when a twelve-core machine failed it twice in one run. The retry lives in the
+harness and deliberately not in production code, next to a test that reproduces
+the refusal on purpose.
+
+Also proven on that hardware, and not reachable from a container at all: the
+kernel mounting a Btrfs filesystem Thalyx wrote byte by byte with no
+`mkfs.btrfs`; a named attempt over real Btrfs, where abandoning restored a file
+and deleted the one made during the attempt, atomically; `cambios` mapping the
+watcher's ring buffer through a real kernel pin and reading tens of thousands of
+records; the bounded listing with its cursor; and the symbol index finding close
+to four thousand declared names over this repository's own sources. The BPF LSM
+has denied a real network connection to a process that lacked the permission,
+and only to that process.
+
+**Still unproven, and named as such by the run itself.** `verify.sh`'s summary
+is the authority on this, not a count written down here: whatever it could not
+exercise on the day it ran comes back as `NOT PROVEN`, with the reason, and is
+listed again at the end. The development container is the extreme case — it has
+no BPF LSM, no delegated cgroup controllers and no Btrfs, so most of the run is
+`NOT PROVEN` there, and that is the point of the distinction rather than a
+failure of it.
+
+**The image boots, and does the six steps by itself.** A kernel built from
+`allnoconfig` comes up in QEMU with one program inside it, attaches its own
+enforcement with no `bpftool` and no second file, mounts its Btrfs store,
+installs a signed module from its own repository through the trusted path, runs
+it confined, reverts it, powers itself off — and on the next boot says what it
+was asked to do and that the install it made no longer checks out. That whole
+sequence is stage 16 of `verify.sh`, typed into a real machine from a cold
+boot.
+
+## Current limits and coverage gaps
+
+- **Physical boot and installation are proven.** On 2026-08-07 a PC booted
+  Thalyx from USB through its own firmware, used HDMI and a real xHCI keyboard,
+  listed the machine's disks, installed itself onto a second disk, and booted
+  again without the installation medium. That closed Phase 1.
+- **Two hardware configurations remain unexercised.** The completed installation
+  targeted removable media, so an internal disk has not received Thalyx, and the
+  machine had no NVMe device. Those are coverage gaps, not failed checks.
+
+- **Five kernel options in this project's history were found by booting or by
+  reading, and by no build check.** Four were found by booting. The fifth,
+  `CONFIG_USB_STORAGE`, was found on 2026-08-07 by reading the config while
+  preparing the hardware run — the UEFI specification has the *firmware* read the
+  boot medium, so a machine without that driver boots off a USB stick, looks
+  entirely healthy, and only fails two commands later when the installer looks for
+  that stick in `/sys/block`. `config-check` stops the build when Kconfig drops an
+  option that was asked for; it cannot see one nobody asked for, which is what the
+  five tests over `thalyx.config` are for. Expect more of them on the first real
+  machine.
+- **Nobody outside the project has done the six steps**, and that is no longer
+  the exit criterion — it was suspended the same day, in favour of the ISO. The
+  steps still have to work and are checked on every change; what is suspended
+  is *who types them*.
+- **The conversational agent has a model, and three of its four tiers are
+  measured.** `vault/02-Arquitectura/Gamas-de-Modelo.md` decrees four sizes of
+  one family; `thalyx agent model use <tier> --weights <gguf>` selects one and
+  llama.cpp is invoked as a process. On 2026-08-08 the light, medium and high
+  tiers ran the twenty-case bench on one machine — a Ryzen 5 5600G with 16 GB
+  and no GPU. **The largest tier is not measured**: the process was killed for
+  running out of memory before its first inference finished, which is recorded
+  as no measurement rather than as a score of zero. A machine with no model
+  configured still says *"I have no model loaded"* and still does everything the
+  rules can do, which is the double route being real rather than polite.
+- **No tier abstained even once.** Across all three measured tiers, every
+  ambiguous utterance produced a module id instead of a request for
+  clarification. The decree calls abstention the most important measurement, so
+  this is the largest open result in the project — and the grammar does not help
+  with it: it constrains the *shape* of an answer, never its truth.
+- **The predictive scheduler is Phase 2.** It is design, not code.
+- **`thalyx_watch` has never been loaded by Thalyx's own loader.** The loader is
+  proven on the LSM object — it loads it, attaches it, and that enforcement
+  denies — and the watcher's ring buffer has been read on hardware through a real
+  kernel pin. But the watcher itself is still loaded with `bpftool`: ten hooks
+  instead of two, and one map type the LSM does not use. It is *likely* the same
+  loader works, and likely is not proven.
+
+## Three limits of the enforcement, stated rather than discovered
+
+- **The LSM enforces by class of action, not by path.** Every absolute read
+  grant becomes one `FS_READ` bit and every write grant one `FS_WRITE` bit, and
+  the BPF program checks the bit. What confines a module to the *particular*
+  paths it was granted is the root filesystem — which contains nothing else —
+  the module's own uid, and the checks in Thalyx's internal API, which open
+  under a descriptor for the granted directory with the kernel refusing to leave
+  it. The LSM is a second, coarser layer. Calling it per-path enforcement would
+  be claiming more than it does.
+- **`net/outbound` has not been exercised end to end on hardware.** The LSM
+  denying a connection to a module *without* the grant is proven and
+  reproducible (`make -C lsm demo`). A module *with* the grant opening a
+  connection is implemented and unit-tested, and has not yet run on a machine.
+- **Snapshots need `btrfs-progs`, which the image does not have and cannot.**
+  `thalyx-snapshot` shells out to `btrfs`, so snapshot and restore work on a
+  host that has it — where `dev/verify.sh` exercises them — and not inside the
+  minimal image, which carries one program.
+
+## And one contradiction, since it is the honest thing to publish
+
+The founding decree says modules speak to Thalyx **exclusively** through its
+API, not through POSIX and not through libc. Today a module is a dynamically
+linked Linux binary: the sandbox mounts `/usr`, `/lib`, `/bin` and `/etc`
+read-only so it can start at all, and the seccomp filter permits around 120
+syscalls.
+
+The distinction that does hold, and is what the code actually implements:
+
+> **The Thalyx API is the only *mediated* surface.** It is not the only
+> reachable one.
+
+Identity, permissions, granted files and speaking to the human exist through it
+and nowhere else. What stays reachable through POSIX is bounded by three layers
+that do exist: a root filesystem containing nothing that was not mounted into
+it, a filter that kills what is not on its allowlist, and the LSM. None of that
+makes a module a program that does not speak POSIX. It makes speaking POSIX get
+it nowhere the human did not authorise.
+
+Closing the gap fully — static modules, no libc, a much smaller filter — is a
+Phase 2 decision recorded in `vault/02-Arquitectura/Sistema-de-Modulos.md`.
+
+---

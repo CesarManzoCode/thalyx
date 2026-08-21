@@ -1,0 +1,30 @@
+$ THALYX_FAULT_POINT=mid-commit thalyx module install greeter.thmod --yes
+  confirmed with --yes
+thalyx: injected fault at mid-commit, aborting
+Aborted
+  (SIGABRT between the directory rename and the symlink swap)
+
+$ thalyx module list
+no modules installed
+
+$ thalyx store status
+root      /tmp/thalyx-demo
+modules   0
+staging   0 leftover director(ies)
+intents   1 unresolved
+          dev.thalyx.greeter 1.0.0  announced 2026-08-21T04:53:02.895026479Z
+orphans   1 version(s) not pointed at by `current`
+          dev.thalyx.greeter 1.0.0
+
+an unresolved intent is a question, not a lost operation: the disk
+has the answer. `thalyx store reconcile` settles them.
+
+leftovers are inert: nothing points at them, so no module is
+half-installed. `thalyx store clean` reclaims the space.
+
+$ thalyx module install greeter.thmod --yes
+
+dev.thalyx.greeter 1.0.0 installed
+  1 file(s), 1 permission(s) now in force
+  runs as user 700000, which is this module's and no other's
+
