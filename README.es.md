@@ -314,10 +314,11 @@ BPF, cgroup v2 y Btrfs — `sudo ./dev/verify.sh`, el 2026-08-07. Incluye que **
 kernel monta un Btrfs que Thalyx escribió byte por byte**, sin `mkfs.btrfs`.
 Fallaron dos cosas y las dos eran del arnés y no de Thalyx; las dos están
 arregladas.
-Una sola quedó sin probar, y es algo que **todavía no existe** en vez de una
-comprobación que no se pudo hacer: el agente no tiene modelo. El LSM de BPF ha
-denegado una conexión de red real a un proceso que no tenía el permiso, y solo a
-ese proceso.
+Una sola quedó sin probar, y en ese momento era algo que todavía no existía
+en vez de una comprobación que no se pudiera hacer: el agente no tenía modelo.
+Lo tiene desde el 2026-08-08, y esa etapa corre con pesos reales cuando
+`THALYX_AGENT_WEIGHTS` los señala. El LSM de BPF ha denegado una conexión de
+red real a un proceso que no tenía el permiso, y solo a ese proceso.
 
 **Sin correr en ningún sitio todavía**: cinco comprobaciones más, de que Thalyx
 crea los tres subvolúmenes Btrfs de un store por `BTRFS_IOC_SUBVOL_CREATE`,
@@ -333,40 +334,32 @@ lo corre confinado, lo revierte, se apaga sola — y en el siguiente arranque di
 qué se le pidió y que la instalación que hizo ya no le cuadra. Todo eso es la
 etapa 16 de `verify.sh`, tecleada en una máquina real desde un arranque frío.
 
-### Lo que todavía no es cierto, dicho sin rodeos
+### Límites actuales y cobertura pendiente
 
-- **Ninguna PC de verdad ha arrancado esto, sólo una virtual.** El 2026-08-07 un
-  firmware UEFI encontró `\EFI\BOOT\BOOTX64.EFI` en un disco escrito por Thalyx y
-  lo ejecutó —sin `-kernel`, sin `-append`, sin gestor de arranque—, y la máquina
-  encontró su store sin que nadie se lo nombrara, sacó la sesión por la pantalla a
-  través del framebuffer del firmware, recibió `apagar` del teclado y se apagó.
-  `thalyx install <disco>` escribe la GPT, una partición de arranque de 512 MiB en
-  FAT32 con el kernel adentro, y el resto como store de Btrfs con sus tres
-  subvolúmenes — sin `sgdisk`, sin `mkfs.vfat` y sin `mkfs.btrfs`, porque la
-  imagen lleva el kernel de Linux y un programa. **Lo que falta es hierro**: el
-  teclado USB (xHCI + HID) y los discos NVMe/AHCI, que una VM no puede responder
-  — el teclado de QEMU es PS/2 y sus discos son virtio. El archivo que instala es
-  el medio: `dd` a una USB y una PC arrancada desde ella se instala en su propio
-  disco con `discos` e `instalar-en` de la sesión, leyendo el kernel de la USB con
-  el lector de FAT propio y sin montar nada.
-- **Cuatro opciones de kernel de la historia de este proyecto se encontraron
-  arrancando y de ninguna otra forma**, la última en la primera compilación
-  después de meter los controladores. `thalyx.config` salía de `allnoconfig` más lo
-  que QEMU necesita, y ahora nombra el framebuffer que deja el firmware, teclado
-  USB y PS/2, y NVMe con AHCI. Hay que esperar más en la primera máquina real.
-- **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el criterio
-  de salida — se suspendió el mismo día, a favor de la ISO. Los pasos siguen
-  teniendo que funcionar y se comprueban en cada cambio; lo suspendido es
-  **quién los teclea**.
-- **El agente conversacional no tiene modelo.** La mitad determinista está
-  construida y funciona; no hay un modelo de lenguaje detrás. La sesión dice *"I
-  have no model loaded"* en vez de aparentar. La elección de modelo está
-  decretada (`vault/03-Primitivas/Gamas-de-Modelo.md`) y no implementada.
+- **El arranque y la instalación en hardware físico están comprobados.** El
+  2026-08-07 una PC arrancó Thalyx desde USB a través de su propio firmware, usó
+  HDMI y un teclado xHCI real, listó los discos de la máquina, se instaló en un
+  segundo disco y volvió a arrancar sin el medio de instalación. Eso cerró la
+  Fase 1.
+- **Quedan dos configuraciones de hardware sin ejercitar.** La instalación
+  comprobada fue sobre un medio removible, así que ningún disco interno ha
+  recibido Thalyx, y esa máquina no tenía NVMe. Son huecos de cobertura, no
+  comprobaciones fallidas.
+- **Cinco opciones del kernel se encontraron arrancando o leyendo, no con una
+  comprobación de build.** `config-check` detecta opciones pedidas que Kconfig
+  descarta, pero no puede detectar una opción que nunca se pidió; para eso están
+  las pruebas sobre `thalyx.config`.
+- **Nadie ajeno al proyecto ha hecho los seis pasos**, y eso ya no es el
+  criterio de salida: se suspendió a favor de la ISO. Los pasos siguen
+  comprobándose en cada cambio; lo suspendido es quién los teclea.
+- **El agente conversacional tiene modelo y tres de sus cuatro gamas están
+  medidas.** La gama mayor no terminó su primera inferencia por falta de memoria
+  en la máquina de prueba. Ninguna de las tres gamas medidas se abstuvo ante los
+  casos ambiguos, que sigue siendo el resultado abierto más importante.
 - **El planificador predictivo es de Fase 2.** Es diseño, no código.
-- **`thalyx_watch` nunca se ha cargado sin `bpftool`.** El cargador de BPF que
-  Thalyx lleva adentro está probado sobre el objeto del LSM: lo carga, lo
-  engancha, y ese enforcement deniega. El watcher son diez hooks en lugar de dos
-  y no se ha intentado. Probable no es comprobado.
+- **`thalyx_watch` nunca se ha cargado sin `bpftool`.** El cargador de BPF
+  incluido sí está probado con el objeto LSM; el watcher usa diez hooks y todavía
+  no se ha intentado.
 
 ### Tres límites del enforcement, dichos en vez de descubiertos
 
