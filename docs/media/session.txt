@@ -1,0 +1,21 @@
+$ thalyx session --once
+
+  Thalyx, running as a program under bash.
+
+  This is not the machine. Something else booted it and started
+  me, and leaving returns you there. On the image this paragraph
+  reads differently, and that difference is the whole claim.
+
+  What I can tell you about where I am:
+
+  ok  kernel       6.18.5-fc-v20
+  no  filesystem   ext4 — snapshots and restore need btrfs and will not work here
+  no  cgroup v2    mounted at /sys/fs/cgroup/unified, but it hands down no memory or pids — a module could not be given the limits its profile declares
+  ok  sandbox root a module can be pivoted into a root of its own
+  ?   lsm order    securityfs is not mounted, so the LSM order cannot be read
+  no  enforcement  no BPF object was built into me, so there is nothing to attach
+  ok  modules      1: dev.thalyx.greeter 1.0.0
+
+  1 of those I could not check at all. Not absent — unchecked.
+  3 are not here. I will not pretend otherwise later.
+
