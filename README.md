@@ -393,47 +393,16 @@ was asked to do and that the install it made no longer checks out. That whole
 sequence is stage 16 of `verify.sh`, typed into a real machine from a cold
 boot.
 
-### Not yet true, stated plainly
+### Current limits and coverage gaps
 
-- **A real PC has booted this, and installed it onto a disk of its own.** On
-  2026-08-07 a physical machine started Thalyx from a USB stick through its own
-  firmware, put its session on a monitor over HDMI through `FB_EFI`, took its
-  keyboard over real xHCI, listed its real disks — including the 447 GiB one with
-  another operating system on it, named by its filesystem label — and then
-  installed itself onto a second disk with `instalar-en`. The medium came out, the
-  machine started again, and it found its own store by label with nothing naming
-  it. **That closed Phase 1.** Its exit criterion — decreed as "an ISO you can put
-  into a PC with no operating system so that it now has Thalyx as its OS" — names
-  no particular disk, and this is that.
+- **Physical boot and installation are proven.** On 2026-08-07 a PC booted
+  Thalyx from USB through its own firmware, used HDMI and a real xHCI keyboard,
+  listed the machine's disks, installed itself onto a second disk, and booted
+  again without the installation medium. That closed Phase 1.
+- **Two hardware configurations remain unexercised.** The completed installation
+  targeted removable media, so an internal disk has not received Thalyx, and the
+  machine had no NVMe device. Those are coverage gaps, not failed checks.
 
-  Two hardware configurations remain unexercised, which is a statement about
-  coverage and not an open clause: the disk it installed onto was removable, so no
-  internal disk has ever received a Thalyx install, and that machine has no NVMe,
-  so NVMe on real silicon stays unexercised — not because a driver failed, but
-  because there is no hardware to fail on. Both move to validation, on somebody
-  else's machine.
-- **Before that, only a virtual one had.** On 2026-08-07 a UEFI
-  firmware found `\EFI\BOOT\BOOTX64.EFI` on a disk Thalyx wrote and started it —
-  no `-kernel`, no `-append`, no boot loader — and the machine found its own
-  store with nothing naming it, put its session on the screen through the
-  firmware's framebuffer, took `apagar` from the keyboard and powered down.
-  `thalyx install <disk>` writes the GPT, a 512 MiB FAT32 boot partition holding
-  the kernel, and the rest as a Btrfs store with its three subvolumes, with no
-  `sgdisk`, no `mkfs.vfat` and no `mkfs.btrfs`, because the image holds the Linux
-  kernel and one program. **What remains is hardware**: the USB keyboard (xHCI +
-  HID), NVMe/AHCI disks, and USB storage — none of which `make run-installed`
-  reaches, because everything it attaches is virtio and its keyboard is PS/2. The
-  same file that installs is the medium: `dd` it to a USB stick and a PC started
-  from it installs itself onto its own disk with the session's `discos` and
-  `instalar-en`, reading the kernel off the stick with Thalyx's own FAT reader and
-  mounting nothing.
-- **`make -C image run-hardware` is as close to that as a machine gets, and it has
-  never run.** QEMU emulates xHCI, NVMe, AHCI and a USB disk, and the kernel driver
-  that talks to an emulated controller is the same one that talks to real silicon —
-  so it answers that the options are compiled, that the drivers bind, and that
-  `/dev/nvme0n1` comes back with its partitions named `nvme0n1p1`. It does not
-  answer real firmware, real silicon, or a physical stick in a physical port, and
-  it is not a substitute for either.
 - **Five kernel options in this project's history were found by booting or by
   reading, and by no build check.** Four were found by booting. The fifth,
   `CONFIG_USB_STORAGE`, was found on 2026-08-07 by reading the config while
