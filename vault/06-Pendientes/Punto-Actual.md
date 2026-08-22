@@ -14,6 +14,44 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## `describe` prometía prosa donde había un objeto — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Revisando qué quedó desalineado después de la corrida en verde salió **un
+> defecto real, y no estaba en la bóveda sino en el código**: `red` se construyó
+> ese mismo día con sus dos caras y quedó declarado `answers: None` en el
+> catálogo. `describe` es lo primero que lee un programa y por cada verbo dice si
+> contesta por estructura; **un verbo declarado sólo-prosa es un verbo que un
+> programa nunca llama**. La única lista de hardware de red que esta máquina
+> tiene fue invisible para eso durante el día entero, sin producir un solo error.
+>
+> Nadie lo vio porque **el catálogo y el despacho son dos archivos y cada uno
+> concuerda consigo mismo**: las pruebas de `net` ejercen la cara estructurada y
+> pasan, y la prueba del catálogo afirmaba que `modules` seguía siendo sólo-prosa
+> —un `contains` sobre un ejemplo no ve que otro se movió—.
+>
+> Tres cosas cambiaron:
+>
+> - `red` declara `answers: Some("network")`;
+> - la prueba del catálogo **fija la lista entera** de verbos sólo-prosa, así que
+>   agregar una cara obliga a editar ese renglón;
+> - la **etapa 22** corre los catorce verbos que aquí se pueden correr sin
+>   argumentos y compara el cable contra lo que `describe` prometió, en las dos
+>   direcciones. Con el defecto devuelto a mano dice
+>   `red:promised-prose-answered-network`; sin él, `ok:14`.
+>
+> La regla nueva está en [[Estrategia-de-Pruebas]]: **una afirmación que un
+> sistema hace sobre sí mismo se comprueba corriéndolo, no leyendo los dos lados
+> del código.**
+>
+> Y de paso quedaron alineados dos pendientes de [[Tareas-Pendientes]] que
+> seguían marcados abiertos y estaban cerrados desde el 2026-08-10: los tres de
+> «sólo hierro» —de los que `D2` y `B3` se construyeron y sólo queda `E1`— y los
+> tres que se podían hacer aquí —`B1`, `C2` y `F2`, los tres hechos—.
+>
+> **Nada de esto necesita hierro**, así que no interrumpe nada.
+
 > ## `proven 159 · not proven 1 · failed 0` — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

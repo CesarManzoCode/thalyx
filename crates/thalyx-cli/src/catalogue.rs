@@ -535,7 +535,7 @@ pub const VERBS: &[Verb] = &[
         names: &["red", "network"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("network"),
         changes: false,
         errors: &[],
         summary: "The network hardware this machine has. Thalyx cannot use it yet.",
@@ -741,14 +741,36 @@ mod tests {
         // The point of `answers: None` is that "this one only speaks prose" is a
         // fact a caller needs *before* it tries to parse. Rule 10 on the wire: a
         // failure to have a face is not a face that failed.
+        //
+        // The whole set is pinned rather than one example, because the way this
+        // goes wrong is silent and it already did: `red` was built with both
+        // faces on 2026-08-23 and left declared `None` here, so `describe` told
+        // every program that the only listing of network hardware spoke prose —
+        // and a program that believes that never calls the verb at all. A single
+        // `contains` could not see it. Growing a face means editing this list,
+        // and that edit is the moment to check the claim is now true.
         let prose_only: Vec<&str> = VERBS
             .iter()
             .filter(|verb| verb.answers.is_none())
             .map(|verb| verb.id)
             .collect();
-        assert!(
-            prose_only.contains(&"modules"),
-            "the catalogue stopped admitting which verbs are prose-only: {prose_only:?}"
+        assert_eq!(
+            prose_only,
+            vec![
+                "clear",
+                "available",
+                "install",
+                "modules",
+                "run",
+                "permissions",
+                "rollback",
+                "kernel",
+                "disks",
+                "install_onto",
+                "leave",
+                "power_off",
+            ],
+            "the set of prose-only verbs moved; if a face was added, say so here"
         );
     }
 

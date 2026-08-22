@@ -3340,6 +3340,102 @@ else:
         failed "the rehearsal did not work out an answer ($REHEARSED); see $WORK/surface-rehearse.log"
     fi
 
+    # --- A1's own claim, checked against what the verbs actually do ---------
+    #
+    # `describe` says, per verb, whether that verb answers by structure. That
+    # claim is the one a program acts on *before* it calls anything: a verb
+    # declared prose-only is a verb a program never calls at all, so the claim
+    # being wrong costs the whole verb silently.
+    #
+    # It went wrong exactly that way. `red` was built on 2026-08-23 with both
+    # faces and left declared prose-only in the catalogue, so the only listing
+    # of network hardware this machine has was invisible to everything that
+    # asked first. `cargo test` could not see it: the catalogue and the dispatch
+    # are two files, and each one agrees with itself.
+    #
+    # So every verb that is safe to run here with no arguments is run, and what
+    # comes back on the wire is compared against what `describe` promised. Both
+    # directions fail: a promise with no object behind it, and an object out of
+    # a verb that promised prose. A refusal counts as a structured face — an op
+    # that says it could not is still the verb answering by structure, which is
+    # rule 10 on the wire.
+    CLAIM_VERBS="ls describe procesos memoria historia cambios estado recuerdos red disponibles modulos permisos nucleo discos"
+    : > "$WORK/surface-claims.tsv"
+    for CLAIM_VERB in $CLAIM_VERBS; do
+        surface "structured on" "$CLAIM_VERB" salir > "$WORK/surface-claim-$CLAIM_VERB.log" 2>&1
+        printf '%s\t%s\n' "$CLAIM_VERB" "$WORK/surface-claim-$CLAIM_VERB.log" \
+            >> "$WORK/surface-claims.tsv"
+    done
+
+    CLAIM_VERDICT=$(python3 - "$WORK/surface-describe.log" "$WORK/surface-claims.tsv" <<'EOF'
+import json, sys
+
+described, claims = sys.argv[1], sys.argv[2]
+
+catalogue = None
+for line in open(described, errors="replace"):
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and value.get("op") == "describe":
+        catalogue = value.get("verbs", [])
+        break
+
+if catalogue is None:
+    print("no-catalogue")
+    raise SystemExit
+
+# One name may be spelled several ways; index every spelling.
+promised = {}
+for verb in catalogue:
+    for name in verb.get("names", []):
+        promised[name] = verb.get("answers")
+
+wrong = []
+checked = 0
+for row in open(claims):
+    name, log = row.rstrip("\n").split("\t")
+    if name not in promised:
+        wrong.append(f"{name}:not-described")
+        continue
+    ops = set()
+    for line in open(log, errors="replace"):
+        if not line.startswith("{"):
+            continue
+        try:
+            answer = json.loads(line)
+        except Exception:
+            continue
+        # `structured on` answers for itself; it is not the verb under test.
+        if isinstance(answer, dict) and answer.get("op") not in (None, "structured"):
+            ops.add(answer["op"])
+    checked += 1
+    want = promised[name]
+    if want is None:
+        if ops:
+            wrong.append(f"{name}:promised-prose-answered-{'/'.join(sorted(ops))}")
+    elif want not in ops:
+        wrong.append(f"{name}:promised-{want}-answered-{'/'.join(sorted(ops)) or 'nothing'}")
+
+print(("ok:%d" % checked) if not wrong else "mismatch:" + " ".join(wrong))
+EOF
+) || CLAIM_VERDICT="mismatch:the-check-itself-failed"
+
+    case "$CLAIM_VERDICT" in
+        ok:*)
+            proven "each of the ${CLAIM_VERDICT#ok:} verbs driven answers exactly as \`describe\` promised"
+            ;;
+        no-catalogue)
+            failed "\`describe\` produced no catalogue to check the verbs against"
+            ;;
+        *)
+            failed "\`describe\` promises what the verbs do not do: ${CLAIM_VERDICT#mismatch:}"
+            ;;
+    esac
+
     # --- C1: the semantic index, asked by the session -----------------------
     #
     # The question no directory walk can answer. Nothing about the name or the

@@ -3478,6 +3478,42 @@ kernel, la pregunta correcta no es *«qué contestó aquí»* sino *«qué de es
 del código que estoy probando»*. Lo primero es un hecho sobre una máquina. Lo
 segundo es lo que la prueba existe para fijar.
 
+## Regla derivada: un catálogo que se describe a sí mismo puede mentir sobre sí mismo — 2026-08-23
+
+`describe` es lo primero que un programa lee, y por cada verbo dice si contesta
+por estructura o sólo en prosa. **Esa afirmación es la que decide si el verbo se
+llama siquiera**: un verbo declarado sólo-prosa es un verbo que un programa
+nunca invoca, así que la afirmación equivocada cuesta el verbo entero y no
+cuesta ni un error.
+
+Fue exactamente así. `red` se construyó el 2026-08-23 con sus dos caras —el
+objeto trae `addressable: false`, que era el punto del verbo— y quedó declarado
+`answers: None` en el catálogo. Durante el día entero, la única lista de
+hardware de red que esta máquina tiene fue **invisible para todo lo que
+preguntara antes**.
+
+Lo que no lo vio, y por qué:
+
+- **Las pruebas unitarias del catálogo** afirmaban que `modules` seguía en la
+  lista de sólo-prosa. Un `contains` sobre un ejemplo no puede ver que otro se
+  movió. Ahora la lista entera está fijada, así que agregar una cara obliga a
+  editarla, y ese renglón es el momento de comprobar que la afirmación es cierta.
+- **Las pruebas de `net`** ejercen la cara estructurada y pasan: el verbo sí
+  contesta. Nadie estaba mintiendo sobre el verbo, sino sobre el verbo *en el
+  catálogo*, y son dos archivos donde **cada uno concuerda consigo mismo**.
+
+La regla: **cuando un sistema publica una afirmación sobre sí mismo, la
+comprobación es correrlo y leer el cable, no leer los dos lados del código.**
+La etapa 22 ahora maneja los catorce verbos que se pueden correr aquí sin
+argumentos y compara lo que sale contra lo que `describe` prometió, en las dos
+direcciones — una promesa sin objeto detrás, y un objeto de un verbo que
+prometió prosa. El control es el de siempre: con el defecto devuelto a mano, la
+etapa nombra `red:promised-prose-answered-network`; sin él, `ok:14`.
+
+Y una consecuencia de la regla 3 que vale escribir: **una negativa cuenta como
+cara estructurada.** Un `op` que dice que no pudo sigue siendo el verbo
+contestando por estructura, que es la regla 10 sobre el cable.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

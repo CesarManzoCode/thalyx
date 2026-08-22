@@ -95,20 +95,24 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 
 - [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** — hecho en
       parte el 2026-08-09. `estado` y `recuerdos` tienen su objeto, y el índice
-      semántico llegó entero a la sesión (`indexar`, `depende`, `usan`). Falta
-      el journal (**F2** del catálogo) y los verbos de módulos. Ver
-      [[Superficie-para-el-LLM]].
-- [ ] **Los tres que necesitan hierro, y hay que correrlos de uno en uno.** Del
-      catálogo de [[Superficie-para-el-LLM]], y ninguno se puede comprobar en el
-      contenedor: **D2** el intento con nombre (Btrfs — un falso de un snapshot
-      que no falla como falla un snapshot no es un falso, es otro sistema),
-      **B3** qué cambió desde X (BPF — un programa que falla el verificador
-      tumba al watcher entero), y **E1** el agente ajeno como tarea con
-      concesión (LSM y cgroups delegados, y es lo único del catálogo que toca
-      seguridad). **Decisión de Cesar**, uno por corrida.
-- [ ] **Los tres que se pueden hacer aquí y quedaron por tiempo.** **B1** acotar
-      toda respuesta larga con su total, **C2** búsqueda por símbolos sobre el
-      parser que ya existe, y **F2** el journal legible desde afuera.
+      semántico llegó entero a la sesión (`indexar`, `depende`, `usan`), y el
+      journal (**F2**) llegó el 2026-08-10 como `historia`. **Lo que sigue sin
+      segunda cara son los verbos de módulos** —`disponibles`, `instalar`,
+      `modulos`, `correr`, `permisos`, `revertir`— más `nucleo`, `discos` e
+      `instalar-en`. Ver [[Superficie-para-el-LLM]].
+- [x] **Los tres que se dijeron «sólo hierro»** — **cerrado el 2026-08-10, y dos
+      de los tres no necesitaban hierro.** `D2` (el intento con nombre) y `B3`
+      (qué cambió desde X) se construyeron: el primero porque la propiedad bajo
+      prueba era la política y no Btrfs, el segundo porque consumir un ringbuf
+      es código de usuario y no código BPF. **`E1` es el único que queda**, y la
+      razón cambió: no es hierro ni dificultad, es que **no hay a qué darle la
+      concesión** —faltan `G1` (lanzar y esperar un proceso) y `G2` (un runtime
+      donde un agente ajeno pueda correr)—. Ver [[Superficie-para-el-LLM]].
+- [x] **Los tres que se pueden hacer aquí y quedaron por tiempo** — **hechos el
+      2026-08-10.** `B1` acotar toda respuesta larga con su total (`limite=` y
+      `cursor=`), `C2` búsqueda por símbolos (`buscar`), y `F2` el journal
+      legible desde afuera (`historia`). Con eso el catálogo va **catorce de
+      diecinueve** y lo único suyo que falta es `E1`.
 - [x] **5. Editor de texto** — hecho el 2026-08-22, **las dos caras en una
       entrega** por decisión de Cesar. `crates/thalyx-edit` es el motor y las dos
       caras lo llaman: `editar <archivo>` abre una pantalla, `editar <archivo>
