@@ -4124,6 +4124,173 @@ else
     failed "the binary in the tree was counted as $not_text file(s) skipped instead of 1; see $WORK/search.log"
 fi
 
+# ------------------------------------------------ 31. what runs, and stopping it
+
+step "31. what is running, how much memory is left, and stopping one"
+
+# Point 7 of the usable terminal. What a real machine adds over the unit tests
+# is that the processes are real, the signals are real, and every claim is
+# checked against `/proc`, read by the shell — the kernel, asked by something
+# that is not Thalyx.
+#
+# Rule 4, and here it decides the whole stage: without the controls, a `matar`
+# that killed everything and a `matar` that killed nothing both produce a
+# process that is gone.
+#
+#   1. a process this stage started is listed with its number, and stopping it
+#      stops it. The control is a second process nobody named, still running at
+#      the end.
+#   2. `forzar` is the difference between asking and making. The baseline is a
+#      shell told to ignore TERM: `matar` must leave it alone, and only
+#      `matar … forzar` must end it. Without the baseline the two words are
+#      indistinguishable from outside.
+#   3. `ensayo matar` sends nothing — asserted by the process being alive after
+#      it, which is the only thing that separates a rehearsal from the verb.
+#   4. `memoria` agrees with /proc/meminfo about the size of this machine.
+
+PROC_STORE="$WORK/proc-store"
+mkdir -p "$PROC_STORE"
+
+# Started inside a command substitution so the job belongs to that subshell and
+# not to this script. Bash announces a background job of its own that gets
+# killed — `Killed`, on stderr, in the middle of the report — and a line saying
+# that reads as something having gone wrong when it is this stage working
+# exactly as intended. The `>/dev/null` matters: without it the job holds the
+# substitution's pipe open and the substitution never returns.
+start() { ( "$@" > /dev/null 2>&1 & echo $! ); }
+
+# Whether a pid is a *running process*, which is not what `kill -0` answers.
+#
+# `kill -0` answers whether the number exists, and a zombie's number exists: it
+# has run its last instruction and is waiting for a parent that may never come.
+# On a machine whose init reaps promptly the two look identical; on one that
+# does not they differ, and the difference is about the init and not about
+# Thalyx. This stage found that out on 2026-08-23 by reporting that `matar
+# forzar` had not worked on a process that was already dead.
+#
+# The state is the field after the **last** `)`, because a process name can hold
+# spaces and parentheses — the same trap `thalyx-proc` parses around, and worth
+# getting right in the control too: a control that misreads the format cannot
+# check a parser of it.
+still_running() {
+    local stat
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    case "${stat##*) }" in
+        Z*) return 1 ;;
+        *)  return 0 ;;
+    esac
+}
+
+DOOMED=$(start sleep 900)
+UNTOUCHED=$(start sleep 900)
+REHEARSED=$(start sleep 900)
+STUBBORN=$(start sh -c "trap '' TERM; while :; do sleep 0.2; done")
+sleep 1
+
+printf '%s\n' "structured on" \
+    "procesos sleep" \
+    "ensayo matar $REHEARSED" \
+    "matar $DOOMED" \
+    "matar $STUBBORN" \
+    "memoria" \
+    salir | \
+    THALYX_ROOT="$PROC_STORE" "$THALYX" session > "$WORK/proc.log" 2>&1
+
+sleep 1
+# `matar … forzar` goes in its own session, after the check that TERM alone did
+# nothing — otherwise the two would be one event and neither would be measured.
+STUBBORN_SURVIVED_TERM=no
+still_running "$STUBBORN" && STUBBORN_SURVIVED_TERM=yes
+
+printf '%s\n' "structured on" "matar $STUBBORN forzar" salir | \
+    THALYX_ROOT="$PROC_STORE" "$THALYX" session > "$WORK/proc-force.log" 2>&1
+sleep 1
+
+DOOMED_GONE=no;     still_running "$DOOMED"    || DOOMED_GONE=yes
+STUBBORN_GONE=no;   still_running "$STUBBORN"  || STUBBORN_GONE=yes
+REHEARSED_ALIVE=no; still_running "$REHEARSED" && REHEARSED_ALIVE=yes
+UNTOUCHED_ALIVE=no; still_running "$UNTOUCHED" && UNTOUCHED_ALIVE=yes
+
+python3 - "$WORK/proc.log" "$DOOMED" "$REHEARSED" > "$WORK/proc-facts" <<'EOF'
+import json, shlex, sys
+
+log, doomed, rehearsed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+answers = {}
+for line in open(log):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    answers.setdefault(value.get("op"), []).append(value)
+
+def say(key, text):
+    # Quoted, because the shell sources this and an unquoted value with a space
+    # in it is assigned in halves and the rest is run as a command. That is how
+    # stage 30 accused a verb of answering nothing on 2026-08-23.
+    print(f"{key}={shlex.quote(str(text))}")
+
+listed = answers.get("processes", [{}])[0]
+rows = {row["pid"]: row for row in listed.get("processes", [])}
+say("listed_doomed", "yes" if doomed in rows else "no")
+say("listed_name", rows.get(doomed, {}).get("name", "none"))
+say("rehearsal", answers.get("rehearse", [{}])[0].get("changed", "missing"))
+stops = answers.get("stop", [])
+say("first_signal", stops[0].get("signal", "none") if stops else "none")
+say("memory_total", answers.get("memory", [{}])[0].get("total", 0))
+EOF
+listed_doomed=""; listed_name=""; rehearsal=""; first_signal=""; memory_total=0
+# shellcheck disable=SC1090
+. "$WORK/proc-facts"
+
+FORCED_SIGNAL=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line.startswith("{"):
+        try:
+            value = json.loads(line)
+        except Exception:
+            continue
+        if value.get("op") == "stop":
+            print(value.get("signal", "none"))
+            break
+else:
+    print("none")
+' "$WORK/proc-force.log")
+
+# The control for the memory reading, from the kernel rather than from Thalyx.
+KERNEL_TOTAL=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024 ))
+
+# They belong to init now, which reaps them; nothing here has to.
+kill -9 "$UNTOUCHED" "$REHEARSED" 2>/dev/null
+
+if [ "$listed_doomed" = "yes" ] && [ "$listed_name" = "sleep" ] \
+   && [ "$rehearsal" = "False" ] && [ "$REHEARSED_ALIVE" = "yes" ] \
+   && [ "$first_signal" = "terminate" ] && [ "$DOOMED_GONE" = "yes" ] \
+   && [ "$UNTOUCHED_ALIVE" = "yes" ] \
+   && [ "$STUBBORN_SURVIVED_TERM" = "yes" ] && [ "$FORCED_SIGNAL" = "kill" ] \
+   && [ "$STUBBORN_GONE" = "yes" ] \
+   && [ "$memory_total" = "$KERNEL_TOTAL" ]; then
+    proven "a real process was listed and stopped while one nobody named kept running, a shell that ignores TERM survived \`matar\` and not \`matar forzar\`, the rehearsal sent nothing, and memoria agrees with /proc/meminfo on $(( KERNEL_TOTAL / 1024 / 1024 )) MiB"
+elif [ "$listed_doomed" != "yes" ] || [ "$listed_name" != "sleep" ]; then
+    failed "procesos did not list the process this stage started (listed=$listed_doomed name=$listed_name); see $WORK/proc.log"
+elif [ "$REHEARSED_ALIVE" != "yes" ] || [ "$rehearsal" != "False" ]; then
+    failed "\`ensayo matar\` killed the process it was rehearsing, or did not say it changed nothing; see $WORK/proc.log"
+elif [ "$DOOMED_GONE" != "yes" ] || [ "$first_signal" != "terminate" ]; then
+    failed "matar answered '$first_signal' and the process is gone=$DOOMED_GONE; see $WORK/proc.log"
+elif [ "$UNTOUCHED_ALIVE" != "yes" ]; then
+    failed "a process nobody named was stopped — that is the one thing this must never do; see $WORK/proc.log"
+elif [ "$STUBBORN_SURVIVED_TERM" != "yes" ]; then
+    failed "the baseline is broken or matar sent KILL when asked for TERM: a shell trapping TERM died anyway; see $WORK/proc.log"
+elif [ "$FORCED_SIGNAL" != "kill" ] || [ "$STUBBORN_GONE" != "yes" ]; then
+    failed "\`matar forzar\` answered '$FORCED_SIGNAL' and the stubborn process gone=$STUBBORN_GONE; see $WORK/proc-force.log"
+else
+    failed "memoria says $memory_total bytes where /proc/meminfo says $KERNEL_TOTAL; see $WORK/proc.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

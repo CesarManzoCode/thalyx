@@ -14,6 +14,81 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Procesos: el punto 7, y una señal que no puede caer en el número equivocado — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> `procesos`, `memoria` y `matar` — todo sobre `/proc`, decreto entero en
+> [[Procesos]]. Con esto la terminal usable llega al punto 7 de 9; quedan la red
+> (punto 8, sólo hierro) y el lenguaje de shell (punto 9, decreto antes que
+> código y decisión tuya).
+>
+> ### Lo que hace a `matar` distinto de un `kill`
+>
+> **El número no es el proceso.** Entre leer `/proc/4711` y señalar 4711, ese
+> proceso puede terminar y el kernel puede darle el número a otro; toda
+> herramienta que recibe un pid tiene ese hueco y vive con él. `matar` abre un
+> `pidfd` y manda la señal por ahí, así que llega al proceso para el que se abrió
+> el descriptor o falla — no hay un tercero donde le llegue a un desconocido.
+>
+> Eso decide el orden y es el contrario del obvio: **primero el descriptor,
+> después la descripción, después la señal.**
+>
+> Por omisión `TERM`, que un programa puede atrapar para guardar lo que tenía;
+> `matar <numero> forzar` manda `KILL`, que no. Se niegan PID 1 y la propia
+> sesión, cada uno nombrando el verbo que hace ese trabajo bien —`apagar` y
+> `salir`—; no es una política sobre quién manda en la máquina, que eres tú, es
+> que una señal hace esos dos trabajos de la única forma que no deja dicho por
+> qué la máquina se detuvo. También se niegan el `0` y los negativos, que para
+> `kill(2)` son *todo lo que alcance* y un *grupo*.
+>
+> ### `ensayo matar` es el ensayo que más importa
+>
+> Un archivo se puede volver a escribir; un proceso no, y la entrada que causa el
+> error son cuatro dígitos. Así que contesta el nombre, la línea de comandos
+> entera, cuánto lleva corriendo y quién lo arrancó — y que no manda nada sólo
+> queda probado por una aserción: el proceso sigue vivo después.
+>
+> ### `libre` no es `disponible`
+>
+> `memoria` contesta las dos y nombra cuál contesta la pregunta. Un Linux sano
+> mantiene `free` cerca de cero a propósito, y quien lee sólo ese número concluye
+> que la máquina está llena y empieza a matar cosas. `en uso` se calcula como
+> `total − disponible`, nunca como `total − libre`.
+>
+> ### Dos cosas que construirlo enseñó
+>
+> - **El nombre en `/proc/<pid>/stat` puede llevar paréntesis.** Se capturó un
+>   renglón real de un proceso llamado `we (ird) x`; partirlo por espacios pone
+>   el estado cinco campos antes y reporta un padre inventado. Regla 6.
+> - **`kill -0` contesta si el número existe, no si el proceso corre** —
+>   decimotercera vez que el arnés miente. La etapa 31 dijo que `forzar` no había
+>   funcionado sobre una shell que llevaba rato muerta: era un zombi, porque en
+>   este contenedor **PID 1 es `process_api` y no cosecha huérfanos**. En tu
+>   Fedora systemd los cosecha y las dos preguntas se ven iguales. Ambas en
+>   [[Estrategia-de-Pruebas]].
+>
+> ### Y un hueco de A2 que apareció por segunda vez
+>
+> `machine::declined` no tiene dónde poner un remedio, así que los verbos que la
+> usaban contestaban `remedy: null`. La primera vez lo parché en `search`; al
+> necesitarlo un segundo crate se volvió forma: `machine::refused(op, palabra,
+> remedio, mensaje)`.
+>
+> ### Qué correr
+>
+> Nada de esto necesita hierro. La etapa 31 corrió verde aquí.
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx session
+> procesos
+> memoria
+> ensayo matar <numero>
+> ```
+>
+> El `ensayo` primero, siempre. Son 39 verbos ahora.
+
 > ## Encontrar y contenido: el punto 6, con tres preguntas separadas — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

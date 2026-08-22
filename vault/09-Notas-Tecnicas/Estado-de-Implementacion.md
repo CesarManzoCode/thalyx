@@ -58,6 +58,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
 | Montajes idmapped para lo concedido | `crates/thalyx-sandbox/idmap.rs` | Verificado: escritura concedida funciona y aterriza a nombre del dueño |
 | Motor de edición de texto | `crates/thalyx-edit` | Direcciones por renglón, guardado atómico, deshacer acotado. Conserva finales de renglón, salto final y permisos; un enlace se edita como el archivo al que apunta |
+| Procesos, memoria y detener uno | `crates/thalyx-proc`, `thalyx-cli/src/proc.rs` | `procesos [patrón]`, `memoria` y `matar <numero> [forzar]` sobre `/proc`. La señal va por un **pidfd**, así que no puede caer en un número reciclado; primero el descriptor, después la descripción, después la señal. `TERM` por omisión y `KILL` sólo con `forzar`, comprobado con una shell que ignora `TERM` de línea base. Se niegan PID 1, la propia sesión, el `0` y los negativos. `memoria` mantiene `libre` y `disponible` separados. Etapa 31. Ver [[Procesos]] |
 | Búsqueda por nombre y por contenido | `crates/thalyx-files/src/search.rs`, `thalyx-cli/src/search.rs` | `encontrar <patrón>` camina el árbol y compara contra el **nombre**, `contenido <texto>` lee y compara **literalmente**. Techo de 20 000 archivos revisado al caminar, binarios y archivos de más de 4 MiB contados aparte de lo ilegible, renglones largos cortados y avisados, y las banderas sólo adelante para que el sujeto sea el resto del renglón sin inventar comillas. Etapa 30 con `find(1)` y `sed(1)` de controles. Ver [[Busqueda]] |
 | Editor de pantalla | `crates/thalyx-edit/src/screen.rs` y `thalyx-cli/src/edit.rs` | Aritmética de cursor y viewport pura, dibujado en el CLI. `Ctrl-O` guarda, `Ctrl-X` sale, `Ctrl-U` deshace, `Ctrl-K` corta |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go. Importaciones **y declaraciones**; identificadores fuera de comentarios y cadenas |
@@ -190,7 +191,7 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-Más de 1 250 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+Más de 1 290 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 

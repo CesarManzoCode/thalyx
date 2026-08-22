@@ -559,7 +559,28 @@ pub fn answer(op: &str, carried: Vec<(&'static str, Value)>) -> String {
     object(op, true, true, fields(carried))
 }
 
-/// The same, for something that did not work and is not a [`FileError`].
+/// Something that did not work, from a part of the system with its own errors.
+///
+/// The general form of [`failure`], which only knows [`FileError`]. It exists
+/// because [`declined`] has nowhere to put a remedy, and the two verbs of
+/// `search` shipped for a day answering `remedy: null` — punto **A2** lost
+/// quietly, in the one field that tells a caller what to do next. A second
+/// crate needing this is what turned that into a shape rather than a patch.
+pub fn refused(op: &str, word: &str, remedy: &str, message: &str) -> String {
+    object(
+        op,
+        false,
+        true,
+        fields([
+            ("error", json!(word)),
+            ("remedy", json!(remedy)),
+            ("message", json!(message)),
+        ]),
+    )
+}
+
+/// The same, for something that did not work, has no remedy to offer, and is
+/// not a [`FileError`].
 pub fn declined(op: &str, word: &str, message: &str) -> String {
     object(
         op,

@@ -27,6 +27,7 @@ thalyx-memory.workspace = true
 thalyx-watch.workspace = true
 thalyx-snapshot.workspace = true
 thalyx-files.workspace = true
+thalyx-proc.workspace = true
 thalyx-term.workspace = true
 thalyx-edit.workspace = true
 thalyx-contract.workspace = true

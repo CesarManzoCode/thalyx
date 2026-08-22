@@ -113,7 +113,7 @@ pub fn in_contents(here: &Where, rest: &str, face: Face) -> Fallible {
     };
 
     let rows: Vec<&Hit> = found.rows.iter().collect();
-    let page = match thalyx_files::window::page(rows, |row| hit_key(row), &asked.window) {
+    let page = match thalyx_files::window::page(rows, hit_key, &asked.window) {
         Ok(page) => page,
         Err(why) => {
             declined(face, op, "unordered", &why.to_string());
@@ -163,7 +163,11 @@ pub fn in_contents(here: &Where, rest: &str, face: Face) -> Fallible {
 }
 
 /// What a cursor into a list of hits names. See `search::hit_key`.
-fn hit_key(row: &Hit) -> Vec<u8> {
+///
+/// Takes a double reference because the rows being paged are borrowed from the
+/// answer rather than moved out of it — the window is generic over the row and
+/// a page of `&Hit` is what avoids copying every line twice.
+fn hit_key(row: &&Hit) -> Vec<u8> {
     thalyx_files::search::hit_key(row)
 }
 

@@ -248,6 +248,7 @@ crates/
   thalyx-files/     the file verbs and the tree search, for both faces
   thalyx-term/      a terminal that is a terminal: line editing, history
   thalyx-edit/      changing text in a file, for a screen and for a program
+  thalyx-proc/      what runs, what memory is left, and stopping one
   thalyx-syscall/   the only crate where `unsafe` is permitted
 
 lsm/      BPF LSM programs: enforcement, and the filesystem watcher

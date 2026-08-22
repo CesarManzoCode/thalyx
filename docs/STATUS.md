@@ -37,7 +37,7 @@ object, so a command that touched three files is still one answer. `structured
 off` brings the sentences back, and the acknowledgement carries those words for
 anyone who turned it on by accident.
 
-**The machine also describes itself.** `describe` answers with all 36 verbs —
+**The machine also describes itself.** `describe` answers with all 39 verbs —
 names, arguments, flags, which `op` each answers with, whether it can change
 anything, and the errors it can give. Nothing on Linux can do that: `--help` is
 prose, written once per tool, inconsistent between any two, and often absent.
@@ -64,6 +64,18 @@ total and a cursor, refuse a tree of more than 20,000 files rather than making
 somebody wait for an answer that never comes, skip binaries instead of spraying
 them at a terminal that has no second window to recover in, and report what they
 could not read rather than counting it as nothing found.
+
+**And the machine answers about itself as a machine.** `procesos` lists what is
+running with its number, its state, its parent and what it actually occupies;
+`memoria` says how much there is and — separately, and named — how much something
+new could actually get, because a healthy Linux keeps `free` near zero on purpose
+and a person shown only that number starts killing things. `matar 4711` asks one
+process to stop and `matar 4711 forzar` makes it. The signal goes through a
+pidfd, so it reaches the process that number named when it was read and never one
+that inherited the number since — the race every tool taking a pid on its command
+line lives with. PID 1 and the session itself are refused, each naming the verb
+that does that job properly, and `ensayo matar 4711` prints exactly which process
+that number is, with its whole command line, and sends nothing.
 
 **And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
 would go and touches nothing, built so the rehearsal *is* the check half of the

@@ -1128,6 +1128,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  those two read the tree, so they answer about anything,");
             println!("  and `buscar` reads the index, so it answers better where");
             println!("  it can. Both take `en=<carpeta>`, and it goes first.");
+            println!("  `procesos` says what is running with its number, `memoria`");
+            println!("  how much is left, and `matar <numero>` asks one to stop —");
+            println!("  `matar <numero> forzar` does not ask. `ensayo matar` says");
+            println!("  which process that number is and sends nothing, which is");
+            println!("  worth doing, because this one cannot be taken back.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1154,6 +1159,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
+            println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1416,6 +1422,26 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "contenido" | "grep" => {
                 crate::search::in_contents(&here, "", face)?;
+            }
+            // Point 7, over /proc. `matar` goes through a pidfd, so the signal
+            // reaches the process the number named at the moment it was read
+            // and never one that inherited the number since.
+            _ if starts_any(line, &["procesos ", "ps "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::proc::running(rest, face)?;
+            }
+            "procesos" | "ps" => {
+                crate::proc::running("", face)?;
+            }
+            "memoria" | "free" => {
+                crate::proc::memory(face)?;
+            }
+            _ if starts_any(line, &["matar ", "stop ", "kill "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::proc::stop(rest, face)?;
+            }
+            "matar" | "stop" | "kill" => {
+                crate::proc::stop("", face)?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

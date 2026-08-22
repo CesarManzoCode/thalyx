@@ -134,8 +134,18 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       ahora, y los dos nuevos son los que una persona compara contra el índice.
       Etapa 30 de `verify.sh`, con `find(1)` y `sed(1)` de controles. Ver
       [[Busqueda]].
-- [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
-      va sobre `/proc`.
+- [x] **7. Procesos** — hecho el 2026-08-23. `procesos [patrón]`, `memoria` y
+      `matar <numero> [forzar]`, todo sobre `/proc`. `matar` manda la señal por
+      un **pidfd**, así que no puede caer en un número reciclado: llega al
+      proceso para el que se abrió el descriptor o falla, y no hay tercer
+      resultado. Por omisión `TERM` —que un programa puede atrapar para guardar
+      lo que tenía— y `forzar` manda `KILL`. Se niegan PID 1 y la propia sesión,
+      cada uno nombrando el verbo que hace ese trabajo bien (`apagar`, `salir`),
+      y también el `0` y los negativos, que para `kill(2)` son *todo* y un
+      *grupo*. `ensayo matar` es el ensayo que más importa, porque un proceso no
+      se puede volver a escribir. `memoria` mantiene `libre` y `disponible`
+      separados y nombra cuál contesta la pregunta. Etapa 31 de `verify.sh`, con
+      línea base y controles. Ver [[Procesos]].
 - [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
       red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
       necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva

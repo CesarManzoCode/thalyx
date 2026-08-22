@@ -928,6 +928,7 @@ dependencies = [
  "thalyx-manifest",
  "thalyx-memory",
  "thalyx-permd",
+ "thalyx-proc",
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",
@@ -1067,6 +1068,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thalyx-manifest",
+ "thalyx-syscall",
+ "thiserror",
+]
+
+[[package]]
+name = "thalyx-proc"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "thalyx-syscall",
  "thiserror",
 ]

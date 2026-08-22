@@ -3262,6 +3262,35 @@ Lo que **no** se hizo, y era la tentación: dar por buena la prueba porque «la
 lógica es obvia». Instalar un módulo que no se podía ejecutar también era obvio
 durante semanas.
 
+## `kill -0` contesta si el número existe, no si el proceso corre — 2026-08-23
+
+Decimotercera vez que el instrumento miente, y otra vez era el arnés.
+
+La etapa 31 comprueba que `matar … forzar` detiene una shell que ignora `TERM`.
+Reportó que no la había detenido. La shell estaba muerta desde el primer
+intento: **era un zombi**, y `kill -0` sobre un zombi contesta que sí, porque el
+número sigue existiendo aunque el proceso ya corrió su última instrucción.
+
+Por qué apareció ahora y no antes: la etapa arranca sus procesos en una subshell
+para que bash no imprima `Killed` en medio del reporte, y eso los deja
+huérfanos. En la máquina de Cesar systemd los cosecha de inmediato y las dos
+preguntas se ven iguales. En este contenedor **PID 1 es `process_api`, que no
+cosecha huérfanos**, así que el zombi se queda para siempre.
+
+La regla: **`kill -0` responde una pregunta sobre el número, no sobre el
+proceso.** Para «¿sigue corriendo?» hay que leer el estado en
+`/proc/<pid>/stat` y contar `Z` como detenido. Y la forma general, que ya lleva
+trece instancias: una diferencia entre dos máquinas que no tiene nada que ver
+con lo que se está probando es del arnés, y hay que buscarla ahí antes de creerle
+al veredicto.
+
+**El corolario del control:** ese lector de estado tiene que tomar el campo
+después del **último** `)`, exactamente como el parser que está comprobando —
+porque un control que malinterpreta el formato no puede comprobar un parser de
+ese formato. Un control escrito con la versión ingenua habría dicho que el
+estado de `we (ird) x` es `(ird)` y habría contado como «no corriendo» a un
+proceso vivo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

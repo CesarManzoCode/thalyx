@@ -20,6 +20,7 @@ mod index;
 mod init;
 mod install;
 mod memory;
+mod proc;
 mod render;
 mod restore;
 mod run;
