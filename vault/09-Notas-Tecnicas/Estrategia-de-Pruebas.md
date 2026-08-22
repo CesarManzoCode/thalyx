@@ -3193,6 +3193,31 @@ el código, caso por caso, antes de creerle.** Y una aserción sobre una salida 
 más de un resultado ordinario tiene que aceptar los dos, o nombrar cuál exige y
 por qué.
 
+## Un marcador que baja no dice qué dejó de correr — 2026-08-23
+
+La sexta corrida en hierro contó **134 probadas** donde la del 2026-08-10 había
+contado 143, y la reacción inmediata —la equivocada— fue buscar una regresión.
+No había ninguna. El reporte ya decía lo que faltaba, en el bloque que se lee
+después del número:
+
+```
+  · no kernel or image built yet, so there is nothing to boot; run 'make -C image'
+```
+
+Era la etapa 16 entera, trece comprobaciones contraídas a un solo `NOT PROVEN`
+porque `image/build/` estaba vacío en esa máquina. Nada se había roto; nada se
+había arrancado.
+
+La regla: **el marcador y las líneas de `NOT PROVEN` son un solo resultado.**
+Un conteo que baja no es una regresión hasta que se sabe qué dejó de correr, y
+lo que dejó de correr no se deduce del número — se lee en la lista que el
+script imprime debajo, que existe exactamente para eso.
+
+El corolario para quien pide la corrida: **pedir la cola del reporte es pedir
+la mitad del resultado.** `sudo ./dev/verify.sh 2>&1 | tail -40` alcanza para el
+resumen; el diagnóstico de por qué un conteo cambió necesita la corrida
+completa, y cuesta lo mismo guardarla con `tee` que perderla.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-21
+fecha-actualizacion: 2026-08-23
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -13,6 +13,57 @@ tags: [continuidad, punto-actual, sesiones]
 > conversación, esa conversación se pierde y el conocimiento con ella.
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
+
+> ## Verde en hierro, y las diez comprobaciones que faltaban eran el arranque — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar volvió a correr `verify.sh` con la precondición arreglada:
+> **134 probadas, 2 no probadas, 0 fallas.** La sexta corrida en hierro, y la
+> primera sin ninguna falla.
+>
+> ### La rama con watcher se ejerció por primera vez
+>
+> La etapa 27 imprimió *«the mutation ring was mapped and read: 4 record(s)
+> named thalyx-ringmark, and a second read had none of them left»*. Es la etapa
+> completa: el anillo mapeado, los registros leídos, y la segunda lectura vacía
+> —que es la mitad que prueba que leer consume—. Y la suite pasó, o sea que
+> `what_the_kernel_saw.rs` corrió su rama de watcher cargado sin haberse podido
+> ejecutar nunca aquí.
+>
+> ### Las diez comprobaciones que faltaban, contestadas por el reporte mismo
+>
+> El bloque anterior dejó abierto por qué esta corrida traía menos
+> comprobaciones que la del 2026-08-10, y pedía el resumen completo antes de
+> afirmar nada. Con el resumen, la respuesta está en la segunda línea de lo que
+> la corrida no pudo establecer:
+>
+> ```
+>   · no kernel or image built yet, so there is nothing to boot; run 'make -C image'
+> ```
+>
+> **Lo que faltó es la etapa 16 entera —arrancar la máquina en QEMU—**, que en
+> esa máquina no tenía qué arrancar porque `image/build/` está vacío;
+> `image/build/` no está en el repositorio, así que se pierde con cualquier
+> limpieza y `git pull` no lo trae de vuelta.
+>
+> Y cuadra por conteo, que es la forma comprobable de decirlo: la etapa 16 tiene
+> **trece comprobaciones**, y aquí se contrajeron a **un solo NOT PROVEN**.
+> 136 − 1 + 13 = 148, menos la etapa 29 que el 2026-08-10 no existía = 147 …
+> contra las **146** que contó aquella corrida. Una de diferencia, que es el
+> tamaño de un `if`/`else` de esa etapa. La dirección no admite otra lectura: no
+> se perdió nada, no se arrancó nada.
+>
+> Para recuperarlas, `make -C image` y luego el disco de store. **No es urgente**
+> — no hay nada nuevo que sólo el arranque compruebe desde el 2026-08-07 — pero
+> mientras `image/build/` esté vacío el reporte va a seguir diciendo 134.
+>
+> ### Regla nueva
+>
+> Un conteo que baja no es una regresión hasta que se sabe *qué* dejó de
+> correr, y el reporte ya lo decía: **las líneas de NOT PROVEN son parte del
+> resultado, no una nota al pie.** Leer sólo el marcador es leer la mitad. En
+> [[Estrategia-de-Pruebas]].
 
 > ## La corrida en hierro: el anillo funciona, y la prueba era la equivocada — 2026-08-23
 >
