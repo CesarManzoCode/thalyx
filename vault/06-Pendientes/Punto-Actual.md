@@ -14,6 +14,38 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## `proven 159 · not proven 1 · failed 0` — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **Cero fallos, y por primera vez con un modelo de verdad.** La corrida de Cesar
+> cierra todo lo que este día abrió:
+>
+> - la terminal usable está en **9 de 9**;
+> - el kernel construye con las ocho opciones de red nuevas y `red` coincide con
+>   `iproute2` en su máquina;
+> - las cuatro afirmaciones que sólo un modelo real puede contestar —que este
+>   build de llama.cpp acepta las banderas que Thalyx le pasa, que una inferencia
+>   real vuelve como algo que el parser acepta, y que `--grammar-file` restringe
+>   en vez de ser ignorada— **quedaron probadas**, después de meses reportándose
+>   como `NOT PROVEN`.
+>
+> Lo único que queda es **la única cosa que no es una comprobación sino una
+> medición**: `thalyx agent bench`, que no corre sola porque tarda minutos.
+>
+> ```
+> sudo THALYX_AGENT_BENCH=1 \
+>      THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Eso da **la primera tabla de acierto por gama que ha existido** y es la entrada
+> a la pregunta de abstención cero de [[Gamas-de-Modelo]], que lleva meses parada
+> por no tener con qué medirla.
+>
+> **Falta que Cesar decida si se corre ahora.** Nada más está bloqueado.
+
 > ## Corregido: una interfaz abajo no tiene una sola respuesta — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

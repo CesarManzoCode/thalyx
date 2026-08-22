@@ -225,11 +225,11 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-Más de 1 290 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+Más de 1 340 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay siete variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS`, `_AGENT_TESTS`, `_IMAGE_TESTS` y `_UNREADABLE_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. La séptima es de una clase nueva: no salta por lo que a la máquina le falta sino por **quién está corriendo** — como root, quitarle todos los permisos a un archivo no impide leerlo, así que la prueba de la regla 10 no tendría cómo fallar. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay **diecinueve** variables distintas y cada una convierte en fallo los saltos de *su* requisito. La séptima es de una clase nueva: no salta por lo que a la máquina le falta sino por **quién está corriendo** — como root, quitarle todos los permisos a un archivo no impide leerlo, así que la prueba de la regla 10 no tendría cómo fallar. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
 `verify.sh` activa las cuatro primeras cuando la máquina las soporta. La de la
 imagen se pide a mano —`THALYX_REQUIRE_IMAGE_TESTS=1`— porque exige un kernel y
