@@ -442,6 +442,9 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # namespace can hide it and a demanded check that cannot be made is a failure
 # for the wrong reason.
 [ "$(cat /proc/2/comm 2>/dev/null)" = kthreadd ] && SUITE_ENV+=(THALYX_REQUIRE_KERNEL_THREAD_TESTS=1)
+# This script runs as root, so mknod(2) works and the test that tells a device
+# node apart from the partition behind it has no excuse to skip.
+SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 
 echo "   ${SUITE_ENV[*]}"
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then

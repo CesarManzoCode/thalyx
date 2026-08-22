@@ -41,7 +41,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Escritura de un Btrfs vacío | `crates/thalyx-btrfs` | Ocho árboles, tres chunks y los superbloques, sin `mkfs.btrfs`; los tres subvolúmenes por ioctl |
 | Tabla de particiones GPT | `crates/thalyx-install/gpt.rs` | Una tabla de dos particiones con sus dos copias, sin `sgdisk` |
 | Sistema de archivos FAT32 | `crates/thalyx-install/fat.rs` | Un volumen con un archivo en `\EFI\BOOT\BOOTX64.EFI`, sin `mkfs.vfat`. No lee |
-| El instalador | `crates/thalyx-install` y `thalyx install` | Particiona, escribe el arranque y hace el store en un acto. **El arranque del disco instalado no lo ha ejercido nadie** |
+| El instalador | `crates/thalyx-install` y `thalyx install` | Particiona, escribe el arranque y hace el store en un acto. Las particiones se reciben **ya abiertas** y se sostienen abiertas hasta el final: cerrar el disco entero hace que el kernel lo reexamine por su cuenta, y ese segundo barrido borra y rehace cada partición — abrir un nodo dentro de esa ventana da `ENXIO`. **El arranque del disco instalado no lo ha ejercido nadie** |
 | Controladores de una PC de verdad | `image/thalyx.config` | Framebuffer, teclado USB y PS/2, NVMe y AHCI, y `console=tty0`. **Ninguna de esas opciones se ha compilado ni arrancado** |
 | Lectura de FAT32 y hallazgo del medio | `crates/thalyx-install/medium.rs` | Saca el kernel del medio del que se arrancó, sin montar nada. El medio es el volumen FAT32 etiquetado `THALYX`: la ruta `\EFI\BOOT\BOOTX64.EFI` sola la tiene también la ESP de cualquier PC |
 | El store por etiqueta | `crates/thalyx-cli/store_disk.rs` | Lo que decretaba el 2026-08-06 y no existía; con `thalyx disk find` para preguntarlo sin ser PID 1 |

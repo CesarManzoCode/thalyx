@@ -14,9 +14,54 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## `matar` ya no dice que detuvo lo que no se puede detener — 2026-08-23
+> ## Instalar dos veces sobre el mismo disco — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Cesar del 2026-08-23 trajo `proven 137 · not proven 2 · failed 1`.
+> El que falló: **instalar dos veces no funcionaba**, con
+> `opening /dev/loop0p1: No such device or address`.
+>
+> `instalar-en` escribe la tabla, le pide al kernel que la relea, y espera a que
+> aparezcan las particiones antes de escribir dentro de ellas. La espera
+> preguntaba **si existía el nodo**. La primera instalación no tiene nodos, así
+> que la espera espera; la segunda los tiene de la tabla anterior, así que la
+> condición ya estaba cumplida antes de empezar y la espera terminó sin haber
+> esperado.
+>
+> Y hay algo que esperar de verdad: **cerrar el descriptor que tenía el disco
+> entero abierto para escritura hace que el kernel lo reexamine por su cuenta**,
+> en su propio tiempo. Ese segundo barrido borra cada partición y la vuelve a
+> hacer, y un nodo abierto dentro de esa ventana da `ENXIO` — *No such device or
+> address*, para un nombre que está ahí en `/dev`.
+>
+> Dos cambios, y el segundo es el que cierra la ventana en vez de esquivarla:
+>
+> 1. la espera **abre** la partición en vez de preguntar si el nombre existe;
+> 2. las particiones se devuelven **ya abiertas** y se sostienen abiertas hasta el
+>    final. El kernel se niega a soltar las particiones de un disco mientras
+>    alguna esté abierta, así que el segundo barrido encuentra el disco ocupado y
+>    lo deja en paz.
+>
+> **Lo que está probado y lo que no.** Que `stat` y abrir contestan cosas distintas
+> quedó fijado con una prueba que hace `mknod` con un major que ningún driver
+> registró: el nombre existe y abrirlo da `ENXIO`, el mismo errno de tu corrida.
+> Que montar funciona con un descriptor abierto encima también se comprobó
+> corriéndolo. **Que sostener la partición bloquea el segundo barrido no se puede
+> comprobar en este contenedor**, que no sabe hacer particiones sobre un loop. Eso
+> lo dice tu máquina:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo ./dev/verify.sh
+> ```
+>
+> La regla que lo habría atrapado está en [[Estrategia-de-Pruebas]]: **una
+> condición de espera tiene que ser falsa al principio.** Si la puede satisfacer lo
+> que quedó de la vez pasada, no está esperando a nada — y el caso que la deja
+> pre-satisfecha es justamente el que nadie prueba, porque es el segundo.
+>
+> ## `matar` ya no dice que detuvo lo que no se puede detener — 2026-08-23
 >
 > Lo encontró Cesar en su primera sesión con el punto 7: ensayó `matar` sobre un
 > `kworker` y Thalyx contestó *«5 would ask to stop»*. A un hilo del kernel no le

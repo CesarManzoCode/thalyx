@@ -3323,6 +3323,36 @@ estaría cuidando algo que no hace falta cuidar.
 que traer cuál. `already_ended` contesta `stop_the_parent`, y quien lo recibe sin
 el número del padre recibió una instrucción que no puede seguir.
 
+## Una espera que la corrida anterior deja satisfecha no es una espera — 2026-08-23
+
+`instalar-en` escribe la tabla de particiones, le pide al kernel que la relea y
+**espera** a que aparezcan las particiones antes de escribir dentro de ellas. La
+espera preguntaba si existía `/dev/loop0p1`.
+
+Instalar por primera vez: no hay nodos, hay que crearlos, la espera espera de
+verdad. **Instalar por segunda vez sobre el mismo disco: los nodos de la tabla
+anterior siguen ahí**, la condición está cumplida antes de que empiece nada, y la
+espera termina sin haber esperado. El instalador siguió adelante y murió en
+`opening /dev/loop0p1: No such device or address`.
+
+La regla: **una condición de espera tiene que ser falsa al principio.** Si la
+puede satisfacer lo que quedó de la vez pasada, no está esperando a nada — y el
+caso que la deja pre-satisfecha es justamente el que nadie prueba, porque es el
+segundo.
+
+**Y el corolario, que es el reverso de la regla 10:** una falla al leer no es una
+falla al existir, y *existir* no es *estar*. `stat(2)` contesta por el nombre y
+tiene éxito sobre un nodo cuya partición el kernel ya borró; sólo abrirlo
+contesta por el dispositivo. La prueba que ahora lo fija hace un `mknod` con un
+major que ningún driver de esta máquina registró —leído de `/proc/devices`, no
+escogido a mano— y comprueba las dos mitades: el nombre existe y abrirlo da
+`ENXIO`.
+
+**Lo que sí funcionó:** la etapa lo encontró. Instalar dos veces es una
+comprobación que existe porque una instalación interrumpida por un apagón tiene
+que poder terminarse, y esa etapa es la única razón por la que esto se supo antes
+de que le pasara a alguien con un disco de verdad.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
