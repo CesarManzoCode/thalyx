@@ -14,6 +14,44 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La imagen está construida, y el modelo sí corrió — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar construyó la imagen en su máquina. La corrida pasó de `139 · 2 · 0` a
+> **`152 · 1 · 0`**: son las trece comprobaciones de la etapa 16, que arranca la
+> imagen en QEMU y le habla, y que llevaban meses fuera del reporte por no haber
+> kernel construido. **Con eso el punto 8 —la red— queda desbloqueado**, porque se
+> prueba con `make -C image run-hardware`, que necesita justamente esa imagen.
+>
+> El NOT PROVEN que quedó **no era suyo, era del instrumento.** Corrió
+> `thalyx agent model check` y el modelo contestó de verdad —una inferencia
+> parseada, 7.28 s, 4.77 GB de pico— y la etapa siguió diciendo *«no real model
+> has run: llama-completion is not installed»*. Las dos cosas ciertas a la vez:
+> el `check` lo corrió él con su `PATH`, y la etapa corre bajo `sudo`, que tira el
+> `PATH` y usa `secure_path`. Regla nueva en [[Estrategia-de-Pruebas]], la quince.
+>
+> Arreglado: la etapa busca el binario también en el `PATH` de `$SUDO_USER` y,
+> cuando lo encuentra, **dice dónde está y qué escribir** para que la corrida lo
+> vea. Las dos mitades del hueco se reportan por separado, y la de los pesos
+> distingue «no la nombraste» de «nombraste un archivo que no está» — y en el
+> primer caso dice que `sudo` no lleva el entorno.
+>
+> Comprobado corriendo los cuatro caminos, no leyéndolos. El segundo destapó un
+> defecto del arreglo mismo: una cuenta con `nologin` imprime una frase en inglés
+> y la primera versión la ofreció como si fuera la ruta del binario.
+>
+> **Lo que falta correr:**
+>
+> ```
+> git pull
+> sudo THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Si aun así dice NOT PROVEN, ahora la línea trae la ruta exacta que falta poner
+> en `THALYX_AGENT_BINARY`.
+
 > ## Punto 9: hay citado y no hay lenguaje — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
