@@ -655,20 +655,28 @@ fn targets(here: &Where, word: &crate::words::Word) -> Vec<PathBuf> {
     }
 }
 
-fn report(done: &thalyx_files::Done) {
-    match (done.what, &done.to) {
-        (thalyx_files::Did::Removed, _) => println!("  removed {}", done.path.display()),
-        (what, Some(to)) => println!(
-            "  {} {} -> {}",
-            what.word().replace('_', " "),
-            done.path.display(),
-            to.display()
-        ),
-        (what, None) => println!(
-            "  {} {}",
-            what.word().replace('_', " "),
-            done.path.display()
-        ),
+/// Whether these outcomes happened or were only foreseen.
+///
+/// The machine face does not need this — its `op` already says `rehearse`, and
+/// that is how a program tells the two apart. The human face has nothing but
+/// the sentence, and `ensayo rm notas.txt` answered `removed …` for a file that
+/// is still there.
+#[derive(Clone, Copy, PartialEq)]
+enum Tense {
+    Happened,
+    Foreseen,
+}
+
+fn report(done: &thalyx_files::Done, tense: Tense) {
+    // One fact, one sentence, two tenses. The alternative — a second printer for
+    // rehearsals — is the second version of events this module exists to avoid.
+    let verb = match tense {
+        Tense::Happened => done.what.word().replace('_', " "),
+        Tense::Foreseen => done.what.would().to_string(),
+    };
+    match &done.to {
+        Some(to) => println!("  {verb} {} -> {}", done.path.display(), to.display()),
+        None => println!("  {verb} {}", done.path.display()),
     }
 }
 
@@ -680,7 +688,7 @@ fn report(done: &thalyx_files::Done) {
 /// different runs of the same command.
 type Outcomes = Vec<Result<thalyx_files::Done, FileError>>;
 
-fn speak(face: Face, op: &str, outcomes: &Outcomes) {
+fn speak(face: Face, op: &str, outcomes: &Outcomes, tense: Tense) {
     if face.machine() {
         let results = outcomes
             .iter()
@@ -696,7 +704,7 @@ fn speak(face: Face, op: &str, outcomes: &Outcomes) {
     println!();
     for outcome in outcomes {
         match outcome {
-            Ok(done) => report(done),
+            Ok(done) => report(done, tense),
             Err(error) => println!("  {error}"),
         }
     }
@@ -875,7 +883,7 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
         }
     };
 
-    speak(face, "rehearse", &outcomes);
+    speak(face, "rehearse", &outcomes, Tense::Foreseen);
     Ok(())
 }
 
@@ -920,7 +928,7 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
         })
         .collect();
 
-    speak(face, op, &outcomes);
+    speak(face, op, &outcomes, Tense::Happened);
     Ok(())
 }
 
@@ -949,7 +957,7 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
         thalyx_files::copy(&from, &to)
     };
 
-    speak(face, op, &vec![outcome]);
+    speak(face, op, &vec![outcome], Tense::Happened);
     Ok(())
 }
 
@@ -988,7 +996,7 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
         .iter()
         .map(|path| thalyx_files::remove(path))
         .collect();
-    speak(face, "remove", &outcomes);
+    speak(face, "remove", &outcomes, Tense::Happened);
     Ok(())
 }
 

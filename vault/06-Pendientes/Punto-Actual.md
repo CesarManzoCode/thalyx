@@ -14,6 +14,34 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Un ensayo ya no dice que borró nada — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió: se arregla. `ensayo rm notas.txt` imprimía
+> `removed /ruta/notas.txt` para un archivo que seguía ahí, y lo mismo `cp`, `mv`
+> y `mkdir`. Ahora dicen `would remove`, `would copy`, `would move` y
+> `would make the directory` — y el verbo de verdad sigue diciendo `removed`,
+> que es la mitad que hace que esto signifique algo.
+>
+> **Una sola frase, dos tiempos.** El tiempo verbal viaja como un dato desde
+> quien sabe si esto es un ensayo hasta quien imprime, y `Did::would()` vive
+> pegado a `Did::word()` para que no se pueda agregar un verbo nuevo con la
+> mitad. Un segundo impresor para los ensayos sería exactamente la segunda
+> versión de los hechos que este módulo existe para no tener.
+>
+> **Por qué nadie lo vio en meses:** la cara de máquina estaba bien todo el
+> tiempo — su `op` dice `rehearse`— así que las cuatro pruebas del ensayo, que
+> leen objetos, no podían verlo. Regla nueva en [[Estrategia-de-Pruebas]]: cuando
+> un hecho se dice en dos caras, una prueba que sólo lee una de ellas prueba una
+> de ellas.
+>
+> Prueba nueva y **etapa 34**, las dos comprobadas de las dos maneras: fallan con
+> el defecto puesto de vuelta y pasan sin él. 1322 pruebas, clippy limpio.
+>
+> **Lo que sigue es el punto 8, la red**, que Cesar también decidió. Es el último
+> de los nueve de la terminal usable.
+
 > ## La imagen está construida, y el modelo sí corrió — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

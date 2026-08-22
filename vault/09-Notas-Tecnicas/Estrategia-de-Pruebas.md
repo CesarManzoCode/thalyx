@@ -3406,6 +3406,29 @@ respuesta sea una ruta absoluta y ejecutable antes de creerle. **Un remedio
 inventado es peor que ningún remedio**: manda a alguien a teclear algo que no
 existe con la confianza de quien leyó una medición.
 
+## La cara de máquina correcta esconde una cara humana que miente — 2026-08-23
+
+`ensayo rm notas.txt` imprimía `removed /ruta/notas.txt` para un archivo que
+seguía ahí. Cuatro pruebas del ensayo y ninguna etapa de `verify.sh` lo vieron, y
+la razón es exacta: **la cara de máquina estaba bien todo el tiempo.** Su `op`
+dice `rehearse`, así que un programa siempre pudo distinguir las dos cosas, y una
+prueba que lee objetos no puede ver la frase que se le muestra a una persona.
+
+La regla: **cuando un hecho se dice en dos caras, una prueba que sólo lee una de
+ellas prueba una de ellas.** No es una prueba más débil, es una prueba de otra
+cosa — y la que faltaba era la de la cara que no se puede parsear, que es
+justamente donde una frase equivocada enseña algo falso sin que nadie lo note.
+
+Es de la misma familia que lo de `matar`: una respuesta que dice que algo pasó
+cuando no pasó. Y es peor que un error, porque quien la lee aprende a no creerle
+a la siguiente frase tampoco.
+
+La etapa 34 lee la frase, no el objeto, y trae las dos mitades de la regla 4: la
+línea base es el verbo de verdad, que **sigue** diciendo `removed` —sin eso, un
+impresor que dejó de funcionar se vería igual que un tiempo verbal corregido— y
+el control es el disco visto desde afuera, porque un ensayo que sólo suavizara la
+redacción mientras borra el archivo se leería idéntico en el log.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
