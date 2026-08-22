@@ -425,6 +425,27 @@ mezcla se resolvió a favor de no construir nada.
 
 ## Revisiones
 
+### 2026-08-23 — `describe` prometía prosa donde había un objeto
+
+`red` nació con sus dos caras y quedó declarado `answers: None` en el catálogo,
+así que **A1 estaba mintiendo sobre A1**. No es un detalle de datos: la
+declaración es lo que un programa lee *antes* de llamar, y un verbo declarado
+sólo-prosa es un verbo que no se llama. La lista de hardware de red existía y
+era inalcanzable para lo único para lo que se expuso.
+
+Lo que se corrigió, y lo que enseña, está en [[Estrategia-de-Pruebas]]: una
+afirmación que un sistema hace sobre sí mismo se comprueba corriéndolo, no
+leyendo los dos lados del código, porque el catálogo y el despacho son dos
+archivos y cada uno concuerda consigo mismo. La etapa 22 ahora corre los catorce
+verbos que aquí se pueden correr sin argumentos y compara el cable contra la
+promesa, en las dos direcciones.
+
+**Los que siguen sin segunda cara, y ahora la lista es exacta**: `disponibles`,
+`instalar`, `modulos`, `correr`, `permisos`, `revertir`, `nucleo`, `discos`,
+`instalar-en`, más `limpiar`, `salir` y `apagar`, que no tienen qué contestar.
+Los seis primeros son los verbos de módulos, y son el pendiente que
+[[Tareas-Pendientes]] nombra en el punto 4c.
+
 ### 2026-08-23 — Dos verbos que este catálogo no pidió, y por qué eso está bien
 
 `encontrar` y `contenido` no son puntos de este catálogo: salen del punto 6 de
