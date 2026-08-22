@@ -519,23 +519,32 @@ mod tests {
         assert_eq!(path, &missing);
     }
 
-    /// The one claim above that a fixture tree cannot make.
+    /// The one claim above that a fixture tree cannot make: that this reader
+    /// never turns a failed read into `Down`.
     ///
-    /// Every test in this file so far reads a directory this repository wrote,
-    /// and a missing file stands in for the `EINVAL` a live kernel returns. That
-    /// is rule 8 — the fake models the property — but it is not the property
-    /// itself: if some kernel started answering `carrier` with `0` on a down
-    /// interface, every one of them would still pass while `red` told people
-    /// their cable was unplugged.
+    /// Every other test in this file reads a directory this repository wrote,
+    /// where a missing file stands in for a kernel refusing the question. That
+    /// is rule 8 and it is not the property itself, so this one asks the machine
+    /// it is running on, and checks the mapping against a second reading of the
+    /// same files taken here rather than against a remembered answer.
     ///
-    /// So this one asks the machine it is running on. Rule 3: when there is no
-    /// interface to ask, it says so out loud, and
+    /// **What this deliberately does not claim.** The first version asserted
+    /// that a down interface always refuses the question, because that is what
+    /// the two interfaces on the machine it was written on did. It is not true:
+    /// on Cesar's Fedora a Docker bridge that is down answers `0` honestly, and
+    /// the assertion took down the whole suite. Whether the question is refused
+    /// belongs to the driver, not to being down — and the module never needed
+    /// that. What it needs is that a refusal is never reported as a missing
+    /// cable, which is a property of this code and is true on every machine.
+    ///
+    /// Rule 3: what this machine cannot show, it says out loud, and
     /// `THALYX_REQUIRE_REAL_SYSFS_TESTS=1` turns that into a failure.
     #[test]
-    fn on_this_machine_a_down_interface_refuses_the_carrier_question() {
-        let Ok(every) = every() else {
-            let gap = "NOT PROVEN: /sys/class/net could not be read here, so the \
-                       EINVAL that shapes Carrier::Unknown was not observed";
+    fn on_this_machine_every_carrier_answer_matches_the_file_it_came_from() {
+        let root = Path::new(SYS_CLASS_NET);
+        let Ok(every) = every_in(root) else {
+            let gap = "NOT PROVEN: /sys/class/net could not be read here, so no \
+                       carrier answer was checked against its file";
             assert_ne!(
                 std::env::var("THALYX_REQUIRE_REAL_SYSFS_TESTS").as_deref(),
                 Ok("1"),
@@ -545,44 +554,52 @@ mod tests {
             return;
         };
 
-        // A down interface is the one that produces it. `operstate` is read from
-        // a different file, so this is not the test inferring its own
-        // precondition from the thing it is about to check.
-        let down: Vec<&Interface> = every
-            .iter()
-            .filter(|interface| interface.state.as_deref() == Some("down"))
-            .collect();
+        assert!(
+            !every.is_empty(),
+            "this machine showed no interfaces at all, so nothing below was checked"
+        );
 
-        if down.is_empty() {
-            let gap = "NOT PROVEN: no interface on this machine is down, so there \
-                       was nothing to ask the carrier question of";
+        let mut refusals = 0;
+        for interface in &every {
+            // Read again, here, with no help from the module under test. This is
+            // the whole instrument: a second reading of the same file.
+            let raw = std::fs::read_to_string(root.join(&interface.name).join("carrier"));
+            let expected = match raw.as_deref().map(str::trim) {
+                Ok("1") => Carrier::Up,
+                Ok("0") => Carrier::Down,
+                // Anything the kernel refuses or writes that is not those two.
+                // A physical card that has never been brought up refuses with
+                // EINVAL; a software bridge with nothing attached answers 0.
+                // Both are ordinary, and only the first one is this branch.
+                _ => Carrier::Unknown,
+            };
+            if raw.is_err() {
+                refusals += 1;
+            }
+            assert_eq!(
+                interface.carrier,
+                expected,
+                "{} carries `{:?}` and its carrier file said {:?}",
+                interface.name,
+                interface.carrier,
+                raw.as_deref().map(str::trim),
+            );
+        }
+
+        // The half a machine may not be able to show. Without a refusal to
+        // observe, everything above passed on a machine where every file could
+        // be read, and the branch that matters was never taken.
+        if refusals == 0 {
+            let gap = "NOT PROVEN: every interface on this machine answered the \
+                       carrier question, so Carrier::Unknown was never produced \
+                       from a real refusal";
             assert_ne!(
-                std::env::var("THALYX_REQUIRE_REAL_SYSFS_TESTS").as_deref(),
+                std::env::var("THALYX_REQUIRE_REFUSED_CARRIER_TESTS").as_deref(),
                 Ok("1"),
                 "{gap}"
             );
             println!("{gap}");
-            return;
         }
-
-        for interface in &down {
-            assert_ne!(
-                interface.carrier,
-                Carrier::Down,
-                "{} is down and reported a missing cable; if this kernel really \
-                 answers 0 here rather than EINVAL, the distinction this module \
-                 is built on has changed",
-                interface.name
-            );
-        }
-
-        // The control, without which a reader that answered `Unknown` to
-        // everything would pass: something on this machine is readable.
-        assert!(
-            every.iter().any(|interface| interface.state.is_some()),
-            "nothing on this machine answered at all, so the check above is \
-             about a sysfs that is not there rather than about a down interface"
-        );
     }
 
     #[test]

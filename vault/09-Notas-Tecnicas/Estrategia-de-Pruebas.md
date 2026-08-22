@@ -3449,6 +3449,35 @@ con `THALYX_REQUIRE_REAL_SYSFS_TESTS` para que un salto sea un fallo, y la etapa
 35, que compara contra `iproute2` — netlink y no sysfs, que es la única manera de
 que el control no sea el mismo instrumento otra vez.
 
+## Dos máquinas, dos respuestas, y la segunda vez que lo hago — 2026-08-23
+
+La prueba nueva de `thalyx-net` afirmaba que **una interfaz abajo se niega a
+contestar si tiene cable**. Aquí es cierto: `ifb0` e `ifb1` dan `EINVAL`. En la
+Fedora de Cesar, un puente de Docker que está abajo contesta `0` con toda
+honestidad, y la prueba tumbó la suite entera y con ella su corrida.
+
+Negarse o contestar **es del driver, no de estar abajo**. Una tarjeta física que
+nunca se levantó se niega; un puente de software sin nada conectado contesta que
+no hay nada conectado, que es la verdad.
+
+Y el módulo nunca necesitó eso. Lo que necesita es que **una lectura fallida
+jamás se reporte como cable ausente**, que es una propiedad de este código y es
+cierta en toda máquina. La prueba ahora lee el mismo archivo por su cuenta y
+compara el mapeo; lo que la máquina no pueda enseñar —una negativa de verdad—
+sale como `NOT PROVEN` con su propia variable.
+
+La regla es la misma que la del `ENXIO` contra `EACCES`, y **es la segunda vez en
+dos días**: una prueba que fija la respuesta concreta de un kernel fija también
+la máquina donde se escribió. La diferencia es qué la produjo, y esa parte es
+nueva: la primera vez fue una opción de montaje; ésta fue **contar dos ejemplos y
+llamarlo la regla**. Dos interfaces de la misma clase, en la misma máquina, no
+son una muestra de nada.
+
+Lo que sí queda escrito: cuando una prueba tenga que afirmar cómo contesta el
+kernel, la pregunta correcta no es *«qué contestó aquí»* sino *«qué de esto es
+del código que estoy probando»*. Lo primero es un hecho sobre una máquina. Lo
+segundo es lo que la prueba existe para fijar.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
