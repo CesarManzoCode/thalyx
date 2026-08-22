@@ -815,6 +815,10 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .map(|path| thalyx_files::foresee_remove(path))
                 .collect()
         }
+        // The rehearsal that matters most, because it is the only one whose
+        // real form cannot be taken back. It answers with everything that would
+        // let somebody notice they typed the wrong four digits.
+        "stop" => return crate::proc::rehearse_stop(arguments, face),
         // `intento` is the one changing verb that already answers this, and it
         // answers it better than a rehearsal could: `intento` alone says what
         // abandoning would cost right now, and `intento abandonar` without the

@@ -330,6 +330,52 @@ pub const VERBS: &[Verb] = &[
         ],
         summary: "Lines holding this text, literally. Flags go first; the rest of the line is the text.",
     },
+    // Point 7. Three verbs over /proc, and `matar` is the second verb in this
+    // machine whose ordinary use destroys something — the first was `editar`,
+    // and unlike a file there is nothing to write back afterwards.
+    Verb {
+        id: "processes",
+        names: &["procesos", "ps"],
+        takes: &["name-pattern"],
+        flags: WINDOW_FLAGS,
+        answers: Some("processes"),
+        changes: false,
+        errors: &["unreadable", "bad_cursor"],
+        summary: "What is running, with its number, its state and what it occupies.",
+    },
+    Verb {
+        id: "memory",
+        // `free` and not `memory`: `recuerdos` already answers to that word,
+        // and it is the agent's memory rather than the machine's. `free` is
+        // also what a person coming from Linux would type, which is the naming
+        // rule Cesar set on 2026-08-09.
+        names: &["memoria", "free"],
+        takes: &[],
+        flags: &[],
+        answers: Some("memory"),
+        changes: false,
+        errors: &["unreadable"],
+        summary: "How much memory there is, and how much something new could get.",
+    },
+    Verb {
+        id: "stop",
+        names: &["matar", "stop", "kill"],
+        takes: &["pid", "forzar"],
+        flags: &[],
+        answers: Some("stop"),
+        changes: true,
+        errors: &[
+            "no_such_process",
+            "is_init",
+            "is_self",
+            "not_allowed",
+            "not_a_number",
+            "nothing_asked",
+            "one_at_a_time",
+            "unreadable",
+        ],
+        summary: "Ask one process to stop, or with `forzar` make it. Cannot be undone.",
+    },
     Verb {
         id: "history",
         names: &["historia", "history"],
@@ -655,6 +701,10 @@ mod tests {
                 "move",
                 "remove",
                 "edit",
+                // The one whose change cannot be taken back at all. Every
+                // other entry on this list either has a rollback or writes
+                // something that can be written again.
+                "stop",
                 "install",
                 "run",
                 "rollback",

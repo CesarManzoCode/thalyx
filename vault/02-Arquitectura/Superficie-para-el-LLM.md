@@ -302,7 +302,7 @@ arriba describe un sistema en el que hoy **Claude Code no arrancaría**.
 
 | | Qué falta |
 |---|---|
-| **G1** | Ejecutar procesos: lanzar, esperar, matar, ver la salida |
+| **G1** | Ejecutar procesos: **lanzar** y **esperar**. *Matar* y *ver qué corre* existen desde el 2026-08-23 — ver [[Procesos]] — y son la mitad que no necesitaba decidir nada sobre módulos firmados |
 | **G2** | Un runtime en el que un agente ajeno pueda correr |
 | **G3** | Red |
 | **G4** | Control de versiones, o la razón escrita de por qué no hace falta |
