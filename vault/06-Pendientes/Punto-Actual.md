@@ -14,6 +14,50 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La corrida en hierro: el anillo funciona, y la prueba era la equivocada — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `verify.sh`: **133 probadas, 2 no probadas, 1 falla.** La falla era
+> la etapa 5 —la suite— por dos pruebas de `what_the_kernel_saw.rs`.
+>
+> ### Thalyx estaba bien y la prueba estaba mal
+>
+> Las dos pruebas suponían **una máquina sin watcher**. Lo decía el encabezado del
+> archivo y lo decía el nombre de una de ellas, y ninguna de las dos lo
+> comprobaba. Era cierto durante meses porque este contenedor no puede cargar BPF,
+> así que la negativa era la única respuesta posible.
+>
+> En la máquina de Cesar el watcher **sí** estaba cargado — porque las
+> instrucciones de esa corrida le decían `make -C lsm load` antes de correr. Así
+> que `cambios` contestó correctamente y la prueba dijo que Thalyx se equivocaba.
+>
+> **Undécima instancia de la regla 5**, y la variante de «una prueba que infiere
+> su propia precondición». Arreglado: las dos preguntan si el pin existe en el
+> sistema de archivos —un hecho en el que `cambios` no participa— y **ninguna de
+> las dos ramas es un salto**, así que el archivo prueba algo dondequiera que
+> corra. Ver [[Estrategia-de-Pruebas]].
+>
+> ### Lo bueno, y estaba en la misma salida
+>
+> La corrida imprimió esto:
+>
+> ```
+>     created    by thalyx (41513), in cgroup 22518
+>     retitled   by thalyx (41510), in cgroup 22518
+> ```
+>
+> Son **registros reales drenados de un anillo real del kernel**, con su cgroup,
+> desde una sesión. El consumidor del ringbuf funciona en hierro. Lo que la
+> etapa 27 persigue está vivo.
+>
+> ### Lo que falta saber de esa corrida
+>
+> **133 probadas contra las 143 del 2026-08-10, y se agregó una etapa.** Diez
+> comprobaciones menos no se explican con la falla de la etapa 5, y con la cola
+> del reporte no alcanza para decir por qué. Hace falta el resumen completo —
+> las dos líneas de `not proven` y el bloque final— antes de afirmar nada.
+
 > ## El editor existe, con sus dos caras — 2026-08-22
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

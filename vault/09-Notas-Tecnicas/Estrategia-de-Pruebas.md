@@ -3142,6 +3142,57 @@ La regla general: **una prueba que ata una afirmación a un archivo tiene que
 comprobar también que alguien llega a ese archivo.** Sin la segunda mitad,
 mover el contenido a un lugar inalcanzable deja la prueba en verde.
 
+## Una prueba que nombra su precondición en el título sigue sin comprobarla — 2026-08-23
+
+**Undécima instancia de la regla 5, y la más incómoda: la prueba estaba mal y
+Thalyx estaba bien.**
+
+`what_the_kernel_saw.rs` empezaba diciendo de sí mismo *«driven from a real
+session on a machine with no watcher»*, y una de sus pruebas se llamaba
+`with_no_watcher_loaded_it_says_so_and_never_says_nothing_changed`. La
+precondición estaba escrita en el encabezado del archivo **y** en el nombre de la
+prueba, y en ningún lado estaba comprobada.
+
+Fue cierta durante meses porque el contenedor de desarrollo **no puede** cargar
+BPF: la negativa era la única respuesta que podía volver, así que la prueba pasó
+en cada commit sin que la suposición fuera falsa ni una vez.
+
+El 2026-08-23 Cesar corrió la suite en hierro con el watcher cargado — porque las
+instrucciones de esa corrida le decían que lo cargara. `cambios` contestó
+**correctamente**, con registros reales drenados de un anillo real del kernel, y
+las dos pruebas fallaron diciendo que Thalyx estaba equivocado.
+
+Tres cosas que sacar de ahí:
+
+1. **Un nombre no es una guarda.** `with_no_watcher_loaded_…` se lee como si
+   estableciera algo. No establece nada: es una etiqueta. Lo mismo vale para un
+   comentario de encabezado, que fue donde esta suposición vivió más tiempo.
+2. **Se le pregunta al kernel, no al verbo bajo prueba.** Ahora las dos preguntan
+   si el pin existe en el sistema de archivos, que es un hecho en el que
+   `cambios` no participa. Una prueba que le preguntara a `cambios` si el watcher
+   está cargado y luego comprobara `cambios` contra esa respuesta estaría de
+   acuerdo consigo misma en cualquier máquina, incluida una rota.
+3. **Ninguna de las dos ramas es un salto.** Las dos afirman algo real sobre la
+   misma oración, así que el archivo prueba algo dondequiera que corra: sin
+   watcher, que la negativa no se puede leer como respuesta vacía; con watcher,
+   que la respuesta nunca dice `not_loaded` y sí dice las tres cosas que un
+   anillo no puede dar. Un salto habría dejado la máquina de Cesar sin comprobar
+   nada, que es justo donde hay algo que comprobar.
+
+### Y la rama nueva casi repite el error
+
+Al escribir la rama del watcher cargado —que **no se puede ejecutar en el
+contenedor**— la primera versión afirmaba que la cara humana imprime «never which
+file». Leyendo el código apareció que con el watcher cargado y **la cola vacía**
+esa oración no se imprime: se imprime «this is not a history of the machine». La
+aserción habría fallado en una máquina tranquila, o sea por el humor de la
+máquina y no porque algo estuviera mal.
+
+La regla que sale de eso: **una rama que no se puede correr se comprueba contra
+el código, caso por caso, antes de creerle.** Y una aserción sobre una salida con
+más de un resultado ordinario tiene que aceptar los dos, o nombrar cuál exige y
+por qué.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
