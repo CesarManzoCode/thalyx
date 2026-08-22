@@ -10,6 +10,7 @@ mod attempt;
 mod catalogue;
 mod changes;
 mod dev;
+mod edit;
 mod enforce;
 mod files;
 mod graph;

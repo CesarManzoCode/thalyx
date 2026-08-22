@@ -920,6 +920,7 @@ dependencies = [
  "thalyx-btrfs",
  "thalyx-contract",
  "thalyx-core",
+ "thalyx-edit",
  "thalyx-files",
  "thalyx-graph",
  "thalyx-install",
@@ -970,6 +971,16 @@ dependencies = [
  "thalyx-syscall",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "thalyx-edit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thalyx-term",
+ "thiserror",
 ]
 
 [[package]]

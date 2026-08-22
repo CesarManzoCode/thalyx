@@ -19,6 +19,7 @@ members = [
     "crates/thalyx-snapshot",
     "crates/thalyx-files",
     "crates/thalyx-term",
+    "crates/thalyx-edit",
     "crates/thalyx-core",
     "crates/thalyx-cli",
     "modules/dev.thalyx.greeter",
@@ -50,6 +51,7 @@ thalyx-journal = { path = "crates/thalyx-journal" }
 thalyx-snapshot = { path = "crates/thalyx-snapshot" }
 thalyx-files = { path = "crates/thalyx-files" }
 thalyx-term = { path = "crates/thalyx-term" }
+thalyx-edit = { path = "crates/thalyx-edit" }
 thalyx-core = { path = "crates/thalyx-core" }
 
 serde = { version = "1", features = ["derive"] }

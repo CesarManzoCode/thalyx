@@ -193,6 +193,33 @@ pub const VERBS: &[Verb] = &[
         summary: "Delete. Inside /home this cannot be undone.",
     },
     Verb {
+        id: "edit",
+        names: &["editar", "edit"],
+        // The file first, then what to do to it. A caller reading this table
+        // learns that `editar <path>` alone is a legal line, which is the form
+        // that opens a screen and the one a program must not use.
+        takes: &["path", "ver|poner|cambiar|borrar", "line|line-line", "text"],
+        flags: &[],
+        answers: Some("edit"),
+        changes: true,
+        errors: &[
+            "absent",
+            "is_directory",
+            "not_text",
+            "too_large",
+            "no_such_line",
+            "backwards",
+            "malformed_address",
+            "unreadable",
+            "unwritable",
+            // The one a program is most likely to meet and the one it can do
+            // something about: it asked for the screen, and there is none.
+            "no_screen",
+            "unknown_action",
+        ],
+        summary: "Change the text in a file, by line for a program or on a screen for a person.",
+    },
+    Verb {
         id: "structured",
         names: &["structured", "estructurado"],
         takes: &["on|off"],
@@ -588,6 +615,7 @@ mod tests {
                 "copy",
                 "move",
                 "remove",
+                "edit",
                 "install",
                 "run",
                 "rollback",

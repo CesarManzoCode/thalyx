@@ -3047,6 +3047,101 @@ suite.
 La regla: **cuando dos lugares tienen que estar de acuerdo sobre qué archivos
 son, no hay dos lugares.** Una sola función, y las dos la llaman.
 
+## Una tecla que el kernel se come es una tecla que no existe — 2026-08-22
+
+Al construir el editor de pantalla ([[Editor-de-Texto]]) la elección obvia era
+`Ctrl-S` para guardar. Es la que todo el mundo espera y **no habría funcionado
+nunca**.
+
+El modo crudo de `thalyx-syscall` apaga `ICANON` y `ECHO` y deja encendidos
+`ISIG` e `IXON`, a propósito y con su comentario: `Ctrl-C` tiene que seguir
+funcionando en una máquina cuya única terminal es ésta. La consecuencia, que
+nadie había escrito, es que la disciplina de línea del kernel se queda con
+`Ctrl-C`, `Ctrl-Z`, `Ctrl-S` y `Ctrl-Q` **antes de que Thalyx vea un byte**. Y
+`Ctrl-S` no es que no haga nada: es XOFF, así que detiene la salida y la terminal
+queda aparentemente muerta.
+
+**Esto se encontró leyendo `termios`, no corriendo el editor**, y por eso vale la
+pena escribirlo: es la excepción a la regla 1 y la excepción tiene forma. Una
+propiedad del *entorno* —qué se traga el kernel, qué opciones de `mount` hay,
+qué señales llegan— se puede establecer preguntándole al entorno, y correr el
+programa sólo confirma lo que ya se sabía. Lo que no se puede establecer leyendo
+es qué hace el programa.
+
+La regla: **antes de enlazar una tecla, preguntarle a la disciplina de línea si
+va a llegar.** Y como eso es una decisión que se olvida, vive en una prueba —
+`the_keys_the_kernel_eats_are_not_bound_to_anything_here` falla si alguien alguna
+vez enlaza una de las cuatro.
+
+## Un pty sin tamaño de ventana no es una terminal — 2026-08-22, y es la décima
+
+La primera corrida de las pruebas del editor de pantalla **se colgó**. El
+diagnóstico completo, y las tres piezas importan:
+
+1. `thalyx dev pty` abre un pty y el kernel lo entrega **sin tamaño de
+   ventana**: `TIOCGWINSZ` contesta cero renglones.
+2. El editor le pregunta el tamaño a la terminal y, con cero, **se niega a
+   dibujar** — que es correcto y es lo que `terminal_size` documenta: cero
+   renglones no es una pantalla chica, es ninguna respuesta, y suponer 80x24
+   dibuja veinticuatro renglones sobre una pantalla de diez.
+3. Como se negó, las pulsaciones destinadas al editor se tecleraon en el prompt,
+   `salir` se lo comió una línea que decía `HOLA salir`, y la sesión se quedó
+   esperando un `EOF` que no iba a llegar.
+
+**Ni Thalyx ni la prueba estaban mal. El arnés estaba incompleto**, y es la
+décima instancia de la regla 5. El arreglo es donde tenía que ser: quien hace un
+pty dice de qué tamaño es (`set_terminal_size`, 24x80 fijo — un tamaño copiado de
+la ventana que alguien dejó abierta es una prueba que pasa en una máquina y no en
+la siguiente). **No** un valor por omisión dentro de `terminal_size`, que sería
+el programa adivinando su propia pantalla, que es justo lo que esa función se
+niega a hacer.
+
+Lo que hizo el diagnóstico barato en vez de caro fue el reloj: la prueba lleva su
+propio plazo y al vencerse **imprime lo que se había dibujado hasta entonces**.
+Ahí estaba la oración `there is no terminal here to draw an editor on`, que dice
+la respuesta entera. Es la misma lección de *[[Estrategia-de-Pruebas|una prueba
+que se cuelga tiene que decir dónde]]* cobrada por segunda vez, y la segunda vez
+costó un minuto en vez de una corrida.
+
+## Una confirmación que se traga la tecla que la contesta — 2026-08-22
+
+`Ctrl-X` sobre un archivo con cambios sin guardar pregunta antes de salir. La
+primera implementación leía la respuesta con un `read_key` **anidado** dentro de
+ese caso: si era otro `Ctrl-X`, salir; cualquier otra cosa, seguir.
+
+Con eso, `Ctrl-X` y luego `Ctrl-O` —que es exactamente lo que hace una persona a
+la que le preguntan si quiere guardar— **no guardaba nada**. El `Ctrl-O` se
+consumía como «no es `Ctrl-X`» y se tiraba, porque la lectura anidada no sabe qué
+significan las teclas; eso lo sabe el bucle.
+
+La forma correcta es una bandera, no una segunda lectura: **toda tecla pasa por
+el único bucle que sabe qué significan las teclas.** Un lector anidado en una
+rama es un segundo intérprete del teclado, y un segundo intérprete de cualquier
+cosa es el defecto que este proyecto ya pagó con `stdin` el 2026-08-09.
+
+Y la prueba que lo encontró no cuenta pulsaciones: afirma **lo que quedó en el
+disco**. Una que hubiera comprobado «el editor preguntó» habría pasado con el
+defecto puesto.
+
+## Un documento que se mueve se lleva la prueba que lo ata — 2026-08-22
+
+`both_readmes_name_every_package_the_doctor_asks_for` llevaba un día fallando en
+`main` y nadie lo había visto. La reescritura de la portada del 2026-08-21 movió
+la ruta de construcción de `README.md` a `docs/BOOT.md`; la prueba seguía
+afirmando sobre los READMEs y decía, con toda la razón, que el README nunca
+menciona `bc`.
+
+**La afirmación sobrevivió a la mudanza y el nombre del archivo no.** Eso es lo
+que hace que valga la pena: la prueba no estaba mal, estaba atada a la casa vieja
+de una verdad que se cambió de casa. Ahora afirma sobre el documento que sí
+enseña a construir, **y además que la portada apunte a él** — porque una ruta de
+construcción en un archivo al que nada apunta es una ruta que nadie encuentra,
+que es el mismo fallo un paso antes.
+
+La regla general: **una prueba que ata una afirmación a un archivo tiene que
+comprobar también que alguien llega a ese archivo.** Sin la segunda mitad,
+mover el contenido a un lugar inalcanzable deja la prueba en verde.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

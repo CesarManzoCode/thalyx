@@ -875,12 +875,20 @@ mod tests {
     }
 
     #[test]
-    fn both_readmes_name_every_package_the_doctor_asks_for() {
+    fn the_document_that_teaches_the_build_names_every_package_the_doctor_asks_for() {
         // The exit criterion is a person outside the project following **only**
-        // the README. If `doctor` grows a prerequisite and the README does not,
-        // that person installs an incomplete list, re-runs, and is sent round
-        // again — which is the one-at-a-time misery `doctor` exists to end,
-        // moved into the document instead of the build.
+        // the written instructions. If `doctor` grows a prerequisite and that
+        // document does not, the person installs an incomplete list, re-runs,
+        // and is sent round again — which is the one-at-a-time misery `doctor`
+        // exists to end, moved into the document instead of the build.
+        //
+        // The document is `docs/BOOT.md` and it used to be both READMEs. The
+        // rewrite of 2026-08-21 moved the build path out of the front page and
+        // this test kept asserting on the old home, so it failed on `main` for
+        // a day saying the README never mentions `bc` — which was true, correct,
+        // and no longer the question. **The claim survived the move; the file
+        // name in it did not**, which is the whole reason this is bound to a
+        // path rather than to a phrase.
         //
         // Read from the Makefile rather than hardcoded here, so this cannot
         // drift the same way. `libbpf-dev` is in the list because it was
@@ -896,17 +904,24 @@ mod tests {
              parser above has probably stopped matching the Makefile"
         );
 
-        for name in ["README.md", "README.es.md"] {
-            let text = readme(name);
-            for package in &wanted {
-                assert!(
-                    text.contains(package.as_str()),
-                    "{name} never mentions `{package}`, which `doctor` will ask \
-                     for — so somebody following only that file installs an \
-                     incomplete list"
-                );
-            }
+        let name = "docs/BOOT.md";
+        let text = readme(name);
+        for package in &wanted {
+            assert!(
+                text.contains(package.as_str()),
+                "{name} never mentions `{package}`, which `doctor` will ask \
+                 for — so somebody following only that file installs an \
+                 incomplete list"
+            );
         }
+
+        // And the front page must still lead there. A build path in a file
+        // nothing points at is a build path nobody finds, which is the same
+        // failure this test exists for one step earlier.
+        assert!(
+            readme("README.md").contains("docs/BOOT.md"),
+            "README.md no longer points at the document that carries the build"
+        );
     }
 
     #[test]

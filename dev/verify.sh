@@ -3931,6 +3931,85 @@ else
     failed "the control tree indexed $SMALL_COUNT files instead of 1: a hidden directory was read, or the ordinary one was not; see $WORK/index-small.log"
 fi
 
+step "29. a file's text can be changed, on a screen and by line"
+
+# Point 5 of the usable terminal. It is the first verb whose ordinary use
+# destroys what a file said before, so what this stage checks is not that an
+# edit happened — the unit tests do that — but the three things that only a real
+# machine can answer, each with the control that makes its result mean anything:
+#
+#   1. the bytes on disk are the ones asked for, read back with `cat` and not
+#      with Thalyx, because "it reported that it saved" and "the file changed"
+#      are two claims;
+#   2. a person at a real terminal can type into the screen and leave with the
+#      work written — driven through a pty, with real keystrokes;
+#   3. a file it refuses is byte-for-byte what it was, which is the control: an
+#      editor that refused everything would pass 1 and 2 and be useless, and one
+#      that mangled binaries would pass 1 and 2 and be dangerous.
+
+EDIT_STORE="$WORK/edit-store"
+EDIT_HOME="$WORK/edit-home"
+mkdir -p "$EDIT_STORE" "$EDIT_HOME"
+
+printf 'uno\ndos\ntres\n' > "$EDIT_HOME/notas.txt"
+printf '\177ELF\000\000\001\002' > "$EDIT_HOME/cosa.bin"
+BINARY_BEFORE=$(md5sum < "$EDIT_HOME/cosa.bin")
+
+printf '%s\n' "structured on" \
+    "editar $EDIT_HOME/notas.txt cambiar 2 DOS" \
+    "editar $EDIT_HOME/cosa.bin cambiar 1 texto" \
+    salir | \
+    THALYX_ROOT="$EDIT_STORE" "$THALYX" session > "$WORK/edit-lines.log" 2>&1
+
+BY_LINE=$(tr -d '\r' < "$EDIT_HOME/notas.txt")
+BINARY_AFTER=$(md5sum < "$EDIT_HOME/cosa.bin")
+REFUSED=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "edit" and not value.get("ok"):
+        print(value.get("error"))
+        break
+else:
+    print("none")
+' "$WORK/edit-lines.log")
+
+# The screen, through a real terminal. `thalyx dev pty` supplies one and sets a
+# window size on it — without that size the editor refuses to draw, correctly,
+# and this check could not be made at all.
+#
+#   \x0f is Ctrl-O (write) and \x18 is Ctrl-X (leave). Deliberately not Ctrl-S:
+#   raw mode leaves IXON on, so the line discipline would eat that one as XOFF
+#   and the terminal would appear to freeze.
+printf 'HOLA\n' > "$EDIT_HOME/pantalla.txt"
+printf "editar $EDIT_HOME/pantalla.txt\nADIOS \x0f\x18salir\n" | \
+    THALYX_ROOT="$EDIT_STORE" timeout 60 "$THALYX" dev pty -- "$THALYX" session \
+    > "$WORK/edit-screen.log" 2>&1
+ON_SCREEN=$(tr -d '\r' < "$EDIT_HOME/pantalla.txt")
+
+if [ "$BY_LINE" = "uno
+DOS
+tres" ] && [ "$ON_SCREEN" = "ADIOS HOLA" ] \
+   && [ "$REFUSED" = "not_text" ] && [ "$BINARY_AFTER" = "$BINARY_BEFORE" ]; then
+    proven "a line was changed by address and read back with cat, a person typed into the screen through a real pty and the work was written, and a binary was refused without a byte of it moving"
+elif [ "$BY_LINE" != "uno
+DOS
+tres" ]; then
+    failed "editing by line left '$BY_LINE' on disk instead of the text asked for; see $WORK/edit-lines.log"
+elif [ "$ON_SCREEN" != "ADIOS HOLA" ]; then
+    failed "the screen editor left '$ON_SCREEN' on disk; see $WORK/edit-screen.log"
+elif [ "$REFUSED" != "not_text" ]; then
+    failed "a binary file answered '$REFUSED' instead of refusing as not_text; see $WORK/edit-lines.log"
+else
+    failed "a file Thalyx refused to edit changed anyway — that is the one thing a refusal must never do; see $WORK/edit-lines.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

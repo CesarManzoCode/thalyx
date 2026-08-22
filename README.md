@@ -243,6 +243,7 @@ crates/
   thalyx-install/   turning a disk with no OS on it into a Thalyx machine
   thalyx-files/     the file verbs, in one place, for both faces
   thalyx-term/      a terminal that is a terminal: line editing, history
+  thalyx-edit/      changing text in a file, for a screen and for a program
   thalyx-syscall/   the only crate where `unsafe` is permitted
 
 lsm/      BPF LSM programs: enforcement, and the filesystem watcher

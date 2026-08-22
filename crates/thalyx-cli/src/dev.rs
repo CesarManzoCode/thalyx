@@ -139,6 +139,18 @@ fn pty(argv: &[std::ffi::OsString]) -> Fallible {
 
     let terminal = thalyx_syscall::open_pty()?;
 
+    // A pty the kernel has just made reports zero rows, and a full-screen
+    // program that asks honestly refuses to draw on a screen of no size — so
+    // without this the editor could not be exercised through the harness at
+    // all, and the half of it that a person sees would have no test that ran it.
+    //
+    // 24x80 because that is what a terminal has meant since the VT100 and what
+    // the image's serial console actually is. Fixed rather than copied from
+    // whatever terminal happens to be running the suite: a test whose screen
+    // size depends on the window somebody left open is a test that passes on one
+    // machine and not the next.
+    thalyx_syscall::set_terminal_size(terminal.follower.as_fd(), 24, 80)?;
+
     let mut command = std::process::Command::new(program);
     command.args(arguments);
 
