@@ -43,6 +43,11 @@ serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Not for driving anything: the integration test reads `ring::DEFAULT_RING` so
+# it can ask the filesystem whether the watcher is loaded. Asking Thalyx that
+# question and then checking Thalyx against the answer is a test agreeing with
+# itself.
+thalyx-watch.workspace = true
 serde_json.workspace = true
 thalyx-permd.workspace = true
 thalyx-agent.workspace = true
