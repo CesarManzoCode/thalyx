@@ -49,6 +49,8 @@
 //! something else parses. The wire shape is a decision, and decisions in this
 //! project are written down where they can be read and tested.
 
+use crate::search::{Found, Hit, Named};
+use crate::window::Page;
 use crate::{Did, Done, Entry, Excerpt, FileError, Kind};
 use serde_json::{Map, Value, json};
 use std::ffi::OsStr;
@@ -67,6 +69,9 @@ impl FileError {
             FileError::NotText { .. } => "not_text",
             FileError::Unreadable { .. } => "unreadable",
             FileError::Exists(_) => "exists",
+            FileError::NotADirectory(_) => "not_a_directory",
+            FileError::NothingAsked => "nothing_asked",
+            FileError::TreeTooLarge { .. } => "tree_too_large",
         }
     }
 
@@ -91,6 +96,12 @@ impl FileError {
             FileError::NotText { .. } => "cannot",
             FileError::Unreadable { .. } => "cannot",
             FileError::Exists(_) => "remove_or_rename",
+            FileError::NotADirectory(_) => "name_a_folder",
+            FileError::NothingAsked => "say_what_to_look_for",
+            // The one remedy that is a real instruction rather than a hint,
+            // because it is the only thing that works: no flag, no retry and
+            // no amount of patience turns a million-file tree into an answer.
+            FileError::TreeTooLarge { .. } => "name_a_smaller_tree",
         }
     }
 }
@@ -212,8 +223,21 @@ fn entry_object(entry: &Entry) -> (Value, bool) {
     let (name, mut exact) = as_text(&entry.name);
     let mut out = Map::new();
     out.insert("name".into(), json!(name));
+    exact &= kind_into(&mut out, &entry.kind);
+    (Value::Object(out), exact)
+}
 
-    match &entry.kind {
+/// What a thing is, in the keys every face uses for it.
+///
+/// One function because a listing row and a search row describe the same fact
+/// about the same filesystem. Written twice, the second one would have grown a
+/// `size` where the first has `bytes` — which is precisely the drift that made
+/// `list_one` answer a `Listing` instead of a shape of its own.
+///
+/// Returns whether every path it wrote survived the trip to text.
+fn kind_into(out: &mut Map<String, Value>, kind: &Kind) -> bool {
+    let mut exact = true;
+    match kind {
         Kind::Directory => {
             out.insert("kind".into(), json!("directory"));
         }
@@ -236,8 +260,91 @@ fn entry_object(entry: &Entry) -> (Value, bool) {
             out.insert("what".into(), json!(what));
         }
     }
+    exact
+}
 
-    (Value::Object(out), exact)
+/// Files whose name matched, as one object.
+///
+/// `looked_at` is here and is not the same number as `total`. A search of
+/// eleven thousand files that matched nothing and a search of four that matched
+/// nothing are different answers, and only the first one means *this pattern is
+/// wrong*; without the count the caller cannot tell them apart and re-runs the
+/// search somewhere else to find out.
+pub fn found_by_name(
+    root: &Path,
+    pattern: &str,
+    found: &Found<Named>,
+    page: &Page<&Named>,
+) -> String {
+    let (place, mut exact) = as_text(root.as_os_str());
+
+    let rows: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|row| {
+            let mut out = Map::new();
+            out.insert("path".into(), json!(row.path));
+            exact &= kind_into(&mut out, &row.kind);
+            Value::Object(out)
+        })
+        .collect();
+
+    let mut carried = vec![
+        ("root", json!(place)),
+        ("pattern", json!(pattern)),
+        ("matches", json!(rows)),
+        ("looked_at", json!(found.looked_at)),
+        ("unreadable", json!(unreadable_rows(&found.unreadable))),
+    ];
+    carried.extend(window_fields(page));
+    object("find", true, exact, fields(carried))
+}
+
+/// Lines that held the text, as one object.
+pub fn found_in_contents(root: &Path, text: &str, found: &Found<Hit>, page: &Page<&Hit>) -> String {
+    let (place, exact) = as_text(root.as_os_str());
+
+    let rows: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|row| {
+            json!({
+                "path": row.path,
+                "line": row.line,
+                "text": row.text,
+                // Whether the line arrived whole. A caller that pasted a cut
+                // line back into a file would be writing something the file
+                // never said, and nothing else in the row would have told it.
+                "cut": row.cut,
+            })
+        })
+        .collect();
+
+    let mut carried = vec![
+        ("root", json!(place)),
+        ("text", json!(text)),
+        ("hits", json!(rows)),
+        ("looked_at", json!(found.looked_at)),
+        // Its own number and not part of `unreadable`: a binary was read
+        // perfectly well and simply has no lines to answer with. A caller told
+        // these were unreadable would go looking for a permission problem.
+        ("not_text", json!(found.not_text)),
+        ("unreadable", json!(unreadable_rows(&found.unreadable))),
+    ];
+    carried.extend(window_fields(page));
+    object("grep", true, exact, fields(carried))
+}
+
+/// What could not be read, never paged away.
+///
+/// It is short by nature and it is the half of the answer rule 10 is about, so
+/// cutting it to a window would turn "I could not tell" into silence — and
+/// silence is what a caller reads as "not there".
+fn unreadable_rows(unreadable: &[(String, String)]) -> Vec<Value> {
+    unreadable
+        .iter()
+        .map(|(path, why)| json!({ "path": path, "why": why }))
+        .collect()
 }
 
 /// A file's contents, with the two byte counts kept apart.
@@ -363,12 +470,18 @@ pub fn problem(error: &FileError) -> Value {
 
 fn path_in(error: &FileError) -> Option<&OsStr> {
     match error {
-        FileError::Absent(path) | FileError::IsDirectory(path) | FileError::Exists(path) => {
-            Some(path.as_os_str())
-        }
+        FileError::Absent(path)
+        | FileError::IsDirectory(path)
+        | FileError::Exists(path)
+        | FileError::NotADirectory(path) => Some(path.as_os_str()),
         FileError::NotText { path, .. } | FileError::Unreadable { path, .. } => {
             Some(path.as_os_str())
         }
+        FileError::TreeTooLarge { root, .. } => Some(root.as_os_str()),
+        // The only error with no path in it, because nothing was named. A
+        // `path` key carrying an empty string would read as a file called
+        // nothing rather than as a question that was never asked.
+        FileError::NothingAsked => None,
     }
 }
 

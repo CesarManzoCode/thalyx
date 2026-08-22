@@ -14,6 +14,73 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Encontrar y contenido: el punto 6, con tres preguntas separadas — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Thalyx podía listar una carpeta y leer un archivo, y no podía contestar *dónde
+> está el archivo que se llama así* ni *qué archivos dicen esto*. Ya contesta las
+> dos, y el decreto entero está en [[Busqueda]].
+>
+> ### Las dos decisiones fueron de Cesar
+>
+> **Dos verbos nuevos, no uno con banderas.** `encontrar <patrón>` por nombre,
+> `contenido <texto>` por texto, y `buscar` intacto en su tercera pregunta —del
+> índice, no del disco—. Un verbo cuyo significado depende de una bandera se
+> puede pedir mal en silencio, y las tres respuestas se ven igual: una lista de
+> `ruta:línea` no dice de dónde salió.
+>
+> **Texto literal, sin expresiones regulares.** Un punto es un punto. Dos
+> razones: la imagen lleva el kernel y un programa, y un dialecto de regex aquí
+> sería decidir a escondidas un pedazo del punto 9 —si Thalyx tiene lenguaje de
+> shell—, que es decreto antes que código. Los nombres sí llevan `*` y `?`,
+> porque es el vocabulario que `rm`, `cp` y `mv` ya usan.
+>
+> ### Lo que construirlo obligó a mover
+>
+> `walk` vivía en `thalyx-graph` con dos llamadores. Ahora son cuatro, y los dos
+> nuevos son justo los que una persona compara contra el índice: un `contenido`
+> que entrara a `.git` donde `buscar` no entra contestaría sobre un archivo del
+> que el índice nunca supo, y la conclusión sería *el índice está roto*. Se movió
+> a `thalyx-files`, con el techo de 20 000 archivos, para que sigan siendo una
+> sola caminata y un solo número.
+>
+> ### Dos cosas nuevas en [[Estrategia-de-Pruebas]]
+>
+> - **Un hecho que la shell va a leer se cita** — duodécima vez que el
+>   instrumento miente, y esta vez el instrumento era mío. La etapa 30 escribía
+>   `names=a.rs b.rs` sin comillas, la shell asignó el primero y trató de
+>   ejecutar el segundo, y la etapa acusó al verbo de no contestar cuando había
+>   contestado las tres cosas bien.
+> - **Una prueba que este usuario no puede hacer fallar tampoco prueba** — quitar
+>   todos los permisos no detiene a root, así que la prueba de la regla 10 dice
+>   `NOT PROVEN` y `THALYX_REQUIRE_UNREADABLE_TESTS=1` la convierte en falla. Es
+>   la regla 3 con una cara nueva: hasta ahora los saltos eran por lo que a la
+>   máquina le falta, y éste es por quién está corriendo.
+>
+> ### Un defecto que sólo salió al correrlo
+>
+> El refuso estructurado usaba `machine::declined`, que no tiene dónde poner un
+> remedio, así que `not_a_directory` llegaba con `remedy: null` — el punto A2 de
+> [[Superficie-para-el-LLM]] perdido calladamente en dos verbos. Lo encontró una
+> prueba que pidió el remedio. Ahora usa `machine::failure`, que sí lo lleva.
+>
+> ### Qué correr
+>
+> Nada de esto necesita hierro; la etapa 30 corre entera en el contenedor y ya
+> corrió. Cuando quieras verlo:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx session
+> encontrar *.rs
+> contenido fn main
+> ```
+>
+> Y `sudo ./dev/verify.sh 2>&1 | tee /tmp/verify.log` cuando toque la próxima
+> corrida completa — con `tee`, porque el conteo de la corrida pasada costó una
+> ida y vuelta por haber pedido nada más la cola.
+
 > ## Verde en hierro, y las diez comprobaciones que faltaban eran el arranque — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

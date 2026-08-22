@@ -58,6 +58,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
 | Montajes idmapped para lo concedido | `crates/thalyx-sandbox/idmap.rs` | Verificado: escritura concedida funciona y aterriza a nombre del dueño |
 | Motor de edición de texto | `crates/thalyx-edit` | Direcciones por renglón, guardado atómico, deshacer acotado. Conserva finales de renglón, salto final y permisos; un enlace se edita como el archivo al que apunta |
+| Búsqueda por nombre y por contenido | `crates/thalyx-files/src/search.rs`, `thalyx-cli/src/search.rs` | `encontrar <patrón>` camina el árbol y compara contra el **nombre**, `contenido <texto>` lee y compara **literalmente**. Techo de 20 000 archivos revisado al caminar, binarios y archivos de más de 4 MiB contados aparte de lo ilegible, renglones largos cortados y avisados, y las banderas sólo adelante para que el sujeto sea el resto del renglón sin inventar comillas. Etapa 30 con `find(1)` y `sed(1)` de controles. Ver [[Busqueda]] |
 | Editor de pantalla | `crates/thalyx-edit/src/screen.rs` y `thalyx-cli/src/edit.rs` | Aritmética de cursor y viewport pura, dibujado en el CLI. `Ctrl-O` guarda, `Ctrl-X` sale, `Ctrl-U` deshace, `Ctrl-K` corta |
 | Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go. Importaciones **y declaraciones**; identificadores fuera de comentarios y cadenas |
 | Símbolos en el índice | `crates/thalyx-graph`, verbo `buscar` | Dónde se declara un nombre y dónde se usa. 3 869 nombres sobre las fuentes de este repo |
@@ -189,11 +190,11 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-915 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+Más de 1 250 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
-Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay seis variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS` `_AGENT_TESTS` y `_IMAGE_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
+Las pruebas de aislamiento corren contra el kernel real y **le preguntan al módulo qué ve**, no al sistema si aisló. Las de cgroup corren contra un montaje cgroup2 real. Donde no lo hay, **imprimen `NOT PROVEN` y dicen que no probaron nada** en vez de pasar en silencio; hay siete variables distintas —`THALYX_REQUIRE_CGROUP_TESTS`, `_LSM_TESTS`, `_CONTROLLER_TESTS`, `_BTRFS_TESTS`, `_AGENT_TESTS`, `_IMAGE_TESTS` y `_UNREADABLE_TESTS`— y cada una convierte en fallo los saltos de *su* requisito. La séptima es de una clase nueva: no salta por lo que a la máquina le falta sino por **quién está corriendo** — como root, quitarle todos los permisos a un archivo no impide leerlo, así que la prueba de la regla 10 no tendría cómo fallar. Antes había una sola, y entonces la única forma de exigir lo que una máquina sí tiene era exigir lo que no tiene. Una prueba que pasa sin haber ejercitado lo que nombra es exactamente cómo una herramienta de seguridad llega a leerse como armada estando desarmada.
 
 `verify.sh` activa las cuatro primeras cuando la máquina las soporta. La de la
 imagen se pide a mano —`THALYX_REQUIRE_IMAGE_TESTS=1`— porque exige un kernel y

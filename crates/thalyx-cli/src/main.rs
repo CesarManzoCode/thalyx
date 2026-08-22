@@ -23,6 +23,7 @@ mod memory;
 mod render;
 mod restore;
 mod run;
+mod search;
 mod session;
 mod snapshot;
 mod store_disk;

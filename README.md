@@ -245,7 +245,7 @@ crates/
   thalyx-snapshot/  Btrfs subvolumes and snapshots
   thalyx-btrfs/     Btrfs written directly, with no mkfs.btrfs
   thalyx-install/   turning a disk with no OS on it into a Thalyx machine
-  thalyx-files/     the file verbs, in one place, for both faces
+  thalyx-files/     the file verbs and the tree search, for both faces
   thalyx-term/      a terminal that is a terminal: line editing, history
   thalyx-edit/      changing text in a file, for a screen and for a program
   thalyx-syscall/   the only crate where `unsafe` is permitted

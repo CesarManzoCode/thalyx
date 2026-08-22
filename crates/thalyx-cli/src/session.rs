@@ -1123,6 +1123,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  amount of looking through folders can answer. `buscar");
             println!("  <nombre>` says where a name is defined and everywhere it");
             println!("  is used, without the comments a search for text catches.");
+            println!("  `encontrar <patrón>` finds files by name anywhere below");
+            println!("  here and `contenido <texto>` finds the lines that say it —");
+            println!("  those two read the tree, so they answer about anything,");
+            println!("  and `buscar` reads the index, so it answers better where");
+            println!("  it can. Both take `en=<carpeta>`, and it goes first.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
@@ -1147,7 +1152,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `editar <archivo> ver|poner|cambiar|borrar <línea> …`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
-            println!("  `buscar <nombre>`, `historia`, `intento`, `cambios`,");
+            println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
+            println!("  `historia`, `intento`, `cambios`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`.");
@@ -1386,6 +1392,30 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "editar" | "edit" => {
                 crate::edit::run(&here, "", face)?;
+            }
+            // Point 6. Two verbs and not one, because `buscar` already answers a
+            // third question and a caller that has to work out which of three a
+            // single verb answered pays the ambiguity cost on every call.
+            _ if starts_any(line, &["encontrar ", "find "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::search::by_name(&here, rest, face)?;
+            }
+            "encontrar" | "find" => {
+                crate::search::by_name(&here, "", face)?;
+            }
+            _ if starts_any(line, &["contenido ", "grep "]) => {
+                // Not trimmed on the right: the text is the rest of the line
+                // verbatim, and a search for `fn main ` with a trailing space is
+                // a search a person can mean. Only the left side is trimmed,
+                // which is the split's own separator.
+                let rest = line
+                    .split_once(' ')
+                    .map(|(_, r)| r.trim_start())
+                    .unwrap_or("");
+                crate::search::in_contents(&here, rest, face)?;
+            }
+            "contenido" | "grep" => {
+                crate::search::in_contents(&here, "", face)?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

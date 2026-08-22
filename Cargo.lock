@@ -991,6 +991,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
@@ -1000,9 +1001,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "tempfile",
+ "thalyx-files",
  "thalyx-parser",
  "thiserror",
- "walkdir",
 ]
 
 [[package]]

@@ -3218,6 +3218,50 @@ la mitad del resultado.** `sudo ./dev/verify.sh 2>&1 | tail -40` alcanza para el
 resumen; el diagnóstico de por qué un conteo cambió necesita la corrida
 completa, y cuesta lo mismo guardarla con `tee` que perderla.
 
+## Un hecho que la shell va a leer se cita, o el arnés lo parte — 2026-08-23
+
+Duodécima vez que el instrumento miente, y esta vez el instrumento era mío.
+
+La etapa 30 de `verify.sh` saca lo que Thalyx contestó a un archivo de
+`clave=valor` y lo lee con `.`, porque comparar en shell es más legible que
+comparar en Python. El Python escribía:
+
+```
+names=src/auth.rs src/deep/util.rs src/main.rs
+```
+
+La shell asignó `names=src/auth.rs` y **trató de ejecutar** los otros dos como
+comandos. La etapa falló diciendo *«encontrar dijo '' donde find(1) dice
+'src/auth.rs src/deep/util.rs src/main.rs'»*, que se lee exactamente como un
+verbo que no contesta — y el verbo había contestado bien las tres.
+
+La regla: **todo valor que la shell vaya a leer sale citado**, y en Python eso
+es `shlex.quote` y no unas comillas escritas a mano. La forma general es la de
+siempre y ya lleva doce instancias: antes de creer que Thalyx se equivocó, hay
+que descartar que lo que preguntó se equivocó. Lo barato de ésta es que el
+mensaje de falla ya traía la pista —el lado de Thalyx estaba **vacío**, no
+distinto— y un vacío casi nunca es un defecto de cálculo.
+
+## Una prueba que este usuario no puede hacer fallar tampoco prueba — 2026-08-23
+
+La prueba de la regla 10 en `search.rs` quita todos los permisos a un archivo y
+comprueba que la búsqueda lo reporta en `unreadable` en vez de contarlo como
+«no coincide». **Como root, un modo `000` no detiene a nadie**, así que en este
+contenedor el archivo se lee, no hay nada que reportar y la prueba pasaría sin
+haber comprobado nada.
+
+Es la regla 3 con una cara nueva: hasta ahora los saltos eran por lo que a la
+*máquina* le falta —BPF, Btrfs, controladores delegados— y éste es por **quién
+está corriendo**. La forma es la misma y no se negocia: la prueba pregunta si
+la lectura de verdad falló, y si no falló imprime `NOT PROVEN` diciendo por
+qué, con `THALYX_REQUIRE_UNREADABLE_TESTS=1` para convertir el salto en falla.
+Una variable para este requisito y nada más, porque una variable para varios
+obliga a exigir lo que la máquina no tiene para exigir lo que sí.
+
+Lo que **no** se hizo, y era la tentación: dar por buena la prueba porque «la
+lógica es obvia». Instalar un módulo que no se podía ejecutar también era obvio
+durante semanas.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
