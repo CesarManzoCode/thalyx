@@ -108,14 +108,18 @@ in **[docs/STATUS.md](docs/STATUS.md)**.
 its own firmware, used HDMI and a real xHCI keyboard, listed its disks,
 installed itself onto a second disk, and booted again without the installation
 medium. That closed Phase 1. The most recent run of `verify.sh` on that machine,
-on 2026-08-10, reported **143 proven, 2 not proven, 1 failed**, and the whole
-kernel side came back proven for the first time: the LSM denied a real network
-connection to a process that lacked the permission and only to that process, a
-module ran confined, Thalyx attached its own LSM with no `bpftool`, and the
-kernel mounted a Btrfs filesystem Thalyx had written byte by byte with no
-`mkfs.btrfs`. The one failure was the test harness — `ETXTBSY` between `fork`
-and `exec` — and it is written up in [docs/STATUS.md](docs/STATUS.md) because it
-took a year to diagnose.
+on 2026-08-23, reported **134 proven, 2 not proven, 0 failed** — the first run
+with nothing failing. The kernel side is proven: the LSM denies a real network
+connection to a process that lacks the permission and only to that process, a
+module runs confined, Thalyx attaches its own LSM with no `bpftool`, the kernel
+mounts a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`, and
+the mutation ring buffer is mapped and drained from a real kernel pin.
+
+The count is lower than the 143 of the run before it and nothing regressed: that
+machine had no kernel built, so the stage that boots the machine in QEMU —
+thirteen checks — contracted into one of the two `NOT PROVEN` lines. A marker
+and the lines under it are one result; see
+[docs/STATUS.md](docs/STATUS.md).
 
 **Built and covered by over 1,100 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the

@@ -101,15 +101,27 @@ task with a grant that expires. Those are tracked in
 ## What has been proven, and where
 
 **Verified on real hardware.** `sudo ./dev/verify.sh`, on one machine with a BPF
-LSM, cgroup v2 and Btrfs. The fifth and most recent run, on **2026-08-10**,
-reported **143 proven, 2 not proven, 1 failed** — and for the first time the
-whole kernel side came back proven: the LSM denied for real, a module ran
-confined, Thalyx attached its own LSM with no `bpftool`, and the module's channel
-survived the sandbox.
+LSM, cgroup v2 and Btrfs. The sixth and most recent run, on **2026-08-23**,
+reported **134 proven, 2 not proven, 0 failed** — the first run in which nothing
+failed. The whole kernel side is proven: the LSM denies for real, a module runs
+confined, Thalyx attaches its own LSM with no `bpftool`, the module's channel
+survives the sandbox, and the mutation ring buffer is mapped and drained from a
+real kernel pin — four records read, and a second read with none of them left.
 
-The one failure was the harness, not Thalyx, and it is the ninth instance of the
-project's fifth testing rule. Two tests in `llama.rs` failed with `ETXTBSY`: the
-kernel refusing to execute a file another thread still had open for writing,
+**The count is lower than the fifth run's 143, and nothing regressed.** That
+machine had no kernel or image built (`image/build/` is not in the repository,
+so it does not survive a clean), which contracts the thirteen checks of the boot
+stage into a single `NOT PROVEN` line. The totals reconcile exactly once that
+stage and the one check added since are accounted for. The rule the project took
+from it is that a marker and the `NOT PROVEN` lines below it are one result: a
+count that drops is not a regression until you know what stopped running, and
+the number does not say — the list under it does. `make -C image` brings those
+thirteen back.
+
+The fifth run's one failure was the harness, not Thalyx, and it is the ninth
+instance of the project's fifth testing rule. Two tests in `llama.rs` failed
+with `ETXTBSY`: the kernel refusing to execute a file another thread still had
+open for writing,
 through the window between `fork` and `exec`. It had failed once a year earlier,
 been "fixed" by a guess that said it was a guess, and only became a diagnosis
 when a twelve-core machine failed it twice in one run. The retry lives in the
