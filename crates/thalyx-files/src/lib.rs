@@ -1285,6 +1285,23 @@ impl Did {
             Did::Removed => "removed",
         }
     }
+
+    /// The same fact in the conditional, for a rehearsal.
+    ///
+    /// It lives beside [`Did::word`] so that a new variant cannot be added with
+    /// only half of it. A rehearsal that reports `removed` teaches that Thalyx
+    /// destroys things it did not destroy, and the person who reads it learns
+    /// not to trust the next sentence either — the same fault as `matar` saying
+    /// it stopped a kernel thread.
+    pub fn would(self) -> &'static str {
+        match self {
+            Did::MadeDirectory => "would make the directory",
+            Did::MadeFile => "would make the file",
+            Did::Copied => "would copy",
+            Did::Moved => "would move",
+            Did::Removed => "would remove",
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────── rehearsing before doing

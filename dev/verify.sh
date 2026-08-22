@@ -4585,6 +4585,75 @@ else
     failed "the baseline is broken: with the quote closed, \`rm \"a b.log\"\` did not remove it, so the refusal above proves nothing; see $WORK/words-closed.log"
 fi
 
+step "34. a rehearsal says what would happen, not what happened"
+
+# Punto D1, and the fault `matar` had: a sentence that reports a completed act
+# when nothing was done. `ensayo rm notas.txt` answered `removed /ruta/notas.txt`
+# for a file that is still there.
+#
+# The machine face was right the whole time — its `op` is `rehearse` — which is
+# exactly why four rehearsal tests and every stage of this script missed it. Only
+# something reading the human sentence can see it, so that is what this reads.
+#
+# Rule 4, with both halves:
+#
+#   · the baseline is the real verb in the same store. It still says `removed`,
+#     so this is a tense that changed and not a printer that stopped working.
+#   · the control is the disk. A rehearsal that hedged its wording while
+#     removing the file would read identically in the log.
+
+TENSE_STORE="$WORK/tense-store"
+TENSE_TREE="$WORK/tense-tree"
+mkdir -p "$TENSE_STORE" "$TENSE_TREE"
+printf 'hola\n' > "$TENSE_TREE/notas.txt"
+
+printf '%s\n' "cd $TENSE_TREE" \
+    "ensayo rm notas.txt" \
+    "ensayo cp notas.txt copia.txt" \
+    "ensayo mv notas.txt movido.txt" \
+    "ensayo mkdir nueva" \
+    salir | \
+    THALYX_ROOT="$TENSE_STORE" "$THALYX" session > "$WORK/tense.log" 2>&1
+
+CONDITIONAL=yes
+for phrase in "would remove" "would copy" "would move" "would make the directory"; do
+    grep -qF "$phrase" "$WORK/tense.log" || CONDITIONAL=no
+done
+
+# No rehearsal may claim a completed act, whatever wording replaced the above.
+CLAIMED=no
+for phrase in "removed " "copied " "moved " "made directory "; do
+    grep -qF "$phrase" "$WORK/tense.log" && CLAIMED=yes
+done
+
+# The control: the disk, from outside, which cannot be talked round.
+NOTHING_HAPPENED=yes
+[ -e "$TENSE_TREE/notas.txt" ] || NOTHING_HAPPENED=no
+[ -e "$TENSE_TREE/copia.txt" ] && NOTHING_HAPPENED=no
+[ -e "$TENSE_TREE/movido.txt" ] && NOTHING_HAPPENED=no
+[ -e "$TENSE_TREE/nueva" ] && NOTHING_HAPPENED=no
+
+# The baseline: the real verb, which must still report the past.
+printf '%s\n' "cd $TENSE_TREE" "rm notas.txt" salir | \
+    THALYX_ROOT="$TENSE_STORE" "$THALYX" session > "$WORK/tense-real.log" 2>&1
+REAL_SAYS_PAST=no
+grep -qF "removed " "$WORK/tense-real.log" && REAL_SAYS_PAST=yes
+REAL_DID_IT=no
+[ -e "$TENSE_TREE/notas.txt" ] || REAL_DID_IT=yes
+
+if [ "$CONDITIONAL" = yes ] && [ "$CLAIMED" = no ] && [ "$NOTHING_HAPPENED" = yes ] \
+   && [ "$REAL_SAYS_PAST" = yes ] && [ "$REAL_DID_IT" = yes ]; then
+    proven "the four rehearsals answered in the conditional and touched nothing, while the real \`rm\` still reported the past and removed the file"
+elif [ "$CLAIMED" = yes ]; then
+    failed "a rehearsal reported a completed act; see $WORK/tense.log"
+elif [ "$CONDITIONAL" != yes ]; then
+    failed "a rehearsal did not say what it would do; see $WORK/tense.log"
+elif [ "$NOTHING_HAPPENED" != yes ]; then
+    failed "a rehearsal changed the disk — the one thing it must never do; see $WORK/tense.log"
+else
+    failed "the baseline is broken: the real \`rm\` no longer reports what it did (says_past=$REAL_SAYS_PAST removed_it=$REAL_DID_IT), so the rehearsal's wording above proves nothing; see $WORK/tense-real.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

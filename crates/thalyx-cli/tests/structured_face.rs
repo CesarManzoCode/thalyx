@@ -548,6 +548,76 @@ fn a_rehearsed_delete_says_what_would_go_and_leaves_it_there() {
 }
 
 #[test]
+fn a_rehearsal_speaks_in_the_conditional_and_the_verb_it_rehearses_does_not() {
+    // The defect: `ensayo rm notas.txt` printed `removed /ruta/notas.txt` for a
+    // file that is still there. It is the same fault as `matar` reporting that
+    // it stopped a kernel thread — a sentence that says something happened when
+    // nothing did — and it is worse than an error, because the person who reads
+    // it learns not to believe the next sentence either.
+    //
+    // Why four rehearsal tests missed it: **the machine face was right the whole
+    // time.** Its `op` is `rehearse`, so a program could always tell the two
+    // apart, and a test that reads objects cannot see the sentence a person is
+    // shown. The only instrument that catches this is the human face itself.
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("notas.txt"), "12345").expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            &inside(home.path()),
+            "ensayo rm notas.txt",
+            "ensayo cp notas.txt copia.txt",
+            "ensayo mv notas.txt movido.txt",
+            "ensayo mkdir nueva",
+            "salir",
+        ],
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+
+    for line in [
+        "would remove",
+        "would copy",
+        "would move",
+        "would make the directory",
+    ] {
+        assert!(
+            said.contains(line),
+            "the rehearsal did not say `{line}`: {said}"
+        );
+    }
+    // No rehearsal may claim a completed act, whatever wording replaces the
+    // ones above. `removed` is the one that was actually printed.
+    for claim in ["removed ", "copied ", "moved ", "made directory "] {
+        assert!(
+            !said.contains(claim),
+            "a rehearsal reported `{claim}` as done: {said}"
+        );
+    }
+    // And against the disk, from outside: nothing moved.
+    assert!(home.path().join("notas.txt").exists());
+    assert!(!home.path().join("copia.txt").exists());
+    assert!(!home.path().join("nueva").exists());
+
+    // The control, without which a change that made every sentence conditional
+    // would look exactly like this one. The real verb still reports the past.
+    let real = piped(
+        home.path(),
+        &[&inside(home.path()), "rm notas.txt", "salir"],
+    );
+    let real = String::from_utf8_lossy(&real.stdout);
+    assert!(
+        real.contains("removed "),
+        "the real verb stopped saying so: {real}"
+    );
+    assert!(
+        !real.contains("would remove"),
+        "the real verb hedged: {real}"
+    );
+    assert!(!home.path().join("notas.txt").exists());
+}
+
+#[test]
 fn a_rehearsal_refuses_where_the_real_thing_would_and_gives_the_same_word() {
     let home = a_home_with_things_in_it();
 
