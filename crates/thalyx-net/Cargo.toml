@@ -1,0 +1,17 @@
+[package]
+name = "thalyx-net"
+description = "The network interfaces this machine has, and nothing it can do with them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

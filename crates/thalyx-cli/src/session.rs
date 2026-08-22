@@ -1162,7 +1162,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
-            println!("  `discos`, `instalar-en <disco>`.");
+            println!("  `discos`, `instalar-en <disco>`, `red`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
             println!("  because this machine is not mine to turn off.");
         }
@@ -1302,6 +1302,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "discos" | "disks" => {
                 list_disks();
+            }
+            // Point 8, and the one listing verb whose things cannot be acted on.
+            // See `crate::net`: the closing sentence is the verb.
+            "red" | "network" => {
+                crate::net::interfaces(face)?;
             }
             // ─────────────────────────────────────────── files, layer 1 of the decree
             //

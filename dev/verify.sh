@@ -446,6 +446,21 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # node apart from the partition behind it has no excuse to skip.
 SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 
+# Point 8. Two requirements, two variables — one script cannot demand `red` be
+# asked and demand a down interface exist with the same word, because a machine
+# where everything is up would then have to be told it is broken.
+if [ -d /sys/class/net ]; then
+    SUITE_ENV+=(THALYX_REQUIRE_NETWORK_TESTS=1)
+    # Only worth demanding where there is something down to ask, which is the
+    # case the EINVAL distinction is about.
+    for interface in /sys/class/net/*/operstate; do
+        if [ "$(cat "$interface" 2>/dev/null)" = down ]; then
+            SUITE_ENV+=(THALYX_REQUIRE_REAL_SYSFS_TESTS=1)
+            break
+        fi
+    done
+fi
+
 echo "   ${SUITE_ENV[*]}"
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
     COUNT="$(grep -Eo '^test result: ok\. [0-9]+' "$WORK/tests.log" | awk '{s+=$4} END {print s}')"
@@ -4652,6 +4667,72 @@ elif [ "$NOTHING_HAPPENED" != yes ]; then
     failed "a rehearsal changed the disk — the one thing it must never do; see $WORK/tense.log"
 else
     failed "the baseline is broken: the real \`rm\` no longer reports what it did (says_past=$REAL_SAYS_PAST removed_it=$REAL_DID_IT), so the rehearsal's wording above proves nothing; see $WORK/tense-real.log"
+fi
+
+step "35. the network can be seen, and Thalyx says it cannot use it"
+
+# Point 8, `vault/02-Arquitectura/Red.md`, and the last of the nine.
+#
+# Rule 5 shapes this stage: the instrument includes the harness, and asking
+# Thalyx to check itself against its own reading of /sys would prove only that
+# it is consistent. So the control is **iproute2**, which reads netlink and not
+# sysfs — a genuinely different way of asking the kernel the same question. When
+# `ip` is absent the stage says so and does not pretend, per rule 3, with its own
+# variable.
+#
+# What the first run of this verb got wrong, and why the count is checked rather
+# than the list: on a machine with one card it reported three, because `ifb0` and
+# `ifb1` present `type 1` with a hardware address and are pure software.
+
+NET_STORE="$WORK/net-store"
+mkdir -p "$NET_STORE"
+
+printf '%s\n' "structured on" red salir | \
+    THALYX_ROOT="$NET_STORE" "$THALYX" session > "$WORK/net.log" 2>&1
+printf '%s\n' red salir | \
+    THALYX_ROOT="$NET_STORE" "$THALYX" session > "$WORK/net-human.log" 2>&1
+
+THALYX_NAMES=$(grep '^{' "$WORK/net.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    said = json.loads(line)
+    if said.get("op") == "network":
+        print(" ".join(sorted(row["name"] for row in said["interfaces"])))
+        break
+' 2>/dev/null)
+
+# The verb has to have answered at all before any of the rest means anything.
+ADDRESSABLE=$(grep '^{' "$WORK/net.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    said = json.loads(line)
+    if said.get("op") == "network":
+        print(said.get("addressable"))
+        break
+' 2>/dev/null)
+
+SAYS_SO=no
+grep -q "cannot use them" "$WORK/net-human.log" && SAYS_SO=yes
+
+if [ -z "$THALYX_NAMES" ]; then
+    failed "\`red\` answered nothing a program can read; see $WORK/net.log"
+elif [ "$ADDRESSABLE" != "False" ]; then
+    failed "\`red\` told a caller this machine is addressable, which is the one thing point 8 does not do; see $WORK/net.log"
+elif [ "$SAYS_SO" != yes ]; then
+    failed "the human face listed interfaces without saying Thalyx cannot use them; see $WORK/net-human.log"
+elif ! command -v ip > /dev/null 2>&1; then
+    GAP="\`red\` listed [$THALYX_NAMES] and said it cannot use them, but iproute2 is absent so nothing independent confirmed the list"
+    if [ "${THALYX_REQUIRE_NETWORK_CONTROL:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    # netlink's own answer. `ip -o link` prints `1: lo: <LOOPBACK...`, and an
+    # interface with an `@` in the name is a veth showing its peer — the name is
+    # the part before it.
+    IP_NAMES=$(ip -o link show | sed 's/^[0-9]*: //' | cut -d: -f1 | cut -d@ -f1 | sort | tr '\n' ' ' | sed 's/ $//')
+    if [ "$THALYX_NAMES" = "$IP_NAMES" ]; then
+        proven "\`red\` and iproute2 name the same interfaces on this machine [$THALYX_NAMES], read through sysfs and through netlink, and Thalyx says it cannot use them"
+    else
+        failed "\`red\` and iproute2 disagree about what this machine has: thalyx=[$THALYX_NAMES] ip=[$IP_NAMES]; see $WORK/net.log"
+    fi
 fi
 
 # ---------------------------------------------------------------- summary

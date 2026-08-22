@@ -154,11 +154,18 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       particiones se devuelven ya abiertas y se sostienen así hasta el final,
       porque cerrar el disco entero hace que el kernel lo reexamine por su cuenta
       y ese segundo barrido borra y rehace cada partición. Ver [[Punto-Actual]].
-- [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
-      red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
-      necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
-      el store de una máquina recién instalada», que es la Fase 2. **Sólo se
-      puede verificar en el hierro de Cesar.**
+- [x] **8. Red** — **decidido por Cesar el 2026-08-23: se ve, no se usa.** De las
+      110 opciones del kernel ninguna era una tarjeta de red; ahora son 118 y las
+      ocho nuevas son los menús y cuatro drivers —`virtio_net`, `e1000`,
+      `e1000e`, `r8169`— cada uno con su razón escrita al lado. El verbo es
+      `red`, con dos caras, y **dice en la respuesta que no se puede usar**: no
+      hay dirección, no hay DHCP y no sale un paquete. Etapa 35, con `iproute2`
+      de control porque lee netlink y no sysfs. Ver [[Red]].
+- [ ] **Salir a internet, cuando la Fase 2 diga a dónde** — DHCP, DNS y TLS, los
+      tres dentro de `thalyx` porque aquí no hay programas aparte. No se hizo con
+      el punto 8 porque lo que compraría —que el store traiga módulos de algún
+      lado— depende de una pregunta de Fase 2 que sigue sin contestarse: de
+      dónde. Ver [[Red]].
 - [x] **9. Decidir si Thalyx tiene lenguaje de shell** — **decidido por Cesar el
       2026-08-23: hay citado y no hay lenguaje**, *«lo que sea más fácil de
       cubrir por ahora, pero en un futuro sí tendremos que hacer shell completo,

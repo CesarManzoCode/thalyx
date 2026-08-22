@@ -16,7 +16,7 @@ Everything below is the long one.
 
 ## What is built
 
-**Built and covered by tests — over 1,100 of them**, across unit tests, fault injection
+**Built and covered by tests — over 1,300 of them**, across unit tests, fault injection
 that kills the real binary at each point of the atomic commit, and end-to-end
 runs of the exit criterion. `cargo test --workspace` runs all of it.
 
@@ -97,9 +97,24 @@ Unix habits where they already were: `rm "*.log"` removes the file actually
 called that, the way it does in bash, and `encontrar "*.rs"` is still a pattern,
 the way `find . -name "*.rs"` is.
 
+**The network can be seen, and the answer says it cannot be used.** `red` lists
+every interface with its kind, hardware address, link state, negotiated speed and
+driver, and counts how many of them are actually a card — which is not how many
+there are, because the kernel's own software interfaces report an Ethernet type
+and carry an address. Two facts survive into what is printed rather than being
+flattened: an interface that is down does not report a missing cable, it refuses
+the question, and a speed nobody measured is absent rather than shown as a
+number. There is no address here, no DHCP and no resolver — those are separate
+programs everywhere else, and here they would have to live inside `thalyx` — so
+every answer says so, in both faces, because this is the one listing whose things
+no other verb can act on.
+
 **And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
-would go and touches nothing, built so the rehearsal *is* the check half of the
-real operation rather than a second implementation that could disagree with it.
+would go and touches nothing — and says `would remove`, never `removed`, because
+a sentence reporting a completed act that never happened teaches that the next
+sentence cannot be trusted either. It is built so the rehearsal *is* the check
+half of the real operation rather than a second implementation that could
+disagree with it.
 Every action that changed something says how to undo it — and a delete says
 plainly that it cannot be undone, because inside `/home` no rollback of ours
 reaches.
