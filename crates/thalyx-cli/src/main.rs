@@ -20,6 +20,7 @@ mod index;
 mod init;
 mod install;
 mod memory;
+mod modules;
 mod net;
 mod proc;
 mod render;

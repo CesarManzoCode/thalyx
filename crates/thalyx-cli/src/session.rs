@@ -380,15 +380,26 @@ fn power_off(standing: &Standing) {
 /// `dmesg` to fall back on. `nucleo` shows what went wrong; `nucleo todo` shows
 /// everything, which is usually a lot and occasionally the only thing that
 /// helps.
-fn show_kernel(everything: bool) {
-    println!();
+fn show_kernel(everything: bool, face: crate::files::Face) {
+    const OP: &str = "kernel";
+
     let messages = match thalyx_syscall::kernel_messages() {
         Ok(messages) => messages,
         Err(error) => {
             // Rule 10 at the one place a human would read silence as calm.
-            println!("  I could not read what the kernel said: {error}");
-            println!("  That is not the same as it having said nothing.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "unreadable",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  I could not read what the kernel said: {error}");
+                println!("  That is not the same as it having said nothing.");
+                println!();
+            }
             return;
         }
     };
@@ -398,6 +409,62 @@ fn show_kernel(everything: bool) {
         .filter(|m| everything || m.is_trouble())
         .collect();
 
+    if face.is_machine() {
+        // Newest last, the order the kernel wrote them in, and the sequence
+        // number is the key: it is the kernel's own counter, it never repeats,
+        // and it is already the ordering — so a cursor into it names a place
+        // that stays put even as the buffer wraps and older lines vanish.
+        let page = match thalyx_files::window::page(
+            shown,
+            |message| message.sequence.to_be_bytes().to_vec(),
+            &thalyx_files::window::Asked::default(),
+        ) {
+            Ok(page) => page,
+            Err(why) => {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "bad_window",
+                    "read_the_error",
+                    &why.to_string(),
+                ));
+                return;
+            }
+        };
+
+        let rows: Vec<serde_json::Value> = page
+            .rows
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "sequence": message.sequence,
+                    "seconds": message.seconds,
+                    "priority": message.priority,
+                    // The kernel's grading, carried as the kernel's. Thalyx does
+                    // not re-grade somebody else's report, and a caller that
+                    // wants a different threshold has the number to do it with.
+                    "trouble": message.is_trouble(),
+                    "text": message.text,
+                })
+            })
+            .collect();
+
+        let mut carried = vec![
+            ("messages", serde_json::json!(rows)),
+            // What the filter left out, said rather than inferable. A caller
+            // reading four lines has no way to know whether the machine said
+            // four things or seven hundred, and the difference is the answer.
+            (
+                "scope",
+                serde_json::json!(if everything { "all" } else { "trouble" }),
+            ),
+            ("said", serde_json::json!(messages.len())),
+        ];
+        carried.extend(thalyx_files::machine::window_fields(&page));
+        face.say(thalyx_files::machine::answer(OP, carried));
+        return;
+    }
+
+    println!();
     if shown.is_empty() {
         if everything {
             println!("  The kernel's buffer is empty, which is stranger than it sounds.");
@@ -481,20 +548,48 @@ fn slowest_gaps(messages: &[thalyx_syscall::KernelMessage], how_many: usize) -> 
 /// what slow reading looks like.
 ///
 /// The kernel already timestamps every line. Nobody had subtracted them.
-fn show_slowest() {
-    println!();
+fn show_slowest(face: crate::files::Face) {
+    // The same op as `nucleo`, because it is the same verb: `describe` names
+    // one op per verb, and a caller that matched a second one would be matching
+    // something the catalogue never promised. What tells the two answers apart
+    // is `scope`, which every branch of this verb carries.
+    const OP: &str = "kernel";
+
     let messages = match thalyx_syscall::kernel_messages() {
         Ok(messages) => messages,
         Err(error) => {
-            println!("  I cannot read what the kernel said: {error}");
-            println!("  That is not the same as it having said nothing.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "unreadable",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  I cannot read what the kernel said: {error}");
+                println!("  That is not the same as it having said nothing.");
+                println!();
+            }
             return;
         }
     };
     if messages.len() < 2 {
-        println!("  Fewer than two messages, so there is no gap to measure.");
-        println!();
+        // Refused rather than answered with an empty list, because zero gaps
+        // and no way to measure a gap are different facts and only the second
+        // is true here. A caller told "no slow spots" would stop looking.
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                OP,
+                "too_few_messages",
+                "cannot",
+                "fewer than two messages, so there is no gap to measure",
+            ));
+        } else {
+            println!();
+            println!("  Fewer than two messages, so there is no gap to measure.");
+            println!();
+        }
         return;
     }
 
@@ -502,6 +597,36 @@ fn show_slowest() {
     let total = messages.last().map(|m| m.seconds).unwrap_or_default();
     let waited: f64 = gaps.iter().map(|gap| gap.seconds).sum();
 
+    if face.is_machine() {
+        let rows: Vec<serde_json::Value> = gaps
+            .iter()
+            .map(|gap| {
+                serde_json::json!({
+                    "seconds": gap.seconds,
+                    "at": gap.at,
+                    // Both sides, for the reason the human face prints both: the
+                    // message after a silence is the one that finished, the one
+                    // before is where the waiting started, and either alone
+                    // sends the reader to the wrong half.
+                    "after_line": gap.before,
+                    "then_line": gap.after,
+                })
+            })
+            .collect();
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("scope", serde_json::json!("slow")),
+                ("gaps", serde_json::json!(rows)),
+                ("boot_seconds", serde_json::json!(total)),
+                ("waited_seconds", serde_json::json!(waited)),
+                ("said", serde_json::json!(messages.len())),
+            ],
+        ));
+        return;
+    }
+
+    println!();
     println!("  The kernel talked for {total:.1}s. The longest silences in it:");
     println!();
     for gap in &gaps {
@@ -521,85 +646,6 @@ fn show_slowest() {
     // would be the machine guessing on somebody's behalf.
     println!("  A gap says where the time went, not what took it. The line after a");
     println!("  silence is the one that finished waiting.");
-    println!();
-}
-
-/// What is installed, read from the store rather than from anything remembered.
-fn list_modules(store: &Store) {
-    println!();
-    match store.installed() {
-        Ok(list) if list.is_empty() => {
-            println!("  Nothing is installed.");
-            println!();
-            println!("  If a store was expected here, the first lines of the boot say");
-            println!("  whether one was mounted. An empty store and an absent one look");
-            println!("  the same from this list, and only the boot told them apart.");
-        }
-        Ok(list) => {
-            for (id, version) in &list {
-                println!("  {id} {version}");
-            }
-            println!();
-            println!("  `correr <id>` runs one.");
-        }
-        Err(error) => {
-            // Not "nothing is installed". Rule 10 again, at the one place a
-            // human is most likely to read the answer as an inventory.
-            println!("  I could not read the store: {error}");
-            println!("  That is not the same as it being empty, and I will not");
-            println!("  report it as empty.");
-        }
-    }
-    println!();
-}
-
-/// What is in the repository and could be installed.
-///
-/// Separate verb from `modulos` because they answer different questions, and
-/// conflating them is how a person ends up believing something is installed
-/// because they saw its name. `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`
-/// step 2 is installing from a local repository, and inside the machine there
-/// is no shell to hand a path to — so the repository has to be findable.
-fn list_available(store: &Store) {
-    println!();
-    let repo = store.repo_root();
-    match thalyx_core::repo::scan(&repo) {
-        Ok(scan) if scan.candidates.is_empty() && scan.rejected.is_empty() => {
-            println!("  The repository is empty.");
-            println!();
-            println!("  It is {}, on the store.", repo.display());
-        }
-        Ok(scan) => {
-            for candidate in &scan.candidates {
-                println!("  {} {}", candidate.module_id, candidate.version);
-            }
-            // Named, never silently dropped. A bundle whose signature does not
-            // check out is the single most important thing this list can say,
-            // and a resolver that only prints what passed would hide exactly
-            // the file somebody needs to look at.
-            for rejected in &scan.rejected {
-                println!();
-                println!(
-                    "  refused  {}",
-                    rejected
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| rejected.path.display().to_string())
-                );
-                println!("           {}", rejected.reason);
-            }
-            if !scan.candidates.is_empty() {
-                println!();
-                println!("  `instalar <id>` installs one, and shows what it asks for");
-                println!("  before anything is written.");
-            }
-        }
-        Err(error) => {
-            println!("  I could not read the repository: {error}");
-            println!("  That is not the same as it being empty.");
-        }
-    }
     println!();
 }
 
@@ -690,15 +736,6 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
             println!("  Nothing was written. An install that stops before the commit");
             println!("  leaves the machine exactly as it was.");
         }
-    }
-    println!();
-}
-
-/// What is granted, and to whom.
-fn show_permissions(store: &Store) {
-    println!();
-    if let Err(error) = crate::render::permissions(store) {
-        println!("  I could not read the permission registry: {error}");
     }
     println!();
 }
@@ -1272,14 +1309,22 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             "apagar" | "poweroff" => {
                 power_off(&standing);
             }
+            _ if starts_any(line, &["modulos ", "módulos ", "modules "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::modules::installed(store, rest, face)?;
+            }
             "modules" | "modulos" | "módulos" => {
-                list_modules(store);
+                crate::modules::installed(store, "", face)?;
+            }
+            _ if starts_any(line, &["disponibles ", "available ", "repo "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::modules::available(store, rest, face)?;
             }
             "disponibles" | "available" | "repo" => {
-                list_available(store);
+                crate::modules::available(store, "", face)?;
             }
             "permisos" | "permissions" => {
-                show_permissions(store);
+                crate::modules::permissions(store, face)?;
             }
             "revertir" | "rollback" => {
                 revert(store, line);
@@ -1301,7 +1346,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 println!();
             }
             "discos" | "disks" => {
-                list_disks();
+                list_disks(face);
             }
             // Point 8, and the one listing verb whose things cannot be acted on.
             // See `crate::net`: the closing sentence is the verb.
@@ -1539,13 +1584,13 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 println!();
             }
             "nucleo" | "núcleo" | "kernel" | "dmesg" => {
-                show_kernel(false);
+                show_kernel(false, face);
             }
             "nucleo todo" | "núcleo todo" | "kernel all" => {
-                show_kernel(true);
+                show_kernel(true, face);
             }
             "nucleo lento" | "núcleo lento" | "kernel slow" => {
-                show_slowest();
+                show_slowest(face);
             }
             _ if line.starts_with("correr ") || line.starts_with("run ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1699,7 +1744,7 @@ fn whats_on(path: &std::path::Path) -> String {
 /// Whole disks only. Installing writes a partition table, so a partition is not a
 /// thing that can be installed onto — offering one would produce a table written
 /// inside a partition, which is legal, invisible, and boots nothing.
-fn list_disks() {
+fn list_disks(face: crate::files::Face) {
     let disks = thalyx_install::partitions::every();
     let whole: Vec<&std::path::PathBuf> = disks
         .iter()
@@ -1721,6 +1766,50 @@ fn list_disks() {
             thalyx_install::partitions::of(device).is_ok()
         })
         .collect();
+
+    if face.is_machine() {
+        let rows: Vec<serde_json::Value> = whole
+            .iter()
+            .map(|device| {
+                // Three states again, and here they are three *per disk*: a size
+                // that read, a size that did not, and a partition table that did
+                // not. `null` is the answer for the second and third, and it is
+                // never a zero — a caller that read `0 GiB` would believe it had
+                // found an empty disk.
+                let size = std::fs::File::open(device)
+                    .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
+                    .ok();
+                let parts = thalyx_install::partitions::of(device).ok();
+                serde_json::json!({
+                    "device": device.display().to_string(),
+                    "bytes": size,
+                    "partitions": parts.as_ref().map(|parts| {
+                        parts
+                            .iter()
+                            .map(|(number, path)| serde_json::json!({
+                                "number": number,
+                                "device": path.display().to_string(),
+                                "holds": whats_on(path),
+                            }))
+                            .collect::<Vec<_>>()
+                    }),
+                })
+            })
+            .collect();
+
+        face.say(thalyx_files::machine::answer(
+            "disks",
+            vec![
+                ("disks", serde_json::json!(rows)),
+                ("count", serde_json::json!(whole.len())),
+                // The sentence the human face ends on, where a program reads it.
+                // Everything on a named disk is lost, and that is the one fact
+                // about this list that a caller must not have to infer.
+                ("destructive_verb", serde_json::json!("instalar-en")),
+            ],
+        ));
+        return;
+    }
 
     println!();
     if whole.is_empty() {
