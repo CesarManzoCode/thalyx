@@ -446,16 +446,22 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # node apart from the partition behind it has no excuse to skip.
 SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 
-# Point 8. Two requirements, two variables — one script cannot demand `red` be
-# asked and demand a down interface exist with the same word, because a machine
-# where everything is up would then have to be told it is broken.
+# Point 8. Three requirements, three variables, because a machine that has one
+# of them and not the others must be able to demand what it has without being
+# told it is broken for what it has not.
+#
+# The third is the one that had to be found out rather than assumed. Whether the
+# kernel refuses the carrier question belongs to the **driver**, not to the
+# interface being down: a physical card that was never brought up refuses with
+# EINVAL, and a software bridge with nothing attached answers 0 quite honestly.
+# So this looks for an actual refusal, with `cat`, which knows nothing about
+# thalyx-net — asking the crate whether the crate has something to test would be
+# the harness inferring its own precondition, which is already on the list.
 if [ -d /sys/class/net ]; then
-    SUITE_ENV+=(THALYX_REQUIRE_NETWORK_TESTS=1)
-    # Only worth demanding where there is something down to ask, which is the
-    # case the EINVAL distinction is about.
-    for interface in /sys/class/net/*/operstate; do
-        if [ "$(cat "$interface" 2>/dev/null)" = down ]; then
-            SUITE_ENV+=(THALYX_REQUIRE_REAL_SYSFS_TESTS=1)
+    SUITE_ENV+=(THALYX_REQUIRE_NETWORK_TESTS=1 THALYX_REQUIRE_REAL_SYSFS_TESTS=1)
+    for carrier in /sys/class/net/*/carrier; do
+        if ! cat "$carrier" > /dev/null 2>&1; then
+            SUITE_ENV+=(THALYX_REQUIRE_REFUSED_CARRIER_TESTS=1)
             break
         fi
     done

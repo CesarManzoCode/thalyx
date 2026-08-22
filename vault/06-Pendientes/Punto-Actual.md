@@ -14,6 +14,48 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Corregido: una interfaz abajo no tiene una sola respuesta — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Cesar trajo `proven 153 · not proven 1 · failed 1`, y el que
+> falló fue **una prueba mía**, no Thalyx.
+>
+> Antes de eso, lo que su corrida sí probó, y es lo que importaba:
+>
+> - **el kernel construyó con las ocho opciones nuevas.** `config-check` no tiró
+>   ninguna, así que las dependencias de `NETDEVICES`, `ETHERNET` y los cuatro
+>   drivers estaban bien;
+> - **la etapa 35 pasó**: `red` y `iproute2` nombran las mismas interfaces en su
+>   máquina, leídas por sysfs y por netlink;
+> - **la etapa 34 pasó**: los ensayos hablan en condicional y el verbo de verdad
+>   no.
+>
+> Lo que falló: la prueba afirmaba que **una interfaz abajo se niega a contestar
+> si tiene cable**. Aquí es cierto —`ifb0` da `EINVAL`—; en su Fedora un puente
+> de Docker abajo contesta `0` con toda honestidad. **Negarse o contestar es del
+> driver, no de estar abajo.**
+>
+> El módulo nunca necesitó eso. Necesita que una lectura fallida jamás se reporte
+> como cable ausente, y eso es cierto en toda máquina. La prueba ahora lee el
+> mismo archivo por su cuenta y compara el mapeo; la negativa de verdad, que no
+> toda máquina tiene, sale como `NOT PROVEN` con su propia variable.
+>
+> **Es la misma regla que la del `ENXIO` contra `EACCES` y es la segunda vez en
+> dos días.** Lo nuevo es qué la produjo: la primera fue una opción de montaje,
+> ésta fue contar dos ejemplos de la misma clase en la misma máquina y llamarlo
+> la regla. Está en [[Estrategia-de-Pruebas]].
+>
+> **Lo único que falta para cerrar el modelo** es lo que su propia corrida ya le
+> dijo, palabra por palabra:
+>
+> ```
+> git pull
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+
 > ## Punto 8: la red se ve y no se usa — la terminal usable está en 9 de 9 — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
