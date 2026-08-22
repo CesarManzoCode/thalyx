@@ -18,6 +18,13 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
 >
+> **Corregido el mismo día:** la prueba nueva afirmaba que abrir el nodo da
+> `ENXIO`, y en tu Fedora dio `EACCES` — porque `/tmp` está montado con `nodev` y
+> ahí no se puede abrir ningún nodo de dispositivo, haya algo detrás o no. La
+> prueba tumbó la suite entera por una opción de montaje. Ahora afirma lo que se
+> estaba probando: que el nombre resuelve y el dispositivo no. Regla en
+> [[Estrategia-de-Pruebas]], y es la catorceava vez que el instrumento miente.
+>
 > La corrida de Cesar del 2026-08-23 trajo `proven 137 · not proven 2 · failed 1`.
 > El que falló: **instalar dos veces no funcionaba**, con
 > `opening /dev/loop0p1: No such device or address`.
