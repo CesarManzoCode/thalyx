@@ -130,7 +130,8 @@ puede comprobar un parser de ese formato**.
   defecto.
 - **Un hilo del kernel no tiene línea de comandos**, y eso no es una línea de
   comandos vacía. Viaja como `null`, y la cara humana lo muestra entre corchetes
-  igual que `ps`, porque quien ve `[kworker/0:1]` sabe que no debe matarlo.
+  igual que `ps`. Desde la revisión de más abajo ya no depende de que quien lo
+  vea sepa leer los corchetes: `matar` se niega.
 - **`uninterruptible` se nombra.** Un proceso en `D` está esperando al kernel y
   **las señales no llegan ahí**, así que un `matar` que parece no hacer nada
   tiene su explicación en esa columna.
@@ -151,9 +152,91 @@ los controles de la regla 4:
 - el ensayo, comprobado por el proceso que sigue vivo;
 - `memoria` contra `/proc/meminfo` leído por la shell.
 
-Diecisiete pruebas del motor —incluidas dos que arrancan un proceso real, lo
-matan y le preguntan al kernel con qué señal murió— y once que teclean en el
-prompt de verdad.
+Veinte pruebas del motor —incluidas dos que arrancan un proceso real, lo matan y
+le preguntan al kernel con qué señal murió— y catorce que teclean en el prompt de
+verdad.
+
+## Revisión del 2026-08-23 — dos cosas que aceptan la señal y la tiran
+
+Cesar ensayó `matar` sobre un `kworker` de su máquina y Thalyx contestó *«5 would
+ask to stop (kworker/R-sync_wq)»*. Es mentira, y el decreto de arriba no la
+anticipó: **que `pidfd_send_signal` conteste `0` significa que el kernel se
+quedó con la señal, no que le vaya a pasar algo a alguien.**
+
+Hay dos sujetos que la aceptan y la tiran:
+
+| sujeto | por qué | palabra | remedio |
+|---|---|---|---|
+| un hilo del kernel | no es un programa: `kthreadd` lo arranca con todas las señales ignoradas | `is_kernel_thread` | `cannot` |
+| un proceso que ya terminó (zombi) | ya corrió su última instrucción; sólo es un renglón en la tabla hasta que su padre lo recoja | `already_ended` | `stop_the_parent` |
+
+Los dos quedan **negados antes de mandar nada**, y la negativa se decide después
+de tomar el descriptor y leer la descripción — así lo que se niega es lo que se
+habría señalado, y no lo que tuviera el número un momento antes.
+
+Medido, no recordado: `kill -9` sobre un hilo del kernel contesta `0` y el hilo
+sigue ahí; `pidfd_open` sobre un zombi **funciona**, la señal se acepta y el
+zombi sigue igual de muerto. Las dos cosas se comprobaron corriéndolas.
+
+### Por qué esto es peor que un error
+
+Un error se lee y se corrige. Una respuesta que dice *«se le pidió que pare»*
+sobre algo que nunca se movió enseña que **Thalyx no es confiable**, cuando
+Thalyx sólo era crédulo. Y enseña algo peor todavía: quien lo vea va a probar
+`forzar`, que hace exactamente lo mismo, y va a concluir que ni `forzar`
+funciona.
+
+### `cannot` es una respuesta
+
+`is_kernel_thread` no manda a ningún lado, y ése es el dato: no hay una segunda
+cosa que intentar. Quien recibe un remedio que no existe gasta un ciclo en
+descubrirlo.
+
+`already_ended` sí manda a un lado, y es el único caso de este decreto donde el
+remedio es *otro proceso*: un zombi se va cuando su padre lo recoge o cuando su
+padre se va. Por eso la respuesta lleva el número del padre además de la palabra
+— **un remedio que dice «para al padre» sin decir cuál no se puede ejecutar**.
+Eso obligó a que la forma de negarse pueda cargar hechos, no sólo palabras.
+
+### El ensayo tiene que llegar al mismo veredicto
+
+`ensayo matar 2` se niega igual que `matar 2`, desde la misma función. Un ensayo
+que predice algo que el verbo no hace no es una forma barata de averiguar qué
+pasa: es una respuesta equivocada que hay que desaprender tecleando la de verdad,
+que es el único costo que este verbo existe para quitar.
+
+### Cómo se distingue un hilo del kernel
+
+Por el bit `PF_KTHREAD` (`0x00200000`) del campo 9 de `/proc/<pid>/stat`. No por
+tener la línea de comandos vacía, que también la tiene un zombi.
+
+Ese valor vive en el `include/linux/sched.h` del kernel, que no se le entrega al
+espacio de usuario, así que no se puede citar de un encabezado de esta máquina —
+se **mide**, que es mejor. Sobre los 72 procesos de un sistema corriendo:
+
+```
+AND de los 66 hilos cuyo padre es kthreadd : 0x200040
+OR  de los 6 procesos ordinarios           : 0x400100
+```
+
+El grupo se escogió por ascendencia —el pid 2 y sus hijos—, que es un hecho de la
+tabla de procesos y no de este bit. Dos renglones capturados representan a cada
+grupo en las pruebas.
+
+### Cómo se comprueba
+
+Etapa 32 de `dev/verify.sh`, y la **línea base es el defecto mismo**: `kill -9`
+manda la señal al zombi, la señal se acepta, y el zombi sigue listado. Sin esa
+mitad, negarse a mandarla no se distingue de mandarla.
+
+El control es un proceso ordinario detenido **en la misma sesión**, para que un
+`matar` que simplemente hubiera dejado de funcionar no pase por uno cuidadoso. Y
+la etapa cuenta aparte las señales que sí salieron hacia algo que no se puede
+detener, para que un `matar` crédulo se diagnostique como eso y no como otra cosa.
+
+La etapa **no** le manda `SIGKILL` a `kthreadd` para demostrar que se ignora.
+Mandarle señales al kernel de la máquina de una persona para probar un punto es
+algo que este script no hace; la negativa se comprueba sin eso.
 
 ## Relacionado
 - [[Tareas-Pendientes]]

@@ -14,9 +14,55 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Procesos: el punto 7, y una señal que no puede caer en el número equivocado — 2026-08-23
+> ## `matar` ya no dice que detuvo lo que no se puede detener — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Lo encontró Cesar en su primera sesión con el punto 7: ensayó `matar` sobre un
+> `kworker` y Thalyx contestó *«5 would ask to stop»*. A un hilo del kernel no le
+> llega ninguna señal. Que `pidfd_send_signal` conteste `0` significa que el
+> kernel se quedó con la señal, **no que le vaya a pasar algo a alguien**.
+>
+> Son dos los sujetos que la aceptan y la tiran, y los dos quedan negados antes
+> de mandar nada:
+>
+> | sujeto | palabra | remedio |
+> |---|---|---|
+> | un hilo del kernel | `is_kernel_thread` | `cannot` |
+> | un proceso que ya terminó (zombi) | `already_ended` | `stop_the_parent`, con el número del padre |
+>
+> Es peor que un error: una respuesta que dice *«se le pidió que pare»* sobre algo
+> que nunca se movió enseña que Thalyx no es confiable, cuando Thalyx sólo era
+> crédulo — y quien la vea va a probar `forzar`, que hace exactamente lo mismo.
+>
+> `ensayo matar` se niega igual, desde la misma función: un ensayo que predice
+> algo que el verbo no hace es una respuesta equivocada que hay que desaprender
+> tecleando la de verdad.
+>
+> El hilo del kernel se reconoce por el bit `PF_KTHREAD` del campo 9 de
+> `/proc/<pid>/stat`, **medido y no citado**: ese valor no está en ningún
+> encabezado que se le entregue al espacio de usuario, así que se sacó
+> comparando los 66 hilos cuyo padre es `kthreadd` contra los 6 procesos
+> ordinarios de un sistema corriendo. No se reconoce por la línea de comandos
+> vacía, que también la tiene un zombi.
+>
+> Lo que esto enseñó de las pruebas: **`matar` se había probado once veces en el
+> prompt de verdad y las once con un proceso que sí se podía detener.** La regla
+> nueva está en [[Estrategia-de-Pruebas]] — cuando el éxito de un verbo se toma
+> del valor de retorno de una llamada al sistema, hay que probarlo sobre un
+> sujeto que la llamada acepta y no obedece. Y la línea base de la etapa 32 es el
+> defecto mismo: `kill -9` al zombi, que se acepta y no hace nada.
+>
+> Falta correrlo en tu máquina:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo ./dev/verify.sh
+> ```
+>
+> Revisión completa en [[Procesos]].
+>
+> ## Procesos: el punto 7, y una señal que no puede caer en el número equivocado — 2026-08-23
 >
 > `procesos`, `memoria` y `matar` — todo sobre `/proc`, decreto entero en
 > [[Procesos]]. Con esto la terminal usable llega al punto 7 de 9; quedan la red

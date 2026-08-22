@@ -44,6 +44,25 @@
 //! parent pid as `4350`. So the name is taken between the **first** `(` and the
 //! **last** `)`, and everything after that is split.
 //!
+//! ## What a signal is accepted for and then dropped
+//!
+//! `pidfd_send_signal` returning `0` means the kernel took the signal, not that
+//! anything will happen. There are two subjects it takes a signal for and then
+//! drops it, and on both of them a `matar` that trusted the return value said
+//! the process had been asked to stop while nothing whatsoever changed:
+//!
+//! - a **kernel thread**, which is part of the kernel and not a program. It has
+//!   every signal ignored from the moment `kthreadd` starts it, so `kill -9` on
+//!   one returns `0` and the thread is still there;
+//! - a **zombie**, which has already exited and is only a row in the table
+//!   until its parent collects it. `pidfd_open` succeeds on one, the signal is
+//!   accepted, and it stays exactly as dead as it was.
+//!
+//! Both are refused by [`stop`] before the signal, each naming what would
+//! actually work. Neither was found by reading: the first was found by Cesar
+//! rehearsing `matar` on a `kworker`, the second by a test harness believing a
+//! zombie was a process that had survived being killed.
+//!
 //! ## Rule 10, and it is the ordinary case here
 //!
 //! A process that exits while this is walking `/proc` is not an error: it is
@@ -74,6 +93,10 @@ pub struct Process {
     pub uid: u32,
     /// Seconds since this process started, from the machine's own uptime.
     pub age: u64,
+    /// Part of the kernel rather than a program. Carried on every process
+    /// rather than worked out where it is needed, because it is the difference
+    /// between `matar` doing something and `matar` saying it did.
+    pub kernel_thread: bool,
 }
 
 /// What the kernel says a process is doing.
@@ -195,6 +218,24 @@ pub enum ProcError {
     #[error("`{0}` is not a process number")]
     NotANumber(String),
 
+    /// Part of the kernel, and no signal reaches it. Refused rather than sent,
+    /// because the kernel accepts the signal and drops it, and a `matar` that
+    /// reported that as success would be wrong twice — once about the process
+    /// and once about `forzar`, which does nothing either.
+    #[error(
+        "{pid} ({name}) is part of the kernel, not a program — no signal reaches it, `forzar` included"
+    )]
+    IsKernelThread { pid: i32, name: String },
+
+    /// Already exited, and only still listed because nobody has collected it.
+    /// The remedy is the one place in this file where the answer is another
+    /// process: a zombie goes away when its parent reaps it or when its parent
+    /// does.
+    #[error(
+        "{pid} ({name}) already ended — it is waiting for {parent} to collect it, and stopping {parent} is what clears it"
+    )]
+    AlreadyEnded { pid: i32, name: String, parent: i32 },
+
     #[error("say which process — `procesos` lists them with their numbers")]
     NothingAsked,
 }
@@ -208,14 +249,16 @@ impl ProcError {
             ProcError::NotAllowed { .. } => "not_allowed",
             ProcError::Unreadable { .. } => "unreadable",
             ProcError::NotANumber(_) => "not_a_number",
+            ProcError::IsKernelThread { .. } => "is_kernel_thread",
+            ProcError::AlreadyEnded { .. } => "already_ended",
             ProcError::NothingAsked => "nothing_asked",
         }
     }
 
     /// What would get past this, as a word. `Superficie-para-el-LLM.md`, A2.
     ///
-    /// Two of them are `cannot`, and that is an answer: a caller told to retry
-    /// something that will never work spends its cycles finding that out.
+    /// Three of them are `cannot`, and that is an answer: a caller told to
+    /// retry something that will never work spends its cycles finding that out.
     pub fn remedy(&self) -> &'static str {
         match self {
             ProcError::NoSuchProcess(_) => "list_first",
@@ -224,6 +267,8 @@ impl ProcError {
             ProcError::NotAllowed { .. } => "cannot",
             ProcError::Unreadable { .. } => "cannot",
             ProcError::NotANumber(_) => "give_a_number",
+            ProcError::IsKernelThread { .. } => "cannot",
+            ProcError::AlreadyEnded { .. } => "stop_the_parent",
             ProcError::NothingAsked => "list_first",
         }
     }
@@ -266,6 +311,12 @@ pub fn stop(pid: i32, force: bool) -> Result<Stopped, ProcError> {
 
     let handle = thalyx_syscall::open_process(pid).map_err(|error| classify(pid, error))?;
     let was = one(Path::new(PROC), pid).ok_or(ProcError::NoSuchProcess(pid))?;
+    // Refused here and not earlier, deliberately: the description this reads is
+    // of the process the handle refers to, so what is being refused is what
+    // would have been signalled and not whatever held the number a moment ago.
+    if let Some(refusal) = unstoppable(&was) {
+        return Err(refusal);
+    }
     let signal = if force {
         Signal::Kill
     } else {
@@ -277,6 +328,29 @@ pub fn stop(pid: i32, force: bool) -> Result<Stopped, ProcError> {
         was,
         signal: if force { "kill" } else { "terminate" },
     })
+}
+
+/// Why a signal to this process would be accepted and then dropped, if it would.
+///
+/// Public because `ensayo matar` has to reach the same verdict as `matar`. A
+/// rehearsal that predicts something the real verb does not do is worse than no
+/// rehearsal: it is a rehearsal that has to be re-learned by typing the real
+/// thing.
+pub fn unstoppable(process: &Process) -> Option<ProcError> {
+    if process.kernel_thread {
+        return Some(ProcError::IsKernelThread {
+            pid: process.pid,
+            name: process.name.clone(),
+        });
+    }
+    if process.state == State::Zombie {
+        return Some(ProcError::AlreadyEnded {
+            pid: process.pid,
+            name: process.name.clone(),
+            parent: process.parent,
+        });
+    }
+    None
 }
 
 /// What a process is, without signalling it. What `ensayo matar` answers with.
@@ -405,6 +479,7 @@ fn one(root: &Path, pid: i32) -> Option<Process> {
         threads: parsed.threads,
         uid,
         age,
+        kernel_thread: parsed.kernel_thread,
     })
 }
 
@@ -415,6 +490,7 @@ struct FromStat {
     threads: u32,
     /// Seconds after boot at which this process started.
     started_at: u64,
+    kernel_thread: bool,
 }
 
 /// Parse one line of `/proc/<pid>/stat`.
@@ -446,6 +522,7 @@ fn parse_stat(line: &str) -> Option<FromStat> {
     // there is and matching it is what makes this checkable.
     let state = State::from_letter(rest.first()?.chars().next()?);
     let parent = rest.get(1)?.parse().ok()?;
+    let flags: u64 = rest.get(6)?.parse().ok()?;
     let threads = rest.get(17)?.parse().ok()?;
     let started_ticks: u64 = rest.get(19)?.parse().ok()?;
 
@@ -455,8 +532,32 @@ fn parse_stat(line: &str) -> Option<FromStat> {
         parent,
         threads,
         started_at: started_ticks / thalyx_syscall::clock_ticks(),
+        kernel_thread: flags & PF_KTHREAD != 0,
     })
 }
+
+/// The bit the kernel sets on a task it started itself.
+///
+/// `PF_KTHREAD` lives in the kernel's own `include/linux/sched.h`, which is not
+/// shipped to userspace, so the value is not quotable from a header on this
+/// machine — it is *measured*, which is better. On 2026-08-23, over the 72
+/// processes of one running system:
+///
+/// ```text
+/// AND over the 66 threads whose parent is kthreadd : 0x200040
+/// OR  over the 6 ordinary processes                : 0x400100
+/// ```
+///
+/// `0x200000` is set in every one of the first group and in none of the second,
+/// and the group was chosen by ancestry — pid 2 and its children — which is a
+/// fact about the process table rather than about this bit. Two captured lines
+/// stand for each group in the tests below.
+///
+/// A kernel whose `stat` did not carry it would misread this as a program, and
+/// the answer would be today's: a `matar` that says it asked. That is the one
+/// direction this cannot be made safe from here, and it is why the refusal is
+/// checked again in `dev/verify.sh` against a thread the machine really has.
+const PF_KTHREAD: u64 = 0x0020_0000;
 
 /// Resident bytes, from the second field of `/proc/<pid>/statm`.
 ///
@@ -554,6 +655,18 @@ mod tests {
     /// times on somebody else's output, and the second time it accused
     /// llama.cpp of ignoring a grammar it had just obeyed.
     const WEIRD: &str = "4709 (we (ird) x) S 4706 4706 4350 0 -1 4194304 83 0 0 0 0 0 0 0 20 0 1 0 16703 2772992 397 18446744073709551615 94342949076992 94342949090993 140731176927040 0 0 0 0 0 0 1 0 0 17 1 0 0 0 0 0 94342949100496 94342949101720 94343469514752 140731176931976 140731176932069 140731176932069 140731176939421 0";
+
+    /// A real kernel thread, captured on 2026-08-23 from `/proc/2/stat`.
+    ///
+    /// The one that matters here is field 9, the flags: `2129984` is
+    /// `0x208040`, and `0x200000` of it is `PF_KTHREAD`. Compare it with the
+    /// `4194304` — `0x400000`, no such bit — that both the lines below carry.
+    const KTHREAD: &str = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 1 0 0 20 0 1 0 42 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0";
+
+    /// A second one, captured the same day from `/proc/5/stat` — a worker with
+    /// different flags again (`69238880`, `0x4208060`), so the test is not
+    /// about one thread's exact number.
+    const WORKER: &str = "5 (kworker/R-sync_wq) I 2 0 0 0 -1 69238880 0 0 0 0 0 0 0 0 0 -20 1 0 43 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 1 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
 
     /// The ordinary case, captured the same day.
     const PLAIN: &str = "4341 (cat) R 3985 4341 3985 0 -1 4194304 83 0 0 0 0 0 0 0 20 0 1 0 15529 2920448 367 18446744073709551615 94835620790272 94835620807857 140722402230496 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0 94835620821648 94835620823144 94836491714560 140722402239341 140722402239361 140722402239361 140722402246635 0";
@@ -815,6 +928,83 @@ SwapFree:              0 kB
             stop(candidate, false).unwrap_err(),
             ProcError::NoSuchProcess(_)
         ));
+    }
+
+    #[test]
+    fn the_flag_the_kernel_sets_on_its_own_threads_is_what_tells_them_apart() {
+        // Not the empty command line, which a zombie has too, and not the
+        // parent being 2, which is true of a kernel thread and of nothing a
+        // person can check without walking the table.
+        assert!(parse_stat(KTHREAD).unwrap().kernel_thread);
+        assert!(parse_stat(WORKER).unwrap().kernel_thread);
+        assert!(!parse_stat(PLAIN).unwrap().kernel_thread);
+        assert!(!parse_stat(WEIRD).unwrap().kernel_thread);
+    }
+
+    #[test]
+    fn a_kernel_thread_is_refused_rather_than_sent_a_signal_that_is_dropped() {
+        // pid 2 is `kthreadd` on every Linux there is, and the precondition is
+        // read from `comm` rather than from the flag under test — a control
+        // that asks the same question as the claim is not a control.
+        let comm = std::fs::read_to_string("/proc/2/comm").unwrap_or_default();
+        if comm.trim() != "kthreadd" {
+            if std::env::var_os("THALYX_REQUIRE_KERNEL_THREAD_TESTS").is_some() {
+                panic!("NOT PROVEN: pid 2 is not kthreadd here, and this run demanded it");
+            }
+            eprintln!("NOT PROVEN: pid 2 is `{}`, not kthreadd", comm.trim());
+            return;
+        }
+
+        let described = describe(2).expect("kthreadd is there");
+        assert!(described.kernel_thread);
+        // Both spellings, because `forzar` on a kernel thread is exactly as
+        // useless as asking, and a refusal that only covered one would teach
+        // the wrong lesson.
+        for force in [false, true] {
+            assert!(
+                matches!(
+                    stop(2, force).unwrap_err(),
+                    ProcError::IsKernelThread { .. }
+                ),
+                "a signal was sent to kthreadd"
+            );
+        }
+        // The control: it is still there, which it would also be if the signal
+        // had been sent — which is the entire point of refusing instead.
+        assert!(describe(2).is_ok());
+    }
+
+    #[test]
+    fn a_process_that_already_ended_is_refused_and_told_who_can_clear_it() {
+        // A real zombie, made the only way there is: a child that exits and a
+        // parent that has not reaped it yet. `Child`'s drop does not reap, so
+        // this stays a zombie until the `wait` at the bottom.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("true(1) is present");
+        let pid = child.id() as i32;
+        let mut state = None;
+        for _ in 0..200 {
+            state = describe(pid).ok().map(|process| process.state);
+            if state == Some(State::Zombie) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(state, Some(State::Zombie), "it never became a zombie");
+
+        // Forced, because `kill -9` is what a person reaches for when a process
+        // will not go away, and on a zombie the kernel accepts it and drops it.
+        match stop(pid, true).unwrap_err() {
+            ProcError::AlreadyEnded { parent, .. } => assert_eq!(
+                parent,
+                std::process::id() as i32,
+                "the remedy named somebody who cannot clear it"
+            ),
+            other => panic!("a zombie was signalled instead of refused: {other}"),
+        }
+
+        child.wait().expect("reaping it");
     }
 
     #[test]
