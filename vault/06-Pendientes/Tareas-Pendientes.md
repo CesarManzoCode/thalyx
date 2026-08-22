@@ -119,7 +119,21 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       construirlo enseñó están en [[Estrategia-de-Pruebas]]: una tecla que el
       kernel se come, un pty sin tamaño de ventana, y una confirmación que se
       traga la tecla que la contesta.
-- [ ] **6. `buscar`** por nombre y por contenido.
+- [x] **6. `buscar` por nombre y por contenido** — hecho el 2026-08-23, y son
+      **dos verbos nuevos** por decisión de Cesar: `encontrar <patrón>` por
+      nombre y `contenido <texto>` por texto, con `buscar` intacto en su tercera
+      pregunta —dónde se declara un nombre y quién lo usa, desde el índice—.
+      Tres preguntas, tres verbos, porque un verbo cuyo significado depende de
+      una bandera se puede pedir mal en silencio y las tres respuestas se ven
+      igual. El texto es **literal**, también decisión suya: la imagen lleva el
+      kernel y un programa, y un dialecto de regex aquí sería decidir un pedazo
+      del punto 9 adentro de una caja donde nadie lo buscaría. Las banderas van
+      adelante y el sujeto es el resto del renglón, así que un texto con espacios
+      no necesita comillas —que también son el punto 9—. La caminata del árbol se
+      movió a `thalyx-files` para que siga siendo una sola: son cuatro llamadores
+      ahora, y los dos nuevos son los que una persona compara contra el índice.
+      Etapa 30 de `verify.sh`, con `find(1)` y `sed(1)` de controles. Ver
+      [[Busqueda]].
 - [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
       va sobre `/proc`.
 - [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de

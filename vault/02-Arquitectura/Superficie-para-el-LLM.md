@@ -425,6 +425,28 @@ mezcla se resolvió a favor de no construir nada.
 
 ## Revisiones
 
+### 2026-08-23 — Dos verbos que este catálogo no pidió, y por qué eso está bien
+
+`encontrar` y `contenido` no son puntos de este catálogo: salen del punto 6 de
+la terminal usable de [[Tareas-Pendientes]], que es la capa 1 de
+[[Principio-Doble-Ruta]] y no la superficie del agente. Se anotan aquí de todas
+formas porque **quedan expuestos en la cara estructurada**, con los mismos seis
+campos de ventana que todo lo demás, y porque tocan C2 de frente.
+
+La relación con C2 hay que decirla, porque un agente que la ignore paga los
+cinco costos: `buscar` sigue siendo la mejor respuesta donde aplica —cinco
+lenguajes, sobre un árbol indexado— y `contenido` es la que aplica en todo lo
+demás. La regla de desempate no cambia: quien pueda usar el índice, que use el
+índice; `contenido` es lo que había que construir para que *no poder* dejara de
+significar *no hay respuesta*. Ver [[Busqueda]].
+
+Y una consecuencia para este documento: **estar fuera del catálogo tampoco
+prohíbe construir nada.** Lo que el catálogo decide es qué se construye *para el
+LLM* y con qué criterio; un verbo que una persona necesita se construye porque
+una persona lo necesita, y entonces nace con sus dos caras como todo lo demás.
+
+
+
 ### 2026-08-10 — El costo de equivocarse incluye la respuesta que nunca llega
 Lo que construir enseñó y el decreto no anticipaba.
 

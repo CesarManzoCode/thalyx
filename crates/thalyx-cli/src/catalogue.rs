@@ -291,6 +291,45 @@ pub const VERBS: &[Verb] = &[
         errors: &["unreadable", "incomplete", "bad_cursor"],
         summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
     },
+    // Point 6 of the usable terminal, and they sit here rather than with the
+    // file verbs because the question above them is the one a caller has to get
+    // right: `buscar` reads the index and knows what a symbol is, these two read
+    // the tree and know what a byte is. A caller that picks the wrong one gets a
+    // correct answer to a question it did not ask.
+    Verb {
+        id: "find",
+        names: &["encontrar", "find"],
+        takes: &["name-pattern", "en=folder"],
+        flags: WINDOW_FLAGS,
+        answers: Some("find"),
+        changes: false,
+        errors: &[
+            "absent",
+            "unreadable",
+            "not_a_directory",
+            "nothing_asked",
+            "tree_too_large",
+            "bad_cursor",
+        ],
+        summary: "Files whose name matches, anywhere below. `*` and `?`, the same as `rm`.",
+    },
+    Verb {
+        id: "grep",
+        names: &["contenido", "grep"],
+        takes: &["text", "en=folder"],
+        flags: WINDOW_FLAGS,
+        answers: Some("grep"),
+        changes: false,
+        errors: &[
+            "absent",
+            "unreadable",
+            "not_a_directory",
+            "nothing_asked",
+            "tree_too_large",
+            "bad_cursor",
+        ],
+        summary: "Lines holding this text, literally. Flags go first; the rest of the line is the text.",
+    },
     Verb {
         id: "history",
         names: &["historia", "history"],

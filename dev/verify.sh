@@ -4010,6 +4010,120 @@ else
     failed "a file Thalyx refused to edit changed anyway — that is the one thing a refusal must never do; see $WORK/edit-lines.log"
 fi
 
+# ------------------------------------------------ 30. finding things in a tree
+
+step "30. finding a file by name, and finding text inside files"
+
+# Point 6 of the usable terminal, and what a real machine adds over the unit
+# tests is one thing: the tree is a real filesystem with real inodes, and
+# everything Thalyx says about it is checked against a tool that is not Thalyx.
+#
+# Four claims, each with the control that makes its result mean something —
+# rule 4, because a search that found nothing and a search that ran against
+# nothing look identical without one:
+#
+#   1. `encontrar` finds a file however deep it is, and `find` agrees on the
+#      list. The control is a pattern that must match nothing, in the same
+#      tree, so "it finds everything" fails here rather than passing as 1.
+#   2. `contenido` names the line, and `sed` is asked what is on that line.
+#      The control is the literal-text claim: `login()` with its parentheses
+#      must not match the prose that says `login`.
+#   3. the hidden directory is not walked, and the control is that the same
+#      search does find the ordinary files — otherwise a walk that found
+#      nothing at all would read as a walk that correctly skipped `.git`.
+#   4. a binary in the tree is skipped rather than printed. The control is the
+#      same word in a text file next to it, which must be found: a verb that
+#      refused everything would pass 4 and be useless.
+
+SEARCH_STORE="$WORK/search-store"
+SEARCH_TREE="$WORK/search-tree"
+mkdir -p "$SEARCH_STORE" "$SEARCH_TREE/src/deep" "$SEARCH_TREE/.git"
+
+printf 'pub fn login() {}\n'            > "$SEARCH_TREE/src/auth.rs"
+printf 'fn main() {\n    login();\n}\n' > "$SEARCH_TREE/src/main.rs"
+printf '// login is called elsewhere\n' > "$SEARCH_TREE/src/deep/util.rs"
+printf 'remember the login page\n'      > "$SEARCH_TREE/notas.txt"
+printf 'login = nobody\n'               > "$SEARCH_TREE/.git/config"
+printf 'login()\000\001\002login()\n'   > "$SEARCH_TREE/thing.bin"
+
+printf '%s\n' "structured on" \
+    "encontrar en=$SEARCH_TREE *.rs" \
+    "encontrar en=$SEARCH_TREE *.zzz" \
+    "contenido en=$SEARCH_TREE login()" \
+    "contenido en=$SEARCH_TREE login" \
+    salir | \
+    THALYX_ROOT="$SEARCH_STORE" "$THALYX" session > "$WORK/search.log" 2>&1
+
+# What the two verbs answered, pulled out as plain lines so the shell can
+# compare them against what the other tools say.
+python3 - "$WORK/search.log" > "$WORK/search-facts" <<'EOF'
+import json, shlex, sys
+
+finds, greps = [], []
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "find":
+        finds.append(value)
+    elif value.get("op") == "grep":
+        greps.append(value)
+
+# Quoted, because these are sourced by the shell and every one of them holds
+# spaces. Unquoted, `names=a.rs b.rs` assigns the first and tries to run the
+# second — which fails as "Thalyx answered nothing" and is the harness.
+def say(key, text):
+    print(f"{key}={shlex.quote(str(text))}")
+
+if len(finds) == 2 and len(greps) == 2:
+    say("names", " ".join(row["path"] for row in finds[0]["matches"]))
+    say("no_names", finds[1]["total"])
+    say("looked_at", finds[1]["looked_at"])
+    say("strict", " ".join(f'{h["path"]}:{h["line"]}' for h in greps[0]["hits"]))
+    say("loose", " ".join(sorted({h["path"] for h in greps[1]["hits"]})))
+    say("not_text", greps[1]["not_text"])
+else:
+    say("names", "the session did not answer both verbs twice")
+EOF
+# Defaulted before sourcing, so that a python that produced nothing fails this
+# stage with a message instead of aborting the whole run on `set -u`.
+names=""; no_names=""; looked_at=0; strict=""; loose=""; not_text=""
+# shellcheck disable=SC1090
+. "$WORK/search-facts"
+
+# The controls, from tools that are not Thalyx. `find` is asked the same
+# question and its answer is made relative and sorted the same way.
+CONTROL_NAMES=$(cd "$SEARCH_TREE" && find . -name '*.rs' -type f |
+                sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+# And `sed` is asked what is actually on the line Thalyx named, so "it said
+# line 2" and "line 2 is the one with the call on it" stay two claims.
+CONTROL_LINE=$(sed -n '2p' "$SEARCH_TREE/src/main.rs" | tr -d ' ')
+
+if [ "$names" = "$CONTROL_NAMES" ] \
+   && [ "$no_names" = "0" ] && [ "${looked_at:-0}" -gt 3 ] \
+   && [ "$strict" = "src/auth.rs:1 src/main.rs:2" ] \
+   && [ "$CONTROL_LINE" = "login();" ] \
+   && [ "$loose" = "notas.txt src/auth.rs src/deep/util.rs src/main.rs" ] \
+   && [ "$not_text" = "1" ]; then
+    proven "the tree was searched by name and by text: find(1) agrees on the $(echo "$names" | wc -w) names it found, sed(1) agrees on the line it named, .git was never walked and the binary was skipped rather than printed"
+elif [ "$names" != "$CONTROL_NAMES" ]; then
+    failed "encontrar said '$names' where find(1) says '$CONTROL_NAMES'; see $WORK/search.log"
+elif [ "$no_names" != "0" ] || [ "${looked_at:-0}" -le 3 ]; then
+    failed "a pattern that matches nothing answered $no_names match(es) after looking at ${looked_at:-0} files; see $WORK/search.log"
+elif [ "$strict" != "src/auth.rs:1 src/main.rs:2" ]; then
+    failed "contenido 'login()' answered '$strict'; the text is supposed to be literal, so the prose saying 'login' must not match; see $WORK/search.log"
+elif [ "$CONTROL_LINE" != "login();" ]; then
+    failed "the control is wrong, not Thalyx: line 2 of main.rs is '$CONTROL_LINE'"
+elif [ "$loose" != "notas.txt src/auth.rs src/deep/util.rs src/main.rs" ]; then
+    failed "contenido 'login' answered about '$loose' — .git/config says login and must never be reached; see $WORK/search.log"
+else
+    failed "the binary in the tree was counted as $not_text file(s) skipped instead of 1; see $WORK/search.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'
