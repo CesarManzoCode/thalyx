@@ -14,9 +14,35 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Instalar dos veces sobre el mismo disco — 2026-08-23
+> ## Comprobado en el hierro: 138 · 2 · 0 — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Cesar cerró el lazo de verificación de los tres arreglos de este
+> día: `proven 138 · not proven 2 · failed 0`. Los dos NOT PROVEN son los de
+> siempre y no son defectos — no hay modelo instalado y no hay imagen construida
+> (`make -C image`).
+>
+> Lo que eso deja probado **en hierro**, que es lo único que cuenta para estas
+> tres cosas:
+>
+> - `matar` se niega ante un hilo del kernel y ante un proceso que ya terminó, en
+>   vez de decir que los detuvo (etapa 32, con la línea base y el control);
+> - **instalar dos veces sobre el mismo disco funciona** — que era el `failed 1`
+>   de la corrida anterior. Sostener las particiones abiertas sí impide el segundo
+>   barrido del kernel; era lo único de ese arreglo que este contenedor no podía
+>   contestar;
+> - la prueba del nodo ya no afirma un errno, así que la suite pasa en una máquina
+>   que monta `/tmp` con `nodev`.
+>
+> **La terminal usable llega a 7 de 9 y los dos que faltan son decisiones suyas:**
+> el punto 8 (red) sólo se verifica en su hierro y se cruza con la Fase 2, y el
+> punto 9 (lenguaje de shell) es decreto antes que código. Nada más está
+> bloqueado.
+
+> ## Instalar dos veces sobre el mismo disco — 2026-08-23
+>
+> Cómo se llegó.
 >
 > **Corregido el mismo día:** la prueba nueva afirmaba que abrir el nodo da
 > `ENXIO`, y en tu Fedora dio `EACCES` — porque `/tmp` está montado con `nodev` y
