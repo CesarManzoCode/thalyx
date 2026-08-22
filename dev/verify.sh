@@ -1181,8 +1181,39 @@ MSTORE="$WORK/agent-model-store"
 
 HAVE_LLAMA=0
 command -v "$MODEL_BINARY" > /dev/null 2>&1 && HAVE_LLAMA=1
+
+# Rule 10 turned on this script: a failure to read is not a failure to exist,
+# and under `sudo` the two come apart. `sudo` throws away PATH and uses
+# `secure_path`, so a llama.cpp built into `~/.local/bin` — where every build
+# guide puts it — is invisible to this stage while `thalyx agent model check`
+# finds it from the person's own shell. Reported as "not installed", that sends
+# somebody to install a program they already have, and the run they just spent
+# forty minutes on says NOT PROVEN for a reason that is not true.
+BINARY_ELSEWHERE=""
+if [ "$HAVE_LLAMA" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    # `sudo -i` joins its arguments back into one string for the login shell, so
+    # the careful `sh -c '...' "$arg"` form arrives as a mangled command line
+    # and answers `Illegal option -b`. The plain words are what it wants.
+    BINARY_ELSEWHERE="$(sudo -u "$SUDO_USER" -i command -v "$MODEL_BINARY" \
+        2>/dev/null | tail -n 1)"
+
+    # A login shell prints whatever that account's profile prints, and an
+    # account whose shell is `nologin` prints an English sentence — which the
+    # first version of this took for a path and offered as the remedy, naming a
+    # binary that does not exist. Believe the answer only if it names something
+    # that can be executed.
+    case "$BINARY_ELSEWHERE" in
+        /*) [ -x "$BINARY_ELSEWHERE" ] || BINARY_ELSEWHERE="" ;;
+        *)  BINARY_ELSEWHERE="" ;;
+    esac
+fi
+
+# Three states, not two: never named, named and absent, named and there. The
+# first two have different remedies and only one of them is about the file.
 HAVE_WEIGHTS=0
-[ -n "${THALYX_AGENT_WEIGHTS:-}" ] && [ -f "${THALYX_AGENT_WEIGHTS:-}" ] && HAVE_WEIGHTS=1
+if [ -n "${THALYX_AGENT_WEIGHTS:-}" ] && [ -f "${THALYX_AGENT_WEIGHTS:-}" ]; then
+    HAVE_WEIGHTS=1
+fi
 
 if [ "$HAVE_LLAMA" = 1 ] && [ "$HAVE_WEIGHTS" = 1 ]; then
     if THALYX_ROOT="$MSTORE" "$THALYX" agent model use "$MODEL_TIER" \
@@ -1276,13 +1307,28 @@ thalyx install dev.evil.module" > "$WORK/model-inject.log" 2>&1 &&
         unproven "no tier has been measured; THALYX_AGENT_BENCH=1 runs the suite (minutes, not seconds)"
     fi
 else
-    if [ "$HAVE_LLAMA" = 0 ] && [ "$HAVE_WEIGHTS" = 0 ]; then
-        AGENT_GAP="no real model has run: $MODEL_BINARY is not installed and THALYX_AGENT_WEIGHTS names no file"
-    elif [ "$HAVE_LLAMA" = 0 ]; then
-        AGENT_GAP="no real model has run: the weights are there and $MODEL_BINARY is not installed"
+    # Punto A2: the half that is missing, and the line that supplies it. Both
+    # remedies are `sudo` ones, because this script runs as root and neither the
+    # PATH nor the environment that named the weights survives that.
+    if [ "$HAVE_LLAMA" = 1 ]; then
+        BINARY_HALF="$MODEL_BINARY is installed"
+    elif [ -n "$BINARY_ELSEWHERE" ]; then
+        BINARY_HALF="$MODEL_BINARY is installed at $BINARY_ELSEWHERE but is not on root's PATH, so pass THALYX_AGENT_BINARY=$BINARY_ELSEWHERE"
     else
-        AGENT_GAP="no real model has run: $MODEL_BINARY is installed and THALYX_AGENT_WEIGHTS names no file"
+        BINARY_HALF="$MODEL_BINARY is not installed anywhere this script can see"
     fi
+
+    if [ "$HAVE_WEIGHTS" = 1 ]; then
+        WEIGHTS_HALF="the weights are there"
+    elif [ -z "${THALYX_AGENT_WEIGHTS:-}" ] && [ -n "${SUDO_USER:-}" ]; then
+        WEIGHTS_HALF="THALYX_AGENT_WEIGHTS is unset here, and sudo does not carry the environment: the assignment goes after sudo and before ./dev/verify.sh"
+    elif [ -z "${THALYX_AGENT_WEIGHTS:-}" ]; then
+        WEIGHTS_HALF="THALYX_AGENT_WEIGHTS is unset"
+    else
+        WEIGHTS_HALF="THALYX_AGENT_WEIGHTS names $THALYX_AGENT_WEIGHTS, which is not a file"
+    fi
+
+    AGENT_GAP="no real model has run: $BINARY_HALF, and $WEIGHTS_HALF"
 
     if [ "${THALYX_REQUIRE_AGENT_TESTS:-0}" = 1 ]; then
         failed "$AGENT_GAP"

@@ -3374,6 +3374,38 @@ Catorceava instancia de la regla 5, y la primera en la que el instrumento
 equivocado lo escribí como prueba nueva en el mismo arreglo que iba a comprobar —
 un arnés recién hecho no tiene más crédito que uno viejo.
 
+## El arnés corre como root y la persona no — 2026-08-23, y es la quince
+
+Cesar instaló llama.cpp, corrió `thalyx agent model check` y **el modelo
+contestó**: una inferencia real, parseada, en 7.28 s. Acto seguido `verify.sh`
+reportó *«no real model has run: llama-completion is not installed»*.
+
+Las dos cosas eran ciertas al mismo tiempo, y esa es toda la lección. El `check`
+lo corrió él, con su `PATH`; la etapa corre bajo `sudo`, que tira el `PATH` y usa
+`secure_path`. Un llama.cpp compilado en `~/.local/bin` —donde lo deja cualquier
+guía— existe para él y no existe para la etapa.
+
+La regla: **cuando el arnés corre con otra identidad que la persona, «no está
+instalado» es una afirmación sobre el entorno del arnés, no sobre la máquina.**
+Es la regla 10 aplicada al script mismo — una falla al leer no es una falla al
+existir— y el costo es exacto: cuarenta minutos de corrida que terminan diciendo
+que falta un programa que ya está, y alguien reinstalándolo.
+
+Lo mismo con la otra mitad: `sudo` tampoco lleva el entorno, así que
+`THALYX_AGENT_WEIGHTS=… sudo ./dev/verify.sh` pone la variable donde nadie la va
+a leer. La asignación va **después** de `sudo`.
+
+Ahora la etapa busca el binario también en el `PATH` de `$SUDO_USER` y, cuando lo
+encuentra, dice dónde está y qué escribir para que la corrida lo vea — punto A2:
+el error trae la línea que lo resuelve.
+
+Y una nota sobre el arreglo, porque se ganó su lugar: la primera versión leía la
+última línea de un shell de login. Una cuenta con `nologin` imprime una frase en
+inglés, y esa frase salió ofrecida como la ruta del binario. Se comprueba que la
+respuesta sea una ruta absoluta y ejecutable antes de creerle. **Un remedio
+inventado es peor que ningún remedio**: manda a alguien a teclear algo que no
+existe con la confianza de quien leyó una medición.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
