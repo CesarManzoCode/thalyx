@@ -28,10 +28,14 @@
 //! nothing, and the person sees their own words in the answer and moves the
 //! flag. Rule 9 — the cautious answer, never the plausible one.
 //!
-//! It also means the subject is **the rest of the line, verbatim**, so text
-//! with spaces needs no quotes. That matters more than it looks: whether Thalyx
-//! has quoting at all is point 9 of the same list and is explicitly *decree
-//! before code*. A search verb that invented quotes would be deciding it here.
+//! It also means the subject is **everything after the flags**, joined with
+//! single spaces — `contenido fn main` looks for `fn main` and needs no quotes.
+//! Until 2026-08-23 it was the rest of the line untouched, because whether
+//! Thalyx had quoting at all was point 9 and undecided; a search verb that
+//! invented quotes would have been deciding it. Cesar decided it that day, so a
+//! run of spaces now collapses the way it does in every terminal and
+//! `contenido "fn  main"` is how the other thing is said. See
+//! `vault/02-Arquitectura/Palabras.md`.
 
 use crate::files::{Face, Where};
 use thalyx_files::search::{Found, Hit, Named};
@@ -225,16 +229,14 @@ impl Asking {
 fn parse(rest: &str, face: Face, op: &str) -> Option<Asking> {
     let mut window = Asked::default();
     let mut folder = String::new();
-    let mut remainder = rest.trim_start();
+    let given = crate::words::asked(face, op, rest)?;
+    let mut remainder = given.as_slice();
 
-    loop {
-        let (word, after) = match remainder.split_once(char::is_whitespace) {
-            Some((word, after)) => (word, after.trim_start()),
-            // The last word of the line is still a candidate flag: `contenido
-            // en=src` with nothing after it is a folder and an empty subject,
-            // which is refused below by name rather than by searching for "".
-            None => (remainder, ""),
-        };
+    while let Some(head) = remainder.first() {
+        // The last word of the line is still a candidate flag: `contenido
+        // en=src` with nothing after it is a folder and an empty subject, which
+        // is refused below by name rather than by searching for "".
+        let word = head.as_str();
         match word.split_once('=') {
             Some(("limite" | "limit", count)) => match count.parse::<usize>() {
                 Ok(limit) => window.limit = limit,
@@ -256,10 +258,13 @@ fn parse(rest: &str, face: Face, op: &str) -> Option<Asking> {
             Some(("en" | "in", named)) => folder = named.to_string(),
             _ => break,
         }
-        remainder = after;
+        remainder = &remainder[1..];
     }
 
-    let subject = remainder.to_string();
+    // Joined with single spaces, which is what several words mean as one
+    // subject. `contenido "fn  main"` is how two spaces are asked for, the same
+    // way they are asked for anywhere else.
+    let subject = crate::words::phrase(remainder);
     if subject.is_empty() {
         declined(
             face,
@@ -331,13 +336,26 @@ mod tests {
     }
 
     #[test]
-    fn the_subject_keeps_the_spaces_it_was_typed_with() {
-        // No quoting language is invented here, so the only way text with
-        // spaces can work is by the subject being the rest of the line. A
-        // parser that split on whitespace would search for "fn" and drop
-        // "main" without saying so.
-        let asked = asking("fn  main").expect("a subject");
-        assert_eq!(asked.subject, "fn  main");
+    fn a_subject_of_several_words_stays_one_subject() {
+        // The thing this has to keep doing: `contenido fn main` searches for
+        // `fn main`. A parser that split on whitespace and took the first word
+        // would search for "fn" and drop "main" without saying so.
+        assert_eq!(asking("fn main").expect("a subject").subject, "fn main");
+    }
+
+    #[test]
+    fn a_run_of_spaces_collapses_unless_it_is_quoted() {
+        // Changed on 2026-08-23, when Cesar decided the line gets quoting: this
+        // used to keep the run because the subject was the rest of the line
+        // untouched, and there was no way to ask for it back. Now it collapses
+        // the way it does in every terminal, and the quotes are how the other
+        // thing is said — which is the same rule a whole shell language would
+        // bring later, so nobody has to unlearn this one.
+        assert_eq!(asking("fn  main").expect("a subject").subject, "fn main");
+        assert_eq!(
+            asking(r#""fn  main""#).expect("a subject").subject,
+            "fn  main"
+        );
     }
 
     #[test]

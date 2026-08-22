@@ -299,11 +299,16 @@ impl Asked {
     ///
     /// The Spanish words are whole arguments and not letters, so `todo` cannot
     /// collide with a `-t` that might exist later.
-    fn parse(rest: &str) -> Self {
+    /// Takes the words rather than the line: the splitting happens once, in
+    /// `words.rs`, so that `ls "mi carpeta"` and `rm "mi carpeta"` agree about
+    /// where a name stops. A flag is read off the text and never off the quoting
+    /// — `ls "-la"` lists everything, exactly as it does in a shell, because a
+    /// shell's quoting speaks to the shell and not to the program.
+    fn parse(given: &[crate::words::Word]) -> Self {
         let mut asked = Asked::default();
         let mut place = Vec::new();
 
-        for word in rest.split_whitespace() {
+        for word in given.iter().map(crate::words::Word::as_str) {
             // `nombre=valor` before anything else, and only when the value is
             // one this understands. A file really named `limite=x` is
             // vanishingly rare and a mis-typed number is not — so a value that
@@ -391,7 +396,10 @@ fn window_asked(asked: &Asked) -> Result<thalyx_files::window::Asked, thalyx_fil
 /// That is the tie-break rule of the objective decree: the LLM is never given
 /// less, and a human comfort is never allowed to cost it capability.
 pub fn look(here: &Where, rest: &str, face: Face) {
-    let asked = Asked::parse(rest);
+    let Some(given) = crate::words::asked(face, "list", rest) else {
+        return;
+    };
+    let asked = Asked::parse(&given);
     let target = if asked.place.is_empty() {
         here.at().to_path_buf()
     } else {
@@ -630,11 +638,13 @@ fn print_excerpt(target: &Path, excerpt: &Excerpt) {
 /// A pattern that matches nothing comes back as **the pattern itself**, so the
 /// error a person reads names what they typed. Silently doing nothing is the
 /// one outcome that leaves them believing something happened.
-fn targets(here: &Where, word: &str) -> Vec<PathBuf> {
-    if !word.contains('*') && !word.contains('?') {
-        return vec![thalyx_files::resolve(here.at(), word)];
+fn targets(here: &Where, word: &crate::words::Word) -> Vec<PathBuf> {
+    // Asked of the word rather than of its text: `rm "a*b"` names one oddly
+    // named file and `rm a*b` names several, and the quotes are gone by here.
+    if !word.is_pattern() {
+        return vec![thalyx_files::resolve(here.at(), word.as_str())];
     }
-    let resolved = thalyx_files::resolve(here.at(), word);
+    let resolved = thalyx_files::resolve(here.at(), word.as_str());
     let (folder, pattern) = match (resolved.parent(), resolved.file_name()) {
         (Some(folder), Some(name)) => (folder.to_path_buf(), name.to_string_lossy().to_string()),
         _ => return vec![resolved],
@@ -770,10 +780,13 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 incomplete(face, "rehearse", "which one", "Which one.");
                 return Ok(());
             }
-            arguments
-                .split_whitespace()
+            let Some(named) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
+            named
+                .iter()
                 .map(|word| {
-                    let path = thalyx_files::resolve(here.at(), word);
+                    let path = thalyx_files::resolve(here.at(), word.as_str());
                     if directory {
                         thalyx_files::foresee_make_directory(&path)
                     } else {
@@ -783,7 +796,9 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .collect()
         }
         "copy" | "move" => {
-            let words: Vec<&str> = arguments.split_whitespace().collect();
+            let Some(words) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
             if words.len() != 2 {
                 incomplete(
                     face,
@@ -793,8 +808,8 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 );
                 return Ok(());
             }
-            let from = thalyx_files::resolve(here.at(), words[0]);
-            let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
+            let from = thalyx_files::resolve(here.at(), words[0].as_str());
+            let to = destination(&from, thalyx_files::resolve(here.at(), words[1].as_str()));
             vec![if verb.id == "move" {
                 thalyx_files::foresee_move(&from, &to)
             } else {
@@ -806,8 +821,11 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 incomplete(face, "rehearse", "which one", "Which one.");
                 return Ok(());
             }
+            let Some(named) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
             let mut chosen = Vec::new();
-            for word in arguments.split_whitespace() {
+            for word in &named {
                 chosen.extend(targets(here, word));
             }
             chosen
@@ -887,10 +905,13 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
         return Ok(());
     }
 
-    let outcomes: Outcomes = rest
-        .split_whitespace()
+    let Some(named) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let outcomes: Outcomes = named
+        .iter()
         .map(|word| {
-            let path = thalyx_files::resolve(here.at(), word);
+            let path = thalyx_files::resolve(here.at(), word.as_str());
             if directory {
                 thalyx_files::make_directory(&path)
             } else {
@@ -906,7 +927,9 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
 /// `cp <de> <a>` and `mv <de> <a>`.
 pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible {
     let op = if moving { "move" } else { "copy" };
-    let words: Vec<&str> = rest.split_whitespace().collect();
+    let Some(words) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
     if words.len() != 2 {
         incomplete(
             face,
@@ -917,8 +940,8 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
         return Ok(());
     }
 
-    let from = thalyx_files::resolve(here.at(), words[0]);
-    let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
+    let from = thalyx_files::resolve(here.at(), words[0].as_str());
+    let to = destination(&from, thalyx_files::resolve(here.at(), words[1].as_str()));
 
     let outcome = if moving {
         thalyx_files::move_to(&from, &to)
@@ -937,8 +960,11 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
         return Ok(());
     }
 
+    let Some(named) = crate::words::asked(face, "remove", rest) else {
+        return Ok(());
+    };
     let mut chosen = Vec::new();
-    for word in rest.split_whitespace() {
+    for word in &named {
         chosen.extend(targets(here, word));
     }
 
@@ -970,11 +996,17 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
 mod tests {
     use super::*;
 
+    /// The line as a verb receives it: split in `words.rs` first, because that
+    /// is the only way any of these reach `parse` at the real prompt.
+    fn parsed(line: &str) -> Asked {
+        Asked::parse(&crate::words::words(line).expect("no quotes in these"))
+    }
+
     // ──────────────────────────────────────────────── what the person asked for
 
     #[test]
     fn a_bare_ls_asks_for_nothing_in_particular() {
-        let asked = Asked::parse("");
+        let asked = parsed("");
         assert!(!asked.all);
         assert!(!asked.long);
         assert!(asked.place.is_empty());
@@ -984,14 +1016,14 @@ mod tests {
     fn grouped_flags_are_read_as_the_flags_they_are_and_not_as_a_folder() {
         // The failure this prevents: `-la` taken as a place, answering "not
         // there" for something the person typed correctly.
-        let asked = Asked::parse("-la");
+        let asked = parsed("-la");
         assert!(asked.all && asked.long);
         assert!(asked.place.is_empty(), "got {:?}", asked.place);
     }
 
     #[test]
     fn flags_and_a_place_together_keep_the_place() {
-        let asked = Asked::parse("-a Documentos");
+        let asked = parsed("-a Documentos");
         assert!(asked.all);
         assert_eq!(asked.place, "Documentos");
     }
@@ -999,13 +1031,13 @@ mod tests {
     #[test]
     fn both_spellings_of_a_flag_mean_the_same_thing() {
         // Cesar chose to keep both vocabularies, so the flags have both too.
-        assert_eq!(Asked::parse("-a"), Asked::parse("todo"));
-        assert_eq!(Asked::parse("-l"), Asked::parse("detalles"));
+        assert_eq!(parsed("-a"), parsed("todo"));
+        assert_eq!(parsed("-l"), parsed("detalles"));
     }
 
     #[test]
     fn an_unknown_flag_is_not_quietly_swallowed() {
-        let asked = Asked::parse("-z");
+        let asked = parsed("-z");
         // Kept as the place, so the person is told "-z is not there" instead of
         // being handed a listing of somewhere they did not ask about — which
         // would look like the flag worked.
@@ -1017,7 +1049,7 @@ mod tests {
     fn a_file_whose_name_begins_with_a_dash_is_still_reachable() {
         // A single `-` is not a flag: `len() > 1` is what keeps a file actually
         // named `-` from becoming unnameable.
-        assert_eq!(Asked::parse("-").place, "-");
+        assert_eq!(parsed("-").place, "-");
     }
 
     #[test]

@@ -4467,6 +4467,78 @@ else
     fi
 fi
 
+# ------------------------------------------- 33. a name that has a space in it
+
+step "33. a name with a space in it, and a star that is not a pattern"
+
+# Point 9, decided by Cesar on 2026-08-23: quoting now, a whole shell language
+# later, and nothing learned now unlearned then.
+#
+# What a real machine adds over the unit tests is that the files are real. The
+# splitting can be perfect and the verb still refuse, which is how installed
+# modules stayed unexecutable for weeks while every test passed.
+#
+# Rule 4, and here the controls carry the stage:
+#
+#   1. a file whose name holds a space is copied, moved and removed. The control
+#      is a file nobody named, still there at the end.
+#   2. `rm "*.log"` removes a file *actually called* `*.log` and leaves the ones
+#      a real pattern would have caught. Without a file by that name, "the
+#      quoted star matched nothing" and "the quoted star was a name" look the
+#      same; without the others, a `rm` that had stopped matching anything at
+#      all would pass this.
+#   3. an unclosed quote is refused and nothing is touched. The baseline is the
+#      same line with the quote closed, which does remove the file — otherwise a
+#      `rm` that had stopped working would look careful.
+
+WORDS_STORE="$WORK/words-store"
+WORDS_TREE="$WORK/words-tree"
+mkdir -p "$WORDS_STORE" "$WORDS_TREE"
+printf 'hola\n' > "$WORDS_TREE/mi archivo.txt"
+printf 'hola\n' > "$WORDS_TREE/a b.log"
+printf 'hola\n' > "$WORDS_TREE/otro.log"
+printf 'hola\n' > "$WORDS_TREE/*.log"
+printf 'hola\n' > "$WORDS_TREE/sencillo.txt"
+
+printf '%s\n' "cd $WORDS_TREE" \
+    'cp "mi archivo.txt" copia.txt' \
+    'mv "mi archivo.txt" "otro nombre.txt"' \
+    'rm "*.log"' \
+    'rm "a b.log' \
+    salir | \
+    THALYX_ROOT="$WORDS_STORE" "$THALYX" session > "$WORK/words.log" 2>&1
+
+# The baseline for the refusal: the same line, closed. If this does not remove
+# it, the stage is measuring a `rm` that stopped working and calling it care.
+printf '%s\n' "cd $WORDS_TREE" 'rm "a b.log"' salir | \
+    THALYX_ROOT="$WORDS_STORE" "$THALYX" session > "$WORK/words-closed.log" 2>&1
+
+there() { [ -e "$WORDS_TREE/$1" ] && echo yes || echo no; }
+
+COPIED=$(there "copia.txt")
+MOVED=$(there "otro nombre.txt")
+ORIGINAL=$(there "mi archivo.txt")
+LITERAL_STAR=$(there '*.log')
+PATTERN_SURVIVORS=$(there "otro.log")
+UNTOUCHED=$(there "sencillo.txt")
+SPACED_AFTER_REFUSAL=no
+grep -q "unclosed" "$WORK/words.log" && SPACED_AFTER_REFUSAL=refused
+CLOSED_REMOVED=$(there "a b.log")
+
+if [ "$COPIED" = yes ] && [ "$MOVED" = yes ] && [ "$ORIGINAL" = no ] \
+   && [ "$LITERAL_STAR" = no ] && [ "$PATTERN_SURVIVORS" = yes ] \
+   && [ "$UNTOUCHED" = yes ] && [ "$CLOSED_REMOVED" = no ]; then
+    proven "a file named with a space was copied, moved and removed; \`rm \"*.log\"\` took the file actually called that and left the ones a pattern would have caught; an unclosed quote refused and the closed one did not"
+elif [ "$COPIED" != yes ] || [ "$MOVED" != yes ] || [ "$ORIGINAL" != no ]; then
+    failed "a quoted name did not reach the verb (copy_made=$COPIED move_made=$MOVED original_still_there=$ORIGINAL); see $WORK/words.log"
+elif [ "$LITERAL_STAR" != no ] || [ "$PATTERN_SURVIVORS" != yes ]; then
+    failed "a quoted star was expanded as a pattern, or stopped naming anything (literal_still_there=$LITERAL_STAR others_kept=$PATTERN_SURVIVORS); see $WORK/words.log"
+elif [ "$UNTOUCHED" != yes ]; then
+    failed "something nobody named was removed — the one thing this must never do; see $WORK/words.log"
+else
+    failed "the baseline is broken: with the quote closed, \`rm \"a b.log\"\` did not remove it, so the refusal above proves nothing; see $WORK/words-closed.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

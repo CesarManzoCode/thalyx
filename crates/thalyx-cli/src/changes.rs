@@ -43,7 +43,10 @@ const OP: &str = "changes";
 
 /// `cambios [limite=N]` — drain what the kernel has queued.
 pub fn show(rest: &str, face: Face) -> Fallible {
-    let (extra, window) = match crate::index::asked_of(rest) {
+    let Some(given) = crate::words::asked(face, OP, rest) else {
+        return Ok(());
+    };
+    let (extra, window) = match crate::index::asked_of(&given) {
         Ok(both) => both,
         Err(why) => {
             declined(face, "bad_cursor", &why.to_string());

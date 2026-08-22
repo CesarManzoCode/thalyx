@@ -162,7 +162,10 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
         "depends_on"
     };
 
-    let (path, window) = match asked_of(rest) {
+    let Some(given) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let (path, window) = match asked_of(&given) {
         Ok(both) => both,
         Err(why) => {
             declined(face, op, "bad_cursor", &why.to_string());
@@ -289,7 +292,10 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
 pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallible {
     let op = "symbol";
 
-    let (name, window) = match asked_of(rest) {
+    let Some(given) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let (name, window) = match asked_of(&given) {
         Ok(both) => both,
         Err(why) => {
             declined(face, op, "bad_cursor", &why.to_string());
@@ -416,13 +422,17 @@ fn use_key(used: &thalyx_graph::Use) -> Vec<u8> {
 /// that has to learn a second spelling of "give me the next page" pays the
 /// discovery cost twice for one idea, and `Superficie-para-el-LLM.md` exists to
 /// stop exactly that.
+///
+/// Takes the words rather than the line, because the splitting belongs in one
+/// place: `words.rs`. What comes back is the rest joined with single spaces,
+/// which is what a subject made of several words means.
 pub(crate) fn asked_of(
-    rest: &str,
+    given: &[crate::words::Word],
 ) -> Result<(String, thalyx_files::window::Asked), thalyx_files::window::Cut> {
     let mut window = thalyx_files::window::Asked::default();
     let mut named = Vec::new();
 
-    for word in rest.split_whitespace() {
+    for word in given.iter().map(crate::words::Word::as_str) {
         match word.split_once('=') {
             Some(("limite" | "limit", count)) if count.parse::<usize>().is_ok() => {
                 window.limit = count.parse().expect("just checked");

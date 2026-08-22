@@ -159,10 +159,21 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
       el store de una máquina recién instalada», que es la Fase 2. **Sólo se
       puede verificar en el hierro de Cesar.**
-- [ ] **9. Decidir si Thalyx tiene lenguaje de shell** — tuberías, redirección,
-      comodines, variables. **Decreto antes que código.** Trece verbos sueltos y
-      un lenguaje que los compone son proyectos distintos, y es la diferencia
-      entre que alguien que viene de Linux sienta que sigue en casa o no.
+- [x] **9. Decidir si Thalyx tiene lenguaje de shell** — **decidido por Cesar el
+      2026-08-23: hay citado y no hay lenguaje**, *«lo que sea más fácil de
+      cubrir por ahora, pero en un futuro sí tendremos que hacer shell completo,
+      no ahora, pero estemos preparados»*. El renglón se parte en palabras con
+      las reglas de POSIX hasta donde POSIX llega hoy, y una comilla sin cerrar
+      se niega en vez de adivinarse. **La expansión se queda en el verbo y eso es
+      decreto**: `rm "*.log"` es un nombre y `encontrar "*.rs"` sigue siendo un
+      patrón, igual que en bash y en `find`. El texto de `editar` es la única
+      excepción y se toma del renglón, porque una sangría perdida no se ve.
+      Etapa 33. Ver [[Palabras]].
+- [ ] **El shell completo, cuando toque** — tuberías, redirección, variables.
+      Decidido que llega algún día y que **hoy no**. Lo que ya quedó preparado
+      está en [[Palabras]]; lo que falta cuando se retome: qué hace `|` con dos
+      caras, si lo que viaja son bytes o filas, y el completado con tabulador,
+      que hoy no sabe de comillas.
 - [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Aplazado por Cesar
       el 2026-08-09 —*«déjalo bloqueado pero cuando tengamos que decidir,
       explícamelos bien»*— así que **queda una deuda de explicación, no sólo una

@@ -64,13 +64,34 @@ const ACTIONS: &[&str] = &[
 const PAGE: usize = 200;
 
 pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
-    let mut words = rest.trim().splitn(3, char::is_whitespace);
-    let named = words.next().unwrap_or("").trim();
+    // Only the name is split as words. Everything after it is taken from the
+    // line byte for byte, because the third part is text going into a file and a
+    // configuration line that starts with four spaces means something with them
+    // and something else without. `words.rs` calls this the one carve-out.
+    let named = match crate::words::first(rest) {
+        Ok(Some(named)) => named,
+        Ok(None) => return which_file(face),
+        Err(why) => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    "edit",
+                    why.word(),
+                    why.remedy(),
+                    &why.to_string(),
+                ));
+            } else {
+                println!("\n  {why}\n");
+            }
+            return Ok(());
+        }
+    };
+    let (named, after) = named;
     if named.is_empty() {
         return which_file(face);
     }
 
-    let path = thalyx_files::resolve(here.at(), named);
+    let path = thalyx_files::resolve(here.at(), named.as_str());
+    let mut words = after.splitn(2, char::is_whitespace);
     let action = words.next().unwrap_or("").trim();
     let argument = words.next().unwrap_or("").trim();
 

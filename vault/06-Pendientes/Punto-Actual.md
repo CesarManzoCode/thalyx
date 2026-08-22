@@ -14,9 +14,57 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Comprobado en el hierro: 138 · 2 · 0 — 2026-08-23
+> ## Punto 9: hay citado y no hay lenguaje — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió así: *«lo que sea más fácil de cubrir por ahora, pero en un
+> futuro sí tendremos que hacer shell completo, no ahora, pero estemos
+> preparados»*. La segunda mitad es la que mandó sobre el diseño — **nada de lo
+> que se aprenda hoy puede tener que desaprenderse el día del shell completo** —
+> y el decreto entero está en [[Palabras]].
+>
+> Antes de preguntarle fui a ver qué faltaba de verdad, corriéndolo: **un archivo
+> con un espacio en el nombre se podía listar y nada más.** `cp mi archivo.txt x`
+> eran tres palabras y los tres verbos se negaban. Nunca se destruyó nada por
+> eso, pero no había forma de nombrar el archivo.
+>
+> Lo que hay ahora:
+>
+> - `'…'`, `"…"` y `\x` con las reglas de POSIX hasta donde POSIX llega hoy, así
+>   que el día que `$` signifique algo no cambia nada de lo escrito;
+> - una comilla sin cerrar **se niega** —`unclosed_quote` / `close_the_quote`— en
+>   vez de adivinarse, que es como un `rm` acaba actuando sobre algo que nadie
+>   nombró. Una diagonal al final tiene su propia palabra, porque es otro error;
+> - **la expansión se queda en el verbo, y eso es decreto**. `rm "*.log"` borra el
+>   archivo que se llama así y `encontrar "*.rs"` sigue siendo un patrón — las
+>   dos costumbres de Unix, cada una donde estaba, igual que bash y `find`.
+>
+> Una palabra recuerda qué caracteres venían citados **carácter por carácter**,
+> porque `"a"*` es un patrón y `a"*"` es un nombre.
+>
+> **Dos cosas cambiaron de significado y hay que decirlas:** una corrida de
+> espacios ahora se colapsa (`contenido fn  main` busca `fn main`; la forma de
+> pedir lo otro es `contenido "fn  main"`), y el texto de `editar` es la única
+> excepción — se toma del renglón byte por byte, porque una sangría perdida en un
+> archivo de configuración no se ve hasta que algo no arranca.
+>
+> Ocho pruebas en el prompt de verdad y la **etapa 33**, comprobada de las dos
+> maneras: pasa con el cambio y falla sin él.
+>
+> **Con esto la terminal usable llega a 8 de 9.** Queda el punto 8, la red, que
+> sólo se verifica en su hierro y se cruza con la Fase 2.
+>
+> **Y una cosa encontrada de paso, que no toqué:** `ensayo rm x` imprime
+> `removed /ruta/x` sin haber borrado nada. Ya estaba en `main` desde antes —lo
+> comprobé con el binario anterior— y es de la misma familia que lo de `matar`:
+> una respuesta que dice que algo pasó cuando no pasó. La cara de máquina está
+> bien (el `op` es `rehearse`); la humana no. **Falta que Cesar decida si se
+> arregla.**
+
+> ## Comprobado en el hierro: 138 · 2 · 0 — 2026-08-23
+>
+> Cómo se llegó.
 >
 > La corrida de Cesar cerró el lazo de verificación de los tres arreglos de este
 > día: `proven 138 · not proven 2 · failed 0`. Los dos NOT PROVEN son los de
