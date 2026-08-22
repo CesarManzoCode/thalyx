@@ -3353,6 +3353,27 @@ comprobación que existe porque una instalación interrumpida por un apagón tie
 que poder terminarse, y esa etapa es la única razón por la que esto se supo antes
 de que le pasara a alguien con un disco de verdad.
 
+## Un errno concreto es un hecho sobre la máquina — 2026-08-23, y es la catorce
+
+La prueba que fija la regla de arriba —el nodo que existe y el dispositivo que
+no— afirmaba que abrirlo da `ENXIO`. En este contenedor da `ENXIO`. En la Fedora
+de Cesar dio **`EACCES`**, y tumbó la suite entera y con ella la corrida.
+
+No era su máquina ni era Thalyx: **Fedora monta `/tmp` como un tmpfs con
+`nodev`**, y en un sistema de archivos `nodev` no se puede abrir *ningún* nodo de
+dispositivo, haya algo detrás o no. `tempfile` pone el nodo ahí. Medido, no
+recordado: montar un tmpfs con `nodev` aquí y abrir un nodo dentro da `errno 13`.
+
+La regla: **una prueba que fija un errno fija también la configuración de la
+máquina donde se escribió.** Lo que se estaba probando era que el nombre resuelve
+y el dispositivo no; `ENXIO` y `EACCES` son las dos maneras de que eso sea cierto,
+y escoger una convirtió la prueba en una afirmación sobre dónde `tempdir()` deja
+las cosas.
+
+Catorceava instancia de la regla 5, y la primera en la que el instrumento
+equivocado lo escribí como prueba nueva en el mismo arreglo que iba a comprobar —
+un arnés recién hecho no tiene más crédito que uno viejo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

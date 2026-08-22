@@ -437,12 +437,27 @@ mod tests {
         // The half that fooled it.
         assert!(node.exists(), "the name is there");
 
+        // And the half that matters: it cannot be opened. **Which** errno says so
+        // is a fact about the machine and not about this crate, so the test does
+        // not name one. Both of these were captured on 2026-08-23:
+        //
+        //   ENXIO  — the node is there and no partition is behind it. What the
+        //            install hit on Cesar's disk.
+        //   EACCES — Fedora mounts /tmp as a tmpfs with `nodev`, and no device node
+        //            on such a filesystem can be opened at all, whatever is behind
+        //            it. What this very test hit on his machine, after an earlier
+        //            version of it asserted ENXIO and failed his whole suite for a
+        //            mount option.
+        //
+        // Both are the property being tested: the name resolves and the device does
+        // not. Pinning the errno would have made this a test of where `tempdir()`
+        // happens to put things.
         let (number, named, why) = hold(&[(1, node.clone())]).unwrap_err();
-        assert_eq!(number, 1);
-        assert_eq!(named, node);
-        // ENXIO, captured on 2026-08-23: `No such device or address (os error 6)`,
-        // which is the same errno the install reported on Cesar's machine.
-        assert_eq!(why.raw_os_error(), Some(6), "{why}");
+        assert_eq!((number, named), (1, node.clone()));
+        assert!(
+            why.raw_os_error().is_some(),
+            "the open failed with no errno at all: {why}"
+        );
     }
 
     #[test]
