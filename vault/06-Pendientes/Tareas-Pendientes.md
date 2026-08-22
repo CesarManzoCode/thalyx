@@ -146,6 +146,14 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       se puede volver a escribir. `memoria` mantiene `libre` y `disponible`
       separados y nombra cuál contesta la pregunta. Etapa 31 de `verify.sh`, con
       línea base y controles. Ver [[Procesos]].
+- [x] **Instalar dos veces sobre el mismo disco** — **arreglado y comprobado en
+      hierro el 2026-08-23** (`proven 138 · not proven 2 · failed 0`). La espera
+      por las particiones preguntaba si existía el nodo, y en una segunda
+      instalación los nodos de la tabla anterior siguen ahí: la condición estaba
+      cumplida antes de empezar. Ahora la espera **abre** la partición, y las
+      particiones se devuelven ya abiertas y se sostienen así hasta el final,
+      porque cerrar el disco entero hace que el kernel lo reexamine por su cuenta
+      y ese segundo barrido borra y rehace cada partición. Ver [[Punto-Actual]].
 - [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
       red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
       necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
