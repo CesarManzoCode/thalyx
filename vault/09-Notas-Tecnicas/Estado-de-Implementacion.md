@@ -135,6 +135,37 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - Un módulo no puede escribir en `.thalyx/` dentro de su propio árbol: ahí vive el registro de lo que tiene permitido hacer.
 - El modo de los archivos del artefacto se aplica enmascarado: setuid, setgid y sticky nunca sobreviven a una instalación.
 
+### La red, que se ve y no se usa
+
+Punto 8 de la terminal usable, decreto en [[Red]]. La configuración del kernel
+pasó de 110 opciones a 118: `NETDEVICES` y `ETHERNET`, que son menús y no
+drivers, y cuatro drivers con su razón escrita al lado —`virtio_net` para lo que
+QEMU entrega, `e1000` para la tarjeta emulada por omisión, `e1000e` para las
+Intel PCIe de la mayoría de los equipos, `r8169` para las Realtek del resto.
+
+El verbo es `red`, y el motor es `thalyx-net`. Lo que contesta:
+
+- qué interfaces hay, ordenadas por nombre para que dos corridas se puedan
+  comparar;
+- de cada una: tipo, dirección física, estado, si hay cable, velocidad, MTU y
+  driver;
+- **cuántas de ellas son una tarjeta**, que no es lo mismo que cuántas hay.
+
+Tres cosas que se miden y no se citan, cada una una manera de mentir:
+
+| Lo que parece | Lo que es |
+|---|---|
+| Una interfaz abajo no tiene cable | Contesta `EINVAL`; no dice `0`. Son *no hay cable* y *no se puede saber* |
+| `speed` es un número | Tiene tres estados: un número, `-1` con el enlace arriba, y no legible |
+| `type 1` es una tarjeta Ethernet | `ifb0` y `ifb1` también dicen `1`. Una tarjeta cuelga de un bus y tiene `device` |
+
+La tercera salió corriéndolo: la primera versión reportó **tres tarjetas en una
+máquina con una**, y ninguna prueba de fixture lo vio.
+
+No hay dirección, no hay DHCP, no hay resolvedor y no sale un paquete — y la
+respuesta lo dice, en las dos caras, porque es la única lista del sistema cuyas
+cosas ningún verbo puede usar.
+
 ## No construido todavía
 
 | Pieza | Bloqueante para |
@@ -142,6 +173,8 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | La gama máxima, medida | Cerrar la cuarta fila de [[Gamas-de-Modelo]]. Necesita una máquina con más de 16 GB: en la de desarrollo el proceso muere antes de la primera inferencia |
 | Una segunda corrida de acierto en cualquier gama | Saber cuánto se mueven esas cifras entre corridas. Disco, RAM y latencia ya tienen réplica; el acierto no |
 | Los casos sin medición del banco | Ninguna fracción de acierto es todavía la puntuación de su gama: 6 casos en ligera y 1 en media y en alta no produjeron respuesta |
+| Salir a internet | Que el store pueda traer un módulo de algún lado. DHCP, DNS y TLS tendrían que vivir dentro de `thalyx`, y **de dónde** es una pregunta de Fase 2 sin contestar. Ver [[Red]] |
+| WiFi | Necesita firmware binario en la imagen y un suplicante WPA, que en todos lados es un demonio aparte. Obliga a revisar qué quiere decir «el kernel y un programa» |
 
 > **Actualizado el 2026-08-08.** Esta tabla decía *«el `Model` real»*, *«la
 > gramática GBNF»* y *«el banco de las cuatro gamas»* como no construidos, y las

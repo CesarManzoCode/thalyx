@@ -121,7 +121,7 @@ thirteen checks — contracted into one of the two `NOT PROVEN` lines. A marker
 and the lines under it are one result; see
 [docs/STATUS.md](docs/STATUS.md).
 
-**Built and covered by over 1,100 tests**, including fault injection that kills
+**Built and covered by over 1,300 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
 

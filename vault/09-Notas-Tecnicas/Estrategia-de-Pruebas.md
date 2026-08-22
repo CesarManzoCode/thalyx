@@ -3429,6 +3429,26 @@ impresor que dejó de funcionar se vería igual que un tiempo verbal corregido�
 el control es el disco visto desde afuera, porque un ensayo que sólo suavizara la
 redacción mientras borra el archivo se leería idéntico en el log.
 
+## Un árbol de fixtures está de acuerdo con quien lo escribió — 2026-08-23
+
+`thalyx-net` tenía doce pruebas contra un árbol que este repositorio escribe, y
+las doce pasaban. La primera vez que el verbo corrió contra una máquina de
+verdad reportó **tres tarjetas de red en una máquina con una**: `ifb0` e `ifb1`
+—los dispositivos de bloque funcional intermedio del kernel— dicen `type 1`,
+traen dirección física y son software puro.
+
+Ninguna prueba podía verlo, porque las interfaces del árbol de fixtures eran las
+que a mí se me ocurrió poner. Es la regla 6 —un parser de la salida de otro
+necesita una muestra real— extendida a algo que no es un parser: **un árbol de
+fixtures prueba que el lector coincide con el modelo de quien lo escribió, y el
+modelo era el defecto.**
+
+Lo que lo atrapó fue teclear `red` una vez. Lo que lo deja atrapado la próxima es
+la prueba que ahora corre contra el `/sys/class/net` de la máquina donde está,
+con `THALYX_REQUIRE_REAL_SYSFS_TESTS` para que un salto sea un fallo, y la etapa
+35, que compara contra `iproute2` — netlink y no sysfs, que es la única manera de
+que el control no sea el mismo instrumento otra vez.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

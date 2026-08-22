@@ -14,6 +14,57 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Punto 8: la red se ve y no se usa — la terminal usable está en 9 de 9 — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió así: **verla, no usarla.** El decreto entero está en [[Red]],
+> con la razón de por qué no es lo mismo un poco más de lo otro — DHCP, DNS y TLS
+> son programas aparte en todos lados y aquí tendrían que vivir dentro de
+> `thalyx`, y lo que comprarían depende de una pregunta de Fase 2 que no está
+> contestada: de dónde saldría un módulo.
+>
+> El kernel pasó de **110 opciones a 118**. Las nuevas son dos menús y cuatro
+> drivers, cada uno con su razón al lado: `virtio_net`, `e1000`, `e1000e` y
+> `r8169`. Nada de WiFi.
+>
+> El verbo es `red`, motor en `thalyx-net`, dos caras. Y **dice en la respuesta
+> que no se puede usar** —`addressable: false` para un programa, una frase para
+> una persona— porque es la única lista del sistema cuyas cosas ningún verbo
+> puede tocar, y quien lea una lista de tarjetas va a ir a buscar el verbo que
+> las usa.
+>
+> **Lo que salió de correrlo, que ninguna prueba de fixture vio:** la primera
+> versión reportó **tres tarjetas en una máquina con una.** `ifb0` e `ifb1` dicen
+> `type 1` y traen dirección física, y son software puro. Lo que separa una
+> tarjeta es que cuelga de un bus. Regla nueva en [[Estrategia-de-Pruebas]].
+>
+> Las otras dos, medidas y no citadas: una interfaz abajo **no dice que no tiene
+> cable, no dice nada** (`EINVAL`, no `0`), y `speed` tiene tres estados —número,
+> `-1` con el enlace arriba, y no legible—. Las dos sobreviven a lo que se
+> imprime: `cable unknown` es una columna distinta de `no cable`.
+>
+> 18 pruebas nuevas y la **etapa 35**, cuyo control es `iproute2` porque lee
+> netlink y no sysfs: pedirle a Thalyx que se compruebe contra su propia lectura
+> de `/sys` sólo probaría que es consistente. 1340 pruebas, clippy limpio.
+>
+> **Lo que falta correr, y sólo tu máquina puede:**
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> make -C image kernel        # los ocho CONFIG_ nuevos
+> sudo THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> `make -C image kernel` es lo primero porque **`config-check` falla la
+> construcción si `olddefconfig` tira cualquiera de las ocho opciones nuevas**, y
+> las nombra. Es la única manera de saber si acerté las dependencias: aquí no se
+> puede compilar un kernel.
+>
+> Y en tu Fedora, `red` a secas ya enseña tu tarjeta real — con su driver y su
+> velocidad negociada— sin necesidad de arrancar la imagen.
+
 > ## Un ensayo ya no dice que borró nada — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

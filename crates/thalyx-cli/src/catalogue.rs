@@ -531,6 +531,16 @@ pub const VERBS: &[Verb] = &[
         summary: "The disks this machine can see, and which one it booted from.",
     },
     Verb {
+        id: "network",
+        names: &["red", "network"],
+        takes: &[],
+        flags: &[],
+        answers: None,
+        changes: false,
+        errors: &[],
+        summary: "The network hardware this machine has. Thalyx cannot use it yet.",
+    },
+    Verb {
         id: "install_onto",
         names: &["instalar-en", "install-onto"],
         takes: &["disk"],
