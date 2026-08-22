@@ -34,7 +34,10 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 /// `procesos [patrón]` — what is running.
 pub fn running(rest: &str, face: Face) -> Fallible {
     let op = "processes";
-    let (pattern, window) = match crate::index::asked_of(rest) {
+    let Some(given) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let (pattern, window) = match crate::index::asked_of(&given) {
         Ok(both) => both,
         Err(why) => {
             declined(face, op, "bad_cursor", &why.to_string());
@@ -184,7 +187,10 @@ pub fn memory(face: Face) -> Fallible {
 /// `matar <pid> [forzar]` — stop one.
 pub fn stop(rest: &str, face: Face) -> Fallible {
     let op = "stop";
-    let words: Vec<&str> = rest.split_whitespace().collect();
+    let Some(given) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let words: Vec<&str> = given.iter().map(crate::words::Word::as_str).collect();
     let force = words.iter().any(|word| FORCE.contains(word));
     let named: Vec<&&str> = words.iter().filter(|word| !FORCE.contains(*word)).collect();
 
@@ -231,7 +237,10 @@ pub fn stop(rest: &str, face: Face) -> Fallible {
 /// command line, how long it has been running, and its parent.
 pub fn rehearse_stop(rest: &str, face: Face) -> Fallible {
     let op = "rehearse";
-    let words: Vec<&str> = rest.split_whitespace().collect();
+    let Some(given) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let words: Vec<&str> = given.iter().map(crate::words::Word::as_str).collect();
     let force = words.iter().any(|word| FORCE.contains(word));
     let Some(number) = words.iter().find(|word| !FORCE.contains(*word)) else {
         return refused(face, op, &ProcError::NothingAsked);

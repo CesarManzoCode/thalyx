@@ -87,6 +87,16 @@ named, and the already-ended one carries the number of the parent that can clear
 it, because a remedy saying "stop the parent" without saying which cannot be
 followed.
 
+**A name can have a space in it, and a star can be a name.** The line is split
+into words with POSIX's rules as far as POSIX goes today — `'…'`, `"…"`, `\x` —
+and a quote that is never closed is refused with its own word rather than
+guessed at, because guessing where a name ends is how `rm` acts on something
+nobody named. There is no shell language: no pipes, no redirection, no
+variables. Expansion stays in the verb and that is a decree, which keeps both
+Unix habits where they already were: `rm "*.log"` removes the file actually
+called that, the way it does in bash, and `encontrar "*.rs"` is still a pattern,
+the way `find . -name "*.rs"` is.
+
 **And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
 would go and touches nothing, built so the rehearsal *is* the check half of the
 real operation rather than a second implementation that could disagree with it.
