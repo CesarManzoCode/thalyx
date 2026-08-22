@@ -437,6 +437,11 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # The requirement and the thing it requires, together. Setting one without the
 # other is what made this stage fail for a machine that could do everything.
 [ "$HAVE_BTRFS" = 1 ]       && SUITE_ENV+=(THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH")
+# Every Linux has kthreadd at pid 2, so this is very nearly unconditional — but
+# it is still read rather than assumed, because a container with a private pid
+# namespace can hide it and a demanded check that cannot be made is a failure
+# for the wrong reason.
+[ "$(cat /proc/2/comm 2>/dev/null)" = kthreadd ] && SUITE_ENV+=(THALYX_REQUIRE_KERNEL_THREAD_TESTS=1)
 
 echo "   ${SUITE_ENV[*]}"
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
@@ -4289,6 +4294,174 @@ elif [ "$FORCED_SIGNAL" != "kill" ] || [ "$STUBBORN_GONE" != "yes" ]; then
     failed "\`matar forzar\` answered '$FORCED_SIGNAL' and the stubborn process gone=$STUBBORN_GONE; see $WORK/proc-force.log"
 else
     failed "memoria says $memory_total bytes where /proc/meminfo says $KERNEL_TOTAL; see $WORK/proc.log"
+fi
+
+# ------------------------- 32. a signal that is accepted and then quietly dropped
+
+step "32. what no signal can stop is refused, not reported as stopped"
+
+# `pidfd_send_signal` returning 0 means the kernel took the signal, not that
+# anything will happen to anybody. Two subjects take one and drop it:
+#
+#   - a kernel thread, which is part of the kernel and has every signal ignored
+#     from the moment kthreadd starts it;
+#   - a zombie, which has already run its last instruction and is only a row in
+#     the table until its parent collects it.
+#
+# On both, a `matar` that trusted the return value said the process had been
+# asked to stop while nothing whatsoever changed. That is worse than an error:
+# it teaches a person that Thalyx is unreliable when Thalyx is only credulous.
+#
+# Rule 4 decides the shape here as it did in stage 31. The **baseline** is the
+# defect itself, reproduced with `kill(1)`: the same signal, sent by something
+# that is not Thalyx, accepted and dropped. The **control** is an ordinary
+# process stopped in the same session, so that a `matar` which had simply
+# stopped working could not pass this stage as one that is careful.
+#
+# The baseline is only taken on the zombie. Sending SIGKILL to kthreadd on a
+# person's own machine to demonstrate that it is ignored is a thing this script
+# will not do, and the refusal is checked without it.
+
+KTHREAD_STORE="$WORK/kthread-store"
+mkdir -p "$KTHREAD_STORE"
+
+HAVE_KTHREAD=0
+[ "$(cat /proc/2/comm 2>/dev/null)" = kthreadd ] && HAVE_KTHREAD=1
+
+# A real zombie: a child that exits under a parent that never reaps it. Made
+# rather than found, because a machine that happens to have one is a machine
+# something is already wrong with.
+ZOMBIE_PARENT=$(start python3 -c '
+import os, time
+if os.fork() == 0:
+    os._exit(0)
+time.sleep(900)
+')
+ZOMBIE=$(python3 - "$ZOMBIE_PARENT" <<'EOF'
+import os, sys, time
+
+parent = int(sys.argv[1])
+for _ in range(200):
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            stat = open(f"/proc/{name}/stat").read()
+        except OSError:
+            continue
+        # The state is the field after the *last* `)`: a process name can hold
+        # parentheses, and a control that misreads the format cannot check a
+        # parser of it.
+        rest = stat[stat.rfind(")") + 1:].split()
+        if len(rest) > 1 and rest[0] == "Z" and rest[1] == str(parent):
+            print(name)
+            sys.exit(0)
+    time.sleep(0.05)
+EOF
+)
+
+# The baseline. If this ever stops being true the stage is checking a refusal
+# that guards nothing, and it should be deleted rather than kept passing.
+BASELINE_DROPPED=no
+if [ -n "$ZOMBIE" ]; then
+    kill -9 "$ZOMBIE" 2>/dev/null
+    sleep 0.3
+    still_running "$ZOMBIE" || BASELINE_DROPPED=yes
+fi
+
+CONTROL=$(start sleep 900)
+sleep 0.5
+
+KT_LINES=(); [ "$HAVE_KTHREAD" = 1 ] && KT_LINES=("matar 2 forzar" "ensayo matar 2")
+Z_LINES=();  [ -n "$ZOMBIE" ]        && Z_LINES=("matar $ZOMBIE forzar")
+printf '%s\n' "structured on" "${KT_LINES[@]}" "${Z_LINES[@]}" \
+    "matar $CONTROL" salir | \
+    THALYX_ROOT="$KTHREAD_STORE" "$THALYX" session > "$WORK/undead.log" 2>&1
+sleep 1
+
+KTHREADD_ALIVE=no; [ "$(cat /proc/2/comm 2>/dev/null)" = kthreadd ] && KTHREADD_ALIVE=yes
+CONTROL_GONE=no;   still_running "$CONTROL" || CONTROL_GONE=yes
+ZOMBIE_STILL=no;   [ -n "$ZOMBIE" ] && [ -e "/proc/$ZOMBIE" ] && ZOMBIE_STILL=yes
+
+python3 - "$WORK/undead.log" "$CONTROL" "$ZOMBIE_PARENT" > "$WORK/undead-facts" <<'EOF'
+import json, shlex, sys
+
+log, control, zombie_parent = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+stops, rehearsals = [], []
+for line in open(log):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "stop":
+        stops.append(value)
+    elif value.get("op") == "rehearse":
+        rehearsals.append(value)
+
+def say(key, text):
+    print(f"{key}={shlex.quote(str(text))}")
+
+def only(rows, error):
+    found = [row for row in rows if row.get("error") == error]
+    return found[0] if len(found) == 1 else {}
+
+say("stop_answers", len(stops))
+kthread = only(stops, "is_kernel_thread")
+say("kthread_remedy", kthread.get("remedy", "none"))
+zombie = only(stops, "already_ended")
+say("zombie_remedy", zombie.get("remedy", "none"))
+# The remedy is a word; this is the field that makes it executable.
+say("zombie_parent_named", "yes" if zombie.get("parent") == zombie_parent else "no")
+say("rehearsal_error", rehearsals[0].get("error", "none") if rehearsals else "none")
+allowed = [row for row in stops if row.get("ok") is True]
+say("control_stopped", "yes" if [row for row in allowed
+                                 if row.get("was", {}).get("pid") == control] else "no")
+# Counted separately, so that a `matar` which signalled everything is diagnosed
+# as that and not as one that failed to stop the control.
+say("wrongly_allowed", len([row for row in allowed
+                            if row.get("was", {}).get("pid") != control]))
+EOF
+stop_answers=0; kthread_remedy=""; zombie_remedy=""; zombie_parent_named=""
+rehearsal_error=""; control_stopped=""; wrongly_allowed=0
+# shellcheck disable=SC1090
+. "$WORK/undead-facts"
+
+kill -9 "$ZOMBIE_PARENT" 2>/dev/null
+
+EXPECTED=1
+[ "$HAVE_KTHREAD" = 1 ] && EXPECTED=$((EXPECTED + 1))
+[ -n "$ZOMBIE" ]        && EXPECTED=$((EXPECTED + 1))
+
+if [ "$wrongly_allowed" != 0 ]; then
+    failed "$wrongly_allowed signal(s) were sent to something no signal can stop, and reported as having stopped it; see $WORK/undead.log"
+elif [ "$control_stopped" != yes ] || [ "$CONTROL_GONE" != yes ] \
+   || [ "$stop_answers" != "$EXPECTED" ]; then
+    failed "the control was not stopped, so nothing this stage refused means anything (answers=$stop_answers expected=$EXPECTED stopped=$control_stopped gone=$CONTROL_GONE); see $WORK/undead.log"
+else
+    if [ "$HAVE_KTHREAD" != 1 ]; then
+        GAP="pid 2 is not kthreadd on this machine, so no kernel thread could be tried"
+        if [ "${THALYX_REQUIRE_KERNEL_THREAD_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+    elif [ "$kthread_remedy" = cannot ] && [ "$rehearsal_error" = is_kernel_thread ] \
+         && [ "$KTHREADD_ALIVE" = yes ]; then
+        proven "kthreadd was refused with remedy 'cannot' rather than signalled, \`ensayo\` refused it the same way, and an ordinary process was stopped in the same session"
+    else
+        failed "a kernel thread was not refused as one (remedy=$kthread_remedy rehearsal=$rehearsal_error alive=$KTHREADD_ALIVE); see $WORK/undead.log"
+    fi
+
+    if [ -z "$ZOMBIE" ]; then
+        GAP="no zombie could be made on this machine, so the already-ended refusal was not tried"
+        if [ "${THALYX_REQUIRE_ZOMBIE_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+    elif [ "$BASELINE_DROPPED" != yes ]; then
+        failed "the baseline is broken: \`kill -9\` on a zombie removed it, so this stage guards nothing; see $WORK/undead.log"
+    elif [ "$zombie_remedy" = stop_the_parent ] && [ "$zombie_parent_named" = yes ] \
+         && [ "$ZOMBIE_STILL" = yes ]; then
+        proven "a zombie \`kill -9\` could not touch was refused by \`matar forzar\` with the number of the parent that can clear it"
+    else
+        failed "a process that had already ended was not refused as one (remedy=$zombie_remedy parent_named=$zombie_parent_named still=$ZOMBIE_STILL); see $WORK/undead.log"
+    fi
 fi
 
 # ---------------------------------------------------------------- summary

@@ -12,6 +12,9 @@
 //! - the signal goes through a pidfd, so it cannot land on a recycled number;
 //! - `TERM` unless the word `forzar` is typed, because a program that can catch
 //!   the signal gets to write what it was holding;
+//! - a kernel thread and a process that has already ended are refused, because
+//!   the kernel accepts a signal for both and then drops it — a `matar` that
+//!   read the return value would report stopping something that never moved;
 //! - PID 1 and this session are refused by name, each pointing at the verb that
 //!   does that job properly — `apagar` and `salir`. Not a policy about who owns
 //!   the machine, which is Cesar: it is that a signal does those two jobs in the
@@ -250,6 +253,13 @@ pub fn rehearse_stop(rest: &str, face: Face) -> Fallible {
         Ok(process) => process,
         Err(error) => return refused(face, op, &error),
     };
+    // Same verdict as `matar`, from the same function. A rehearsal that says a
+    // kernel thread would be asked to stop is not a cheaper way to find out
+    // what happens — it is a wrong answer that has to be unlearned by typing
+    // the real thing, which is the one cost this verb exists to remove.
+    if let Some(refusal) = thalyx_proc::unstoppable(&process) {
+        return refused(face, op, &refusal);
+    }
 
     if face.is_machine() {
         let mut carried = vec![
@@ -304,6 +314,9 @@ fn object(process: &Process) -> Value {
         // line at all, which is a different fact from an empty one.
         "command": process.command,
         "state": process.state.word(),
+        // Carried in every listing rather than only in the refusal, so a caller
+        // planning what to stop can rule these out before it asks.
+        "kernel_thread": process.kernel_thread,
         "resident": process.resident,
         "threads": process.threads,
         "uid": process.uid,
@@ -383,9 +396,22 @@ fn clip(line: &str, width: usize) -> String {
 
 fn refused(face: Face, op: &str, error: &ProcError) -> Fallible {
     if face.is_machine() {
+        // `stop_the_parent` is not a remedy on its own — a caller told to stop
+        // the parent and not told which one has been given something it cannot
+        // do. The number rides along with the word that asks for it.
+        let extra = match error {
+            ProcError::AlreadyEnded { parent, .. } => vec![("parent", json!(parent))],
+            _ => Vec::new(),
+        };
         println!(
             "{}",
-            thalyx_files::machine::refused(op, error.word(), error.remedy(), &error.to_string())
+            thalyx_files::machine::refused_with(
+                op,
+                error.word(),
+                error.remedy(),
+                &error.to_string(),
+                extra,
+            )
         );
     } else {
         println!("\n  {error}\n");
@@ -425,6 +451,7 @@ mod tests {
             threads: 1,
             uid: 0,
             age: 5,
+            kernel_thread: true,
         };
         assert_eq!(shown_command(&thread), "[kworker/0:1]");
     }
@@ -445,6 +472,7 @@ mod tests {
                 threads: 1,
                 uid: 0,
                 age: 0,
+                kernel_thread: false,
             };
             pid_key(&&process)
         };

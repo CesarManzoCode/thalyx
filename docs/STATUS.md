@@ -77,6 +77,16 @@ line lives with. PID 1 and the session itself are refused, each naming the verb
 that does that job properly, and `ensayo matar 4711` prints exactly which process
 that number is, with its whole command line, and sends nothing.
 
+**A signal the kernel accepts and drops is refused rather than reported as
+having worked.** A kernel thread has every signal ignored from the moment
+`kthreadd` starts it, and a process that has already exited is only a row in the
+table until its parent collects it; `kill -9` on either returns success and
+changes nothing. Answering "asked to stop" for something that never moved
+teaches that Thalyx is unreliable when Thalyx was only credulous — so both are
+named, and the already-ended one carries the number of the parent that can clear
+it, because a remedy saying "stop the parent" without saying which cannot be
+followed.
+
 **And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
 would go and touches nothing, built so the rehearsal *is* the check half of the
 real operation rather than a second implementation that could disagree with it.

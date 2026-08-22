@@ -13,7 +13,10 @@
 //! - that `forzar` means something → the same process, sent `TERM` first, which
 //!   it ignores because it was started to ignore it;
 //! - that `ensayo matar` sends nothing → the process is alive afterwards, which
-//!   is the only assertion that separates a rehearsal from the real thing.
+//!   is the only assertion that separates a rehearsal from the real thing;
+//! - that the two subjects a signal is accepted for and dropped are refused →
+//!   an ordinary process stopped in the same session, so that a `matar` which
+//!   had simply stopped working could not pass as one that is careful.
 
 use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
@@ -324,4 +327,137 @@ fn a_person_gets_a_table_and_a_program_gets_objects_for_the_same_question() {
 
     waiting.kill().ok();
     waiting.wait().ok();
+}
+
+#[test]
+fn a_kernel_thread_is_refused_because_no_signal_reaches_it() {
+    // pid 2 is `kthreadd` on every Linux there is. Read from `comm`, which is
+    // not the flag the refusal is made of: a precondition that asks the same
+    // question as the claim proves nothing about either.
+    let comm = std::fs::read_to_string("/proc/2/comm").unwrap_or_default();
+    if comm.trim() != "kthreadd" {
+        if std::env::var_os("THALYX_REQUIRE_KERNEL_THREAD_TESTS").is_some() {
+            panic!("NOT PROVEN: pid 2 is not kthreadd here, and this run demanded it");
+        }
+        eprintln!("NOT PROVEN: pid 2 is `{}`, not kthreadd", comm.trim());
+        return;
+    }
+
+    // The control is in the same session: an ordinary process is stopped right
+    // after the refusal, so a `matar` that had stopped working entirely cannot
+    // pass this as carefulness.
+    let mut ordinary = a_waiting_process();
+    let pid = ordinary.id() as i32;
+    let output = typed(&[
+        "structured on",
+        "matar 2 forzar",
+        &format!("matar {pid}"),
+        "salir",
+    ]);
+
+    let refusals: Vec<serde_json::Value> = objects(&output)
+        .into_iter()
+        .filter(|value| value["op"] == "stop")
+        .collect();
+    assert_eq!(refusals.len(), 2, "two answers, one per line typed");
+    assert_eq!(refusals[0]["ok"], false);
+    assert_eq!(refusals[0]["error"], "is_kernel_thread");
+    // `cannot`, and that is the honest word: there is no second thing to try,
+    // and a caller sent to try one spends its cycles finding that out.
+    assert_eq!(refusals[0]["remedy"], "cannot");
+    assert_eq!(
+        refusals[1]["ok"], true,
+        "the control was not stopped either"
+    );
+
+    // The kernel's own answer, not Thalyx's: it is still there.
+    assert_eq!(
+        std::fs::read_to_string("/proc/2/comm")
+            .unwrap_or_default()
+            .trim(),
+        "kthreadd"
+    );
+    assert!(
+        died_within(&mut ordinary, PATIENCE).is_some(),
+        "the control process outlived the session"
+    );
+}
+
+#[test]
+fn a_rehearsal_of_a_kernel_thread_says_the_same_thing_the_verb_would() {
+    let comm = std::fs::read_to_string("/proc/2/comm").unwrap_or_default();
+    if comm.trim() != "kthreadd" {
+        if std::env::var_os("THALYX_REQUIRE_KERNEL_THREAD_TESTS").is_some() {
+            panic!("NOT PROVEN: pid 2 is not kthreadd here, and this run demanded it");
+        }
+        eprintln!("NOT PROVEN: pid 2 is `{}`, not kthreadd", comm.trim());
+        return;
+    }
+
+    // The claim is not that the rehearsal refuses — it is that it refuses the
+    // same way, since a rehearsal that predicts something else is a wrong
+    // answer to be unlearned by typing the real thing.
+    let output = typed(&["structured on", "ensayo matar 2", "salir"]);
+    let said = answer_to(&output, "rehearse");
+    assert_eq!(said["ok"], false);
+    assert_eq!(said["error"], "is_kernel_thread");
+    assert_eq!(said["remedy"], "cannot");
+}
+
+#[test]
+fn a_process_that_already_ended_is_refused_and_told_who_can_clear_it() {
+    // A real zombie: a child that has exited whose parent has not reaped it.
+    // `Child`'s drop does not reap, so it stays one until the `wait` below.
+    let mut ended = Command::new("true").spawn().expect("true(1) is present");
+    let pid = ended.id() as i32;
+    let until = Instant::now() + PATIENCE;
+    while Instant::now() < until && !is_a_zombie(pid) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(is_a_zombie(pid), "it never became a zombie");
+
+    let mut ordinary = a_waiting_process();
+    let control = ordinary.id() as i32;
+    let output = typed(&[
+        "structured on",
+        &format!("matar {pid} forzar"),
+        &format!("matar {control}"),
+        "salir",
+    ]);
+    let answers: Vec<serde_json::Value> = objects(&output)
+        .into_iter()
+        .filter(|value| value["op"] == "stop")
+        .collect();
+    assert_eq!(answers.len(), 2);
+    assert_eq!(answers[0]["ok"], false);
+    assert_eq!(answers[0]["error"], "already_ended");
+    assert_eq!(answers[0]["remedy"], "stop_the_parent");
+    // The remedy is a word, and this is what makes it executable: which parent.
+    assert_eq!(
+        answers[0]["parent"],
+        std::process::id(),
+        "the remedy named somebody who cannot clear it"
+    );
+    assert_eq!(answers[1]["ok"], true, "the control was not stopped either");
+
+    ended.wait().expect("reaping it");
+    ordinary.kill().ok();
+    ordinary.wait().ok();
+}
+
+/// Whether a pid is an uncollected corpse, asked of `/proc` and not of Thalyx.
+///
+/// The state is the field after the **last** `)`, because a process name can
+/// hold parentheses — the same trap the parser under test has, and a control
+/// that fell into it would not be a control. `kill -0` cannot answer this: it
+/// succeeds on a zombie, which is how a harness once reported that `forzar`
+/// had failed on a process that had been dead for a second and a half.
+fn is_a_zombie(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some(close) = stat.rfind(')') else {
+        return false;
+    };
+    stat[close + 1..].split_whitespace().next() == Some("Z")
 }

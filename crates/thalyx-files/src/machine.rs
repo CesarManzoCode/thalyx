@@ -567,16 +567,29 @@ pub fn answer(op: &str, carried: Vec<(&'static str, Value)>) -> String {
 /// quietly, in the one field that tells a caller what to do next. A second
 /// crate needing this is what turned that into a shape rather than a patch.
 pub fn refused(op: &str, word: &str, remedy: &str, message: &str) -> String {
-    object(
-        op,
-        false,
-        true,
-        fields([
-            ("error", json!(word)),
-            ("remedy", json!(remedy)),
-            ("message", json!(message)),
-        ]),
-    )
+    refused_with(op, word, remedy, message, Vec::new())
+}
+
+/// The same, carrying whatever the remedy needs in order to be executable.
+///
+/// A remedy is a word, and some words are not enough on their own: `matar` on a
+/// zombie answers `stop_the_parent`, and a caller that is not also told *which*
+/// parent has been handed an instruction it cannot follow. So the fact goes in
+/// the answer, beside the word that asks for it.
+pub fn refused_with(
+    op: &str,
+    word: &str,
+    remedy: &str,
+    message: &str,
+    extra: Vec<(&'static str, Value)>,
+) -> String {
+    let mut carried = vec![
+        ("error", json!(word)),
+        ("remedy", json!(remedy)),
+        ("message", json!(message)),
+    ];
+    carried.extend(extra);
+    object(op, false, true, fields(carried))
 }
 
 /// The same, for something that did not work, has no remedy to offer, and is

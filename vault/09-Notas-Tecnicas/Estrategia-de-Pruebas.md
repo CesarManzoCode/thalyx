@@ -3291,6 +3291,38 @@ ese formato. Un control escrito con la versión ingenua habría dicho que el
 estado de `we (ird) x` es `(ird)` y habría contado como «no corriendo» a un
 proceso vivo.
 
+## Un sujeto que acepta la operación y no hace nada — 2026-08-23
+
+`matar` se probó once veces en el prompt de verdad y ninguna encontró esto,
+porque **las once usaban un proceso que sí se podía detener**. Lo encontró Cesar
+en la primera sesión suya, ensayando `matar` sobre un `kworker`: Thalyx contestó
+que le pediría que pare, y a un hilo del kernel no le llega ninguna señal.
+
+Que la llamada al sistema conteste `0` no quiere decir que haya pasado algo. Hay
+sujetos que aceptan la operación y la tiran:
+
+- un hilo del kernel: `kill -9` contesta `0` y el hilo sigue ahí;
+- un zombi: `pidfd_open` funciona, la señal se acepta, y sigue igual de muerto.
+
+La regla: **cuando el éxito de un verbo se toma del valor de retorno de una
+llamada al sistema, hay que probarlo sobre un sujeto que la llamada acepta y no
+obedece.** Un conjunto de pruebas donde todos los sujetos funcionan mide que el
+verbo funciona; no mide nada sobre lo que el verbo *dice*.
+
+Es pariente de la regla 4 y no la misma. La regla 4 pide línea base y control
+para una prueba de que algo **se niega**. Ésta es sobre **escoger el sujeto**: la
+línea base y el control pueden estar los dos, impecables, y no encontrar nada si
+el sujeto es siempre de los que responden.
+
+**Y la línea base de la regla 4, aquí, es el defecto.** La etapa 32 le manda
+`kill -9` al zombi con la herramienta de siempre, y comprueba que sigue listado.
+Sin esa mitad, negarse a mandar la señal no se distingue de mandarla, y la etapa
+estaría cuidando algo que no hace falta cuidar.
+
+**Corolario, del lado de la respuesta:** un remedio que nombra otra cosa tiene
+que traer cuál. `already_ended` contesta `stop_the_parent`, y quien lo recibe sin
+el número del padre recibió una instrucción que no puede seguir.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
