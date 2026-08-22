@@ -109,8 +109,16 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 - [ ] **Los tres que se pueden hacer aquí y quedaron por tiempo.** **B1** acotar
       toda respuesta larga con su total, **C2** búsqueda por símbolos sobre el
       parser que ya existe, y **F2** el journal legible desde afuera.
-- [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
-      corregir un archivo de configuración desde la máquina.
+- [x] **5. Editor de texto** — hecho el 2026-08-22, **las dos caras en una
+      entrega** por decisión de Cesar. `crates/thalyx-edit` es el motor y las dos
+      caras lo llaman: `editar <archivo>` abre una pantalla, `editar <archivo>
+      cambiar 12 <texto>` direcciona renglones y contesta un objeto. Es el primer
+      verbo donde las dos caras difieren de *forma*, y por qué se resolvió así
+      está en [[Editor-de-Texto]]. Etapa 29 de `verify.sh`; la mitad de pantalla
+      se ejerce con un pty de verdad, así que **no espera hierro**. Tres cosas que
+      construirlo enseñó están en [[Estrategia-de-Pruebas]]: una tecla que el
+      kernel se come, un pty sin tamaño de ventana, y una confirmación que se
+      traga la tecla que la contesta.
 - [ ] **6. `buscar`** por nombre y por contenido.
 - [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
       va sobre `/proc`.

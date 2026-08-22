@@ -43,6 +43,21 @@ pub enum Key {
     Up,
     Down,
     Tab,
+    PageUp,
+    PageDown,
+    /// A control key this crate does not give a name of its own, carried as the
+    /// letter it was typed with — `Ctrl('o')` for Ctrl-O.
+    ///
+    /// Named rather than dropped because the editor needs several of them and
+    /// the line editor needs none: one decoder, two callers, and the caller that
+    /// has no use for a key ignores it instead of the decoder deciding for both.
+    ///
+    /// **Which letters are reachable is decided by the kernel, not here.** Raw
+    /// mode in `thalyx-syscall` deliberately leaves `ISIG` and `IXON` on, so the
+    /// line discipline eats Ctrl-C, Ctrl-\, Ctrl-Z, Ctrl-S and Ctrl-Q before any
+    /// byte arrives — a key bound to one of those does nothing, or worse, wedges
+    /// the terminal. That is why the editor saves with Ctrl-O and not Ctrl-S.
+    Ctrl(char),
     /// Ctrl-C. Abandon the line without running it.
     Interrupt,
     /// Ctrl-D on an empty line, which every terminal has meant "I am done" for
@@ -79,9 +94,16 @@ pub fn decode(bytes: &[u8]) -> Option<(Key, usize)> {
         0x01 => Some((Key::Home, 1)),
         0x05 => Some((Key::End, 1)),
         0x1b => decode_escape(bytes),
-        // Every other control byte means nothing here. Passed through as a
-        // character it would be written into the line and then into a filename.
-        _ if first < 0x20 => Some((Key::Ignored, 1)),
+        // Every other control byte arrives named. It is never a character: passed
+        // through as one it would be written into the line and then into a
+        // filename, which is the bug this arm has always existed to stop.
+        _ if first < 0x20 => {
+            // 0x01 is Ctrl-A, so the byte is its distance from `a`. Lowercase,
+            // always, because a terminal sends the same byte for Ctrl-O and
+            // Ctrl-Shift-O and a caller matching on `'O'` would never fire.
+            let letter = (b'a' + first - 1) as char;
+            Some((Key::Ctrl(letter), 1))
+        }
         _ => decode_char(bytes),
     }
 }
@@ -104,6 +126,21 @@ fn decode_escape(bytes: &[u8]) -> Option<(Key, usize)> {
         // `ESC [ 3 ~` is Delete, and the `~` may not have arrived yet.
         b'3' => match bytes.get(3) {
             Some(b'~') => Some((Key::Delete, 4)),
+            Some(_) => Some((Key::Ignored, 4)),
+            None => None,
+        },
+        // `ESC [ 5 ~` and `ESC [ 6 ~`. A screenful at a time is the difference
+        // between reading a file and scrolling through it one line at a time,
+        // and on the image there is no mouse to do it another way.
+        b'5' | b'6' => match bytes.get(3) {
+            Some(b'~') => {
+                let key = if bytes[2] == b'5' {
+                    Key::PageUp
+                } else {
+                    Key::PageDown
+                };
+                Some((key, 4))
+            }
             Some(_) => Some((Key::Ignored, 4)),
             None => None,
         },
@@ -436,10 +473,31 @@ mod tests {
     }
 
     #[test]
-    fn a_control_byte_with_no_meaning_is_ignored_rather_than_typed() {
-        // Passed through as a character it would end up in the line, and then in
-        // a filename.
-        assert_eq!(decode(b"\x0b"), Some((Key::Ignored, 1)));
+    fn a_control_byte_arrives_named_and_never_as_a_character() {
+        // The claim is not that it is discarded — the editor binds several of
+        // these — it is that it can never reach the line, and from there a
+        // filename. `Ctrl` is not something `Line::insert` is ever called with.
+        assert_eq!(decode(b"\x0b"), Some((Key::Ctrl('k'), 1)));
+        assert_eq!(decode(b"\x0f"), Some((Key::Ctrl('o'), 1)));
+        assert_eq!(decode(b"\x18"), Some((Key::Ctrl('x'), 1)));
+    }
+
+    #[test]
+    fn the_keys_the_line_discipline_eats_are_still_decoded_as_themselves() {
+        // Ctrl-S and Ctrl-Q do arrive here when something else turned flow
+        // control off, and this crate must not pretend otherwise. What it must
+        // not do is let the editor *bind* them, which is a fact about raw mode
+        // written where the binding is made.
+        assert_eq!(decode(b"\x13"), Some((Key::Ctrl('s'), 1)));
+        assert_eq!(decode(b"\x11"), Some((Key::Ctrl('q'), 1)));
+    }
+
+    #[test]
+    fn a_screenful_at_a_time_arrives_as_its_own_key() {
+        assert_eq!(decode(b"\x1b[5~"), Some((Key::PageUp, 4)));
+        assert_eq!(decode(b"\x1b[6~"), Some((Key::PageDown, 4)));
+        // And the `~` that has not arrived yet is a prefix, not a key.
+        assert_eq!(decode(b"\x1b[5"), None);
     }
 
     #[test]

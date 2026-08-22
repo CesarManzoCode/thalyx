@@ -14,6 +14,82 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El editor existe, con sus dos caras — 2026-08-22
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Es el punto 5 de la terminal usable, y lo que lo justificaba desde el
+> principio: **sin un editor no se puede corregir un archivo de configuración
+> desde la máquina.** Thalyx podía hacer un archivo, copiarlo, moverlo, borrarlo
+> e imprimirlo, y no podía cambiarle un byte por dentro.
+>
+> Cesar decidió **las dos caras en una entrega**, que era la opción cara de las
+> tres. El decreto entero está en [[Editor-de-Texto]]; lo corto:
+>
+> - `editar <archivo>` abre una **pantalla** — flechas, `Ctrl-O` guarda, `Ctrl-X`
+>   sale, `Ctrl-U` deshace, `Ctrl-K` corta.
+> - `editar <archivo> cambiar 12 <texto>` direcciona **renglones** y contesta un
+>   objeto, porque un programa no puede manejar una pantalla que se redibuja.
+> - `crates/thalyx-edit` es **un solo motor** y las dos caras lo llaman, así que
+>   no pueden acabar en desacuerdo sobre lo que el archivo dice ahora.
+>
+> Es el primer verbo donde las dos caras difieren de **forma**, y por eso valía
+> la pena decidirlo en la bóveda antes de escribirlo.
+>
+> ### Lo que se puede correr aquí, y ya corrió
+>
+> **1 231 pruebas en verde, clippy limpio.** La etapa **29** de `verify.sh` está
+> escrita y **ya pasó en este contenedor**: no necesita hierro. Ejerce las tres
+> cosas que sólo una máquina contesta, cada una con su control —
+>
+> - un renglón cambiado por dirección y **leído de vuelta con `cat`**, no con
+>   Thalyx;
+> - una persona tecleando en la pantalla **a través de un pty de verdad**, con
+>   pulsaciones reales, y el trabajo escrito;
+> - un archivo binario **negado sin que se moviera un byte**, que es el control:
+>   un editor que negara todo pasaría las dos primeras y sería inútil.
+>
+> ### Tres defectos que salieron de correrlo, y uno que ya estaba
+>
+> Todos están escritos como reglas en [[Estrategia-de-Pruebas]]:
+>
+> 1. **`Ctrl-S` no habría funcionado nunca.** El modo crudo deja `IXON` e `ISIG`
+>    encendidos a propósito, así que la disciplina de línea se come `Ctrl-C`,
+>    `Ctrl-Z`, `Ctrl-S` y `Ctrl-Q` antes de que Thalyx vea un byte — y `Ctrl-S` es
+>    XOFF, o sea que habría dejado la terminal aparentemente muerta. Por eso
+>    guarda `Ctrl-O`. Hay una prueba que falla si alguien enlaza una de las cuatro.
+> 2. **La décima instancia de la regla 5.** Las pruebas de pantalla se colgaron:
+>    un pty recién hecho no tiene tamaño de ventana, el editor se negó a dibujar
+>    —correctamente— y las teclas se tecleraon en el prompt. **El arnés estaba
+>    incompleto, no Thalyx.** Ahora `thalyx dev pty` le pone tamaño al pty. Lo
+>    hizo barato el reloj de la prueba, que al vencerse imprime lo que se había
+>    dibujado: ahí estaba la oración que decía la respuesta entera.
+> 3. **La confirmación de salida se tragaba la tecla que la contestaba.**
+>    `Ctrl-X` y luego `Ctrl-O` no guardaba nada. Era una lectura anidada haciendo
+>    de segundo intérprete del teclado; ahora es una bandera y toda tecla pasa por
+>    el único bucle que sabe qué significan.
+> 4. **Y una que ya llevaba un día roja en `main`**: la reescritura de la portada
+>    del 2026-08-21 movió la ruta de construcción a `docs/BOOT.md` y la prueba
+>    que la ata seguía afirmando sobre el README. Arreglada, y ahora comprueba
+>    también que la portada apunte ahí — una ruta de construcción en un archivo
+>    al que nada apunta es una ruta que nadie encuentra.
+>
+> ### Lo que sigue sin correrse en hierro
+>
+> **Nada de lo del 2026-08-10 se ha vuelto a correr en tu máquina**, y hay cuatro
+> arreglos de ese día esperando: el techo de `indexar`, la etapa 14 que devuelve
+> el watcher, el `ETXTBSY` de `grammar_check` y el control del anillo. La etapa
+> 27 —el ring buffer— es la que más falta hace, porque la 14 la estaba tumbando.
+>
+> ### Qué correr
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo chown -R "$USER" lsm
+> make -C lsm unload && make -C lsm load
+> sudo ./dev/verify.sh
+> ```
+
 > ## La portada del repositorio, rehecha — 2026-08-21
 >
 > **Esto no cambió el sistema, cambió cómo se lee.** El estado técnico sigue

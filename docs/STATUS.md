@@ -37,10 +37,20 @@ object, so a command that touched three files is still one answer. `structured
 off` brings the sentences back, and the acknowledgement carries those words for
 anyone who turned it on by accident.
 
-**The machine also describes itself.** `describe` answers with all 33 verbs —
+**The machine also describes itself.** `describe` answers with all 34 verbs —
 names, arguments, flags, which `op` each answers with, whether it can change
 anything, and the errors it can give. Nothing on Linux can do that: `--help` is
 prose, written once per tool, inconsistent between any two, and often absent.
+
+**And text in a file can be changed, by either route.** `editar notas.txt` opens
+a screen — arrows, Ctrl-O to write, Ctrl-X to leave, Ctrl-U to take back the last
+change — while `editar notas.txt cambiar 12 <text>` addresses lines and answers
+with one object, because a program cannot drive a screen that redraws. Both are
+the same engine, so they cannot come to disagree about what the file now says.
+The save is a write-then-rename, so a machine that loses power mid-save has
+either the old file or the new one; line endings, a missing final newline and the
+file's mode are all preserved; and anything that is not text, or is over 4 MiB,
+is refused rather than opened and written back mangled.
 
 **And a mistake is cheaper here.** `ensayo rm *.log` works out exactly what
 would go and touches nothing, built so the rehearsal *is* the check half of the

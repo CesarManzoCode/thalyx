@@ -1107,6 +1107,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  includes hidden names and `ls -l` shows sizes.");
             println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
             println!("  `rm <cosa>` change what is there. `*` and `?` work.");
+            println!("  `editar <archivo>` opens it on a screen — Ctrl-O writes,");
+            println!("  Ctrl-X leaves, Ctrl-U takes back the last change. A");
+            println!("  program says `editar <archivo> cambiar 12 <texto>`");
+            println!("  instead, because it cannot see a screen.");
             println!("  `ensayo <verbo> …` says what one of those would do");
             println!("  without doing any of it.");
             println!("  `structured on` makes every one of those answer in JSON");
@@ -1140,6 +1144,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         Standing::AProgram { .. } => {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
+            println!("  `editar <archivo> ver|poner|cambiar|borrar <línea> …`,");
             println!("  `ensayo <verbo> …`, `describe`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `historia`, `intento`, `cambios`,");
@@ -1370,6 +1375,17 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "intento" | "attempt" => {
                 crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;
+            }
+            // Point 5 of the usable terminal. Two shapes of the same verb: with
+            // a subverb it addresses lines and answers, without one it opens a
+            // screen — which is the only way one verb can serve a person and a
+            // program without either of them losing something.
+            _ if starts_any(line, &["editar ", "edit "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::edit::run(&here, rest, face)?;
+            }
+            "editar" | "edit" => {
+                crate::edit::run(&here, "", face)?;
             }
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {

@@ -1315,6 +1315,79 @@ pub fn is_a_terminal(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     answer == 1
 }
 
+/// Tell a terminal how big it is.
+///
+/// A pty the kernel has just made has **no window size** — `TIOCGWINSZ` on it
+/// answers zero rows — and a full-screen program that asks correctly refuses to
+/// draw on it. That is the right refusal and it made `thalyx dev pty` unable to
+/// exercise the editor at all: rule 5 again, the instrument includes the
+/// harness, and a pty with no window is not the terminal the harness exists to
+/// supply.
+///
+/// So whoever makes a pty says how big it is. This is not a fallback inside
+/// [`terminal_size`] — a program guessing its own screen size is the failure
+/// that one refuses to commit.
+pub fn set_terminal_size(
+    fd: std::os::fd::BorrowedFd<'_>,
+    rows: u16,
+    columns: u16,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        // The pixel dimensions. Zero is what every terminal emulator reports for
+        // these unless it is drawing graphics, and nothing here reads them.
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `TIOCSWINSZ` reads one `winsize` through the pointer, which is to
+    // a live, fully initialised local. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let set = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// How many rows and columns the terminal has, or `None` if it will not say.
+///
+/// `None` rather than a default, and that is the decision worth writing down.
+/// Assuming 80x24 when the kernel declines is how a full-screen editor draws
+/// twenty-four rows onto a screen with ten and leaves fourteen rows of a file on
+/// a screen that scrolled them away — the person sees a mangled file and
+/// concludes the editor corrupted it. A caller that gets `None` must decide what
+/// to do about it in the open, which is rule 10: this is a failure to *read* the
+/// size, and it is not a size.
+///
+/// A pipe has no window, so this answering `None` down a pipe is correct and
+/// not a fallback.
+pub fn terminal_size(fd: std::os::fd::BorrowedFd<'_>) -> Option<(u16, u16)> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `TIOCGWINSZ` writes one `winsize` through the pointer, which is to
+    // a live local zeroed first so a driver that fills only part of it cannot
+    // leave the rest reading as stack garbage. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let size = unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) != 0 {
+            return None;
+        }
+        size
+    };
+    // A terminal that reports zero of either is one that does not know, and it
+    // does happen — a serial console before anything has asked it. Zero rows is
+    // not a small screen, it is no answer, and treating it as one divides the
+    // editor's arithmetic by nothing.
+    if size.ws_row == 0 || size.ws_col == 0 {
+        return None;
+    }
+    Some((size.ws_row, size.ws_col))
+}
+
 // ────────────────────────────────────────────── what the kernel has been saying
 //
 // On a machine with no shell there is no `dmesg`, and the kernel's console

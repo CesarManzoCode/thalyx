@@ -40,12 +40,17 @@ impl Face {
         self == Face::Machine
     }
 
+    /// The same question, for the modules that print the other verbs.
+    pub fn is_machine(self) -> bool {
+        self.machine()
+    }
+
     /// Print a line of the structured face.
     ///
     /// Kept as a method so no caller has to remember that these go out without
     /// the blank lines and two-space indent the human face uses. Whitespace a
     /// person reads as breathing room is noise a parser has to strip.
-    fn say(self, line: String) {
+    pub fn say(self, line: String) {
         println!("{line}");
     }
 }
