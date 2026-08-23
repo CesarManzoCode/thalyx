@@ -354,3 +354,189 @@ fn refused(face: Face, op: &str, word: &str, remedy: &str, message: &str) -> Fal
     }
     Ok(())
 }
+
+/// `ensayo instalar <id>` — what installing that would ask for.
+///
+/// `Superficie-para-el-LLM.md`, punto **D1**: a rehearsal on every verb that
+/// changes something. This one is cheap because the answer already exists as a
+/// value — resolving a candidate and reading its manifest is what the real verb
+/// does before it asks anybody anything — and it is worth having because **the
+/// permissions are the part a person is agreeing to** and today the only way to
+/// read them is to start the install and then decline.
+///
+/// It stops exactly where the real verb starts asking. Nothing is written, no
+/// confirmation is requested, and the journal gets no entry — which is the one
+/// difference from declining at the prompt, where a `rejected` entry is
+/// recorded on purpose.
+pub fn foresee_install(store: &Store, name: &str, face: Face) -> Fallible {
+    const OP: &str = "rehearse";
+
+    if name.is_empty() {
+        return refused(face, OP, "nothing_asked", "list_available", "which one");
+    }
+
+    let candidate = match thalyx_core::repo::resolve(&store.repo_root(), name, None) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return refused(
+                face,
+                OP,
+                "no_such_module",
+                "list_available",
+                &error.to_string(),
+            );
+        }
+    };
+
+    // Read again rather than carried on the `Candidate`, and the signature is
+    // verified again on the way. `resolve` already checked it; reading a bundle
+    // is the only way to get its permissions, and a read that skipped the check
+    // would be a second, weaker way into the same file.
+    let bundle = match thalyx_core::bundle::Bundle::read(&candidate.path) {
+        Ok(bundle) => bundle,
+        Err(error) => return refused(face, OP, "unreadable", "cannot", &error.to_string()),
+    };
+    if let Err(error) = bundle.manifest.verify_signature(&bundle.signature) {
+        return refused(face, OP, "bad_signature", "cannot", &error.to_string());
+    }
+    let manifest = bundle.manifest;
+
+    // Whether this replaces something, worked out here rather than left for the
+    // reader. "Installing 1.4.2" and "replacing 1.4.1 with 1.4.2" are different
+    // things to agree to, and the second is the one with something to lose.
+    let replaces = store.installed().ok().and_then(|list| {
+        list.into_iter()
+            .find(|(id, _)| *id == candidate.module_id)
+            .map(|(_, version)| version.to_string())
+    });
+
+    if face.is_machine() {
+        let asks: Vec<Value> = manifest
+            .permissions
+            .iter()
+            .map(|permission| {
+                json!({
+                    "action": permission.action,
+                    "resource": permission.resource,
+                    "kind": permission.kind.to_string(),
+                    // The field that decides whether a human is asked at all,
+                    // said here so a caller knows before it starts whether this
+                    // needs somebody at a terminal.
+                    "needs_confirmation": permission.kind.requires_confirmation(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            thalyx_files::machine::answer(
+                OP,
+                vec![
+                    ("verb", json!("install")),
+                    ("module_id", json!(candidate.module_id)),
+                    ("version", json!(candidate.version.to_string())),
+                    ("from", json!(candidate.path.display().to_string())),
+                    ("replaces", json!(replaces)),
+                    ("asks_for", json!(asks)),
+                    (
+                        "needs_a_terminal",
+                        json!(
+                            manifest
+                                .permissions
+                                .iter()
+                                .any(|one| one.kind.requires_confirmation())
+                        )
+                    ),
+                    // Said out loud because it is the whole difference between a
+                    // rehearsal and declining at the prompt: that one leaves a
+                    // `rejected` entry in the journal, and this leaves nothing.
+                    ("would_write", json!(false)),
+                ],
+            )
+        );
+        return Ok(());
+    }
+
+    println!();
+    println!("  {} {}", candidate.module_id, candidate.version);
+    println!("  from {}", candidate.path.display());
+    match &replaces {
+        Some(previous) => println!("  would replace {previous}, which is installed now"),
+        None => println!("  nothing of that id is installed now"),
+    }
+    println!();
+    if manifest.permissions.is_empty() {
+        println!("  it asks for nothing.");
+    } else {
+        println!("  it asks for:");
+        for permission in &manifest.permissions {
+            println!(
+                "    {} {} ({})",
+                permission.action, permission.resource, permission.kind
+            );
+        }
+    }
+    println!();
+    println!(
+        "  Nothing was written and nothing was asked. `instalar {}`",
+        candidate.module_id
+    );
+    println!("  is the real one, and it asks before it writes.");
+    println!();
+    Ok(())
+}
+
+/// `ensayo revertir` — what undoing the last install would undo.
+///
+/// The cheapest rehearsal in the system: `rollback::plan` is already a separate
+/// value from `rollback::apply`, computed before anything is touched, and the
+/// human face of the real verb already prints it. This is that same plan with
+/// the `apply` never called.
+pub fn foresee_rollback(store: &Store, face: Face) -> Fallible {
+    const OP: &str = "rehearse";
+
+    let plan = match thalyx_core::rollback::plan(store, None) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return refused(face, OP, "nothing_to_undo", "cannot", &error.to_string());
+        }
+    };
+
+    if face.is_machine() {
+        println!(
+            "{}",
+            thalyx_files::machine::answer(
+                OP,
+                vec![
+                    ("verb", json!("rollback")),
+                    ("would_undo", json!(plan.describe())),
+                    ("request_id", json!(plan.request_id)),
+                    ("module_id", json!(plan.module_id)),
+                    ("version", json!(plan.version)),
+                    ("permissions_revoked", json!(plan.permissions_revoked)),
+                    ("uid_retired", json!(plan.uid_retired)),
+                    ("touches_user_data", json!(false)),
+                    ("would_write", json!(false)),
+                ],
+            )
+        );
+        return Ok(());
+    }
+
+    println!();
+    println!("  would undo: {}", plan.describe());
+    println!("  published by request {}", plan.request_id);
+    if plan.permissions_revoked > 0 {
+        println!(
+            "  {} permission(s) would stop being effective",
+            plan.permissions_revoked
+        );
+    }
+    if let Some(uid) = plan.uid_retired {
+        println!("  user {uid} would be retired, and never handed to another module");
+    }
+    println!();
+    println!("  Nothing outside what Thalyx published would be touched, and");
+    println!("  nothing has been touched now. `revertir` is the real one.");
+    println!();
+    Ok(())
+}

@@ -749,7 +749,7 @@ fn incomplete(face: Face, op: &str, machine_why: &str, human_why: &str) {
 /// on — and then a real `rm` does nothing while the caller believes it worked —
 /// or left off, which is worse. Written in front of the command, it is a fact
 /// about that one line and cannot be forgotten in either direction.
-pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
+pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face) -> Fallible {
     let rest = rest.trim();
     let (word, arguments) = match rest.split_once(' ') {
         Some((word, arguments)) => (word, arguments.trim()),
@@ -881,10 +881,45 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
             }
             return Ok(());
         }
-        // `instalar`, `correr`, `revertir`, `instalar-en`, `apagar`. Each one
-        // changes the machine and none of them has a check half yet, so the
-        // honest answer is that this cannot be rehearsed — not a rehearsal that
-        // quietly reports nothing.
+        // The three whose "work it out" half already existed as a value, so the
+        // rehearsal is that half with the acting half never called. `install`
+        // resolves a candidate and reads what it asks for; `rollback` has had a
+        // `plan` separate from `apply` since it was written; `install_onto`
+        // computes the whole layout, finds the kernel and reads what is on the
+        // disk **before** the confirmation, which was done so that a confirmed
+        // wipe could never discover afterwards that there was no kernel — and
+        // that ordering is what makes this rehearsal a stop rather than a second
+        // implementation.
+        "install" => return Ok(crate::modules::foresee_install(store, arguments, face)?),
+        "rollback" => return Ok(crate::modules::foresee_rollback(store, face)?),
+        "install_onto" => {
+            crate::session::foresee_install_onto(arguments, face);
+            return Ok(());
+        }
+        // `apagar`. Everything not written to the store is lost and that is all
+        // there is to say, but it has to be said: this is the one verb where a
+        // person finds out by losing it.
+        "power_off" => {
+            let why = "everything not written to the store would be lost, because the root filesystem is memory";
+            if face.machine() {
+                face.say(thalyx_files::machine::answer(
+                    "rehearse",
+                    vec![
+                        ("verb", serde_json::json!("power_off")),
+                        ("loses_unwritten_memory", serde_json::json!(true)),
+                        ("would_write", serde_json::json!(false)),
+                        ("message", serde_json::json!(why)),
+                    ],
+                ));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return Ok(());
+        }
+        // `correr`. The only one left, and it stays honest rather than guessing:
+        // what a run would be allowed to do is a question for the kernel side,
+        // and answering it from the manifest would describe a run that the
+        // machine may not be able to give.
         _ => {
             let why = format!(
                 "`{}` changes the machine and cannot be rehearsed yet",

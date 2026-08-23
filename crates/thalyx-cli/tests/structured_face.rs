@@ -667,15 +667,58 @@ fn rehearsing_something_harmless_says_so_instead_of_pretending_to_work() {
 #[test]
 fn rehearsing_a_verb_that_has_no_check_half_says_that_rather_than_reporting_nothing() {
     let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &["structured on", "ensayo correr algo", "salir"],
+    );
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // `correr` is the last verb with no check half, and it stays honest rather
+    // than guessing: what a run would be allowed to do is a question for the
+    // kernel side, and answering it from the manifest would describe a run the
+    // machine may not be able to give. A rehearsal that quietly reported an
+    // empty plan would read as "this would do nothing", which is the opposite
+    // of true.
+    //
+    // This test named `revertir` until 2026-08-23, when `revertir` grew its
+    // rehearsal. The claim it makes is about the *shape* of the honest answer,
+    // so it moved to the verb that still has that shape rather than being
+    // deleted with the gap it was describing.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["error"], serde_json::json!("cannot"));
+}
+
+#[test]
+fn rehearsing_an_undo_with_nothing_to_undo_says_that_and_not_that_it_cannot() {
+    let home = a_home_with_things_in_it();
     let output = piped(home.path(), &["structured on", "ensayo revertir", "salir"]);
     let objects = objects(&output);
     let answer = answer_to(&objects, "rehearse");
 
-    // `revertir` changes the machine and has no check half yet. A rehearsal that
-    // quietly reported an empty plan would read as "this would do nothing",
-    // which is the opposite of true.
+    // Two different facts that a single `cannot` used to fold together: *this
+    // verb has no rehearsal* and *there is nothing here to undo*. The first
+    // sends a caller away for good; the second is a fact about this store right
+    // now, and it changes the moment anything is installed.
     assert_eq!(answer["ok"], serde_json::json!(false));
-    assert_eq!(answer["error"], serde_json::json!("cannot"));
+    assert_eq!(answer["error"], serde_json::json!("nothing_to_undo"));
+}
+
+#[test]
+fn a_rehearsed_install_says_what_it_would_ask_for_and_that_it_would_write_nothing() {
+    let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &["structured on", "ensayo instalar dev.thalyx.nope", "salir"],
+    );
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // No repository here, so the interesting half is the refusal: it names the
+    // way out rather than only the problem, which is punto A2. What it must not
+    // do is answer as though the module were installable.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["remedy"], serde_json::json!("list_available"));
 }
 
 #[test]

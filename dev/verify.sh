@@ -3448,6 +3448,64 @@ EOF
             ;;
     esac
 
+    # --- D1: the rehearsal that leaves no trace, against the verb that does --
+    #
+    # `ensayo instalar` answers what installing would ask for and stops one line
+    # before the real verb starts asking. The claim is that it writes nothing,
+    # and the claim is in the answer as `would_write: false`.
+    #
+    # **The control is the whole check.** The same bundle is installed for real
+    # into a second store, and that one must write — a journal entry and a
+    # module on disk. Without it, a rehearsal that errored out before doing
+    # anything would also leave an empty store and would pass a check that only
+    # asked whether the store was empty.
+    REH_A="$WORK/rehearse-store"; REH_B="$WORK/rehearse-control"
+    rm -rf "$REH_A" "$REH_B"
+    mkdir -p "$REH_A/repo" "$REH_B/repo"
+    cp "$AREPO/demo-1.4.2.thmod" "$REH_A/repo/" 2>/dev/null || true
+    cp "$AREPO/demo-1.4.2.thmod" "$REH_B/repo/" 2>/dev/null || true
+
+    if [ ! -f "$REH_A/repo/demo-1.4.2.thmod" ]; then
+        unproven "no bundle was staged, so the install rehearsal had nothing to rehearse"
+    else
+        printf '%s\n' "structured on" "ensayo instalar dev.thalyx.demo" salir \
+            | THALYX_ROOT="$REH_A" "$THALYX" session > "$WORK/rehearse-install.log" 2>&1
+        printf '%s\n' "structured on" "instalar dev.thalyx.demo" salir \
+            | THALYX_ROOT="$REH_B" "$THALYX" session > "$WORK/real-install.log" 2>&1
+
+        REH_SAID=$(grep '^{' "$WORK/rehearse-install.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(value, dict) and value.get("op") == "rehearse" and value.get("verb") == "install":
+        print("yes" if value.get("ok") and value.get("would_write") is False else "no")
+        break
+else:
+    print("none")
+' 2>/dev/null || echo none)
+
+        REH_JOURNAL=$([ -f "$REH_A/journal.jsonl" ] && wc -l < "$REH_A/journal.jsonl" || echo 0)
+        CTL_JOURNAL=$([ -f "$REH_B/journal.jsonl" ] && wc -l < "$REH_B/journal.jsonl" || echo 0)
+        REH_MODULES=$(ls "$REH_A/modules" 2>/dev/null | wc -l)
+        CTL_MODULES=$(ls "$REH_B/modules" 2>/dev/null | wc -l)
+
+        if [ "$CTL_JOURNAL" -eq 0 ] || [ "$CTL_MODULES" -eq 0 ]; then
+            # The control did not write, so the first column proves nothing: on a
+            # machine where installing writes nothing either, the two are the
+            # same store and the rehearsal is indistinguishable from a no-op.
+            failed "the real install wrote nothing either (journal $CTL_JOURNAL, modules $CTL_MODULES); see $WORK/real-install.log"
+        elif [ "$REH_SAID" != "yes" ]; then
+            failed "the rehearsal did not answer ($REH_SAID); see $WORK/rehearse-install.log"
+        elif [ "$REH_JOURNAL" -ne 0 ] || [ "$REH_MODULES" -ne 0 ]; then
+            failed "the rehearsal wrote something: journal $REH_JOURNAL, modules $REH_MODULES"
+        else
+            proven "a rehearsed install said what it would ask for and wrote nothing, where the real one wrote both"
+        fi
+    fi
+
     # --- C1: the semantic index, asked by the session -----------------------
     #
     # The question no directory walk can answer. Nothing about the name or the

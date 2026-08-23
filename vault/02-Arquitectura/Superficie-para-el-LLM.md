@@ -365,7 +365,7 @@ derecha está decidido**; es el catálogo, no un plan.
 | C1 | Índice semántico expuesto | **Hecho** — `indexar`, `depende`, `usan` |
 | C2 | Búsqueda por símbolos | **Hecho** — `buscar`, con la definición y los usos separados, sin comentarios ni cadenas |
 | C3 | Vigencia en toda respuesta | **Hecho donde hay caché**: cada respuesta del índice trae `fresh` |
-| D1 | Ensayo en todo verbo que cambia | **Hecho para los verbos de archivos** — `ensayo`; los otros cinco dicen que no pueden |
+| D1 | Ensayo en todo verbo que cambia | **Hecho en ocho de nueve** — archivos, `matar`, y desde el 2026-08-23 `instalar`, `revertir`, `instalar-en` y `apagar`. Falta `correr`, y dice que no puede |
 | D2 | El intento con nombre | **Hecho** — `intento empezar/confirmar/abandonar`; la política probada aquí, el Btrfs en la etapa 26 |
 | D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
 | E1 | El agente ajeno como tarea con concesión | **Bloqueado por G1 y G2**, no por dificultad: no hay a qué darle la concesión |
@@ -430,6 +430,36 @@ mezcla se resolvió a favor de no construir nada.
 ---
 
 ## Revisiones
+
+### 2026-08-23 — El ensayo llegó a los que cambian la máquina, y salió gratis
+
+Segunda entrega del sprint. `D1` decía *«hecho para los verbos de archivos; los
+otros cinco dicen que no pueden»*, y al mirarlos resultó que **cuatro de los
+cinco ya tenían escrita la mitad que averigua**, separada de la que actúa:
+
+- `revertir` tiene `plan` aparte de `apply` desde que se escribió;
+- `instalar` resuelve un candidato y lee su manifiesto antes de preguntar nada;
+- `instalar-en` calcula la distribución entera, encuentra el kernel y lee qué hay
+  en el disco **antes** de la confirmación — y eso se hizo el 2026-08-07 por otra
+  razón: para que un borrado ya confirmado no descubriera después que no había
+  kernel que escribir. **Esa decisión es la que hace posible este ensayo**, y
+  nadie la tomó pensando en él;
+- `apagar` no tiene nada que calcular y sí tiene algo que decir, que es lo único
+  que importa en el verbo donde una persona se entera perdiéndolo.
+
+O sea que el ensayo no fue construir una segunda implementación de nada: fue
+**parar en la línea que ya estaba dibujada**. Para el único verbo irreversible
+del sistema, que no haya una segunda implementación que se pueda desalinear no
+es un detalle.
+
+`correr` es el que queda y se queda honesto: qué podría hacer un módulo al
+correr es una pregunta del lado del kernel, y contestarla desde el manifiesto
+describiría una corrida que la máquina quizá no puede dar.
+
+**Lo que la prueba tuvo que aprender:** un `cannot` estaba tapando dos hechos
+distintos —*este verbo no tiene ensayo* y *aquí no hay nada que deshacer*—. El
+primero manda al que preguntó a otro lado para siempre; el segundo deja de ser
+cierto en cuanto se instale algo.
 
 ### 2026-08-23 — Los nueve verbos que no tenían segunda cara, y ya no queda ninguno
 

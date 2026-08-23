@@ -1733,10 +1733,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // D1: what a verb would do, without doing any of it.
             _ if starts_any(line, &["ensayo ", "rehearse "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::rehearse(&here, rest, face)?;
+                crate::files::rehearse(&here, store, rest, face)?;
             }
             "ensayo" | "rehearse" => {
-                crate::files::rehearse(&here, "", face)?;
+                crate::files::rehearse(&here, store, "", face)?;
             }
             "pwd" | "donde" | "dónde" | "where" => {
                 crate::files::where_am_i(&here, face);
@@ -1813,7 +1813,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_onto(rest, face);
+                install_onto(rest, face, false);
             }
             "instalar-en" | "install-onto" => {
                 println!();
@@ -2078,6 +2078,17 @@ fn list_disks(face: crate::files::Face) {
     println!();
 }
 
+/// `ensayo instalar-en <disco>` — everything the real verb works out, and none
+/// of what it does.
+///
+/// Its own entry point rather than a flag on the verb, because the caller is
+/// `ensayo` and the verb it names is somebody else's. What it runs is the same
+/// code path: there is no second implementation to drift, which for the one
+/// irreversible verb in the system is not a nicety.
+pub fn foresee_install_onto(disk: &str, face: crate::files::Face) {
+    install_onto(disk, face, true);
+}
+
 /// Put this machine onto a disk, so it stops needing the medium it booted from.
 ///
 /// The kernel comes off the medium this machine started from, found by looking for a
@@ -2086,10 +2097,18 @@ fn list_disks(face: crate::files::Face) {
 /// what happened the day it asked for the file alone. Nothing is mounted to do it:
 /// the bytes are read the same way they were written, so this needs no vfat in the
 /// kernel.
-fn install_onto(disk: &str, face: crate::files::Face) {
+fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
     use std::io::{IsTerminal, Write};
 
-    const OP: &str = "install_onto";
+    // The op is the one the caller typed, not the one this function is called.
+    // `describe` promises `rehearse` for `ensayo`, and a refusal that came back
+    // under `install_onto` would be an answer to a verb nobody used — which, on
+    // this verb, is an answer that reads like the real thing failed.
+    let op: &str = if rehearsing {
+        "rehearse"
+    } else {
+        "install_onto"
+    };
 
     let disk = std::path::PathBuf::from(disk);
 
@@ -2102,7 +2121,7 @@ fn install_onto(disk: &str, face: crate::files::Face) {
     let refuse = |word: &str, remedy: &str, message: &str, wrote: bool| {
         if face.is_machine() {
             face.say(thalyx_files::machine::refused_with(
-                OP,
+                op,
                 word,
                 remedy,
                 message,
@@ -2153,6 +2172,10 @@ fn install_onto(disk: &str, face: crate::files::Face) {
     // machine that asked for confirmation, got it, wiped the disk and only then
     // discovered it had no kernel to write would have destroyed the disk for nothing
     // — and this is the one verb where that is unrecoverable.
+    //
+    // That ordering is also what makes `ensayo instalar-en` possible at all:
+    // everything above the confirmation is a question, and everything below it
+    // is an act. A rehearsal is this same path stopping at the line.
     let found = match thalyx_install::medium::find(Some(&disk)) {
         Ok(found) => found,
         Err(error) => {
@@ -2235,6 +2258,61 @@ fn install_onto(disk: &str, face: crate::files::Face) {
     // driving a real terminal can do here is exactly what a person can, and what a
     // program on a pipe can do is nothing. Widening it would make the one
     // irreversible verb in the system reachable by whatever was on stdin.
+    //
+    // A rehearsal stops here, one line before the question. Everything it wanted
+    // to know has been worked out and nothing has been done.
+    if rehearsing {
+        if face.is_machine() {
+            face.say(thalyx_files::machine::answer(
+                "rehearse",
+                vec![
+                    ("verb", serde_json::json!("install_onto")),
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    (
+                        "kernel_from",
+                        serde_json::json!(found.device.display().to_string()),
+                    ),
+                    ("kernel_bytes", serde_json::json!(found.kernel_bytes)),
+                    ("boot_mib", serde_json::json!(mib(plan.esp_sectors()))),
+                    ("store_mib", serde_json::json!(mib(plan.store_sectors()))),
+                    // What is on it now, read off the disk rather than off the
+                    // listing from a minute ago — and `null` when it could not
+                    // be read, which is not the same as nothing to lose and is
+                    // the difference that decides whether somebody should go and
+                    // check before answering.
+                    (
+                        "holds_now",
+                        serde_json::json!(thalyx_install::partitions::of(&disk).ok().map(
+                            |existing| {
+                                existing
+                                    .iter()
+                                    .map(|(number, path)| {
+                                        serde_json::json!({
+                                            "number": number,
+                                            "holds": whats_on(path),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
+                        )),
+                    ),
+                    // The whole reason this rehearsal exists, said where a
+                    // program reads it.
+                    ("would_destroy_everything_on_it", serde_json::json!(true)),
+                    ("would_write", serde_json::json!(false)),
+                ],
+            ));
+        } else {
+            println!(
+                "  Nothing has been done. `instalar-en {}` is the real one,",
+                disk.display()
+            );
+            println!("  and it asks for the disk's path typed out before it writes.");
+            println!();
+        }
+        return;
+    }
+
     if !std::io::stdin().is_terminal() {
         refuse(
             "no_terminal",
@@ -2332,7 +2410,7 @@ fn install_onto(disk: &str, face: crate::files::Face) {
     ) {
         Ok(installed) if face.is_machine() => {
             face.say(thalyx_files::machine::answer(
-                OP,
+                op,
                 vec![
                     ("disk", serde_json::json!(disk.display().to_string())),
                     (

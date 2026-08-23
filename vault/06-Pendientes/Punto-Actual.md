@@ -14,6 +14,48 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El ensayo llegó a los verbos que cambian la máquina — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Segunda entrega del sprint. El punto **D1** de [[Superficie-para-el-LLM]]
+> —ensayo en todo verbo que cambia— estaba en «hecho para los verbos de
+> archivos, los otros cinco dicen que no pueden». Ahora está en **ocho de
+> nueve**.
+>
+> Y salió casi gratis, por una razón que vale más que los cuatro verbos:
+> **cuatro de los cinco ya tenían escrita la mitad que averigua**, separada de la
+> que actúa. `revertir` tiene `plan` aparte de `apply` desde que se escribió.
+> `instalar` resuelve el candidato y lee su manifiesto antes de preguntar nada.
+> Y `instalar-en` calcula la distribución entera, encuentra el kernel y lee qué
+> hay en el disco **antes** de la confirmación — decisión del 2026-08-07, tomada
+> por otra razón completamente distinta: que un borrado ya confirmado no
+> descubriera después que no había kernel que escribir.
+>
+> Así que el ensayo no fue una segunda implementación de nada: **fue parar en la
+> línea que ya estaba dibujada.** Para el único verbo irreversible del sistema,
+> que no exista una segunda implementación que se pueda desalinear no es un
+> detalle.
+>
+> `ensayo instalar` es el que más se usa y contesta lo que una persona sólo podía
+> ver empezando la instalación y declinando: qué pide el módulo, si alguno de
+> esos permisos necesita a alguien en una terminal, y si reemplaza algo que ya
+> está.
+>
+> **Comprobado con su control, que es lo que lo hace valer**: el ensayo deja el
+> store sin journal y sin módulos, y la instalación de verdad del mismo bundle
+> deja las dos cosas. Sin esa segunda columna, un ensayo que se cayera antes de
+> hacer nada se vería igual.
+>
+> `correr` es el único que queda y se queda diciendo que no puede: qué podría
+> hacer un módulo al correr es una pregunta del lado del kernel, y contestarla
+> desde el manifiesto describiría una corrida que la máquina quizá no puede dar.
+>
+> **Y una prueba estaba tapando dos hechos con una sola palabra.** `cannot`
+> significaba a la vez *este verbo no tiene ensayo* y *aquí no hay nada que
+> deshacer*. El primero manda al que preguntó a otro lado para siempre; el
+> segundo deja de ser cierto en cuanto se instale algo.
+
 > ## Los cuarenta verbos contestan por estructura — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
