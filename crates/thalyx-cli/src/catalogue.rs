@@ -425,7 +425,7 @@ pub const VERBS: &[Verb] = &[
         names: &["clear", "limpiar", "cls"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("clear"),
         changes: false,
         errors: &[],
         summary: "Wipe the screen. Nothing on the machine changes.",
@@ -434,8 +434,8 @@ pub const VERBS: &[Verb] = &[
         id: "available",
         names: &["disponibles", "available", "repo"],
         takes: &[],
-        flags: &[],
-        answers: None,
+        flags: &["limite=", "cursor="],
+        answers: Some("available"),
         changes: false,
         errors: &[],
         summary: "What is in this machine's repository and could be installed.",
@@ -445,7 +445,7 @@ pub const VERBS: &[Verb] = &[
         names: &["instalar", "install"],
         takes: &["module-id"],
         flags: &[],
-        answers: None,
+        answers: Some("install"),
         changes: true,
         errors: &[],
         summary: "Install a signed module, showing what it asks for first.",
@@ -454,8 +454,8 @@ pub const VERBS: &[Verb] = &[
         id: "modules",
         names: &["modulos", "módulos", "modules"],
         takes: &[],
-        flags: &[],
-        answers: None,
+        flags: &["limite=", "cursor="],
+        answers: Some("modules"),
         changes: false,
         errors: &[],
         summary: "What is installed on this machine.",
@@ -465,7 +465,7 @@ pub const VERBS: &[Verb] = &[
         names: &["correr", "run"],
         takes: &["module-id"],
         flags: &["sin-confinar"],
-        answers: None,
+        answers: Some("run"),
         changes: true,
         errors: &[],
         summary: "Run an installed module, confined to what it was granted.",
@@ -475,7 +475,7 @@ pub const VERBS: &[Verb] = &[
         names: &["permisos", "permissions"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("permissions"),
         changes: false,
         errors: &[],
         summary: "What is granted right now, and to whom.",
@@ -485,7 +485,7 @@ pub const VERBS: &[Verb] = &[
         names: &["revertir", "rollback"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("rollback"),
         changes: true,
         errors: &[],
         summary: "Undo the last install, refusing when the disk no longer matches.",
@@ -515,7 +515,7 @@ pub const VERBS: &[Verb] = &[
         names: &["nucleo", "núcleo", "kernel", "dmesg"],
         takes: &["todo|lento"],
         flags: &[],
-        answers: None,
+        answers: Some("kernel"),
         changes: false,
         errors: &[],
         summary: "What the kernel has been saying. There is no dmesg in here.",
@@ -525,7 +525,7 @@ pub const VERBS: &[Verb] = &[
         names: &["discos", "disks"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("disks"),
         changes: false,
         errors: &[],
         summary: "The disks this machine can see, and which one it booted from.",
@@ -545,7 +545,7 @@ pub const VERBS: &[Verb] = &[
         names: &["instalar-en", "install-onto"],
         takes: &["disk"],
         flags: &[],
-        answers: None,
+        answers: Some("install_onto"),
         changes: true,
         errors: &[],
         summary: "Put this machine onto a disk. Everything on that disk is lost.",
@@ -555,7 +555,7 @@ pub const VERBS: &[Verb] = &[
         names: &["salir", "exit", "quit"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("leave"),
         changes: false,
         errors: &[],
         summary: "Leave the session. On the machine itself there is nowhere to go.",
@@ -565,7 +565,7 @@ pub const VERBS: &[Verb] = &[
         names: &["apagar", "poweroff"],
         takes: &[],
         flags: &[],
-        answers: None,
+        answers: Some("power_off"),
         changes: true,
         errors: &[],
         summary: "Turn the machine off.",
@@ -749,6 +749,12 @@ mod tests {
         // and a program that believes that never calls the verb at all. A single
         // `contains` could not see it. Growing a face means editing this list,
         // and that edit is the moment to check the claim is now true.
+        //
+        // **It is empty, and that is the claim now.** Every verb this machine has
+        // answers by structure, including the three that used to have nothing to
+        // say — `limpiar`, `salir` and `apagar` — because silence is never an
+        // answer and those were the three places it was still being given. A verb
+        // added without a face has to add itself here, in a test that says so.
         let prose_only: Vec<&str> = VERBS
             .iter()
             .filter(|verb| verb.answers.is_none())
@@ -756,21 +762,8 @@ mod tests {
             .collect();
         assert_eq!(
             prose_only,
-            vec![
-                "clear",
-                "available",
-                "install",
-                "modules",
-                "run",
-                "permissions",
-                "rollback",
-                "kernel",
-                "disks",
-                "install_onto",
-                "leave",
-                "power_off",
-            ],
-            "the set of prose-only verbs moved; if a face was added, say so here"
+            Vec::<&str>::new(),
+            "a verb was added with no structured face; the decree is that it is born with both"
         );
     }
 

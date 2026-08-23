@@ -3359,7 +3359,15 @@ else:
     # a verb that promised prose. A refusal counts as a structured face — an op
     # that says it could not is still the verb answering by structure, which is
     # rule 10 on the wire.
-    CLAIM_VERBS="ls describe procesos memoria historia cambios estado recuerdos red disponibles modulos permisos nucleo discos"
+    #
+    # The list is every verb that is safe to run here with no argument. What is
+    # not on it is on it for a reason and the reason is never "it has no face":
+    # `apagar` and `instalar-en` would act on the machine, `salir` ends the
+    # session the other verbs are being driven in, and the rest need a subject.
+    # Since 2026-08-23 the catalogue's own test asserts that **no verb is
+    # prose-only**, so a promise here is never `null` and every one of these must
+    # come back with an object.
+    CLAIM_VERBS="ls describe procesos memoria historia cambios estado recuerdos red disponibles modulos permisos nucleo discos limpiar correr instalar revertir intento ensayo indexar"
     : > "$WORK/surface-claims.tsv"
     for CLAIM_VERB in $CLAIM_VERBS; do
         surface "structured on" "$CLAIM_VERB" salir > "$WORK/surface-claim-$CLAIM_VERB.log" 2>&1
@@ -3409,8 +3417,12 @@ for row in open(claims):
             answer = json.loads(line)
         except Exception:
             continue
-        # `structured on` answers for itself; it is not the verb under test.
-        if isinstance(answer, dict) and answer.get("op") not in (None, "structured"):
+        # `structured on` answers for itself, and so does the `salir` that ends
+        # every one of these sessions. Neither is the verb under test — and
+        # `leave` only started appearing here on 2026-08-23, when it grew the
+        # face it needed for the reason that a caller cannot tell a session that
+        # left from one that died.
+        if isinstance(answer, dict) and answer.get("op") not in (None, "structured", "leave"):
             ops.add(answer["op"])
     checked += 1
     want = promised[name]
