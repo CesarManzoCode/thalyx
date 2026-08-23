@@ -16,6 +16,7 @@
 //! types them. Everything they name — `/home`, `/opt/thalyx` — stays as it is on
 //! disk, because a path is not language.
 
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -147,8 +148,23 @@ impl Where {
 /// cursor back at the top. Written out rather than borrowed from a terminal
 /// library, for the same reason as the cpio and the Btrfs writer — the image
 /// holds the kernel and one program.
-pub fn clear() {
+pub fn clear(face: Face) {
     use std::io::Write;
+
+    // A program gets an answer and not an escape sequence, and it gets one for
+    // the reason `machine.rs` gives for `cd`: **silence is never an answer.** A
+    // parser waiting on a stream cannot tell a screen it did not need cleared
+    // from a session that died mid-line, and this verb is otherwise the one that
+    // produces no output at all.
+    //
+    // Nothing is cleared for it either. There is no screen on that end, and
+    // writing `ESC[2J` into a pipe is bytes a caller has to strip before it can
+    // parse the line it is on.
+    if face.is_machine() {
+        face.say(machine::answer("clear", vec![("cleared", json!(false))]));
+        return;
+    }
+
     print!("\x1b[2J\x1b[H");
     // Flushed here because what follows is a prompt printed with `print!` and no
     // newline of its own; leaving this in the buffer would put the prompt on

@@ -347,28 +347,61 @@ fn gather(store: &Store) -> Vec<Reading> {
 /// The kernel is asked to power off directly. There is no `shutdown` to call
 /// and nothing else running that would need to be told first: the session is
 /// the only child, and PID 1 is what invoked it.
-fn power_off(standing: &Standing) {
+fn power_off(standing: &Standing, face: crate::files::Face) {
+    const OP: &str = "power_off";
+
     match standing {
         Standing::TheMachine => {
-            println!();
-            println!("  Turning off. Anything not written to the store is gone,");
-            println!("  because the root filesystem is memory and always was.");
-            println!();
+            if face.is_machine() {
+                // Said before the syscall, because after it there is nobody to
+                // say anything: on success this call does not return. A caller
+                // that only ever heard from the failure branch would learn about
+                // a poweroff exactly when it did not happen.
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![("turning_off", serde_json::json!(true))],
+                ));
+            } else {
+                println!();
+                println!("  Turning off. Anything not written to the store is gone,");
+                println!("  because the root filesystem is memory and always was.");
+                println!();
+            }
             let _ = std::io::stdout().flush();
             // Only returns on failure: on success the machine is already off.
             // Reported rather than swallowed, because a poweroff that silently
             // did nothing leaves a prompt that looks like it ignored the human.
             let error = thalyx_syscall::reboot(thalyx_syscall::RebootCommand::PowerOff);
-            println!("  the kernel refused to power off: {error}");
-            println!("  that needs privilege I do not have here.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "refused_by_kernel",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!("  the kernel refused to power off: {error}");
+                println!("  that needs privilege I do not have here.");
+                println!();
+            }
         }
         Standing::AProgram { under } => {
-            println!();
-            println!("  No. I am a program under {under}, and turning this machine");
-            println!("  off would turn off something that is not mine. `salir`");
-            println!("  leaves; on the image this same word powers the machine down.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "not_the_machine",
+                    "leave",
+                    &format!(
+                        "this is a program under {under}; turning the machine off would turn off something that is not Thalyx's"
+                    ),
+                ));
+            } else {
+                println!();
+                println!("  No. I am a program under {under}, and turning this machine");
+                println!("  off would turn off something that is not mine. `salir`");
+                println!("  leaves; on the image this same word powers the machine down.");
+                println!();
+            }
         }
     }
 }
@@ -656,22 +689,36 @@ fn show_slowest(face: crate::files::Face) {
 /// decrees that the request is generated and rendered by the core, and this is
 /// the machine's end of it. It is step 3 of the exit criterion, and it is the
 /// same code path the host CLI uses, not a copy of it.
-fn install_module(store: &Store, name: &str, utterance: &str) {
-    println!();
+fn install_module(store: &Store, name: &str, utterance: &str, face: crate::files::Face) {
+    const OP: &str = "install";
+
     let candidate = match thalyx_core::repo::resolve(&store.repo_root(), name, None) {
         Ok(candidate) => candidate,
         Err(error) => {
-            println!("  {error}");
-            println!();
-            println!("  `disponibles` lists what the repository holds.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "no_such_module",
+                    "list_available",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  {error}");
+                println!();
+                println!("  `disponibles` lists what the repository holds.");
+                println!();
+            }
             return;
         }
     };
 
-    println!("  {} {}", candidate.module_id, candidate.version);
-    println!("  from {}", candidate.path.display());
-    println!();
+    if !face.is_machine() {
+        println!();
+        println!("  {} {}", candidate.module_id, candidate.version);
+        println!("  from {}", candidate.path.display());
+        println!();
+    }
 
     let request = thalyx_core::InstallRequest {
         bundle_path: &candidate.path,
@@ -683,7 +730,69 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
     // consent would make the trusted path a formality.
     let mut confirmer = crate::render::TerminalConfirmer::new(false);
 
-    match thalyx_core::install(store, request, &mut confirmer) {
+    let installed = thalyx_core::install(store, request, &mut confirmer);
+
+    if face.is_machine() {
+        match &installed {
+            Ok(outcome) => {
+                let module_id = outcome.module_id.clone();
+                let version = outcome.version.clone();
+                let installed_at = store.current_link(&module_id);
+                remembering(store, "The install", |memory| {
+                    thalyx_agent::recollection::record_install(
+                        memory,
+                        SESSION_TASK,
+                        utterance,
+                        &module_id,
+                        &version,
+                        &installed_at,
+                    )
+                });
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![
+                        ("module_id", serde_json::json!(outcome.module_id)),
+                        ("version", serde_json::json!(outcome.version)),
+                        // `null` when nothing was there before, the version when
+                        // something was. An upgrade and a first install are
+                        // different events and the caller that conflates them
+                        // reports the wrong one to whoever asked.
+                        ("replaced", serde_json::json!(outcome.replaced)),
+                        ("files", serde_json::json!(outcome.files.len())),
+                        ("granted", serde_json::json!(outcome.granted)),
+                    ],
+                ));
+            }
+            Err(error) => {
+                // Includes the refusal at the trusted path, which is the case
+                // that matters most here: `Camino-Confiable.md` is not weakened
+                // by this face, it is reported by it. A session that is not a
+                // terminal cannot confirm, and it is told so in the same shape
+                // as any other refusal rather than on stderr where a parser
+                // reading one stream would never see it.
+                face.say(thalyx_files::machine::refused_with(
+                    OP,
+                    "not_installed",
+                    "confirm_at_a_terminal",
+                    &error.to_string(),
+                    vec![
+                        ("module_id", serde_json::json!(candidate.module_id)),
+                        // Exactly what is true, and no more. This field first
+                        // said `wrote_anything: false`, which was checked by
+                        // driving it and was **wrong**: a refused install leaves
+                        // a `rejected` entry in the journal, which is the whole
+                        // point — a refusal at the trusted path that left no
+                        // trace would be a trusted path nobody could audit.
+                        // What is true is that no module landed.
+                        ("installed", serde_json::json!(false)),
+                    ],
+                ));
+            }
+        }
+        return;
+    }
+
+    match installed {
         Ok(outcome) => {
             println!();
             match &outcome.replaced {
@@ -733,8 +842,9 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
             println!();
             println!("  not installed: {error}");
             println!();
-            println!("  Nothing was written. An install that stops before the commit");
-            println!("  leaves the machine exactly as it was.");
+            println!("  No module was installed. An install that stops before the");
+            println!("  commit puts nothing on disk — the journal does record that");
+            println!("  it was refused, which is what makes a refusal auditable.");
         }
     }
     println!();
@@ -746,32 +856,87 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
 /// back what Thalyx itself put on disk and touches nothing the human made,
 /// which is why it does not ask first. The destructive one is `restore`, it has
 /// its own name, and it is not a verb here.
-fn revert(store: &Store, utterance: &str) {
-    println!();
+fn revert(store: &Store, utterance: &str, face: crate::files::Face) {
+    const OP: &str = "rollback";
+
     let plan = match thalyx_core::rollback::plan(store, None) {
         Ok(plan) => plan,
         Err(error) => {
-            println!("  {error}");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "nothing_to_undo",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  {error}");
+                println!();
+            }
             return;
         }
     };
 
-    println!("  {}", plan.describe());
-    println!("  published by request {}", plan.request_id);
-    if plan.permissions_revoked > 0 {
-        println!(
-            "  {} permission(s) stop being effective",
-            plan.permissions_revoked
-        );
+    if !face.is_machine() {
+        println!();
+        println!("  {}", plan.describe());
+        println!("  published by request {}", plan.request_id);
+        if plan.permissions_revoked > 0 {
+            println!(
+                "  {} permission(s) stop being effective",
+                plan.permissions_revoked
+            );
+        }
+        if let Some(uid) = plan.uid_retired {
+            println!("  user {uid} is retired, and never handed to another module");
+        }
+        println!();
+        println!("  Nothing outside what Thalyx published is touched.");
     }
-    if let Some(uid) = plan.uid_retired {
-        println!("  user {uid} is retired, and never handed to another module");
-    }
-    println!();
-    println!("  Nothing outside what Thalyx published is touched.");
 
-    match thalyx_core::rollback::apply(store, &plan, &crate::new_request_id()) {
+    let undone = thalyx_core::rollback::apply(store, &plan, &crate::new_request_id());
+
+    if face.is_machine() {
+        match &undone {
+            Ok(()) => {
+                remembering(store, "The rollback", |memory| {
+                    thalyx_agent::recollection::record_utterance(memory, SESSION_TASK, utterance)
+                });
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![
+                        ("undid", serde_json::json!(plan.describe())),
+                        ("request_id", serde_json::json!(plan.request_id)),
+                        (
+                            "permissions_revoked",
+                            serde_json::json!(plan.permissions_revoked),
+                        ),
+                        // `null` when no user was retired. A uid that is retired
+                        // is never handed to another module, which is the fact
+                        // that makes this undo different from deleting files.
+                        ("uid_retired", serde_json::json!(plan.uid_retired)),
+                        // The boundary of the whole verb, where a program reads
+                        // it: `revertir` takes back what Thalyx published and
+                        // touches nothing a person made. The destructive one has
+                        // its own name and is not a verb here.
+                        ("touched_user_data", serde_json::json!(false)),
+                    ],
+                ));
+            }
+            Err(error) => {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "not_undone",
+                    "read_the_error",
+                    &error.to_string(),
+                ));
+            }
+        }
+        return;
+    }
+
+    match undone {
         Ok(()) => {
             // Only what was asked, and nothing about the world. The install's
             // own record witnesses the `current` link this just removed, so the
@@ -917,37 +1082,78 @@ fn remembering(
 /// written to prevent: reaching the degraded state by accident instead of
 /// deliberately. So the refusal is printed, the word that means it is named,
 /// and the human types it or does not.
-fn start_module(store: &Store, rest: &str) {
+fn start_module(store: &Store, rest: &str, face: crate::files::Face) {
     let (id, unconfined) = match rest.split_once(' ') {
         Some((id, tail)) => (id.trim(), tail.trim() == UNCONFINED_WORD),
         None => (rest, false),
     };
 
     if id.is_empty() {
-        println!();
-        println!("  Which one. `modulos` lists them.");
-        println!();
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                "run",
+                "nothing_asked",
+                "list_modules",
+                "which one — `correr <id>`",
+            ));
+        } else {
+            println!();
+            println!("  Which one. `modulos` lists them.");
+            println!();
+        }
         return;
     }
 
     if !store.is_installed(id) {
-        println!();
-        println!("  `{id}` is not installed. `modulos` lists what is.");
-        println!();
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                "run",
+                "not_installed",
+                "list_modules",
+                &format!("`{id}` is not installed"),
+            ));
+        } else {
+            println!();
+            println!("  `{id}` is not installed. `modulos` lists what is.");
+            println!();
+        }
         return;
     }
 
-    let Err(error) = crate::run::run(
-        store.root(),
-        id,
-        SESSION_PROFILE,
-        thalyx_core::run::DEFAULT_ENTRYPOINT,
-        Vec::new(),
+    let Err(error) = crate::run::run(crate::run::Asked {
+        root: store.root(),
+        module_id: id,
+        profile: SESSION_PROFILE,
+        entrypoint: thalyx_core::run::DEFAULT_ENTRYPOINT,
+        args: Vec::new(),
         unconfined,
-        crate::new_request_id(),
-    ) else {
+        request_id: crate::new_request_id(),
+        face,
+    }) else {
         return;
     };
+
+    if face.is_machine() {
+        // The known gap, as a remedy rather than as a paragraph. `run_unconfined`
+        // is a word a caller can act on, and it carries what it costs in the same
+        // object: the journal records that run as degraded, because it is.
+        let (word, remedy) = if unconfined {
+            ("did_not_run", "cannot")
+        } else {
+            ("cannot_enforce", "run_unconfined")
+        };
+        face.say(thalyx_files::machine::refused_with(
+            "run",
+            word,
+            remedy,
+            &error.to_string(),
+            vec![
+                ("module_id", serde_json::json!(id)),
+                ("degraded_if_forced", serde_json::json!(!unconfined)),
+            ],
+        ));
+        return;
+    }
 
     println!();
     println!("  {id} did not run: {error}");
@@ -1281,13 +1487,35 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             "" => continue,
             "salir" | "exit" | "quit" => match &standing {
                 Standing::TheMachine => {
-                    println!();
-                    println!("  There is nowhere to go. Turning the machine off is");
-                    println!("  `apagar`; anything else keeps you here.");
-                    println!();
+                    if face.is_machine() {
+                        face.say(thalyx_files::machine::refused(
+                            "leave",
+                            "nowhere_to_go",
+                            "power_off",
+                            "there is nowhere to go; `apagar` turns the machine off",
+                        ));
+                    } else {
+                        println!();
+                        println!("  There is nowhere to go. Turning the machine off is");
+                        println!("  `apagar`; anything else keeps you here.");
+                        println!();
+                    }
                 }
                 Standing::AProgram { under } => {
-                    println!("  Back to {under}.");
+                    // Said *before* the stream ends, which is the whole point of
+                    // this one: a caller that got a closed pipe with nothing in
+                    // it cannot tell a session that left from one that crashed.
+                    if face.is_machine() {
+                        face.say(thalyx_files::machine::answer(
+                            "leave",
+                            vec![
+                                ("left", serde_json::json!(true)),
+                                ("to", serde_json::json!(under)),
+                            ],
+                        ));
+                    } else {
+                        println!("  Back to {under}.");
+                    }
                     break;
                 }
             },
@@ -1307,7 +1535,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 }
             }
             "apagar" | "poweroff" => {
-                power_off(&standing);
+                power_off(&standing, face);
             }
             _ if starts_any(line, &["modulos ", "módulos ", "modules "]) => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
@@ -1327,7 +1555,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
                 crate::modules::permissions(store, face)?;
             }
             "revertir" | "rollback" => {
-                revert(store, line);
+                revert(store, line, face);
             }
             "recuerdos" | "recordar" | "memory" | "recall" => {
                 if face == crate::files::Face::Machine {
@@ -1338,12 +1566,21 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             _ if line.starts_with("instalar ") || line.starts_with("install ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_module(store, rest, line);
+                install_module(store, rest, line, face);
             }
             "instalar" | "install" => {
-                println!();
-                println!("  Which one. `disponibles` lists what the repository holds.");
-                println!();
+                if face.is_machine() {
+                    face.say(thalyx_files::machine::refused(
+                        "install",
+                        "nothing_asked",
+                        "list_available",
+                        "which one — `instalar <id>`",
+                    ));
+                } else {
+                    println!();
+                    println!("  Which one. `disponibles` lists what the repository holds.");
+                    println!();
+                }
             }
             "discos" | "disks" => {
                 list_disks(face);
@@ -1360,7 +1597,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // the rest of it possible — a person who cannot see what is there
             // cannot copy, move or delete it either.
             "clear" | "limpiar" | "cls" => {
-                crate::files::clear();
+                crate::files::clear(face);
             }
             // The verb the objective decree was waiting on: everything below
             // already returns facts, and this is what lets something ask for
@@ -1576,7 +1813,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_onto(rest);
+                install_onto(rest, face);
             }
             "instalar-en" | "install-onto" => {
                 println!();
@@ -1594,12 +1831,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             _ if line.starts_with("correr ") || line.starts_with("run ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                start_module(store, rest);
+                start_module(store, rest, face);
             }
             "correr" | "run" => {
-                println!();
-                println!("  Which one. `modulos` lists them.");
-                println!();
+                start_module(store, "", face);
             }
             _ => {
                 println!();
@@ -1851,20 +2086,57 @@ fn list_disks(face: crate::files::Face) {
 /// what happened the day it asked for the file alone. Nothing is mounted to do it:
 /// the bytes are read the same way they were written, so this needs no vfat in the
 /// kernel.
-fn install_onto(disk: &str) {
+fn install_onto(disk: &str, face: crate::files::Face) {
     use std::io::{IsTerminal, Write};
+
+    const OP: &str = "install_onto";
 
     let disk = std::path::PathBuf::from(disk);
 
-    println!();
+    // One place every refusal in this verb goes through, because there are
+    // eleven of them and the one that forgets to answer is the one a program
+    // waits on forever. Each carries `wrote`, which is the only question that
+    // matters after this verb declines: this is the one verb whose damage
+    // cannot be undone, so *whether it got as far as writing* is not something
+    // a caller may be left to infer from how far the sentences got.
+    let refuse = |word: &str, remedy: &str, message: &str, wrote: bool| {
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused_with(
+                OP,
+                word,
+                remedy,
+                message,
+                vec![
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    ("wrote", serde_json::json!(wrote)),
+                ],
+            ));
+        } else {
+            println!();
+            for line in message.lines() {
+                println!("  {line}");
+            }
+            println!();
+        }
+    };
+
+    if !face.is_machine() {
+        println!();
+    }
     let sectors = match std::fs::File::open(&disk)
         .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
     {
         Ok(bytes) => bytes / thalyx_install::gpt::SECTOR,
         Err(error) => {
-            println!("  I cannot open {}: {error}", disk.display());
-            println!("  `discos` lists what I can see.");
-            println!();
+            refuse(
+                "unopenable",
+                "list_disks",
+                &format!(
+                    "I cannot open {}: {error}\n`discos` lists what I can see.",
+                    disk.display()
+                ),
+                false,
+            );
             return;
         }
     };
@@ -1872,8 +2144,7 @@ fn install_onto(disk: &str) {
     let plan = match thalyx_install::Plan::of(&disk, sectors) {
         Ok(plan) => plan,
         Err(error) => {
-            println!("  {error}");
-            println!();
+            refuse("no_plan", "read_the_error", &error.to_string(), false);
             return;
         }
     };
@@ -1885,82 +2156,92 @@ fn install_onto(disk: &str) {
     let found = match thalyx_install::medium::find(Some(&disk)) {
         Ok(found) => found,
         Err(error) => {
-            println!("  I cannot find the medium I started from, so I have no kernel");
-            println!(
-                "  to install. Nothing has been written to {}.",
-                disk.display()
+            refuse(
+                "no_kernel",
+                "cannot",
+                &format!(
+                    "I cannot find the medium I started from, so I have no kernel\nto install. Nothing has been written to {}.\n{error}",
+                    disk.display()
+                ),
+                false,
             );
-            println!();
-            for line in error.to_string().lines() {
-                println!("  {line}");
-            }
-            println!();
             return;
         }
     };
 
     let mib = |sectors: u64| sectors * thalyx_install::gpt::SECTOR / (1024 * 1024);
-    println!("  About to install Thalyx onto {}.", disk.display());
-    println!();
-    println!(
-        "  the kernel comes from {} — {} bytes",
-        found.device.display(),
-        found.kernel_bytes
-    );
-    println!();
-    println!("  it will become:");
-    println!(
-        "    1  {:>8} MiB  the boot partition, holding that kernel",
-        mib(plan.esp_sectors())
-    );
-    println!(
-        "    2  {:>8} MiB  the store: system, modules, user",
-        mib(plan.store_sectors())
-    );
-    println!();
+    if !face.is_machine() {
+        println!("  About to install Thalyx onto {}.", disk.display());
+        println!();
+        println!(
+            "  the kernel comes from {} — {} bytes",
+            found.device.display(),
+            found.kernel_bytes
+        );
+        println!();
+        println!("  it will become:");
+        println!(
+            "    1  {:>8} MiB  the boot partition, holding that kernel",
+            mib(plan.esp_sectors())
+        );
+        println!(
+            "    2  {:>8} MiB  the store: system, modules, user",
+            mib(plan.store_sectors())
+        );
+        println!();
 
-    // What is there now, named before the question rather than after it. `thalyx
-    // install` on the host has always done this and the session's verb did not,
-    // which mattered the day `discos` ran on a machine with another operating
-    // system on it: the list said `btrfs "fedora"` and the confirmation said only
-    // "everything will be gone", leaving the human to carry the mapping from a
-    // device name to a system in their head. Read off the disk, so it describes
-    // the disk being destroyed and not the one that was listed a minute ago.
-    match thalyx_install::partitions::of(&disk) {
-        Ok(existing) if !existing.is_empty() => {
-            println!("  it has {} partition(s) on it now:", existing.len());
-            for (number, path) in &existing {
-                println!("    {number}  {}", whats_on(path));
+        // What is there now, named before the question rather than after it. `thalyx
+        // install` on the host has always done this and the session's verb did not,
+        // which mattered the day `discos` ran on a machine with another operating
+        // system on it: the list said `btrfs "fedora"` and the confirmation said only
+        // "everything will be gone", leaving the human to carry the mapping from a
+        // device name to a system in their head. Read off the disk, so it describes
+        // the disk being destroyed and not the one that was listed a minute ago.
+        match thalyx_install::partitions::of(&disk) {
+            Ok(existing) if !existing.is_empty() => {
+                println!("  it has {} partition(s) on it now:", existing.len());
+                for (number, path) in &existing {
+                    println!("    {number}  {}", whats_on(path));
+                }
+                println!();
             }
-            println!();
+            Ok(_) => {
+                println!("  it has no partitions on it now.");
+                println!();
+            }
+            // Rule 10 again, and it matters most here: not being able to look is not
+            // the same as there being nothing to lose, and the difference decides
+            // whether somebody should go and check before answering.
+            Err(error) => {
+                println!("  I could not read what is on it: {error}");
+                println!("  That is not the same as it being empty.");
+                println!();
+            }
         }
-        Ok(_) => {
-            println!("  it has no partitions on it now.");
-            println!();
-        }
-        // Rule 10 again, and it matters most here: not being able to look is not
-        // the same as there being nothing to lose, and the difference decides
-        // whether somebody should go and check before answering.
-        Err(error) => {
-            println!("  I could not read what is on it: {error}");
-            println!("  That is not the same as it being empty.");
-            println!();
-        }
-    }
 
-    println!(
-        "  Everything on {} will be gone. This cannot be undone.",
-        disk.display()
-    );
-    println!();
+        println!(
+            "  Everything on {} will be gone. This cannot be undone.",
+            disk.display()
+        );
+        println!();
+    }
 
     // The same confirmation `thalyx install` uses on the host, and for the same
     // reason: this is the most destructive thing Thalyx can be asked to do, the
     // argument is one word, and a `y` confirms a sentence the human stopped reading.
+    //
+    // **The structured face does not get a cheaper way past this.** It reports the
+    // refusal instead of a paragraph, which is the only difference: what a program
+    // driving a real terminal can do here is exactly what a person can, and what a
+    // program on a pipe can do is nothing. Widening it would make the one
+    // irreversible verb in the system reachable by whatever was on stdin.
     if !std::io::stdin().is_terminal() {
-        println!("  There is no terminal to confirm on, so I will not do this.");
-        println!("  Silence is not consent.");
-        println!();
+        refuse(
+            "no_terminal",
+            "confirm_at_a_terminal",
+            "There is no terminal to confirm on, so I will not do this.\nSilence is not consent.",
+            false,
+        );
         return;
     }
     print!("  Type the disk's path to confirm: ");
@@ -1970,12 +2251,17 @@ fn install_onto(disk: &str) {
         .flatten()
         .unwrap_or_default();
     if answer.trim() != disk.display().to_string() {
-        println!();
-        println!("  That is not {}. Nothing was written.", disk.display());
-        println!();
+        refuse(
+            "not_confirmed",
+            "type_the_disk_path",
+            &format!("That is not {}. Nothing was written.", disk.display()),
+            false,
+        );
         return;
     }
-    println!();
+    if !face.is_machine() {
+        println!();
+    }
 
     // Onto the tmpfs, because that is the only writable place on this machine and
     // because the kernel must not touch the disk being installed onto before the
@@ -1984,35 +2270,54 @@ fn install_onto(disk: &str) {
     if let Some(parent) = staged.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        println!("  I could not make {}: {error}", parent.display());
-        println!();
+        refuse(
+            "no_workspace",
+            "cannot",
+            &format!("I could not make {}: {error}", parent.display()),
+            false,
+        );
         return;
     }
 
     let mut volume = match thalyx_install::medium::Volume::open(&found.device) {
         Ok(Some(volume)) => volume,
         Ok(None) => {
-            println!(
-                "  {} stopped being readable between finding it and",
-                found.device.display()
+            refuse(
+                "medium_vanished",
+                "cannot",
+                &format!(
+                    "{} stopped being readable between finding it and\nreading it. Nothing was written.",
+                    found.device.display()
+                ),
+                false,
             );
-            println!("  reading it. Nothing was written.");
-            println!();
             return;
         }
         Err(error) => {
-            println!("  I could not read {}: {error}", found.device.display());
-            println!();
+            refuse(
+                "medium_unreadable",
+                "cannot",
+                &format!("I could not read {}: {error}", found.device.display()),
+                false,
+            );
             return;
         }
     };
     if let Err(error) = volume.extract_boot_file(&staged) {
-        println!("  I could not take the kernel off the medium: {error}");
-        println!("  Nothing was written to {}.", disk.display());
-        println!();
+        refuse(
+            "no_kernel",
+            "cannot",
+            &format!(
+                "I could not take the kernel off the medium: {error}\nNothing was written to {}.",
+                disk.display()
+            ),
+            false,
+        );
         return;
     }
-    println!("  ok  kernel       taken off {}", found.device.display());
+    if !face.is_machine() {
+        println!("  ok  kernel       taken off {}", found.device.display());
+    }
 
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2025,6 +2330,49 @@ fn install_onto(disk: &str) {
         std::path::Path::new(INSTALL_WORKSPACE),
         seconds,
     ) {
+        Ok(installed) if face.is_machine() => {
+            face.say(thalyx_files::machine::answer(
+                OP,
+                vec![
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    (
+                        "boot",
+                        serde_json::json!(installed.esp.display().to_string()),
+                    ),
+                    (
+                        "store",
+                        serde_json::json!(installed.store.display().to_string()),
+                    ),
+                    ("label", serde_json::json!(installed.filesystem.label)),
+                    (
+                        "subvolumes",
+                        serde_json::json!(
+                            installed
+                                .subvolumes
+                                .mounted
+                                .iter()
+                                .map(|(name, why)| serde_json::json!({
+                                    "name": name,
+                                    // `null` is mounted. The reason is the whole
+                                    // answer when it is not, and a boolean here
+                                    // would throw away the only thing that says
+                                    // what to do about it.
+                                    "refused": why,
+                                }))
+                                .collect::<Vec<_>>()
+                        ),
+                    ),
+                    // Whether that disk is a Thalyx machine now, which is the
+                    // question the verb was asked. A half-written disk boots and
+                    // reports no store, so `true` here and `finished: false` are
+                    // very different mornings.
+                    (
+                        "finished",
+                        serde_json::json!(installed.subvolumes.is_a_store()),
+                    ),
+                ],
+            ));
+        }
         Ok(installed) => {
             println!(
                 "  ok  boot         {} — the kernel, at the one path a firmware looks for",
@@ -2056,16 +2404,20 @@ fn install_onto(disk: &str) {
             println!();
         }
         Err(error) => {
-            println!();
-            println!("  The install did not finish: {error}");
-            println!();
-            println!(
-                "  Whatever was on {} before is gone either way — the",
-                disk.display()
+            // The one refusal in this verb that carries `wrote: true`, and it is
+            // the reason the field exists. The partition table goes down first,
+            // so a failure here has already destroyed what was there — a caller
+            // that read this the same as the ten refusals above would tell
+            // somebody their disk was untouched.
+            refuse(
+                "did_not_finish",
+                "run_it_again",
+                &format!(
+                    "The install did not finish: {error}\nWhatever was on {} before is gone either way — the\npartition table is written first. Running this again is safe\nand is the way to finish it.",
+                    disk.display()
+                ),
+                true,
             );
-            println!("  partition table is written first. Running this again is safe");
-            println!("  and is the way to finish it.");
-            println!();
         }
     }
 }
