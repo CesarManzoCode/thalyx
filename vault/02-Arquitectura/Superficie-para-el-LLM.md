@@ -356,7 +356,7 @@ derecha está decidido**; es el catálogo, no un plan.
 
 | | Punto | Estado |
 |---|---|---|
-| A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 29 verbos |
+| A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 40 verbos, y desde el 2026-08-23 el `op` que promete se comprueba corriendo el verbo |
 | A2 | El error nombra su remedio | **Hecho** — `remedy` como palabra estable |
 | A3 | El estado de la máquina en un objeto | **Hecho** — `estado`, con los tres estados de la regla 10 |
 | B1 | Respuestas acotadas con total y cursor | **Hecho** — `limite=` y `cursor=`, en `ls`, `depende`, `usan`, `buscar`, `historia`, `cambios` |
@@ -374,6 +374,12 @@ derecha está decidido**; es el catálogo, no un plan.
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
 | F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
 | G1–G4 | El piso | No construido, y es lo que bloquea la vara |
+
+**Y desde el 2026-08-23 hay una fila que no estaba en el catálogo y decide si
+cualquiera de las de arriba sirve: los cuarenta verbos contestan por
+estructura, y la lista de excepciones está vacía.** Catorce puntos hechos no
+servían de nada mientras los seis verbos de módulos —el ciclo entero de lo que
+Thalyx existe para hacer— sólo hablaran en prosa.
 
 **Lo que esa tabla decía el 2026-08-09 y ya no dice:** que seis de los
 diecinueve puntos existían y no eran alcanzables. Ninguno queda así.
@@ -424,6 +430,48 @@ mezcla se resolvió a favor de no construir nada.
 ---
 
 ## Revisiones
+
+### 2026-08-23 — Los nueve verbos que no tenían segunda cara, y ya no queda ninguno
+
+Cesar leyó la lista de pendientes y contestó que **íbamos innecesariamente
+lento**: *«todo esto es horizontal, nada es realmente complejo, son cosas
+sencillas pero son muchísimas, porque no hacemos un sprint para eliminar todo el
+horizonte barato?»*. Tenía razón y ésta es la primera entrega de ese sprint.
+
+Los verbos sin cara eran nueve, más tres que se creían sin nada que contestar.
+Ninguno era difícil; lo que los mantuvo así es que **el catálogo de esta nota
+trata de superficie nueva**, y éstos son anteriores al decreto de las dos caras.
+Nadie volvió por los viejos.
+
+**Lo que costaba, dicho bien**: `disponibles`, `instalar`, `modulos`, `correr`,
+`permisos` y `revertir` son el ciclo completo de lo único que Thalyx existe para
+dejar hacer. Un programa que no los lee no puede saber si lo que va a instalar ya
+está instalado, ni qué hay en el repositorio, ni qué concedió la vez pasada.
+Catorce de diecinueve puntos hechos y el ciclo entero en prosa.
+
+Ahora el ciclo se corre entero por la cara estructurada — buscar, instalar,
+listar, correr, deshacer, listar — y quedó capturado en una sola sesión por
+tubería.
+
+**Tres cosas que construirlo enseñó y esta nota no anticipaba:**
+
+1. **El camino confiable no se debilita, se reporta.** `Camino-Confiable` queda
+   intacto: sin terminal no hay confirmación y no hay instalación, y
+   `instalar-en` sigue pidiendo la ruta del disco tecleada. Lo único que cambia
+   es que la negativa vuelve como objeto en vez de una línea en `stderr`, donde
+   un parser que lee un solo flujo no la veía nunca.
+2. **Una afirmación falsa salió de correrlo, no de leerlo.** El primer campo de
+   la negativa decía `wrote_anything: false`, y el journal **sí** guarda una
+   entrada `rejected` — que es justamente el punto, porque una negativa del
+   camino confiable que no dejara rastro sería un camino confiable que nadie
+   puede auditar. La cara humana llevaba el mismo exceso en prosa.
+3. **«No tiene nada que contestar» era el último sitio donde quedaba silencio.**
+   `limpiar`, `salir` y `apagar` contestan, y las tres razones son distintas: no
+   hay pantalla del otro lado, un pipe cerrado sin nada adentro es exactamente lo
+   que parece un cierre inesperado, y `apagar` no regresa cuando funciona.
+
+Lo que lo sostiene: la prueba del catálogo **afirma que la lista de verbos sólo
+prosa está vacía**, y la etapa 22 pasó de catorce verbos manejados a veintiuno.
 
 ### 2026-08-23 — `describe` prometía prosa donde había un objeto
 

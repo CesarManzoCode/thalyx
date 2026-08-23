@@ -14,6 +14,66 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Los cuarenta verbos contestan por estructura — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar leyó la lista de pendientes y contestó lo que había que contestar: que
+> íbamos innecesariamente lento, que **todo eso es horizontal y ninguna pieza es
+> difícil**, y que en vez de elegir una hiciéramos un sprint para eliminar el
+> horizonte barato entero. Ésta es la primera entrega.
+>
+> Nueve verbos no tenían cara estructurada, más tres que se creían sin nada que
+> contestar. **Ninguno era difícil.** Lo que los dejó así es que el catálogo de
+> [[Superficie-para-el-LLM]] trata de superficie *nueva*, y éstos son anteriores
+> al decreto de las dos caras.
+>
+> **Lo que eso costaba, dicho bien:** `disponibles`, `instalar`, `modulos`,
+> `correr`, `permisos` y `revertir` son el ciclo completo de lo único que Thalyx
+> existe para dejar hacer. Catorce de diecinueve puntos del catálogo hechos, y el
+> ciclo entero en prosa — un programa no podía saber si lo que iba a instalar ya
+> estaba instalado, ni qué había en el repositorio, ni qué concedió la vez
+> pasada.
+>
+> Ahora el ciclo entero se corre por la cara estructurada, y quedó capturado en
+> una sola sesión por tubería:
+>
+> ```
+> {"op":"available","ok":true,"total":1}
+> {"op":"install","ok":true,"module_id":"org.thalyx.face"}
+> {"op":"modules","ok":true,"total":1}
+> {"op":"run","ok":false,"error":"cannot_enforce","remedy":"run_unconfined"}
+> {"op":"rollback","ok":true,"undid":"undo install_module of org.thalyx.face 1.0.0"}
+> {"op":"modules","ok":true,"total":0}
+> ```
+>
+> **El camino confiable no se debilitó, se reporta.** [[Camino-Confiable]] queda
+> intacto: sin terminal no hay confirmación y no hay instalación, y `instalar-en`
+> sigue pidiendo la ruta del disco tecleada. Lo único que cambia es que la
+> negativa vuelve como objeto en vez de una línea en `stderr`, donde un parser
+> que lee un solo flujo no la veía nunca.
+>
+> **Y salió una afirmación falsa, de correrlo y no de leerlo.** El primer campo
+> de esa negativa decía `wrote_anything: false`. El journal **sí** guarda una
+> entrada `rejected` — que es justamente el punto: una negativa del camino
+> confiable que no dejara rastro sería un camino confiable que nadie puede
+> auditar. Dice `installed: false`, que es lo cierto. La cara humana llevaba el
+> mismo exceso en prosa y también se corrigió.
+>
+> Los tres que "no tenían nada que contestar" eran el último sitio donde quedaba
+> silencio, y las tres razones son distintas: `limpiar` no limpia nada porque del
+> otro lado no hay pantalla, `salir` contesta **antes** de que el pipe se cierre
+> porque un pipe cerrado y vacío es exactamente lo que parece un cierre
+> inesperado, y `apagar` contesta antes de la llamada al sistema porque cuando
+> funciona no regresa.
+>
+> Lo que lo sostiene: la prueba del catálogo **afirma que la lista de verbos
+> sólo-prosa está vacía**, y la etapa 22 pasó de catorce verbos manejados a
+> veintiuno. Control corrido en los dos sentidos.
+>
+> **Nada de esto necesita hierro.** Sigue faltando el banco de gamas, que es una
+> medición y no una comprobación.
+
 > ## `describe` prometía prosa donde había un objeto — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

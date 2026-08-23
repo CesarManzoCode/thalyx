@@ -3514,6 +3514,41 @@ Y una consecuencia de la regla 3 que vale escribir: **una negativa cuenta como
 cara estructurada.** Un `op` que dice que no pudo sigue siendo el verbo
 contestando por estructura, que es la regla 10 sobre el cable.
 
+## Regla derivada: una lista de excepciones fijada por ejemplo no ve moverse a las demás — 2026-08-23
+
+La primera versión de la prueba que atrapó lo de `red` decía *«`modules` sigue
+en la lista de sólo-prosa»*. Es cierto y no sirve: **un `contains` sobre un
+ejemplo no puede ver que otro se movió.** La lista entera fijada sí, y con eso
+agregar una cara obliga a editar ese renglón — que es el momento exacto en que
+alguien puede comprobar que la afirmación nueva es cierta.
+
+Y el final de esa lista enseña la otra mitad. Cuando los cuarenta verbos
+tuvieron cara, la prueba dejó de fijar una lista y pasó a afirmar que **está
+vacía**. Una lista vacía es una afirmación más fuerte que cualquier lista: un
+verbo nuevo sin cara tiene que agregarse ahí a mano, o sea tiene que decir en voz
+alta que nace incumpliendo el decreto.
+
+**El corolario, que cuesta poco y se olvida:** cuando una prueba fija un conjunto
+que se espera que se vacíe, la prueba tiene que seguir teniendo sentido vacía.
+
+## Regla derivada: dar una cara nueva a un verbo cambia lo que las otras pruebas leen — 2026-08-23
+
+`salir` es lo que termina cada sesión que la etapa 22 maneja. En cuanto contestó
+por estructura —que era correcto y necesario, porque un pipe cerrado y vacío es
+exactamente lo que parece un cierre inesperado— **empezó a aparecer un objeto de
+más en el registro de los veintiún verbos**, y tres de ellos se reportaron como
+incumplidos sin que nadie hubiera tocado nada suyo.
+
+No es un defecto del verbo ni de la etapa: es que el arnés usa el sistema que
+mide, y el terminador dejó de ser mudo. Se resuelve nombrando el ruido —
+`structured` y `leave` no son el verbo bajo prueba— y la regla que queda es la
+5, con una forma nueva: **cuando el instrumento se maneja a sí mismo, ampliar lo
+que el sistema dice amplía lo que el instrumento lee.** Antes de creerle a un
+fallo así, ver si lo que cambió fue el sujeto o el arnés.
+
+Lo barato de este caso es que se vio en un renglón: los tres «incumplimientos»
+nombraban `leave`, que es el único verbo que ninguno de los tres había invocado.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

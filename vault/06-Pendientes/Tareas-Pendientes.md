@@ -93,13 +93,19 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 > los puntos de ese catálogo que ya tienen orden; los demás siguen ahí sin
 > decidirse, y **estar en el catálogo no autoriza construir nada**.
 
-- [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** — hecho en
-      parte el 2026-08-09. `estado` y `recuerdos` tienen su objeto, y el índice
-      semántico llegó entero a la sesión (`indexar`, `depende`, `usan`), y el
-      journal (**F2**) llegó el 2026-08-10 como `historia`. **Lo que sigue sin
-      segunda cara son los verbos de módulos** —`disponibles`, `instalar`,
+- [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** —
+      **cerrado del todo el 2026-08-23.** `estado` y `recuerdos` tuvieron su
+      objeto el 2026-08-09, el índice entero llegó ese mismo día (`indexar`,
+      `depende`, `usan`) y el journal (**F2**) el 2026-08-10 como `historia`. Lo
+      que faltaba eran **los seis verbos de módulos** —`disponibles`, `instalar`,
       `modulos`, `correr`, `permisos`, `revertir`— más `nucleo`, `discos` e
-      `instalar-en`. Ver [[Superficie-para-el-LLM]].
+      `instalar-en`, y con ellos el ciclo completo de lo único que Thalyx existe
+      para dejar hacer estaba en prosa. Ahora ese ciclo se corre entero por la
+      cara estructurada. Se cerraron también los tres que se creían sin nada que
+      contestar (`limpiar`, `salir`, `apagar`), que eran el último sitio donde
+      quedaba silencio. **La lista de verbos sólo-prosa está vacía y hay una
+      prueba que lo afirma**; la etapa 22 maneja veintiún verbos y compara el
+      cable contra `describe`. Ver [[Superficie-para-el-LLM]].
 - [x] **Los tres que se dijeron «sólo hierro»** — **cerrado el 2026-08-10, y dos
       de los tres no necesitaban hierro.** `D2` (el intento con nombre) y `B3`
       (qué cambió desde X) se construyeron: el primero porque la propiedad bajo
