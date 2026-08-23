@@ -3549,6 +3549,41 @@ fallo así, ver si lo que cambió fue el sujeto o el arnés.
 Lo barato de este caso es que se vio en un renglón: los tres «incumplimientos»
 nombraban `leave`, que es el único verbo que ninguno de los tres había invocado.
 
+## Regla derivada: una guarda que se vuelve implícita sigue funcionando hasta el día que no — 2026-08-23
+
+En `TerminalConfirmer` —el camino confiable, el sitio donde una persona concede
+algo— vivía esto:
+
+```rust
+let answer = crate::term::read_answer().ok().flatten().unwrap_or_default();
+if false {
+    return false;
+}
+```
+
+El `if false` es basura obvia de una mudanza del 2026-08-09, cuando esa lectura
+pasó al lector único de `stdin`. Lo que no es obvio es qué reemplazó: la forma
+anterior era `if read_line(..).is_err() { return false }`, o sea **una lectura
+fallida no es un sí**. La forma nueva pliega el error en `unwrap_or_default()`,
+que da la cadena vacía, que no es `y`, así que se sigue negando.
+
+**El comportamiento nunca cambió. La razón sí.** Pasó de estar escrita a
+sostenerse por lo que `String::default()` resulta ser. La regla 9 dice que una
+entrada corrupta recibe la respuesta cautelosa; una regla 9 que se cumple por
+accidente del valor por omisión de otro tipo deja de cumplirse el día que alguien
+cambia ese valor — y esto es el único lugar del sistema donde la respuesta
+cautelosa *es* el punto.
+
+Y lo que lo hizo visible fue precisamente la basura: **un `if false` que nadie
+podía borrar porque nadie sabía qué había estado guardando.** Un refactor
+mecánico que deja el cascarón de una guarda está señalando dónde se perdió una
+razón, aunque no lo parezca.
+
+La regla: **cuando un refactor conserva un comportamiento pero borra el enunciado
+que lo pedía, la propiedad quedó sin dueño.** En código que falla cerrado, el
+enunciado se vuelve a poner aunque no cambie nada, porque lo que se está
+protegiendo no es el resultado de hoy sino el de la próxima edición.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
