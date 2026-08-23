@@ -502,6 +502,12 @@ echo "host=$(hostname)"
 echo "root=$(ls / | tr '\n' ' ')"
 echo "net=$(tail -n +3 /proc/net/dev | awk '{print $1}' | tr -d ' \n')"
 echo "granted=$(cat GRANTED_PATH/note 2>&1)"
+# The scheduling guard, asked of the confined program rather than of Thalyx.
+# `chrt` is a separate process, so a kill lands on it and this script survives
+# to report the status: 0 is the call going through, 159 is 128+31 — SIGSYS,
+# which is the only thing the filter does.
+chrt --other 0 true 2>/dev/null; echo "sched_ordinary=$?"
+chrt --fifo  1 true 2>/dev/null; echo "sched_realtime=$?"
 MODULE
 sed -i "s|GRANTED_PATH|$GRANTED|" "$PAYLOAD/bin/demo"
 chmod +x "$PAYLOAD/bin/demo"
@@ -577,6 +583,36 @@ if [ "$LOADED" = 1 ]; then
         check "its hostname says nothing about the host" '^  > host=thalyx-module$'             host
         check "it has no network but loopback"           '^  > net=lo:$'                        net
         check "the granted path is readable"             '^  > granted=reachable$'              granted
+
+        # The scheduling guard: one column for what it must let through, one
+        # for what it must stop, and a control outside the sandbox so that a
+        # `chrt` which cannot do the thing anywhere does not read as a denial.
+        #
+        # Any status that is neither 0 nor 159 is reported as NOT PROVEN rather
+        # than as either answer. 127 is `chrt` missing from the module's root,
+        # 1 is the kernel refusing on capabilities — and both of those look
+        # exactly like a working filter to a check that only asks "did it fail".
+        sched_status() {
+            grep -Eo "^  > $1=[0-9]+\$" "$WORK/run.log" | head -1 | sed 's/.*=//'
+        }
+        ORDINARY="$(sched_status sched_ordinary)"
+        REALTIME="$(sched_status sched_realtime)"
+
+        case "${ORDINARY:-none}" in
+            0)   green "     it may put its own threads on an ordinary policy" ;;
+            159) failed "the filter killed an ordinary sched_setscheduler — the guard denies what it exists to permit" ;;
+            *)   unproven "the ordinary scheduling call exited ${ORDINARY:-with nothing reported}, which is neither the call working nor the filter stopping it" ;;
+        esac
+
+        if chrt --fifo 1 true 2>/dev/null; then
+            case "${REALTIME:-none}" in
+                159) green "     and may not take a real-time policy: killed by SIGSYS" ;;
+                0)   failed "a confined module set a real-time policy; it can hold a processor against the machine" ;;
+                *)   unproven "the real-time call exited ${REALTIME:-with nothing reported}; the filter is not what stopped it" ;;
+            esac
+        else
+            unproven "chrt --fifo does not work outside the sandbox either, so the denial inside it proves nothing"
+        fi
 
         if grep -q 'root=.*module' "$WORK/run.log" && ! grep -q 'root=.*home' "$WORK/run.log"; then
             green "     its root holds its own tree and not the host's"
