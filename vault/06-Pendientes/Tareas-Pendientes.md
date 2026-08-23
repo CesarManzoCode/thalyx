@@ -243,12 +243,23 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 
 Decretado el 2026-08-09: la vara es que **Claude Code y cualquier otro agente ya
 escrito corran sobre Thalyx mejor que sobre Linux o macOS**. Ver
-[[Filosofia-Fundacional]]. Hoy **no arrancarían**, así que esto no es afinar,
-es construir.
+[[Filosofia-Fundacional]]. Hoy **no arrancarían** — y desde el 2026-08-23 se
+sabe por qué y por qué no: el filtro de llamadas casi no estorba, y lo que
+bloquea es que nada lanza un proceso arbitrario y que la imagen no tiene libc.
+Ver [[Que-Necesita-Un-Agente-Ajeno]].
 
-- [ ] **Averiguar qué necesita exactamente un agente ajeno para arrancar.** No
-      por suposición: tomar Claude Code, mirar qué llama, y hacer la lista. Es
-      barato y no se ha hecho, y sin ella todo lo de abajo es adivinado.
+- [x] **Averiguar qué necesita exactamente un agente ajeno para arrancar** —
+      **medido el 2026-08-23**, con Claude Code 2.1.241 bajo `strace`. Era
+      barato, como decía, y **la respuesta corrige la frase que estaba debajo**:
+      de las 41 llamadas al sistema que hace para arrancar, `module_standard` ya
+      permite 40, y la que falta es una sola (`sched_setscheduler`). De las 19
+      rutas que abre, 13 caen dentro de lo que un módulo ve. Donde «no
+      arrancaría» sí es cierto es en el enlazador: la imagen lleva `/init` y
+      nada más, así que no hay libc — que es exactamente la pregunta abierta del
+      ABI de los módulos, hecha por el agente antes que ninguna otra. Se
+      reproduce con `dev/foreign-agent-needs.sh`. Ver
+      [[Que-Necesita-Un-Agente-Ajeno]], que también dice **qué no contesta**:
+      arrancar no es trabajar.
 - [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
       instalados. Cruza con la decisión de `NOEXEC` en `/home`.
 - [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna

@@ -302,8 +302,8 @@ arriba describe un sistema en el que hoy **Claude Code no arrancaría**.
 
 | | Qué falta |
 |---|---|
-| **G1** | Ejecutar procesos: **lanzar** y **esperar**. *Matar* y *ver qué corre* existen desde el 2026-08-23 — ver [[Procesos]] — y son la mitad que no necesitaba decidir nada sobre módulos firmados |
-| **G2** | Un runtime en el que un agente ajeno pueda correr |
+| **G1** | Ejecutar procesos: **lanzar** y **esperar**. *Matar* y *ver qué corre* existen desde el 2026-08-23 — ver [[Procesos]] — y son la mitad que no necesitaba decidir nada sobre módulos firmados. **Medido el 2026-08-23: éste es el que bloquea**, no el filtro de llamadas ni las rutas. Ver [[Que-Necesita-Un-Agente-Ajeno]] |
+| **G2** | Un runtime en el que un agente ajeno pueda correr. Con forma concreta desde el 2026-08-23: **la imagen no tiene libc** y el agente lo pide con el enlazador antes que nada |
 | **G3** | Red |
 | **G4** | Control de versiones, o la razón escrita de por qué no hace falta |
 
@@ -373,7 +373,7 @@ derecha está decidido**; es el catálogo, no un plan.
 | E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
 | F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
-| G1–G4 | El piso | No construido, y es lo que bloquea la vara |
+| G1–G4 | El piso | No construido, y es lo que bloquea la vara. **G1 y G2 medidos el 2026-08-23** y con eso dejaron de ser una suposición: ver [[Que-Necesita-Un-Agente-Ajeno]] |
 
 **Y desde el 2026-08-23 hay una fila que no estaba en el catálogo y decide si
 cualquiera de las de arriba sirve: los cuarenta verbos contestan por

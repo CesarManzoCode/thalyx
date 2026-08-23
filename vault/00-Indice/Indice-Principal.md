@@ -93,6 +93,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Construccion-del-ISO]] — **la imagen es el kernel y un programa**, y cómo se cuenta
 - [[Primer-Arranque]] — los comandos para arrancarla, y qué significa cada fallo
 - [[Cargador-BPF-Propio]] — cómo Thalyx carga su enforcement sin bpftool
+- [[Que-Necesita-Un-Agente-Ajeno]] — **medido**: 40 de 41 llamadas ya permitidas, y dónde sí bloquea
 
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]

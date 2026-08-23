@@ -14,6 +14,53 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Qué necesita un agente ajeno para arrancar, medido — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Tercera entrega del sprint, y es la que más cambia lo que creíamos. El
+> pendiente decía *«tomar Claude Code, mirar qué llama, y hacer la lista; es
+> barato y no se ha hecho, y sin ella todo lo de abajo es adivinado»*. Estaba
+> abierto desde el 2026-08-09. Se hizo con `strace`, en veinte minutos.
+>
+> **De las 41 llamadas al sistema que Claude Code hace para arrancar,
+> `module_standard` ya permite 40.** La que falta es una: `sched_setscheduler`.
+> De las 19 rutas que abre, 13 caen dentro de lo que un módulo ve.
+>
+> Eso contradice de frente la frase que estaba escrita debajo del decreto —*«hoy
+> no arrancarían, así que esto no es afinar, es construir»*—. En la capa donde
+> más caro parecía, el filtro de llamadas de este proyecto ya cubre el 97.5% de
+> lo que un agente ajeno pide para existir. **La afirmación era razonable y
+> nadie la había medido.**
+>
+> **Dónde sí es cierta**, y ahora con nombre en vez de por suposición:
+>
+> - **El enlazador.** El agente abre `/etc/ld.so.cache` y cinco objetos
+>   compartidos. La imagen lleva `/init`, unos directorios y `/dev/console` — no
+>   hay libc. Un binario enlazado dinámicamente no arranca ahí, y eso es
+>   **exactamente la pregunta abierta del ABI de los módulos**, hecha por el
+>   agente antes que ninguna otra.
+> - **`G1`, lanzar un proceso arbitrario.** No es una llamada que falte ni una
+>   ruta: es que `correr` sólo lanza módulos instalados y firmados. La medición
+>   lo confirma como el que bloquea en vez de contradecirlo.
+> - **`/home` montado `NOEXEC`.** Un agente que aterrice ahí no se ejecuta
+>   aunque todo lo demás esté resuelto. La deuda de explicación que aplazaste el
+>   2026-08-09 ahora tiene un caso concreto detrás en lugar de ser hipotética.
+>
+> Y **seis rutas bajo `/sys`** que un módulo no ve. De las seis sólo se puede
+> afirmar algo de una: `trace_marker` dio `ENOENT` y arrancó igual, o sea que no
+> hace falta. De las otras cinco lo único cierto es que aquí no tuvo que
+> arreglárselas sin ellas — la sospecha razonable es que degrada a valores por
+> omisión, y una sospecha razonable no se apunta como medición.
+>
+> La lista entera está en [[Que-Necesita-Un-Agente-Ajeno]], **con la mitad que
+> dice qué NO contesta**: arrancar no es trabajar. No hubo red, ni terminal, ni
+> subprocesos, ni una sola escritura.
+>
+> Se reproduce con `dev/foreign-agent-needs.sh`, que es un script y no un
+> párrafo porque un procedimiento impreso para una persona es código que no
+> corre.
+
 > ## El ensayo llegó a los verbos que cambian la máquina — 2026-08-23
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
