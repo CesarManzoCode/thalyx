@@ -509,13 +509,30 @@ mod tests {
             !text.contains("JSON") && !text.contains("object"),
             "the prose arm still asks for an object: {text}"
         );
-        for operation in ProposedOperation::ALL {
+        // This used to read "no operation name appears anywhere", and that
+        // stopped meaning anything the day the model was given the whole
+        // catalogue: `where`, `read`, `find`, `go`, `state` and `changes` are
+        // ordinary English words and this prompt is written in English. A
+        // substring match on them measures the language, not the leak — and
+        // it failed on `where` while the arm was perfectly clean.
+        //
+        // What it was ever guarding is this: the arm must not name the
+        // operation the experiment is about, and must not hand over the
+        // vocabulary of the object the other two arms ask for.
+        // Not `install` on its own, and the reason is the arm's whole purpose:
+        // it must show the human's sentence, and the human's sentence is
+        // `instala dev.thalyx.demo` or its English twin. A check that refused
+        // the word would be refusing the material the three arms are required
+        // to share.
+        //
+        // `install_module` has no such excuse. Nobody types it; it is the
+        // grammar's word, and its presence here would be the leak.
+        for leak in ["install_module", "operation", "targets"] {
             assert!(
-                !text.contains(operation.name()),
-                "the prose arm names {}, so the model is told this is an install \
-                 before it is asked what to install — which is the thing being \
-                 measured",
-                operation.name()
+                !text.contains(leak),
+                "the prose arm names {leak:?}, so the model is told this is an \
+                 install before it is asked what to install — which is the \
+                 thing being measured: {text}"
             );
         }
     }

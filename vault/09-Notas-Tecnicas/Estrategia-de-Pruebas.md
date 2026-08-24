@@ -3584,6 +3584,78 @@ que lo pedía, la propiedad quedó sin dueño.** En código que falla cerrado, e
 enunciado se vuelve a poner aunque no cambie nada, porque lo que se está
 protegiendo no es el resultado de hoy sino el de la próxima edición.
 
+## Regla derivada: un vocabulario de palabras ordinarias rompe las pruebas que lo buscaban — 2026-08-24
+
+El día que la gramática del agente pasó de una operación a treinta y nueve,
+**tres pruebas fallaron y ninguna era por el cambio**. Las tres buscaban una
+palabra como subcadena, y las palabras nuevas son inglés corriente:
+
+- una prueba de la gramática afirmaba que `permissions` no aparece en ninguna
+  parte, porque es un campo que el núcleo decide y al modelo nunca se le
+  pregunta. Ahora es también el nombre de un verbo —el que **muestra** qué
+  tiene un módulo, que es leer y no decidir— así que la prueba reportó el
+  catálogo como una fuga de procedencia;
+- el brazo de prosa del experimento de gramática afirmaba que no nombra ninguna
+  operación, y falló por contener la palabra `where`;
+- la sonda leía la producción `root` esperando un objeto, donde ahora hay tres
+  alternativas.
+
+Ninguna de las tres estaba mal cuando se escribió. **Dejaron de medir lo que
+decían cuando el vocabulario dejó de ser artificial.** La corrección en los tres
+casos es la misma: hacer la pregunta precisa en vez de la barata. `permissions`
+como **campo** —`"permissions" ws ":"`— y no como cadena; el leak real, que es
+`install_module`, y no la palabra `install`, que el humano teclea y el brazo de
+prosa está obligado a mostrar; y **cada** alternativa de `root`, no la primera.
+
+> Cuando un conjunto de nombres pasa de ser inventado a ser el idioma en que
+> está escrito todo lo demás, toda prueba que lo busque por subcadena hay que
+> volver a leerla. Sigue pasando; ya no dice nada.
+
+## Regla derivada: una forma nueva al lado de una validada se salta lo que la validaba — 2026-08-24
+
+`Plan` pasó de una forma a dos: un contrato, y un verbo que no lo es. El
+contrato corre `Contract::validate` de salida, y ahí adentro está
+`origins.validate()`, que es la comprobación que **rechaza una operación
+concluida mientras se leía una página hostil**.
+
+La forma nueva no tiene contrato. Así que no llegaba a esa comprobación, y la
+regla de procedencia habría quedado con **una puerta rotulada `read`**: un
+modelo que, mirando un documento ajeno, concluyera que hay que leer algo,
+habría sido un modelo cuya conclusión nadie examinaba.
+
+No lo encontró una prueba. Lo encontró leer el compilador quejándose de otra
+cosa —una sonda que imprimía «se produjo un contrato» y ya no siempre produce
+un contrato— y preguntarse qué más viajaba dentro de esa palabra.
+
+> Una defensa que vive dentro de un tipo se pierde cuando aparece un segundo
+> tipo. Al agregar una rama, la pregunta no es «¿funciona?» sino **«¿qué corría
+> el camino viejo que éste ya no corre?»** — y hay que contestarla mirando el
+> camino viejo, no la rama nueva.
+
+Prueba en los dos sentidos, porque cualquiera sola pasa sin decir nada: la
+lectura inyectada se rechaza, y la lectura que el humano pidió no.
+
+## Regla derivada: un permiso por argumento escrito desde el manual es un permiso escrito desde tu modelo — 2026-08-24
+
+La regla 6 dice que un analizador para la salida de otra herramienta necesita
+una muestra real capturada. **Vale igual para los argumentos de una llamada al
+sistema.**
+
+El guardia de `sched_setscheduler` se escribió primero permitiendo
+`SCHED_OTHER`, `SCHED_BATCH` y `SCHED_IDLE` — las tres políticas que no son de
+tiempo real, que es lo que dice el manual y lo que cualquiera escribiría. Luego
+se leyó la traza: Node pide `0x40000000`, que es `SCHED_OTHER |
+SCHED_RESET_ON_FORK`, en cada uno de sus hilos. La bandera no es una política,
+se le suma a una, y el manual la documenta en otro párrafo.
+
+Ese guardia habría matado al agente ajeno en la llamada exacta que el guardia
+existe para dejar pasar — **y habría parecido el guardia funcionando**, porque
+la política pedida no estaba en la lista y morir es lo que hace el filtro.
+
+> Una lista de valores permitidos es un analizador del formato de ese argumento.
+> Se escribe mirando lo que un programa real manda, no lo que la documentación
+> enumera.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

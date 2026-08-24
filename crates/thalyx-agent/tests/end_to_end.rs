@@ -39,13 +39,14 @@ fn install_from(
 ) -> Result<String, String> {
     let plan = thalyx_agent::plan(transcript, model, ForeignText::NeverActs, caller())
         .map_err(|e| e.to_string())?;
-    let target = plan.contract.targets.first().ok_or("no target")?.clone();
-    let resolved = thalyx_core::repo::resolve(repo, &target, plan.contract.constraint.as_deref())
+    let contract = plan.into_contract().ok_or("the plan is not a contract")?;
+    let target = contract.targets.first().ok_or("no target")?.clone();
+    let resolved = thalyx_core::repo::resolve(repo, &target, contract.constraint.as_deref())
         .map_err(|e| e.to_string())?;
 
     let request = thalyx_core::InstallRequest {
         bundle_path: &resolved.path,
-        contract: plan.contract,
+        contract,
     };
     let outcome = thalyx_core::install(store, request, &mut AllowAll).map_err(|e| e.to_string())?;
     Ok(outcome.version)
@@ -354,9 +355,9 @@ fn the_agent_can_act_on_something_only_its_own_memory_knows() {
     )
     .expect("a value from Thalyx's own record is allowed to have effect");
 
-    assert_eq!(plan.contract.targets, ["dev.thalyx.demo"]);
+    assert_eq!(plan.targets(), ["dev.thalyx.demo"]);
     assert_eq!(
-        plan.contract.origins.get("targets"),
+        plan.origins().get("targets"),
         Some(thalyx_contract::Origin::SystemState),
         "it came from Thalyx's own state, not from the human and not from a stranger"
     );
@@ -452,4 +453,59 @@ fn a_module_that_is_not_in_the_repository_says_so_rather_than_half_installing() 
 
     assert!(outcome.is_err());
     assert!(!store.is_installed("dev.thalyx.absent"));
+}
+
+/// A model that says one thing, whatever it is asked.
+struct Says(&'static str);
+impl Model for Says {
+    fn propose(&self, _: &Transcript) -> Result<String, ModelError> {
+        Ok(self.0.to_string())
+    }
+}
+
+/// The whole way in for a verb that is not an install: a sentence, a model, the
+/// grammar's shape, the parser, attribution, and a plan that says what it is.
+///
+/// Written because everything else about the widening is a unit test, and rule
+/// 1 of `Estrategia-de-Pruebas.md` is that every real defect came from running
+/// the thing. This is as close to running it as a machine with no model gets;
+/// `dev/verify.sh` asks a real one.
+#[test]
+fn a_sentence_about_the_disks_becomes_a_verb_and_not_an_install() {
+    let transcript = Transcript::new().with(Segment::typed("qué discos hay"));
+
+    let plan = thalyx_agent::plan(
+        &transcript,
+        &Says(r#"{"operation": "disks", "targets": []}"#),
+        ForeignText::NeverActs,
+        caller(),
+    )
+    .expect("a verb that takes no arguments is a complete request");
+
+    assert_eq!(plan.operation(), "disks");
+    assert!(
+        plan.contract().is_none(),
+        "asking what disks exist produced a contract"
+    );
+}
+
+#[test]
+fn a_path_the_model_invented_is_refused_for_a_verb_as_it_is_for_an_install() {
+    // Widening the catalogue widened what a hallucination can be. A module id
+    // that appears nowhere was already refused; a *path* that appears nowhere
+    // has to be refused by the same rule and not by a new one, or the new one
+    // is a second place to get it wrong.
+    let transcript = Transcript::new().with(Segment::typed("lee el archivo de hosts"));
+
+    let refused = thalyx_agent::plan(
+        &transcript,
+        &Says(r#"{"operation": "read", "targets": ["/etc/hosts"]}"#),
+        ForeignText::NeverActs,
+        caller(),
+    );
+
+    assert!(
+        refused.is_err(),
+        "the model named a path nobody said, and it was accepted"
+    );
 }

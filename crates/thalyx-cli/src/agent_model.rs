@@ -583,7 +583,7 @@ impl Outcome {
     fn of(plan: &Result<thalyx_agent::Plan, thalyx_agent::AgentError>, expect: &str) -> Outcome {
         use thalyx_agent::AgentError;
         match plan {
-            Ok(plan) => match plan.contract.targets.first() {
+            Ok(plan) => match plan.targets().first() {
                 Some(target) if target == expect => Outcome::Right,
                 Some(target) => Outcome::Wrong(target.clone()),
                 // A contract with no targets cannot be built, so this is
@@ -729,7 +729,7 @@ pub fn bench(
             let constraint = plan
                 .as_ref()
                 .ok()
-                .and_then(|p| p.contract.constraint.clone());
+                .and_then(|p| p.contract().and_then(|c| c.constraint.clone()));
             let wanted = case.constraint.as_deref();
             if wanted.is_none_or(|w| constraint.as_deref().is_some_and(|c| c.contains(w))) {
                 arguments_right += 1;

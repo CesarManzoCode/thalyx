@@ -102,6 +102,13 @@ for line in trace.open(errors="replace"):
 seccomp = (repo / "crates/thalyx-sandbox/src/seccomp.rs").read_text()
 allowed = set(re.findall(r"libc::SYS_([a-z_0-9]+)", seccomp))
 
+# A guarded syscall is allowed for some of its arguments and killed for the
+# rest, so counting it as plainly allowed would report a condition as a
+# permission — the same collapse rule 10 forbids between "absent" and
+# "unreadable". They come out of the allowed set and get their own line.
+guarded = set(re.findall(r"syscall: libc::SYS_([a-z_0-9]+)", seccomp))
+allowed -= guarded
+
 # What a module actually sees.
 rootfs = (repo / "crates/thalyx-sandbox/src/rootfs.rs").read_text()
 system = re.search(r"SYSTEM_PATHS: \[&str; \d+\] = \[([^\]]*)\]", rootfs)
@@ -114,14 +121,21 @@ def rule(title):
     print("─" * len(title))
 
 rule("syscalls, against module_standard's filter")
-missing = sorted(set(calls) - allowed)
-print(f"  {len(calls)} distinct to start; {len(calls) - len(missing)} already allowed")
+missing = sorted(set(calls) - allowed - guarded)
+conditional = sorted(set(calls) & guarded)
+print(f"  {len(calls)} distinct to start; {len(calls) - len(missing)} allowed")
+if conditional:
+    print(f"  {len(conditional)} of those only for some of their arguments:")
+    for name in conditional:
+        print(f"      {name}   ({calls[name]}x)   guarded, not plainly allowed")
+    print("      this script does not check the arguments; the guard's own")
+    print("      tests do, and dev/verify.sh asks a confined module")
 if missing:
-    print(f"  {len(missing)} not allowed:")
+    print(f"  {len(missing)} not allowed at all:")
     for name in missing:
         print(f"      {name}   ({calls[name]}x)")
 else:
-    print("  every one of them is already allowed")
+    print("  none are missing outright")
 
 rule("paths, against what a module's root holds")
 # `/proc` is mounted into the sandbox after the pivot, so it is present even

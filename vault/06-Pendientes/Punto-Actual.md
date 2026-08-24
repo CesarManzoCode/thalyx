@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-23
+fecha-actualizacion: 2026-08-24
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,100 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Qué necesita un agente ajeno para arrancar, medido — 2026-08-23
+> ## La gramática del agente es el catálogo entero — 2026-08-24
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar decidió las dos cosas que quedaban abiertas y que no eran código sino
+> alcance. Las dos están construidas.
+>
+> ### 1. Qué puede proponer el modelo: todo el catálogo
+>
+> `Superficie-para-el-LLM.md` dejaba la pregunta abierta y le ponía dos
+> condiciones. Las dos se resolvieron construyendo, y ninguna de las dos era la
+> que parecía.
+>
+> **La abstención dejó de ser expresable, y se dio cuenta sola.** Mientras
+> `install_module` era la única operación, una lista de objetivos vacía la
+> decía: nada que instalar es nada que hacer. La mayoría de los verbos del
+> catálogo no toman argumentos, así que una lista vacía en `disks` es una
+> petición completa. Uno de los dos significados tenía que mudarse, y la
+> abstención tiene ahora palabra propia: `nothing`. Las dos siguen valiendo,
+> porque **todas las muestras capturadas de un modelo real absteniéndose usan
+> la lista vacía** y la regla 6 dice que una muestra reescrita ya no es la
+> muestra.
+>
+> **El otro condicionante era el que importaba, y no estaba escrito así.**
+> `assemble` escribía `Operation::InstallModule` en cada contrato que armaba,
+> porque mientras había una sola operación no había otra cosa que escribir. El
+> día que el modelo pudiera proponer `disks`, esa línea habría producido **un
+> contrato para instalar un disco**: un plan que se llama a sí mismo otra cosa,
+> que es la única forma de estar mal que quien lo lee no puede ver.
+>
+> Así que un plan tiene dos formas. Un contrato es lo que
+> [[Contrato-Estructurado]] le da a una operación que **cambia la máquina y
+> necesita que un humano diga que sí**. Preguntar qué discos hay no es eso, y
+> vestirlo de contrato deja la palabra sin significado para quien lea el
+> siguiente.
+>
+> **Y ahí apareció el hueco.** Un plan de verbo no tiene contrato, así que
+> nunca llegaba a `Contract::validate`, así que nunca llegaba a
+> `origins.validate()` — que es la comprobación que rechaza una operación
+> concluida mientras se leía una página hostil. La regla de procedencia habría
+> quedado con **una puerta rotulada `read`**. Se valida en los dos caminos, con
+> prueba en los dos sentidos: la lectura inyectada se rechaza, la que pidió el
+> humano no.
+>
+> La gramática son tres formas de objeto en vez de una, así que ensancharla no
+> costó nada de lo que ya compraba: `install` y `run` conservan la regla de
+> DNS inverso, todo lo demás recibe una clase de caracteres que cubre rutas y
+> nombres y **no puede cerrar la cadena JSON en la que está**, y `nothing` tiene
+> un objeto sin argumentos.
+>
+> Tres pruebas cayeron y ninguna era por este cambio: **las palabras del
+> catálogo son inglés ordinario**. `permissions` es un verbo ahora, así que una
+> prueba que buscaba la palabra en cualquier parte reportó el catálogo como una
+> fuga de procedencia; el brazo de prosa del experimento de gramática "nombraba
+> una operación" porque contiene la palabra `where`; y la sonda leía una
+> producción `root` donde ahora hay tres. Las tres son el instrumento.
+>
+> ### 2. `sched_setscheduler`: sí, pero sin tiempo real
+>
+> Cesar entendió el problema y me dejó decidir los costos. La llamada son dos
+> peticiones con un solo nombre. Un runtime acomodando sus propios hilos dentro
+> del pedazo de procesador que el cgroup ya le dio es ordinario y lo hace antes
+> que nada. Un programa pidiendo política de **tiempo real** está pidiendo
+> quedarse un procesador contra todo lo demás de la máquina, Thalyx incluido, y
+> ningún límite de cgroup se lo quita.
+>
+> El filtro aprendió a mirar un argumento. Y lo que ese cambio enseñó **sólo
+> aparece corriendo**: la primera versión del guardia permitía `SCHED_OTHER`,
+> `SCHED_BATCH` y `SCHED_IDLE`, que es lo que sugiere el manual y lo que
+> cualquiera escribiría. Node pide `0x40000000` —`SCHED_OTHER |
+> SCHED_RESET_ON_FORK`— en cada hilo. **Ese guardia habría matado al agente
+> ajeno en la llamada exacta que el guardia existe para dejar pasar, y habría
+> parecido el guardia funcionando.**
+>
+> Con eso, `dev/foreign-agent-needs.sh` dice **41 de 41**. En la capa de seccomp
+> ya no falta nada para que un agente ajeno arranque. Lo que bloquea sigue
+> siendo G1 y G2, que es lo que la medición del 2026-08-23 ya decía.
+>
+> ### Lo que queda
+>
+> - **`thalyx agent bench`** — el único `NOT PROVEN`. No es una decisión, es una
+>   medición que necesita su máquina y unos minutos:
+>   `sudo THALYX_AGENT_BENCH=1 ./dev/verify.sh`.
+> - **`agent do` sólo lleva a cabo instalaciones.** Poder decir una cosa no es
+>   poder que se haga: todo lo demás pasa por el verbo, en una terminal, con la
+>   confirmación que ese verbo ya pide. Ensancharlo es otra decisión de Cesar y
+>   no se tomó.
+> - Lo de siempre que necesita hierro: `net/outbound` de punta a punta, cargar
+>   `thalyx_watch` con el cargador propio, la deuda de explicación de `/home`
+>   `NOEXEC`.
+
+> ## Qué necesita un agente ajeno para arrancar, medido — 2026-08-23
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Tercera entrega del sprint, y es la que más cambia lo que creíamos. El
 > pendiente decía *«tomar Claude Code, mirar qué llama, y hacer la lista; es

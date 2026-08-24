@@ -373,7 +373,17 @@ derecha está decidido**; es el catálogo, no un plan.
 | E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
 | F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
-| G1–G4 | El piso | No construido, y es lo que bloquea la vara. **G1 y G2 medidos el 2026-08-23** y con eso dejaron de ser una suposición: ver [[Que-Necesita-Un-Agente-Ajeno]] |
+| G1–G4 | El piso | No construido, y es lo que bloquea la vara. **G1 y G2 medidos el 2026-08-23** y con eso dejaron de ser una suposición: ver [[Que-Necesita-Un-Agente-Ajeno]]. El filtro de llamadas dejó de estar en la lista el 2026-08-24: 41 de 41 |
+
+**Y desde el 2026-08-24 hay una segunda fila que no estaba en el catálogo:
+el modelo puede proponer los treinta y nueve `op` del catálogo, y la lista de
+palabras que la gramática no le da está vacía.** Decreto de Cesar del
+2026-08-24. La línea dejó de estar en lo que el modelo puede **decir** y pasó a
+estar en lo que la máquina **hace** sin un humano en una terminal diciendo que
+sí: `agent do` sigue llevando a cabo instalaciones y nada más, y todo lo demás
+pasa por el verbo con la confirmación que ese verbo ya pide. Ver
+[[Punto-Actual]] para lo que costó — la abstención se quedó sin forma de
+decirse, y un plan que no es contrato no llegaba a `origins.validate()`.
 
 **Y desde el 2026-08-23 hay una fila que no estaba en el catálogo y decide si
 cualquiera de las de arriba sirve: los cuarenta verbos contestan por
