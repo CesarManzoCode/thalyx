@@ -32,7 +32,7 @@ Claude Code 2.1.241 arrancando —`--version`, que carga el runtime y sale— ba
 
 ### Llamadas al sistema: 41 distintas, y 41 permitidas
 
-`module_standard` permite 159. De las 41 que el agente hace para arrancar,
+`module_standard` permite 128. De las 41 que el agente hace para arrancar,
 faltaba exactamente una:
 
 | Faltaba | Cuántas veces | Estado |
@@ -66,6 +66,36 @@ y lo que cualquiera escribiría. Se leyó la traza en vez de imaginarla: Node pi
 > guardia existe para dejar pasar**, y habría parecido el guardia funcionando.
 
 Es la regla 6 otra vez: un valor inventado prueba tu modelo del formato.
+
+### Y al día siguiente faltaban dos más, que esta medición no podía ver
+
+El 2026-08-24 `dev/verify.sh` reportó que un módulo confinado moría con `SIGSYS`
+al poner un hilo suyo en una política ordinaria — en la llamada que el guardia
+existe para dejar pasar, otra vez, y ahora con el guardia bien escrito.
+
+No era `sched_setscheduler`. `chrt` pregunta primero el rango legal de
+prioridades, con `sched_get_priority_min` y `sched_get_priority_max`, y ninguna
+de las dos estaba en la lista. Las dos contestan una constante y no cambian
+nada; están permitidas desde entonces, y `module_standard` permite 130.
+
+**Lo que importa de esto para esta nota:** la medición de arriba no lo habría
+encontrado y no está mal hecha. Claude Code no pregunta el rango de prioridades;
+`chrt` sí. Una traza es un programa, no todos — la nota ya lo dice de sus rutas
+y vale igual para sus llamadas. La regla nueva quedó en
+[[Estrategia-de-Pruebas]]: el camino hasta una llamada permitida es parte de lo
+que hay que permitir.
+
+### Y el instrumento contaba mal las permitidas
+
+El script comparaba las 41 contra todos los `libc::SYS_…` del archivo, y el
+archivo nombra 32 que un módulo **no** tiene: las que las pruebas nombran para
+afirmar su ausencia —`socket`, `connect`, `bind`, `ptrace`, `mount`, `bpf`— y
+las que sólo agrega un permiso de red concedido. Un agente que llamara a
+`socket` para arrancar habría salido como cubierto.
+
+Corregido el 2026-08-24 a leer el cuerpo de `module_standard`, y vuelto a
+correr: **la respuesta no cambió, 41 de 41.** El renglón de arriba se sostiene, y
+ahora se sostiene sobre la comparación correcta.
 
 ### Rutas: 19 abiertas, 13 dentro de lo que un módulo ve
 
