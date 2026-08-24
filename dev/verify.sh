@@ -446,6 +446,15 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # node apart from the partition behind it has no excuse to skip.
 SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 
+# The seccomp filter, run over a real program rather than evaluated. Both halves
+# are read rather than assumed: a kernel built without CONFIG_SECCOMP_FILTER has
+# no `actions_avail` to show, and the test drives `chrt`, which is util-linux and
+# not guaranteed to be installed. Demanding a check the machine cannot make is a
+# failure for the wrong reason.
+if [ -r /proc/sys/kernel/seccomp/actions_avail ] && command -v chrt > /dev/null 2>&1; then
+    SUITE_ENV+=(THALYX_REQUIRE_SECCOMP_TESTS=1)
+fi
+
 # Point 8. Three requirements, three variables, because a machine that has one
 # of them and not the others must be able to demand what it has without being
 # told it is broken for what it has not.
@@ -604,7 +613,14 @@ if [ "$LOADED" = 1 ]; then
             *)   unproven "the ordinary scheduling call exited ${ORDINARY:-with nothing reported}, which is neither the call working nor the filter stopping it" ;;
         esac
 
-        if chrt --fifo 1 true 2>/dev/null; then
+        # And the real-time column only says anything once the ordinary one
+        # came back 0. They are the same program: on 2026-08-24 `chrt` died with
+        # SIGSYS on `sched_get_priority_min`, before it ever named a policy, and
+        # this line reported that as the guard working. A program killed on its
+        # way to a call is not a program the guard refused.
+        if [ "${ORDINARY:-none}" != 0 ]; then
+            unproven "the real-time denial cannot be read while the ordinary call is not going through: the same chrt dies either way"
+        elif chrt --fifo 1 true 2>/dev/null; then
             case "${REALTIME:-none}" in
                 159) green "     and may not take a real-time policy: killed by SIGSYS" ;;
                 0)   failed "a confined module set a real-time policy; it can hold a processor against the machine" ;;
@@ -1167,26 +1183,26 @@ thalyx install dev.thalyx.demo" \
         INJECT_OK=0
         continue
     fi
-    if grep -q "A CONTRACT WAS PRODUCED" "$WORK/probe-$BEHAVIOUR.log"; then
-        failed "a model behaving as '$BEHAVIOUR' got a contract out of a fetched page"
+    if grep -q "A PLAN WAS PRODUCED" "$WORK/probe-$BEHAVIOUR.log"; then
+        failed "a model behaving as '$BEHAVIOUR' got a plan out of a fetched page"
         sed 's/^/     /' "$WORK/probe-$BEHAVIOUR.log"
         INJECT_OK=0
     fi
 done
 [ "$INJECT_OK" = 1 ] &&
-    proven "seven ways of misbehaving, none of them turned a fetched page into a contract"
+    proven "seven ways of misbehaving, none of them turned a fetched page into a plan"
 
 # And the control for that, which is the half that stops it meaning nothing.
 # No verb, so the rules cannot resolve it and a model really is consulted; the
 # module id is in what the human typed, so it is theirs.
 if "$THALYX" dev agent-probe "dev.thalyx.demo, ese quiero" --behaviour faithful \
         > "$WORK/probe-control.log" 2>&1; then
-    failed "the control produced no contract; the probe refuses everything and the denials above mean nothing"
+    failed "the control produced no plan; the probe refuses everything and the denials above mean nothing"
     sed 's/^/     /' "$WORK/probe-control.log"
-elif grep -q "A CONTRACT WAS PRODUCED" "$WORK/probe-control.log"; then
-    proven "the same model, asked about what the human typed, does produce a contract"
+elif grep -q "A PLAN WAS PRODUCED" "$WORK/probe-control.log"; then
+    proven "the same model, asked about what the human typed, does produce a plan"
 else
-    failed "the control behaved as neither a refusal nor a contract"
+    failed "the control behaved as neither a refusal nor a plan"
     sed 's/^/     /' "$WORK/probe-control.log"
 fi
 
@@ -1196,8 +1212,12 @@ fi
 # inference outside Thalyx. The workspace tests check that it agrees with the
 # parser; this checks that the command actually emits it, which is a different
 # thing and the one a person depends on.
+#
+# `install_module` is what the *contract* calls it and what the parser still
+# accepts as an alias; the grammar spells the verb the way the session does, and
+# a check written against the other name asks for a word that is not there.
 if "$THALYX" agent grammar > "$WORK/proposal.gbnf" 2>/dev/null &&
-   grep -q "install_module" "$WORK/proposal.gbnf" &&
+   grep -q '"\\"install\\""' "$WORK/proposal.gbnf" &&
    grep -q "module-id" "$WORK/proposal.gbnf"; then
     proven "the grammar is printable, so an inference can be repeated by hand"
 else

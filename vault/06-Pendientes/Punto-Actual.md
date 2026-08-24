@@ -14,9 +14,90 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La gramática del agente es el catálogo entero — 2026-08-24
+> ## Tres fallas en `verify.sh`: dos eran del arnés y una era del filtro — 2026-08-24
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Cesar en su máquina dio `154 proven · 1 not proven · 3 failed`.
+> Las tres fallas están diagnosticadas y arregladas, y **sólo una era de
+> Thalyx**. Ninguna de las tres necesitó su hardware para reproducirse: las tres
+> se reprodujeron en el contenedor.
+>
+> ### 1. El guardia mataba la llamada que existe para dejar pasar — era real
+>
+> `sched_ordinary=159`: el módulo confinado murió con `SIGSYS` al poner un hilo
+> suyo en una política ordinaria. El guardia por argumento de ayer estaba bien
+> escrito; **el camino hasta él no estaba permitido**. `chrt` pregunta primero
+> el rango legal de prioridades —`sched_get_priority_min` y
+> `sched_get_priority_max`— y ninguna de las dos estaba en la lista. Las dos
+> contestan una constante y no cambian nada. Ya están permitidas.
+>
+> Lo que vale más que el arreglo: **la columna de al lado estaba en verde por la
+> razón equivocada.** `chrt --fifo 1 true` moría en esa misma primera línea, sin
+> haber nombrado jamás una política de tiempo real, y eso se lee idéntico a que
+> el guardia lo haya rechazado. La denegación se estaba afirmando sin medirse.
+> Ahora `verify.sh` se calla ahí mientras la columna ordinaria no dé 0, y hay una
+> prueba en el workspace que **instala el filtro de verdad** en un proceso
+> aparte y corre `chrt` bajo él, con las dos columnas en una sola prueba para
+> que nadie las lea por separado. Falla sin el arreglo; se comprobó.
+>
+> ### 2. Las siete sondas de inyección estaban pasando por vacías — era el arnés
+>
+> `verify.sh` buscaba `A CONTRACT WAS PRODUCED` en la salida de
+> `dev agent-probe`. La sonda dejó de imprimir esa frase el mismo 24, cuando un
+> plan pasó a poder ser un verbo y no sólo un contrato. Las siete comprobaciones
+> de «ninguna forma de portarse mal produjo nada» **pasaban sin mirar nada**.
+>
+> Lo agarró el control positivo —el que exige que el mismo modelo, preguntado
+> por lo que el humano tecleó, sí produzca uno—, que es la falla que Cesar vio
+> como «the control behaved as neither a refusal nor a contract». La regla 4
+> pagándose sola.
+>
+> ### 3. `agent grammar` sí imprimía la gramática — era el arnés
+>
+> La etapa exigía la palabra `install_module`. La gramática deletrea el verbo
+> como lo deletrea la sesión, `install`; `install_module` es como se llama la
+> operación en el **contrato** y sigue siendo alias aceptado por el analizador.
+> La etapa pedía una palabra que no está ahí.
+>
+> ### De pasada: el instrumento del agente ajeno contaba mal
+>
+> `dev/foreign-agent-needs.sh` sacaba las llamadas permitidas de todo
+> `seccomp.rs`, que también nombra 32 que un módulo tiene **prohibidas** —las de
+> las pruebas que afirman su ausencia y las que sólo agrega un permiso de red—.
+> Un agente que llamara a `socket` habría salido como cubierto. Corregido a leer
+> el cuerpo de `module_standard`, y **vuelto a correr**: la respuesta no cambió,
+> 41 de 41.
+>
+> ### El `NOT PROVEN` no es una falla, y sigue en pie
+>
+> Ningún modelo real corrió: `llama-completion` está instalado y no en el `PATH`
+> de root, y `THALYX_AGENT_WEIGHTS` no estaba puesto. Es la etapa diciendo
+> exactamente lo que no pudo comprobar. Para cerrarla:
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/al/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Las asignaciones van **después** de `sudo`, porque `sudo` no lleva el entorno.
+>
+> ### Lo que falta y sólo se puede hacer en su máquina
+>
+> Volver a correr `verify.sh`. Lo que este contenedor no puede decir sigue sin
+> decirlo: el LSM, los controladores de cgroup y Btrfs. Lo que sí quedó
+> comprobado aquí es el filtro sobre un programa real, que es donde estaba el
+> defecto.
+>
+> Y con el resultado de esa corrida se actualiza el párrafo de estado de
+> `README.md` y de `docs/STATUS.md`, que todavía citan la corrida del 23 —`134
+> proven · 2 not proven · 0 failed`—. No se cambió con los números de hoy a
+> propósito: citar el conteo de una corrida que falló, y que ya no es la que
+> correría ahora, es escribir un número que nadie midió.
+
+> ## La gramática del agente es el catálogo entero — 2026-08-24
 >
 > Cesar decidió las dos cosas que quedaban abiertas y que no eran código sino
 > alcance. Las dos están construidas.

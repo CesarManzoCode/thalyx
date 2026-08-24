@@ -123,7 +123,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened nine times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened eleven times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -136,6 +136,11 @@ These were all learned by something going wrong. They are recorded in
    took a year: it failed once in twenty-five runs, was "fixed" by a guess that
    said it was a guess, and only became a diagnosis when a twelve-core machine
    failed it twice in one run and the error — `ETXTBSY` — was finally captured.
+   The tenth and eleventh are both a set read from the wrong place: `verify.sh`
+   grepping for a sentence the probe had stopped printing, which turned seven
+   denials into seven vacuous passes and was caught only by the positive
+   control beside them; and `dev/foreign-agent-needs.sh` taking the permitted
+   syscalls out of a file that also names the forbidden ones.
 6. **A parser for another tool's output needs one captured real sample,
    verbatim.** A hand-written fixture proves the parser matches your model of
    the format, not the format.

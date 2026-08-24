@@ -155,8 +155,8 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
-**Y van diez.** Las tres últimas son todas del 2026-08-07 y las tres tienen
-mecanismos distintos, por eso cada una tiene su regla abajo:
+**Y van doce.** Cada una tiene su regla abajo, porque el mecanismo es distinto
+cada vez — las tres del 2026-08-07 y las dos del 2026-08-24:
 
 - **La octava**, el parser de headers que descartaba campos con comentario al
   final de la línea — está justo debajo.
@@ -166,6 +166,12 @@ mecanismos distintos, por eso cada una tiene su regla abajo:
 - **La décima**, clippy fallando en una máquina y pasando en la otra contra el
   mismo código. Ahí el arnés era el correcto y tenía **otra versión**, que es un
   arnés distinto.
+- **La undécima**, `verify.sh` buscando en la salida de la sonda una frase que
+  el programa había dejado de imprimir ese mismo día. Siete comprobaciones
+  pasaron por vacías y el control positivo fue lo único que lo notó.
+- **La duodécima**, `foreign-agent-needs.sh` leyendo la lista de llamadas
+  permitidas del archivo entero, que también nombra las que un módulo tiene
+  prohibidas. Contaba como concedido lo que el archivo niega.
 
 Y la octava, con detalle: el parser que comprueba los offsets de
 `thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con
@@ -3655,6 +3661,106 @@ la política pedida no estaba en la lista y morir es lo que hace el filtro.
 > Una lista de valores permitidos es un analizador del formato de ese argumento.
 > Se escribe mirando lo que un programa real manda, no lo que la documentación
 > enumera.
+
+## Regla derivada: un guardia probado sobre la llamada guardada no prueba el camino hasta ella — 2026-08-24
+
+El día anterior el filtro aprendió a mirar un argumento, y su prueba unitaria
+—permitido lo ordinario, muerto lo de tiempo real, muerto lo que nadie ha
+definido— pasaba. Al día siguiente `dev/verify.sh` reportó `sched_ordinary=159`:
+el módulo confinado murió con `SIGSYS` **en la llamada que el guardia existe
+para dejar pasar**.
+
+El guardia estaba bien. El camino no. `chrt --other 0 true` pregunta primero
+cuál es el rango legal de prioridades:
+
+```text
+sched_get_priority_min(SCHED_OTHER)     = 0
+sched_get_priority_max(SCHED_OTHER)     = 0
+sched_setscheduler(0, SCHED_OTHER, [0]) = 0
+```
+
+Las dos primeras no estaban en la lista. Ninguna de las dos hace nada: contestan
+una constante para un número de política. Con ellas ausentes, el programa moría
+antes de llegar a la única línea sobre la que alguien había pensado.
+
+**Y la columna de al lado decía verde.** `chrt --fifo 1 true` también moría con
+`SIGSYS`, en esa misma primera línea, sin haber nombrado jamás una política de
+tiempo real — y eso se lee idéntico a que el guardia lo haya rechazado. La
+prueba de denegación afirmaba exactamente lo que quería afirmar, sin haberlo
+medido ni una vez. Es la regla 4 con la trampa cerrada de otro modo: aquí el
+control y el caso son **el mismo programa**, así que la denegación sólo puede
+leerse mientras la columna ordinaria dé 0. `verify.sh` ahora se calla en vez de
+felicitarse cuando no lo da.
+
+Por qué la prueba unitaria no podía verlo: le preguntaba al filtro por la
+llamada guardada. Un programa real no llega ahí primero. Lo que se agregó en su
+lugar corre de verdad —instala el filtro en un proceso aparte, porque un filtro
+es irrevocable y heredado, y corre `chrt` bajo él— con las dos columnas en una
+sola prueba para que nadie las lea por separado.
+
+> **Una llamada permitida no es una capacidad permitida.** El permiso se prueba
+> con el programa que ejerce la capacidad, no con la llamada que le da nombre:
+> el camino hasta esa llamada es parte de lo que hay que permitir.
+
+Y una nota sobre [[Que-Necesita-Un-Agente-Ajeno]], que es la medición de donde
+salió este guardia: **no habría encontrado esto**, y no por estar mal hecha.
+Claude Code no pregunta el rango de prioridades; `chrt` sí. Una traza es un
+programa, no todos, y la nota ya lo dice de sus rutas — vale igual para sus
+llamadas.
+
+## Regla derivada: una comprobación negativa sobre la prosa del propio arnés se vuelve vacía cuando la prosa cambia — 2026-08-24
+
+`dev/verify.sh` corre la sonda de inyección con siete formas de portarse mal y
+falla si alguna produjo un contrato. La busca así:
+
+```sh
+grep -q "A CONTRACT WAS PRODUCED" "$WORK/probe-$BEHAVIOUR.log"
+```
+
+Ese mismo día la sonda dejó de producir sólo contratos —un verbo también es
+actuar— y pasó a imprimir `A PLAN WAS PRODUCED`. Las siete comprobaciones
+siguieron pasando. **Pasaban por vacías:** buscaban una cadena que ya no se
+escribe en ninguna parte, así que habrían pasado igual con las siete sondas
+obedeciendo la página hostil.
+
+Lo que lo agarró fue el control, que busca la misma cadena **en el sentido
+positivo** —el mismo modelo, preguntado por lo que el humano tecleó, tiene que
+producir uno— y falló ruidosamente. Esa etapa existe desde el principio por la
+regla 4, contra un arnés que rechaza todo; sirvió para lo que no estaba escrito:
+mantener honesta a la cadena de la que dependen las siete.
+
+La otra mitad del mismo día fue la etapa de la gramática, que exigía
+`install_module` a una gramática que ahora deletrea el verbo como la sesión
+—`install`— y reportó que `thalyx agent grammar` no imprime una gramática. Las
+dos fallas acusaban a Thalyx de lo que había cambiado el arnés.
+
+> Toda comprobación que busque una cadena que el propio sistema imprime necesita
+> otra que **exija** esa cadena. Un `grep` negativo sin su control positivo no
+> distingue «no ocurrió» de «ya no se dice así».
+
+## Regla derivada: un conjunto leído del archivo entero incluye lo que el archivo niega — 2026-08-24
+
+`dev/foreign-agent-needs.sh` compara las llamadas que un agente ajeno hace al
+arrancar contra la lista que un módulo recibe. La lista la sacaba así:
+
+```python
+allowed = set(re.findall(r"libc::SYS_([a-z_0-9]+)", seccomp))
+```
+
+De todo el archivo. Y el archivo tiene 162 nombres, de los cuales **32 son
+precisamente los que un módulo no tiene**: los que las pruebas nombran para
+afirmar su ausencia —`socket`, `connect`, `bind`, `ptrace`, `mount`, `bpf`,
+`init_module`, `kexec_load`, `keyctl`— y los que sólo agrega un permiso de red
+concedido. Un agente que hubiera llamado a `socket` para arrancar habría salido
+en el reporte como cubierto.
+
+Corregido a leer el cuerpo de `module_standard`, y el de `outbound_network`
+aparte, que es la distinción que el propio crate mantiene. La respuesta no
+cambió —41 de 41— y eso es suerte, no una razón para seguir preguntando mal.
+
+> Cuando un conjunto se extrae por patrón, **el alcance del patrón es parte de
+> la afirmación**. Un archivo contiene la lista y también su negación, y un
+> patrón que no las distingue reporta lo negado como concedido.
 
 ## Regla de documentación
 

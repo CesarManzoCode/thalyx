@@ -99,8 +99,28 @@ for line in trace.open(errors="replace"):
         opens[path] = "ENOENT" not in line.split("=")[-1]
 
 # The filter a module actually gets.
+#
+# Read out of `module_standard`'s body and not out of the file, which is what
+# this did first and is the harness lying about the thing it measures: the file
+# also names `socket`, `connect`, `bind`, `ptrace`, `mount`, `bpf` and twenty-six
+# more — in the tests that assert a module does **not** get them, and in the list
+# that a `net/outbound` grant adds. Thirty-two syscalls a module is denied were
+# being counted as permitted, so an agent that called one of them would have been
+# reported as fully covered. It happens that none of the forty-one are in that
+# set, which is luck and not a reason to keep asking the question wrong.
 seccomp = (repo / "crates/thalyx-sandbox/src/seccomp.rs").read_text()
-allowed = set(re.findall(r"libc::SYS_([a-z_0-9]+)", seccomp))
+
+def body_of(function):
+    """The text of one function, up to the `}` in the first column."""
+    after = seccomp.split(f"pub fn {function}(", 1)[1]
+    return after.split("\n}\n", 1)[0]
+
+allowed = set(re.findall(r"libc::SYS_([a-z_0-9]+)", body_of("module_standard")))
+
+# What a `net/outbound` grant adds, kept apart for the same reason the crate
+# keeps it apart: a module without that permission does not have these, and
+# folding them in here would answer a question nobody asked.
+granted = set(re.findall(r"libc::SYS_([a-z_0-9]+)", body_of("outbound_network")))
 
 # A guarded syscall is allowed for some of its arguments and killed for the
 # rest, so counting it as plainly allowed would report a condition as a
@@ -123,6 +143,7 @@ def rule(title):
 rule("syscalls, against module_standard's filter")
 missing = sorted(set(calls) - allowed - guarded)
 conditional = sorted(set(calls) & guarded)
+with_grant = sorted(set(missing) & granted)
 print(f"  {len(calls)} distinct to start; {len(calls) - len(missing)} allowed")
 if conditional:
     print(f"  {len(conditional)} of those only for some of their arguments:")
@@ -133,7 +154,11 @@ if conditional:
 if missing:
     print(f"  {len(missing)} not allowed at all:")
     for name in missing:
-        print(f"      {name}   ({calls[name]}x)")
+        note = "   with a net/outbound grant, allowed" if name in granted else ""
+        print(f"      {name}   ({calls[name]}x){note}")
+    if with_grant:
+        print("      a grant is a decision, not a fix: without it these are")
+        print("      denied, and the agent has to start before anyone grants")
 else:
     print("  none are missing outright")
 

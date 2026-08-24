@@ -489,6 +489,23 @@ pub fn module_standard() -> Allowlist {
             libc::SYS_getsid,
             libc::SYS_sched_getaffinity,
             libc::SYS_sched_yield,
+            // The two questions asked *before* the guarded call, and the reason
+            // they are here is that leaving them out killed the program on its
+            // way to a call the guard permits. `chrt --other 0 true` — which is
+            // how `dev/verify.sh` asks a confined module whether it may arrange
+            // its own threads — reads the legal priority range first:
+            //
+            //     sched_get_priority_min(SCHED_OTHER)     = 0
+            //     sched_get_priority_max(SCHED_OTHER)     = 0
+            //     sched_setscheduler(0, SCHED_OTHER, [0]) = 0
+            //
+            // With these absent it died with SIGSYS on the first line, and the
+            // *real-time* column of that same check read as the guard working
+            // — a program that dies before reaching a call is indistinguishable
+            // from one the guard stopped. Both answer a policy number with a
+            // constant and change nothing, so there is nothing here to guard.
+            libc::SYS_sched_get_priority_min,
+            libc::SYS_sched_get_priority_max,
             // Identity, read-only. Changing it is not on the list.
             libc::SYS_getuid,
             libc::SYS_geteuid,
