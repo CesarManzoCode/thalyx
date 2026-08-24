@@ -30,25 +30,42 @@ Lo primero sigue en pie. **Lo segundo hay que corregirlo, y ésa es la noticia.*
 Claude Code 2.1.241 arrancando —`--version`, que carga el runtime y sale— bajo
 `strace -f`, en el contenedor de desarrollo.
 
-### Llamadas al sistema: 41 distintas, y 40 ya están permitidas
+### Llamadas al sistema: 41 distintas, y 41 permitidas
 
 `module_standard` permite 159. De las 41 que el agente hace para arrancar,
-**falta exactamente una**:
+faltaba exactamente una:
 
-| Falta | Cuántas veces |
-|---|---|
-| `sched_setscheduler` | 8 |
+| Faltaba | Cuántas veces | Estado |
+|---|---|---|
+| `sched_setscheduler` | 8 | **Resuelta el 2026-08-24** — permitida por argumento |
 
-Eso es todo. No es una lista de trabajo, es un renglón — y contradice de frente
-la frase «no arrancarían» en la capa donde más caro parecía: el filtro de
-seccomp de este proyecto ya cubre el 97.5% de lo que un agente ajeno pide para
-existir.
+Eso era todo. No una lista de trabajo, un renglón — y contradice de frente la
+frase «no arrancarían» en la capa donde más caro parecía: el filtro de seccomp
+de este proyecto ya cubría el 97.5% de lo que un agente ajeno pide para existir,
+y desde el 24 cubre el 100%.
 
-**Lo que eso no dice**: que agregarlo sea correcto. `sched_setscheduler` cambia
-la política de planificación de un hilo, y si un módulo confinado debe poder
-hacerlo es una decisión de [[Sandbox-Ejecucion]] y de Cesar, no una consecuencia
-de esta medición. Lo que la medición aporta es que **la pregunta es esa una, y
-no cuarenta**.
+### Lo que costó ese renglón, que es la parte que vale
+
+La medición decía que agregarlo no era obviamente correcto, y tenía razón.
+`sched_setscheduler` son **dos peticiones con un solo nombre**: un runtime
+acomodando sus propios hilos dentro del pedazo de procesador que el cgroup ya le
+dio, que es ordinario, y un programa pidiendo política de **tiempo real**, que
+es pedir quedarse un procesador contra todo lo demás de la máquina —Thalyx
+incluido— y que ningún límite de cgroup le quita.
+
+Cesar decidió el 2026-08-24: permitirla **sin tiempo real**. El filtro aprendió
+a mirar un argumento, y `SCHED_FIFO`, `SCHED_RR` y `SCHED_DEADLINE` se mueren
+con `SIGSYS` como cualquier llamada fuera de la lista.
+
+**Y ahí apareció lo que sólo aparece corriendo.** La primera versión del guardia
+permitía `SCHED_OTHER`, `SCHED_BATCH` y `SCHED_IDLE` — lo que sugiere el manual
+y lo que cualquiera escribiría. Se leyó la traza en vez de imaginarla: Node pide
+`0x40000000`, que es `SCHED_OTHER | SCHED_RESET_ON_FORK`, en cada hilo.
+
+> Ese guardia habría matado al agente ajeno **en la llamada exacta que el
+> guardia existe para dejar pasar**, y habría parecido el guardia funcionando.
+
+Es la regla 6 otra vez: un valor inventado prueba tu modelo del formato.
 
 ### Rutas: 19 abiertas, 13 dentro de lo que un módulo ve
 

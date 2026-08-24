@@ -225,19 +225,29 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       [[Filosofia-Fundacional]] apuntaba con *«no a través de scripts de
       shell»*.
 
-- [ ] **Ampliar la gramática del agente más allá de `install_module`.** Es el
-      techo real de lo que el agente puede hacer, y no es filosófico: la
-      producción `operation ::= "install_module"` tiene **una sola
-      alternativa**, así que el modelo no puede pedir ver una carpeta porque no
-      existe la forma de decirlo. Bajo el decreto del 2026-08-09
-      ([[Filosofia-Fundacional]], «el LLM es para quien se construye») esto deja
-      de ser una decisión abierta y pasa a ser trabajo pendiente: cada verbo que
-      el humano gana debe tener su operación. Va **después** de que existan los
-      verbos, porque una operación que nombra algo que la máquina no sabe hacer
-      no se puede probar. Dos cosas que hay que resolver al hacerlo: que la
-      abstención siga siendo expresable —fue imposible una vez y nadie lo notó
-      hasta escribir el banco— y que cada argumento nuevo tenga dónde
-      comprobarse contra los canales, como los ids tienen la atribución.
+- [x] **Ampliar la gramática del agente más allá de `install_module`.**
+      Hecho el 2026-08-24, por decreto de Cesar: **todo el catálogo**. Las dos
+      condiciones que este pendiente ponía se resolvieron, y ninguna de las dos
+      era la que parecía.
+
+      La abstención dejó de ser expresable exactamente como se temía, y la
+      salida fue darle palabra propia (`nothing`) en vez de quitarle el
+      significado a la lista vacía: **todas las muestras capturadas de un
+      modelo real absteniéndose usan la lista vacía**, y la regla 6 dice que
+      una muestra reescrita ya no es la muestra. Las dos siguen valiendo.
+
+      Lo de los argumentos resultó ser más grande de lo escrito, y no estaba
+      en el lado del argumento. `assemble` escribía `InstallModule` en cada
+      contrato porque no había otra cosa que escribir, así que un `disks`
+      habría producido un contrato para instalar un disco. Un plan tiene dos
+      formas ahora, y la de verbo **no llegaba a `origins.validate()`** — la
+      regla de procedencia habría quedado con una puerta rotulada `read`. Se
+      valida en los dos caminos. Ver [[Punto-Actual]].
+
+      Lo que **no** se decidió y sigue abierto: `agent do` sólo lleva a cabo
+      instalaciones. Poder decir una cosa no es poder que se haga; todo lo
+      demás pasa por el verbo, en una terminal. Ensancharlo es otra decisión
+      de Cesar.
 
 ## Que un agente ajeno pueda trabajar aquí
 
@@ -252,7 +262,8 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       **medido el 2026-08-23**, con Claude Code 2.1.241 bajo `strace`. Era
       barato, como decía, y **la respuesta corrige la frase que estaba debajo**:
       de las 41 llamadas al sistema que hace para arrancar, `module_standard` ya
-      permite 40, y la que falta es una sola (`sched_setscheduler`). De las 19
+      permite 40, y la que falta era una sola (`sched_setscheduler`, resuelta el
+      2026-08-24 con un guardia por argumento: **41 de 41**). De las 19
       rutas que abre, 13 caen dentro de lo que un módulo ve. Donde «no
       arrancaría» sí es cierto es en el enlazador: la imagen lleva `/init` y
       nada más, así que no hay libc — que es exactamente la pregunta abierta del

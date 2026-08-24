@@ -388,7 +388,7 @@ fn plan(store: &Store, planning: Planning<'_>) -> Fallible {
     println!();
 
     // A contract prints as a contract. A verb prints as what it is, and does
-    // not borrow the word: `Contrato-de-Intencion.md` gives a contract to an
+    // not borrow the word: `Contrato-Estructurado.md` gives a contract to an
     // operation that changes the machine and needs a human to say yes, and
     // most of the catalogue is not that. Printing `list` as a contract would
     // make the word mean nothing to whoever reads the next one.

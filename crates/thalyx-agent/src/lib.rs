@@ -108,7 +108,7 @@ pub enum AgentError {
 /// Until the catalogue was opened to the model there was one operation, so
 /// there was one shape: a [`Contract`]. Now there are thirty-nine, and most of
 /// them are not contracts. A contract is what
-/// `vault/03-Contrato/Contrato-de-Intencion.md` gives to an operation that
+/// `vault/04-Flujo-Canonico/Contrato-Estructurado.md` gives to an operation that
 /// changes the machine and needs a human to say yes — provenance on every
 /// field, a rendered confirmation, a journal entry, a way back. Asking what is
 /// on the disks is not that.

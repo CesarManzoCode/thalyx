@@ -37,7 +37,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Lanzamiento confinado (re-exec) | `crates/thalyx-sandbox/launch.rs` | Probado: el programa reporta su propio cgroup |
 | Orquestación de ejecución | `crates/thalyx-core/run.rs` | `thalyx module run`, ciclo completo |
 | Perfil `module_standard` | `crates/thalyx-sandbox/profile.rs` | Namespaces, seccomp y límites; falta user namespace |
-| Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente |
+| Filtro seccomp (BPF clásico) | `crates/thalyx-sandbox/seccomp.rs` | Lista de permitidos derivada empíricamente. Desde el 2026-08-24 hay **guardias por argumento**: `sched_setscheduler` pasa con política ordinaria y muere con tiempo real. Los saltos se resuelven simbólicamente y una distancia que no cabe en ocho bits se rechaza al compilar |
 | Escritura de un Btrfs vacío | `crates/thalyx-btrfs` | Ocho árboles, tres chunks y los superbloques, sin `mkfs.btrfs`; los tres subvolúmenes por ioctl |
 | Tabla de particiones GPT | `crates/thalyx-install/gpt.rs` | Una tabla de dos particiones con sus dos copias, sin `sgdisk` |
 | Sistema de archivos FAT32 | `crates/thalyx-install/fat.rs` | Un volumen con un archivo en `\EFI\BOOT\BOOTX64.EFI`, sin `mkfs.vfat`. No lee |
@@ -72,9 +72,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `thalyx-lsm` (BPF LSM) | `lsm/thalyx_lsm.bpf.c` | **Demostrado denegando en hardware real** |
 | `thalyx-watch` (BPF LSM) | `lsm/thalyx_watch.bpf.c` | Diez hooks, contador por CPU, atribución por ancestros |
 | Entorno de desarrollo (VM) | `dev/` | Preflight, guest reproducible, verificación de enforcement |
-| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Enunciado → contrato → instalación, probado de punta a punta |
+| Agente mínimo: router, atribución, ensamblado | `crates/thalyx-agent` | Enunciado → contrato → instalación, probado de punta a punta. Un plan tiene **dos formas** desde el 2026-08-24: contrato para lo que el núcleo lleva a cabo, verbo para el resto del catálogo — y las dos pasan por `origins.validate()`, que el camino de verbo se saltaba |
 | Las cuatro gamas | `crates/thalyx-agent/tier.rs` | Los tamaños son de un tipo que se imprime con `~`, para que un estimado no se lea como medición |
-| Gramática GBNF de la propuesta | `crates/thalyx-agent/grammar.rs` | Generada desde la forma que tiene que respetar; las clases de caracteres se comparan contra el escáner de ids, carácter por carácter |
+| Gramática GBNF de la propuesta | `crates/thalyx-agent/grammar.rs` | Generada desde la forma que tiene que respetar; las clases de caracteres se comparan contra el escáner de ids, carácter por carácter. Desde el 2026-08-24 son **tres formas de objeto** y cubre los 39 `op` del catálogo: `install` y `run` conservan la regla de id, el resto recibe una clase que cubre rutas y nombres, y `nothing` es la abstención con palabra propia |
 | El prompt y el marcador | `crates/thalyx-agent/prompt.rs` | Aleatorio por invocación, así que la respuesta se localiza sin parsear el formato de `llama.cpp` |
 | `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Corrido entero contra hierro real en **tres gamas** (1.5B, 3B, 7B). `grammar-check` probó que la gramática restringe en media y alta; en ligera dijo `PROVEN` **sin control** —el brazo libre no dijo nada— y ahora exige que lo diga. `Truncated` distingue presupuesto agotado de regla violada |
 | La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |

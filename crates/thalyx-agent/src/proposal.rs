@@ -214,7 +214,7 @@ impl ProposedOperation {
     /// The contract the core carries this out under, when there is one.
     ///
     /// [`None`] for most of the catalogue, and that is not a gap. A contract is
-    /// the shape `vault/03-Contrato/Contrato-de-Intencion.md` gives to an
+    /// the shape `vault/04-Flujo-Canonico/Contrato-Estructurado.md` gives to an
     /// operation that **changes the machine and needs a human to say yes**:
     /// provenance on every field, a rendered confirmation, a journal entry, a
     /// way back. Asking what is in a directory is not that, and dressing it as
