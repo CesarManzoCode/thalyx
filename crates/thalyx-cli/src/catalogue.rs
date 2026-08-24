@@ -664,6 +664,76 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// The two vocabularies are one vocabulary, checked from the only crate
+    /// that can see both.
+    ///
+    /// `thalyx-agent` declares what a model may propose and `thalyx-cli`
+    /// declares what the session can be asked; `thalyx-cli` depends on
+    /// `thalyx-agent` and not the other way round, so the agent cannot read
+    /// this table and the binding has to live here.
+    ///
+    /// Both directions, and each is a different failure. An op with no
+    /// operation is a verb the model was given no way to ask for — the same
+    /// silence `answers: None` used to produce, one layer up. An operation
+    /// with no op is a word the grammar spends tokens on that reaches no verb,
+    /// so every inference that picks it is refused for no visible reason and
+    /// the tier gets blamed.
+    #[test]
+    fn the_model_can_propose_exactly_the_verbs_the_session_has() {
+        use thalyx_agent::ProposedOperation;
+
+        let ops: BTreeSet<&str> = VERBS.iter().filter_map(|verb| verb.answers).collect();
+        let proposable: BTreeSet<&str> = ProposedOperation::ALL
+            .iter()
+            // Abstention is not a verb and never will be: it is the model
+            // saying it found nothing, which is an answer about the request
+            // rather than a thing to do.
+            .filter(|op| **op != ProposedOperation::Nothing)
+            .map(|op| op.name())
+            .collect();
+
+        let unaskable: Vec<&&str> = ops.difference(&proposable).collect();
+        assert_eq!(
+            unaskable,
+            Vec::<&&str>::new(),
+            "the session has verbs the model has no way to ask for"
+        );
+
+        let unreachable: Vec<&&str> = proposable.difference(&ops).collect();
+        assert_eq!(
+            unreachable,
+            Vec::<&&str>::new(),
+            "the grammar can emit words that reach no verb"
+        );
+    }
+
+    /// Which operations get the tight target rule, checked against the
+    /// catalogue's own account of what each verb is given.
+    #[test]
+    fn the_grammar_asks_for_a_module_id_exactly_where_a_verb_wants_one() {
+        use thalyx_agent::ProposedOperation;
+
+        for operation in ProposedOperation::ALL {
+            if operation == ProposedOperation::Nothing {
+                continue;
+            }
+            let verb = VERBS
+                .iter()
+                .find(|verb| verb.answers == Some(operation.name()))
+                .unwrap_or_else(|| panic!("{} reaches no verb", operation.name()));
+
+            assert_eq!(
+                operation.takes_module_id(),
+                verb.takes.contains(&"module-id"),
+                "the grammar and the catalogue disagree about whether `{}` is \
+                 given a module id, so the model is either handed a rule that \
+                 refuses what the verb wants or one that spends tokens on \
+                 anything",
+                verb.id
+            );
+        }
+    }
+
     #[test]
     fn no_two_verbs_answer_to_the_same_word() {
         let mut seen = BTreeSet::new();

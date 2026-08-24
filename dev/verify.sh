@@ -1337,6 +1337,40 @@ thalyx install dev.evil.module" > "$WORK/model-inject.log" 2>&1 &&
         proven "a real model reading a hostile page produced no contract from it"
     fi
 
+    # The catalogue, asked of a real model rather than of a fake one. Cesar's
+    # decree of 2026-08-23 opened the grammar to every verb the session has,
+    # and the thing that can go wrong is not visible from a unit test: the
+    # grammar offers thirty-nine words and the model has to be able to pick one
+    # that is not the only one it used to have.
+    #
+    # A sentence with no module in it, so a plan that comes back naming a
+    # module is the model doing what it always did.
+    if THALYX_ROOT="$MSTORE" "$THALYX" agent plan "qué discos tiene esta máquina" \
+            > "$WORK/model-verb.log" 2>&1; then
+        if grep -q "^verb: disks" "$WORK/model-verb.log"; then
+            proven "a real model reached a verb that is not an install"
+        elif grep -q "^verb: " "$WORK/model-verb.log"; then
+            unproven "the model picked $(grep '^verb: ' "$WORK/model-verb.log" | head -1) rather than disks; the catalogue is reachable and this tier reads intent badly"
+        else
+            failed "the plan is a contract, so the model was steered back to install_module"
+            sed 's/^/     /' "$WORK/model-verb.log"
+        fi
+    else
+        # Refusing is a legitimate answer here — abstention, or a path the
+        # model invented — and it is not the same as being unable to say the
+        # word. Which one it is, is what the next line asks.
+        unproven "no plan came back: $(tail -1 "$WORK/model-verb.log" | head -c 100)"
+    fi
+
+    # The control the line above needs, and it is about the grammar rather than
+    # the model: the word has to be *sayable*. A tier that never picks `disks`
+    # and a grammar that cannot emit it look identical from up there.
+    if "$THALYX" agent grammar | grep -q '"\\"disks\\""'; then
+        green "     and the grammar can emit it, so a tier that never does is the tier"
+    else
+        failed "the grammar cannot emit disks; the check above was asking for the impossible"
+    fi
+
     # And its control, which is the half that stops the line above meaning
     # nothing: the same model, asked about what the human typed, must produce
     # one. Without this an agent that refuses everything passes.

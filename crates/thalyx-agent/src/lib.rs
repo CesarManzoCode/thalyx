@@ -97,15 +97,95 @@ pub enum AgentError {
     Contract(#[from] thalyx_contract::ContractError),
 }
 
-/// A contract, and the record of how it was arrived at.
+/// What the agent worked out, and the record of how it was arrived at.
 ///
-/// The path travels with the contract because "the rules produced this" and "a
-/// model produced this" are different claims about the same bytes, and the
-/// human confirming it is entitled to know which one they are looking at.
+/// The path travels with it because "the rules produced this" and "a model
+/// produced this" are different claims about the same bytes, and the human
+/// confirming it is entitled to know which one they are looking at.
+///
+/// ## Why there are two shapes
+///
+/// Until the catalogue was opened to the model there was one operation, so
+/// there was one shape: a [`Contract`]. Now there are thirty-nine, and most of
+/// them are not contracts. A contract is what
+/// `vault/03-Contrato/Contrato-de-Intencion.md` gives to an operation that
+/// changes the machine and needs a human to say yes — provenance on every
+/// field, a rendered confirmation, a journal entry, a way back. Asking what is
+/// on the disks is not that.
+///
+/// Collapsing the two would mean lying about one of them, and the lie was
+/// already written: [`assemble`] used to put `InstallModule` in the contract
+/// whatever the model had proposed, because there was nothing else to put. A
+/// model proposing `disks` would have produced a contract to install
+/// something, with the disk's name as its target.
+///
+/// Both shapes carry [`Origins`] and both are attributed identically. What a
+/// verb plan does not carry is a claim to be a contract.
 #[derive(Debug, Clone)]
-pub struct Plan {
-    pub contract: Contract,
-    pub path: Path,
+pub enum Plan {
+    /// One of the operations the core carries out under a contract.
+    Contracted { contract: Contract, path: Path },
+
+    /// A verb of the session, with its arguments attributed.
+    Verb {
+        operation: ProposedOperation,
+        targets: Vec<String>,
+        origins: thalyx_contract::Origins,
+        path: Path,
+    },
+}
+
+impl Plan {
+    /// Which path produced it.
+    pub fn path(&self) -> Path {
+        match self {
+            Plan::Contracted { path, .. } | Plan::Verb { path, .. } => *path,
+        }
+    }
+
+    /// The contract, for a caller that can only act on one.
+    ///
+    /// [`None`] is a complete answer here and not a failure to read: the plan
+    /// is a verb, and there is no contract to be had. A caller that needs to
+    /// tell the human why nothing happened has the operation to name.
+    pub fn contract(&self) -> Option<&Contract> {
+        match self {
+            Plan::Contracted { contract, .. } => Some(contract),
+            Plan::Verb { .. } => None,
+        }
+    }
+
+    /// The contract, taken rather than borrowed.
+    pub fn into_contract(self) -> Option<Contract> {
+        match self {
+            Plan::Contracted { contract, .. } => Some(contract),
+            Plan::Verb { .. } => None,
+        }
+    }
+
+    /// What it asks for, in the one vocabulary both shapes share.
+    pub fn operation(&self) -> &str {
+        match self {
+            Plan::Contracted { contract, .. } => contract.operation.name(),
+            Plan::Verb { operation, .. } => operation.name(),
+        }
+    }
+
+    /// What it acts on.
+    pub fn targets(&self) -> &[String] {
+        match self {
+            Plan::Contracted { contract, .. } => &contract.targets,
+            Plan::Verb { targets, .. } => targets,
+        }
+    }
+
+    /// Where each field came from.
+    pub fn origins(&self) -> &thalyx_contract::Origins {
+        match self {
+            Plan::Contracted { contract, .. } => &contract.origins,
+            Plan::Verb { origins, .. } => origins,
+        }
+    }
 }
 
 /// Translate what was said into a contract, asking the model only if needed.
@@ -122,7 +202,7 @@ pub fn plan(
     match router::route(transcript) {
         Route::Resolved { target, constraint } => {
             let proposal = Proposal {
-                operation: ProposedOperation::InstallModule,
+                operation: ProposedOperation::Install,
                 targets: vec![target],
                 constraint,
             };
@@ -161,9 +241,12 @@ mod tests {
         let plan = plan(&transcript, &NeverAsked, ForeignText::NeverActs, caller())
             .expect("the rules cover this");
 
-        assert_eq!(plan.path, Path::Rules);
-        assert_eq!(plan.contract.targets, ["dev.thalyx.demo"]);
-        assert_eq!(plan.contract.constraint.as_deref(), Some("^1.0"));
+        assert_eq!(plan.path(), Path::Rules);
+        assert_eq!(plan.targets(), ["dev.thalyx.demo"]);
+        assert_eq!(
+            plan.contract().and_then(|c| c.constraint.as_deref()),
+            Some("^1.0")
+        );
     }
 
     #[test]
@@ -194,7 +277,7 @@ mod tests {
             assert!(
                 outcome.is_err(),
                 "{behaviour:?} produced a contract: {:?}",
-                outcome.map(|p| p.contract.to_json())
+                outcome.map(|p| p.operation().to_string())
             );
         }
     }
@@ -212,8 +295,8 @@ mod tests {
         )
         .expect("the human is the sovereign; they may install what they name");
 
-        assert_eq!(plan.contract.targets, ["dev.evil.module"]);
-        assert_eq!(plan.path, Path::Rules);
+        assert_eq!(plan.targets(), ["dev.evil.module"]);
+        assert_eq!(plan.path(), Path::Rules);
     }
 
     #[test]
@@ -221,9 +304,10 @@ mod tests {
         let transcript = Transcript::new().with(Segment::typed("install dev.thalyx.demo"));
         let plan = plan(&transcript, &NeverAsked, ForeignText::NeverActs, caller()).unwrap();
 
-        let reparsed = Contract::parse(&plan.contract.to_json())
+        let contract = plan.contract().expect("an install is a contract");
+        let reparsed = Contract::parse(&contract.to_json())
             .expect("what the agent hands the core has to survive the trip");
-        assert_eq!(reparsed, plan.contract);
+        assert_eq!(&reparsed, contract);
     }
 
     #[test]
