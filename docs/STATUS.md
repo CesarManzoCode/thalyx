@@ -161,28 +161,38 @@ task with a grant that expires. Those are tracked in
 ## What has been proven, and where
 
 **Verified on real hardware.** `sudo ./dev/verify.sh`, on one machine with a BPF
-LSM, cgroup v2 and Btrfs. The sixth and most recent run, on **2026-08-23**,
-reported **134 proven, 2 not proven, 0 failed** — the first run in which nothing
-failed. The whole kernel side is proven: the LSM denies for real, a module runs
-confined, Thalyx attaches its own LSM with no `bpftool`, the module's channel
-survives the sandbox, and the mutation ring buffer is mapped and drained from a
-real kernel pin — four records read, and a second read with none of them left.
+LSM, cgroup v2 and Btrfs. The most recent run, on **2026-08-25**, reported
+**156 proven, 2 not proven, 0 failed**. The whole kernel side is proven: the LSM
+denies for real, a module runs confined, Thalyx attaches its own LSM with no
+`bpftool`, the module's channel survives the sandbox, and the mutation ring
+buffer is mapped and drained from a real kernel pin — four records read, and a
+second read with none of them left.
 
-**The count is lower than the fifth run's 143, and nothing regressed.** That
-machine had no kernel or image built (`image/build/` is not in the repository,
+**The run before it, on 2026-08-24, reported two failures, and they were one
+thing seen twice.** Both stages asked whether a confined module may put a thread
+of its own on an ordinary scheduling policy, and both asked with `chrt --other`
+— which on util-linux 2.41 makes that request through `sched_setattr`, a second
+door to the same capability that carries its argument behind a pointer where no
+seccomp filter can read it, and which Thalyx denies. The filter was doing
+exactly what it was decreed to do; the instrument was measuring the version of
+util-linux. The ordinary column now asks with `chrt --idle`, which no version
+sends through the closed door, and `--other` stays as a report — `strace` naming
+which of the two calls this machine's `chrt` used — so the cost of the closed
+door is measured on the machine that pays it rather than assumed.
+
+**A count that moves is not a score.** The run before those reported 134 on a
+machine with no kernel or image built (`image/build/` is not in the repository,
 so it does not survive a clean), which contracts the thirteen checks of the boot
-stage into a single `NOT PROVEN` line. The totals reconcile exactly once that
-stage and the one check added since are accounted for. The rule the project took
-from it is that a marker and the `NOT PROVEN` lines below it are one result: a
-count that drops is not a regression until you know what stopped running, and
-the number does not say — the list under it does. `make -C image` brings those
-thirteen back.
+stage into a single `NOT PROVEN` line. The rule the project took from it is that
+a marker and the `NOT PROVEN` lines below it are one result: a count that drops
+is not a regression until you know what stopped running, and the number does not
+say — the list under it does. `make -C image` brings those thirteen back.
 
-The fifth run's one failure was the harness, not Thalyx, and it is the ninth
-instance of the project's fifth testing rule. Two tests in `llama.rs` failed
-with `ETXTBSY`: the kernel refusing to execute a file another thread still had
-open for writing,
-through the window between `fork` and `exec`. It had failed once a year earlier,
+Before that one, the run that reported 143 failed once, and the failure was the
+harness rather than Thalyx — the ninth instance of the project's fifth testing
+rule. Two tests in `llama.rs` failed with `ETXTBSY`: the kernel refusing to
+execute a file another thread still had open for writing, through the window
+between `fork` and `exec`. It had failed once a year earlier,
 been "fixed" by a guess that said it was a guess, and only became a diagnosis
 when a twelve-core machine failed it twice in one run. The retry lives in the
 harness and deliberately not in production code, next to a test that reproduces

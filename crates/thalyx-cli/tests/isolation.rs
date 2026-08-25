@@ -835,50 +835,15 @@ fn a_write_grant_on_someone_elses_directory_works_through_an_idmapped_mount() {
         target.path().display()
     ));
 
-    let rootfs = thalyx_sandbox::RootFs::for_module_as(
-        module.dir(),
-        &[grant(target.path(), "write")],
-        Some(thalyx_core::uids::FIRST_UID),
-    );
-
-    let rootfs = match rootfs {
-        Ok(rootfs) => rootfs,
-        Err(error) => panic!("{error}"),
-    };
-
-    let spec = thalyx_sandbox::LaunchSpec {
-        cgroup: arena.0.join("org.thalyx.demo"),
-        profile: profile::MODULE_STANDARD.to_string(),
-        namespaces: standard(),
-        rootfs: Some(rootfs),
-        program: module.program(),
-        uid: Some(thalyx_core::uids::FIRST_UID),
-        channel_fd: None,
-    };
-
-    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .args(
-            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
-                .expect("argv"),
-        )
-        .output()
-        .expect("launch");
-
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    // Keyed on what the kernel refusing actually says, and nothing else. A
-    // looser match caught the helper's own goodbye and reported NOT PROVEN for
-    // a run that had worked.
-    if stderr.contains("the kernel refused to remap") {
-        eprintln!("NOT PROVEN: this kernel or filesystem refused the idmapped mount.");
-        eprintln!("  {}", stderr.trim());
-        eprintln!("  This test did not run. It did not pass.");
-        assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
-            "{stderr}"
-        );
+    let output = remapped(&arena, &module, &[grant(target.path(), "write")]).expect("launch");
+    if remap_refused(
+        &output,
+        "a write onto someone else's directory went unchecked",
+    ) {
         return;
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "{stderr}");
     assert_eq!(stdout(&output), "wrote");
 
@@ -916,12 +881,37 @@ fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
         dir = target.path().display()
     ));
 
+    let output = remapped(&arena, &module, &[grant(target.path(), "read")]).expect("launch");
+    if remap_refused(&output, "a read of a private directory went unchecked") {
+        return;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    let seen = stdout(&output);
+    assert!(seen.contains("granted content"), "{seen}");
+    assert!(seen.contains("read-only"), "{seen}");
+    assert!(!target.path().join("more").exists());
+}
+
+/// Launch a module in a root remapped to its own uid, and hand back what it said.
+///
+/// Extracted when this became the third copy of the same eight lines. It is
+/// `create_target_like`'s lesson one crate over: two pieces of code that must
+/// agree about the same kernel protocol, kept apart, stop agreeing — and here
+/// the protocol is which uid the root was built for, which has to be the same
+/// uid the launch runs as or the remapping proves nothing.
+fn remapped(
+    arena: &Arena,
+    module: &Module,
+    grants: &[thalyx_manifest::Permission],
+) -> std::io::Result<Output> {
     let rootfs = thalyx_sandbox::RootFs::for_module_as(
         module.dir(),
-        &[grant(target.path(), "read")],
+        grants,
         Some(thalyx_core::uids::FIRST_UID),
     )
-    .expect("rootfs");
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
 
     let spec = thalyx_sandbox::LaunchSpec {
         cgroup: arena.0.join("org.thalyx.demo"),
@@ -933,27 +923,128 @@ fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
         channel_fd: None,
     };
 
-    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+    Command::new(env!("CARGO_BIN_EXE_thalyx"))
         .args(
             thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
-                .expect("argv"),
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
         )
         .output()
-        .expect("launch");
+}
 
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stderr.contains("the kernel refused to remap") {
-        eprintln!("NOT PROVEN: idmapped mounts refused here. This test did not pass.");
-        assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
-            "{stderr}"
-        );
+/// Whether this kernel or filesystem turned the remapping down.
+///
+/// Keyed on what the refusal actually says, and nothing else. A looser match
+/// caught the helper's own goodbye and reported `NOT PROVEN` for a run that had
+/// worked — the eleventh time the instrument was the thing that was wrong.
+fn remap_refused(output: &Output, what: &str) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.contains("the kernel refused to remap") {
+        return false;
+    }
+
+    eprintln!("NOT PROVEN: this kernel or filesystem refused the idmapped mount, so {what}");
+    eprintln!("  {}", stderr.trim());
+    eprintln!("  This test did not run. It did not pass.");
+    assert!(
+        std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+        "{stderr}"
+    );
+    true
+}
+
+#[test]
+fn a_write_grant_on_a_single_file_lands_through_the_remapped_mount() {
+    // The shape every other grant in this file happened not to have. On
+    // 2026-08-04 a granted path that named one file — the greeter's
+    // `notes.txt` — got a directory for its mount point, and the remapped bind
+    // died at its last syscall with `EINVAL` on the machine's own console,
+    // while this suite was green: every permission in every test here was a
+    // directory, so the kernel rule that a bind's target must be the same kind
+    // as its source was never asked about.
+    //
+    // `create_target_like` has held that rule in one place since, and a unit
+    // test covers it without mounting anything. This is the same claim made
+    // where it broke — a real remapped root, a real bind, one real file.
+    let Some(arena) = arena("idmap-file") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let home = tempfile::tempdir().unwrap();
+    let note = home.path().join("notes.txt");
+    std::fs::write(&note, "what was already there\n").unwrap();
+    set_mode(&note, 0o600); // the human's file, and nobody else's
+
+    let module = Module::with(&format!(
+        "cat {note}; echo 'and what the module added' >> {note} 2>/dev/null \
+         && echo appended || echo DENIED",
+        note = note.display()
+    ));
+
+    let output = remapped(&arena, &module, &[grant(&note, "write")]).expect("launch");
+    if remap_refused(&output, "a granted file was never bound") {
         return;
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "{stderr}");
+
     let seen = stdout(&output);
-    assert!(seen.contains("granted content"), "{seen}");
-    assert!(seen.contains("read-only"), "{seen}");
-    assert!(!target.path().join("more").exists());
+    assert!(
+        seen.contains("what was already there"),
+        "the granted file was not readable inside: {seen}"
+    );
+    assert!(seen.contains("appended"), "the write was refused: {seen}");
+
+    // And on the host it is the same file, not a copy and not a directory with
+    // something in it: the bind has to have landed on the file itself.
+    let after = std::fs::read_to_string(&note).unwrap();
+    assert_eq!(after, "what was already there\nand what the module added\n");
+
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        std::fs::metadata(&note).unwrap().uid(),
+        current_uid(),
+        "the file changed hands; the module's user does not exist outside Thalyx"
+    );
+}
+
+#[test]
+fn a_granted_file_does_not_bring_the_directory_it_lives_in() {
+    // The control for the one above. Without it, "the granted file is
+    // reachable" would also be true of a sandbox that bound its whole
+    // directory — which is the obvious way to make a file grant work and the
+    // one that hands over everything beside it.
+    let Some(arena) = arena("idmap-file-only") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let home = tempfile::tempdir().unwrap();
+    let note = home.path().join("notes.txt");
+    std::fs::write(&note, "granted\n").unwrap();
+    std::fs::write(home.path().join("private.txt"), "never granted\n").unwrap();
+
+    let module = Module::with(&format!(
+        "cat {note}; [ -e {other} ] && echo REACHABLE || echo absent",
+        note = note.display(),
+        other = home.path().join("private.txt").display()
+    ));
+
+    let output = remapped(&arena, &module, &[grant(&note, "read")]).expect("launch");
+    if remap_refused(&output, "the neighbour of a granted file went unchecked") {
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let seen = stdout(&output);
+    assert!(seen.contains("granted"), "{seen}");
+    assert!(
+        seen.contains("absent"),
+        "the file's neighbour came along with it: {seen}"
+    );
 }

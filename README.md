@@ -108,18 +108,19 @@ in **[docs/STATUS.md](docs/STATUS.md)**.
 its own firmware, used HDMI and a real xHCI keyboard, listed its disks,
 installed itself onto a second disk, and booted again without the installation
 medium. That closed Phase 1. The most recent run of `verify.sh` on that machine,
-on 2026-08-23, reported **134 proven, 2 not proven, 0 failed** — the first run
-with nothing failing. The kernel side is proven: the LSM denies a real network
-connection to a process that lacks the permission and only to that process, a
-module runs confined, Thalyx attaches its own LSM with no `bpftool`, the kernel
-mounts a Btrfs filesystem Thalyx wrote byte by byte with no `mkfs.btrfs`, and
-the mutation ring buffer is mapped and drained from a real kernel pin.
+on 2026-08-25, reported **156 proven, 2 not proven, 0 failed**. The kernel side
+is proven: the LSM denies a real network connection to a process that lacks the
+permission and only to that process, a module runs confined, Thalyx attaches its
+own LSM with no `bpftool`, the kernel mounts a Btrfs filesystem Thalyx wrote
+byte by byte with no `mkfs.btrfs`, and the mutation ring buffer is mapped and
+drained from a real kernel pin.
 
-The count is lower than the 143 of the run before it and nothing regressed: that
-machine had no kernel built, so the stage that boots the machine in QEMU —
-thirteen checks — contracted into one of the two `NOT PROVEN` lines. A marker
-and the lines under it are one result; see
-[docs/STATUS.md](docs/STATUS.md).
+What that number is not is a score. A count that moves says nothing until you
+know which checks ran: the run before it reported 134 on a machine with no
+kernel built, where the stage that boots it in QEMU — thirteen checks —
+contracted into a single `NOT PROVEN` line. A marker and the lines under it are
+one result, and the two lines this run could not establish are named in its own
+summary rather than here. See [docs/STATUS.md](docs/STATUS.md).
 
 **Built and covered by over 1,300 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
