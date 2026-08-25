@@ -94,10 +94,22 @@ fn parse(rest: &str) -> Result<Asked, Refusal> {
                 .display()
                 .to_string(),
             action: action.to_string(),
-            // Never `Persistent`. A grant made on one line lives as long as the
-            // process does; anything that outlived it would be a permission
-            // nobody could later find to withdraw. See `Programas-Ajenos.md`.
-            kind: PermissionKind::Jit,
+            // Lives as long as the run, which is what this was always meant
+            // to say. `Persistent` would be a permission nobody could later
+            // find to withdraw — it is attached to a path, not to anything the
+            // store knows the name of — and `Jit` was worse in the other
+            // direction: it carries a deadline the kernel enforces, thirty
+            // seconds by default, and a policy is a single entry with a single
+            // deadline. So a guest that named a path lost *everything* half a
+            // minute in, the read floor included, and died on its next open.
+            //
+            // Cesar decided on 2026-08-25 that a guest's grant lasts the run.
+            // `release()` withdraws it when the process exits and takes the
+            // cgroup with it. What that gives up is named rather than hidden:
+            // the thirty seconds were also the kernel's backstop against a
+            // Thalyx that hung and never reached `release()`. See
+            // `Programas-Ajenos.md`.
+            kind: PermissionKind::Session,
         });
         index += 2;
     }
@@ -438,12 +450,25 @@ mod tests {
     }
 
     #[test]
-    fn no_grant_lives_longer_than_the_run() {
-        // A persistent grant here would be a permission nobody could later find
-        // to withdraw: it is attached to a path, not to anything the store
-        // knows the name of.
+    fn a_grant_lasts_the_run_and_neither_longer_nor_shorter() {
+        // Two failures on either side of one line. `Persistent` would be a
+        // permission nobody could later find to withdraw. `Jit` — which this
+        // was until 2026-08-25, under a comment claiming it meant "as long as
+        // the run" — carries a deadline the kernel enforces, so the run was
+        // capped at thirty seconds instead.
         let asked = parse("leyendo /a tool").unwrap();
-        assert_eq!(asked.grants[0].kind, PermissionKind::Jit);
+        assert_ne!(asked.grants[0].kind, PermissionKind::Persistent);
+
+        // The claim, asked of the thing that decides it rather than of the
+        // label. A kind whose name sounds right and still produced a deadline
+        // is exactly what was here before.
+        let policy =
+            thalyx_permd::policy_for(&asked.grants, 1_000, thalyx_permd::DEFAULT_JIT_LIFETIME_NS)
+                .expect("a grant on a path is expressible");
+        assert_eq!(
+            policy.expires_ns, 0,
+            "the kernel would take this grant away while the program was still running"
+        );
     }
 
     #[test]

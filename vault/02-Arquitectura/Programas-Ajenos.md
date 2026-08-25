@@ -225,12 +225,37 @@ el sistema de archivos entero del anfitrión dentro del sandbox, que es lo
 contrario de lo que hace. Aplica a módulos igual que a invitados — un módulo sin
 permiso de lectura tampoco podía abrir su propio binario.
 
-**Lo que esto dejó ver, y no se cerró.** Una entrada de política tiene **una**
-fecha de vencimiento, y las concesiones de `ejecutar` son JIT: treinta segundos.
-Pasados, expira la entrada entera, el piso incluido. `ejecutar` sin concesiones
-no vence —no hay ninguna JIT—, pero **`ejecutar leyendo <ruta> …` no puede correr
-más de treinta segundos**, y la vara del proyecto es un agente que corre minutos.
-Está en [[Tareas-Pendientes]] y es una decisión de Cesar, no un arreglo.
+### 2026-08-25 — una concesión a un invitado dura la corrida
+
+**Lo que el piso dejó ver.** Una entrada de política tiene **una** fecha de
+vencimiento, y las concesiones de `ejecutar` eran JIT: treinta segundos. Pasados,
+expiraba la entrada entera —el piso de lectura incluido—, así que
+`ejecutar leyendo <ruta> …` no podía correr más de medio minuto y moría en su
+siguiente apertura de archivo. La vara del proyecto es un agente que corre
+minutos.
+
+Lo irónico es que el comentario que estaba encima de esa línea ya decía lo
+correcto: *«una concesión hecha en una línea vive lo que vive el proceso»*. El
+tipo elegido para lograrlo hacía lo contrario.
+
+**Decidido por Cesar el 2026-08-25: la concesión dura la corrida.** El tipo es
+`Session`, que no lleva plazo, y `release()` la retira cuando el proceso sale y
+se lleva el cgroup con ella.
+
+**Lo que se cede, dicho y no escondido.** Los treinta segundos eran también el
+respaldo del kernel contra un Thalyx que se cuelga y nunca llama a `release()`.
+Sin ellos, ese caso deja una política viva sobre un cgroup vacío. Lo acota que
+el nombre del cgroup es determinista —la siguiente corrida del mismo programa lo
+reutiliza y sobrescribe la entrada— y que `thalyx enforce status` lo muestra.
+
+`Persistent` sigue estando prohibido aquí, por lo de siempre: sería un permiso
+que nadie podría encontrar después para retirarlo, porque está pegado a una ruta
+y no a nada cuyo nombre conozca el store.
+
+**Cómo se comprueba.** En la etapa 36, con un invitado que duerme **35 segundos**
+y luego lee lo que se le concedió. Es la única forma que distingue las dos
+respuestas: la corrida tiene que ser más larga que el plazo que ya no debe
+existir. Cuesta 35 segundos de reloj en cada `verify.sh` y los vale.
 
 ## Relacionado
 - [[Superficie-para-el-LLM]]

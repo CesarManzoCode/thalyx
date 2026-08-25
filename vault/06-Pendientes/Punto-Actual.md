@@ -69,14 +69,24 @@ tags: [continuidad, punto-actual, sesiones]
 > misma frase, y esa frase era toda la evidencia de un fallo cuyas dos causas
 > candidatas necesitaban arreglos opuestos.
 >
-> ### Lo que abrió, y es tuyo
+> ### Lo que abrió, y Cesar cerró el mismo día
 >
 > Una entrada de política tiene **una** fecha de vencimiento, y las concesiones
-> de `ejecutar` son JIT: **treinta segundos**. Pasados, expira la entrada
-> entera, el piso incluido. Sin concesiones no vence — por eso `node --version`
-> sirve. Pero **`ejecutar leyendo <ruta> …` no puede correr más de medio
-> minuto**, y la vara es un agente que corre minutos. Está en
-> [[Tareas-Pendientes]] y es una decisión, no un arreglo.
+> de `ejecutar` eran JIT: **treinta segundos**. Pasados, expiraba la entrada
+> entera, el piso incluido — así que `ejecutar leyendo <ruta> …` no podía correr
+> más de medio minuto, y la vara es un agente que corre minutos. El comentario
+> encima de esa línea ya decía lo correcto —*«vive lo que vive el proceso»*—; el
+> tipo elegido hacía lo contrario.
+>
+> **Cesar decidió: la concesión dura la corrida.** Tipo `Session`, sin plazo, y
+> `release()` la retira al salir. Lo que se cede está dicho: los treinta
+> segundos eran también el respaldo del kernel contra un Thalyx colgado que
+> nunca llegue a `release()`; lo acota que el nombre del cgroup es determinista,
+> así que la siguiente corrida del mismo programa sobrescribe la entrada.
+>
+> Se comprueba en la etapa 36 con un invitado que **duerme 35 segundos** y
+> después lee lo concedido. Es la única forma que distingue las dos respuestas:
+> la corrida tiene que ser más larga que el plazo que ya no debe existir.
 
 > ## Lo primero que `ejecutar` dijo en su máquina encontró un hueco — 2026-08-25
 >

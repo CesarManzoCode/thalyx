@@ -5103,6 +5103,20 @@ echo "a guest with nothing granted ran"
 BARE
 chmod +x "$EXEC_HOME/bare"
 
+# A guest that outlives the deadline a JIT grant used to carry. Thirty-five
+# seconds, deliberately: `DEFAULT_JIT_LIFETIME_NS` is thirty, and until
+# 2026-08-25 every grant `ejecutar` made was JIT — so a guest that named a path
+# lost the grant, the read floor and its own next file open half a minute in.
+# Cesar decided a guest's grant lasts the run, and this is the only shape of
+# check that can tell the two apart: the run has to be longer than the deadline
+# that is not supposed to be there any more.
+cat > "$EXEC_HOME/endure" <<ENDURE
+#!/bin/sh
+sleep 35
+cat $EXEC_GRANTED/note
+ENDURE
+chmod +x "$EXEC_HOME/endure"
+
 # --- the outside column, before anything is confined ----------------------
 #
 # The same script, unconfined, on this machine. It must see both, or the run
@@ -5253,6 +5267,21 @@ if [ "$EXEC_FLIPPED" = 1 ]; then
         failed "a guest granted nothing could not read its own cgroup back; see $WORK/exec-bare.log"
     else
         failed "a guest granted nothing did not run; see $WORK/exec-bare.log"
+    fi
+fi
+
+# --- a grant lasts the run, not thirty seconds -----------------------------
+#
+# Costs thirty-five seconds of wall clock on every run, and is worth them: the
+# project's bar is a foreign agent working here, an agent runs for minutes, and
+# a policy that expired underneath it would look like the agent crashing.
+if [ "$EXEC_FLIPPED" = 1 ]; then
+    at_the_guest_prompt "ejecutar leyendo $EXEC_GRANTED $EXEC_HOME/endure" y salir \
+        > "$WORK/exec-endure.log" 2>&1
+    if grep -q "granted content" "$WORK/exec-endure.log"; then
+        proven "a guest still holds what it was granted after 35s, past the old 30s deadline"
+    else
+        failed "a guest lost its grant while it was still running; see $WORK/exec-endure.log"
     fi
 fi
 
