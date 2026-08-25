@@ -217,6 +217,12 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         if available { "present" } else { "NOT PRESENT" }
     );
 
+    // Attached and enforcing are two questions. Printing only the first is
+    // what let a machine in observe mode read as armed for three weeks.
+    if available {
+        println!("mode:              {}", kernel.enforcement().describe());
+    }
+
     let registry = Registry::load(store.permissions_path())?;
     let installed = store.installed()?;
 
@@ -236,6 +242,14 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         println!();
         println!("  make -C lsm load     attach the enforcement programs");
         return Ok(());
+    }
+
+    if kernel.enforcement() != thalyx_permd::Enforcement::Enforcing {
+        println!("The kernel side is attached and is not denying anything.");
+        println!("Every policy below is written into a map nothing acts on.");
+        println!();
+        println!("  make -C lsm enforce  start denying");
+        println!();
     }
 
     if recorded > 0 {

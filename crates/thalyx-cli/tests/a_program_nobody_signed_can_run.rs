@@ -118,6 +118,93 @@ fn a_machine_with_nothing_to_enforce_refuses_rather_than_running_it_anyway() {
 }
 
 #[test]
+fn a_kernel_that_is_only_watching_does_not_get_to_run_a_guest() {
+    // `make -C lsm load` lands in observe mode on purpose, so this is the
+    // state a machine is in right after the human does the thing the previous
+    // refusal told them to do. Until 2026-08-25 the run went ahead there: the
+    // policy map opened, `is_available()` said yes, and every denial the guest
+    // earned would have been written to a log and not applied.
+    let (_root, store) = store();
+    let guest = Guest::saying("echo I should never have run");
+    let program = guest.program();
+
+    let watching = thalyx_permd::MemoryStore::observing();
+    let error = thalyx_core::run_foreign(&store, &watching, request(&program, Vec::new()))
+        .expect_err("a kernel that denies nothing must not run an unsigned program");
+
+    let said = error.to_string();
+    assert!(said.contains("only observing"), "{said}");
+    // The remedy has to be the one that fixes *this*. Sending the human back
+    // to `make -C lsm load` is what the other refusal says, and following it
+    // here would leave them exactly where they started.
+    assert!(said.contains("make -C lsm enforce"), "{said}");
+    assert!(!said.contains("--unconfined"), "{said}");
+}
+
+#[test]
+fn a_kernel_whose_mode_could_not_be_read_does_not_get_to_run_a_guest() {
+    // Rules 9 and 10 together: an unread answer is not a "no", and it is
+    // certainly not a "yes". The dangerous default here is the fast one.
+    let (_root, store) = store();
+    let guest = Guest::saying("echo I should never have run");
+    let program = guest.program();
+
+    let mute = thalyx_permd::MemoryStore::mode_unreadable("the pin is something else");
+    let error = thalyx_core::run_foreign(&store, &mute, request(&program, Vec::new()))
+        .expect_err("an unread mode must not be taken for enforcement");
+
+    let said = error.to_string();
+    assert!(said.contains("could not be read"), "{said}");
+    // What went wrong, carried through rather than flattened into "failed".
+    assert!(said.contains("the pin is something else"), "{said}");
+}
+
+#[test]
+fn an_enforcing_kernel_is_never_refused_for_its_mode() {
+    // Rule 4's control column, and it runs on every machine. Without it, a
+    // mode check that refused unconditionally would pass both tests above and
+    // look exactly like one that works — while `ejecutar` had quietly stopped
+    // being able to run anything at all.
+    //
+    // This does not assert the run succeeds: on a machine with no delegated
+    // controllers it cannot. It asserts the refusal, whatever it is, is not
+    // about the mode.
+    let (_root, store) = store();
+    let guest = Guest::saying("echo hello");
+    let program = guest.program();
+
+    let enforcing = thalyx_permd::MemoryStore::new();
+    if let Err(error) = thalyx_core::run_foreign(&store, &enforcing, request(&program, Vec::new()))
+    {
+        let said = error.to_string();
+        assert!(!said.contains("only observing"), "{said}");
+        assert!(!said.contains("could not be read"), "{said}");
+    }
+}
+
+#[test]
+fn the_refusal_a_human_reads_never_counts_zero_of_anything() {
+    // The sentence Cesar was handed the first time he ran the verb:
+    // «none of the 0 thing(s) this was granted would be enforced». A run with
+    // no grants is the ordinary case — it is what `ejecutar <ruta>` with no
+    // words after it does — so the ordinary case was the broken one.
+    let (_root, store) = store();
+    let guest = Guest::saying("echo nothing");
+    let program = guest.program();
+
+    let nothing = thalyx_permd::MemoryStore::unavailable();
+    let error = thalyx_core::run_foreign(&store, &nothing, request(&program, Vec::new()))
+        .expect_err("a machine that can enforce nothing must not run an unsigned program");
+
+    let said = error.to_string();
+    assert!(!said.contains(" 0 "), "{said}");
+    assert!(!said.contains("thing(s)"), "{said}");
+    // And it still says what is wrong and what fixes it.
+    assert!(said.contains("policy map is not loaded"), "{said}");
+    assert!(said.contains("make -C lsm load"), "{said}");
+}
+
+#[test]
 fn a_refused_run_is_in_the_journal_and_is_not_called_a_module() {
     // `Marcado-de-Origen` at this layer: what a program nobody signed did has
     // to be separable from what Thalyx did by reading the record, not by

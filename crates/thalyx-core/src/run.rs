@@ -76,6 +76,15 @@ pub struct RunOutcome {
     pub isolation: Option<String>,
     /// Whether the profile in force actually isolated anything.
     pub isolated: bool,
+    /// Whether the kernel side was denying or only watching while it ran.
+    /// `None` when the module ran unconfined, where the question does not
+    /// arise.
+    ///
+    /// Carried rather than assumed, because `make -C lsm load` lands in
+    /// observe mode and a run under an observing kernel is a run nobody could
+    /// tell apart from a confined one — which is the failure the journal block
+    /// below has a comment about.
+    pub enforcement: Option<thalyx_permd::Enforcement>,
     pub permissions: Vec<thalyx_manifest::Permission>,
     /// The user the module ran as. `None` when it ran as Thalyx itself.
     pub uid: Option<u32>,
@@ -237,6 +246,9 @@ pub fn run(
             if let Some(isolation) = &outcome.isolation {
                 notes.push(isolation.clone());
             }
+            if let Some(enforcement) = &outcome.enforcement {
+                notes.push(format!("kernel enforcement: {}", enforcement.describe()));
+            }
 
             journal.append(&Entry {
                 timestamp: thalyx_journal::now(),
@@ -249,12 +261,35 @@ pub fn run(
                 // profile promised. Anything less is degraded and says so —
                 // a run nobody can tell apart from a confined one is the
                 // failure this project keeps arranging against.
-                outcome: match (outcome.confined(), outcome.isolated) {
-                    (true, true) => Outcome::Success,
-                    (true, false) => Outcome::Degraded {
+                outcome: match (
+                    outcome.confined(),
+                    outcome.enforcement.clone(),
+                    outcome.isolated,
+                ) {
+                    (true, Some(thalyx_permd::Enforcement::Enforcing), true) => Outcome::Success,
+                    // Ahead of the isolation clause below: a kernel that
+                    // denies nothing is the larger of the two gaps, and a
+                    // journal that named only the smaller one would be
+                    // describing the wrong run.
+                    (true, Some(thalyx_permd::Enforcement::Observing), _) => Outcome::Degraded {
+                        reason: "the kernel side was attached but only observing: the policy was \
+                                 written and no denial would have been applied"
+                            .to_string(),
+                    },
+                    (true, Some(thalyx_permd::Enforcement::Unreadable(reason)), _) => {
+                        Outcome::Degraded {
+                            reason: format!(
+                                "whether the kernel was enforcing could not be read — {reason}"
+                            ),
+                        }
+                    }
+                    (true, _, false) => Outcome::Degraded {
                         reason: "ran under a profile that isolates nothing".to_string(),
                     },
-                    (false, _) => Outcome::Degraded {
+                    (true, None, true) => Outcome::Degraded {
+                        reason: "confined, but the kernel's mode was never read".to_string(),
+                    },
+                    (false, _, _) => Outcome::Degraded {
                         reason: "ran without kernel enforcement".to_string(),
                     },
                 },
@@ -354,6 +389,16 @@ fn run_inner(
             permissions: permissions.len(),
         });
     }
+
+    // Read once, here, rather than after the run: the answer has to be about
+    // the kernel the module ran under, and `make -C lsm enforce` in another
+    // terminal halfway through would otherwise have the journal describe a run
+    // that never happened.
+    //
+    // Unlike a guest, a module is allowed to run under an observing kernel —
+    // somebody signed it and a human read its manifest — but the run is
+    // degraded and says so. See `run_foreign`, which refuses instead.
+    let enforcement = policies.enforcement();
 
     // The user this module runs as, assigned once and kept forever.
     //
@@ -465,6 +510,7 @@ fn run_inner(
         policy: Some(policy),
         isolation: Some(isolation),
         isolated,
+        enforcement: Some(enforcement),
         uid,
         permissions,
         exit_code: status.code(),
@@ -546,6 +592,7 @@ fn run_unconfined(
         policy: None,
         isolation: None,
         isolated: false,
+        enforcement: None,
         uid: None,
         permissions,
         exit_code: status.code(),

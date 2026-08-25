@@ -222,6 +222,21 @@ needs the LSM attached and is `NOT PROVEN` until the next run on hardware — an
 the `NOT PROVEN` line says one true thing besides: the refusal comes from the
 core, which is only reached after the `y` was read and accepted.
 
+**Attached is not enforcing — fixed 2026-08-25.** The first real run of
+`ejecutar` refused with "the kernel policy map is not loaded", correctly, and
+pointed at `make -C lsm load`. That target lands in observe mode deliberately,
+so the remedy left the machine in the one state where the verb *would* have
+launched a guest under a kernel that denies nothing. The cause was a question
+that answers itself: `is_available()` asks whether the policy map opens, and
+every caller read it as "the kernel is enforcing". The mode lives in a second
+map, `thalyx_enforcing`, which nothing in Rust had ever read — only the Makefile
+did, through `bpftool`. A guest is now refused while the kernel only observes; a
+module still runs there, but the report warns and the journal records the run as
+degraded; `thalyx enforce status` prints the mode; and stage 36 switches
+enforcement on for its own run and puts it back. No test caught this because the
+fake had no state for it: `MemoryStore` could not represent "loaded and denying
+nothing", so neither a test nor its control could name the failure. It can now.
+
 **Still unproven, and named as such by the run itself.** `verify.sh`'s summary
 is the authority on this, not a count written down here: whatever it could not
 exercise on the day it ran comes back as `NOT PROVEN`, with the reason, and is

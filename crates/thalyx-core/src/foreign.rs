@@ -220,6 +220,30 @@ fn run_inner(
         });
     }
 
+    // And then whether what is loaded is denying. `make -C lsm load` lands in
+    // observe mode deliberately, so "the map opens" and "a denial is real" are
+    // two questions, and until 2026-08-25 only the first one was ever asked.
+    //
+    // A module may run under an observing kernel — degraded, and the journal
+    // says so, because somebody signed it and a human read its manifest. A
+    // guest may not: the whole of what stands behind it is the confinement,
+    // and `vault/02-Arquitectura/Programas-Ajenos.md` decrees no degraded mode
+    // for a program nobody signed.
+    match policies.enforcement() {
+        thalyx_permd::Enforcement::Enforcing => {}
+        thalyx_permd::Enforcement::Observing => {
+            return Err(CoreError::ObservingNotEnforcing {
+                program: program.clone(),
+            });
+        }
+        thalyx_permd::Enforcement::Unreadable(reason) => {
+            return Err(CoreError::EnforcementModeUnreadable {
+                program: program.clone(),
+                reason,
+            });
+        }
+    }
+
     // Its own user, keyed on the path rather than on an id it does not have.
     //
     // Assigned under the global lock and only for as long as that takes — two

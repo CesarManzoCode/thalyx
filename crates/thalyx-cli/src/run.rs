@@ -90,6 +90,15 @@ pub fn run(asked: Asked<'_>) -> Fallible {
             if outcome.permissions.is_empty() {
                 println!("    (no permissions; every guarded operation is denied)");
             }
+            match &outcome.enforcement {
+                Some(thalyx_permd::Enforcement::Enforcing) | None => {}
+                Some(mode) => {
+                    println!();
+                    println!("  WARNING: the kernel side is {}.", mode.describe());
+                    println!("  The policy above was written and nothing applied it. Make it");
+                    println!("  binding with `make -C lsm enforce`.");
+                }
+            }
             if !outcome.isolated {
                 println!();
                 println!("  WARNING: this profile isolates nothing beyond the cgroup.");
@@ -244,6 +253,21 @@ fn say_it(outcome: &thalyx_core::run::RunOutcome) {
                 // degraded — so a caller must not have to derive it from the
                 // absence of a cgroup id.
                 ("confined", json!(outcome.cgroup_id.is_some())),
+                // Beside `confined`, and for its reason. A confined run under
+                // an observing kernel and a confined run under an enforcing
+                // one are the same JSON without this, and they are not the
+                // same run.
+                (
+                    "enforcing",
+                    json!(matches!(
+                        outcome.enforcement,
+                        Some(thalyx_permd::Enforcement::Enforcing)
+                    ))
+                ),
+                (
+                    "enforcement",
+                    json!(outcome.enforcement.as_ref().map(|mode| mode.describe()))
+                ),
                 ("cgroup_id", json!(outcome.cgroup_id)),
                 ("isolated", json!(outcome.isolated)),
                 ("isolation", json!(outcome.isolation)),
