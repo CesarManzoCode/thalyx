@@ -43,6 +43,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Core-Nucleo]] — el núcleo del sistema operativo
 - [[Core]] — el orquestador del flujo, y por qué es un solo proceso con módulos internos
 - [[Sistema-de-Modulos]] — el ecosistema de módulos `.thmod`
+- [[Programas-Ajenos]] — **`ejecutar`**: correr un programa que nadie firmó, confinado, y por qué eso no toca la firma
 - [[Formato-Manifiesto-Thmod]] — el schema del manifiesto
 - [[Agente-Conversacional]] — el traductor de intención
 - [[Gamas-de-Modelo]] — cuatro gamas que elige el usuario, y qué garantiza la gramática
