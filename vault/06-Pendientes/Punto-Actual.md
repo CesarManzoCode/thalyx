@@ -14,9 +14,92 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## G1: Thalyx ya puede correr un programa que nadie firmó — 2026-08-25
+> ## Lo primero que `ejecutar` dijo en su máquina encontró un hueco — 2026-08-25
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `ejecutar /usr/bin/node --version` en su Fedora, justo después de
+> `verify.sh`, y leyó:
+>
+> ```
+> refusing to run `/usr/bin/node-22`: the kernel policy map is not loaded, so
+> none of the 0 thing(s) this was granted would be enforced.
+>   Load it with `make -C lsm load`. Nobody signed this program, so there is no
+>   unconfined mode to fall back to.
+> ```
+>
+> La negativa era correcta: `verify.sh` desengancha el LSM al salir. Dos cosas
+> estaban mal de todos modos.
+>
+> ### La chica: la frase contaba cero
+>
+> «none of the 0 thing(s) this was granted» es el caso **ordinario** —
+> `ejecutar <ruta>` sin palabras después no concede nada—, así que el caso
+> ordinario era el roto. Ahora la cuenta es una cláusula que desaparece cuando
+> no hay nada que contar, y hay una prueba que falla si vuelve a aparecer un
+> cero.
+>
+> ### La grande: `make -C lsm load` no es lo que el mensaje creía
+>
+> El remedio que ese mensaje da deja la máquina en **modo observación** —
+> `make -C lsm load` aterriza ahí a propósito, para poder medir una política
+> antes de que ate. Los ganchos corren, cada negación se escribe en el anillo, y
+> **ninguna se aplica**.
+>
+> O sea: la única acción que el sistema le pedía a Cesar lo dejaba justo donde
+> `ejecutar` **sí** arrancaba al invitado y el kernel no le negaba nada.
+>
+> La causa: `is_available()` contesta *«¿se abre el mapa de políticas?»*, y todo
+> el que decidía si confinar lo leía como *«el kernel está negando»*. El modo
+> vive en otro mapa, `thalyx_enforcing`, que **nada en el lado de Rust había
+> leído nunca** — sólo el `Makefile`, con `bpftool`. `thalyx enforce status`
+> imprimía «kernel policy map: present» y se callaba.
+>
+> ### Qué se hizo
+>
+> | | módulo firmado | programa ajeno |
+> |---|---|---|
+> | mapa sin cargar | se niega, ofrece `sin-confinar` | **se niega**, no hay a qué caer |
+> | cargado, observando | **corre degradado, y el journal lo dice** | **se niega**: `make -C lsm enforce` |
+> | no se pudo leer el modo | corre degradado, y el journal lo dice | **se niega**: regla 9 |
+> | cargado, negando | corre | corre |
+>
+> La asimetría es la de [[Programas-Ajenos]] entera: a un módulo lo firmó
+> alguien y un humano leyó su manifiesto, así que un run degradado que el
+> journal nombra es auditable. Detrás de un invitado no hay nadie, y un
+> confinamiento que no niega no es un confinamiento.
+>
+> `thalyx enforce status` ahora dice el modo. La cara de máquina de `correr`
+> lleva `enforcing` al lado de `confined`, por la misma razón que `confined`
+> está ahí. El falso, `MemoryStore`, ganó los tres estados — porque el motivo de
+> que ninguna prueba agarrara esto es que **el modo de fallo no existía en el
+> falso**, y lo que no se puede nombrar no se puede probar.
+>
+> ### Qué está comprobado
+>
+> Aquí: 1384 pruebas en verde (siete nuevas), `clippy` y `fmt` limpios. Las tres
+> guardas nuevas se rompieron a propósito y cada mutación la agarró **la prueba
+> que le toca** — incluida la columna de control, que atrapó la versión que se
+> niega siempre y se vería idéntica a una que funciona.
+>
+> En su máquina, tres etapas nuevas de `verify.sh`: que `thalyx enforce status`
+> diga «observing» cuando el script lo dejó observando, que un módulo corrido
+> bajo un kernel que observa **lo diga**, y que un invitado sea rechazado ahí
+> mismo. Y la etapa 36 ahora **enciende el enforcement para su corrida real y lo
+> vuelve a dejar como estaba** — sin eso, la etapa entera reportaría una
+> negativa y la llamaría una máquina que no puede hacer cumplir nada.
+>
+> ### Lo que abrió
+>
+> Thalyx **lee** el modo sin `bpftool`. **Cambiarlo** todavía es
+> `make -C lsm enforce`, o sea `bpftool`, que la imagen no tiene: dentro de la
+> máquina no hay forma de pasar de observar a negar. Escrito en
+> [[Tareas-Pendientes]]; es una escritura de cuatro bytes en un mapa que ya se
+> abre.
+
+> ## G1: Thalyx ya puede correr un programa que nadie firmó — 2026-08-25
+>
+> Lo de arriba corrige un hueco que esto dejó abierto.
 >
 > Cesar delegó la forma —*«lo que veas conveniente que sea coherente con nuestra
 > filosofía»*— y ésta es la forma, con la coherencia escrita en
@@ -81,7 +164,7 @@ tags: [continuidad, punto-actual, sesiones]
 > cuatro necesitan los controladores `memory` y `pids` delegados y dicen
 > `NOT PROVEN` donde no los hay, con `THALYX_REQUIRE_CONTROLLER_TESTS`.
 >
-> **En tu máquina esas cuatro corren.** `cargo test --workspace`: 1377 en verde.
+> **En tu máquina esas cuatro corren.** `cargo test --workspace`: 1384 en verde.
 >
 > ### Lo que esto no hizo
 >

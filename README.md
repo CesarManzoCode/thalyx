@@ -149,6 +149,17 @@ no, the journal calling it `run_foreign`, the structured face declining to
 consent on a human's behalf. What a confined guest can *see* needs a machine
 with the LSM attached, and is `NOT PROVEN` until the next run there.
 
+The first thing that verb ever said on real hardware found a hole. "The kernel
+policy map is not loaded" was the right refusal, and the remedy it named —
+`make -C lsm load` — lands a machine in **observe mode**, where every hook runs,
+every denial is written to a ring, and none of them is applied. So the one
+action the system asked for left the machine in the state where a guest would
+have run and the kernel would have denied it nothing. `is_available()` answers
+"does the policy map open"; nothing on this side had ever read the map that says
+whether a denial is real. Now a guest is refused there too, a module runs but
+the journal calls it degraded, and `thalyx enforce status` says which mode the
+machine is in.
+
 **Not proven.** `thalyx_watch` — the filesystem watcher, ten BPF hooks against
 the LSM's two — has never been loaded by Thalyx's own loader; `bpftool` still
 loads it, and *likely the same loader works* is not *proven*. An internal disk

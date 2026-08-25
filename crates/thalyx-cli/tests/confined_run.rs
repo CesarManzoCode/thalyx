@@ -164,10 +164,19 @@ fn running_without_the_kernel_side_is_refused_rather_than_silently_unenforced() 
 
     let status = fixture.run(&["module", "run", Fixture::MODULE_ID]);
     assert!(!status.success());
+    // Two substrings, both load-bearing: what is wrong, and what fixes it.
+    // This used to look for «would be enforced», a fragment of a sentence that
+    // was rewritten on 2026-08-25 — and the rewrite is what turned this test
+    // red, which is the only reason the drift was noticed at all. A remedy the
+    // human can act on is the part that must never change quietly.
+    let said = status.stderr();
     assert!(
-        status.stderr().contains("would be enforced"),
-        "expected a refusal naming the missing enforcement, got: {}",
-        status.stderr()
+        said.contains("policy map is not loaded"),
+        "expected a refusal naming the missing enforcement, got: {said}"
+    );
+    assert!(
+        said.contains("make -C lsm load"),
+        "expected the refusal to say what fixes it, got: {said}"
     );
 }
 

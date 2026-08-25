@@ -25,6 +25,44 @@ pub enum StoreError {
     },
 }
 
+/// Whether denials are real, as opposed to merely attached.
+///
+/// `make -C lsm load` deliberately lands in observe mode — the kernel side is
+/// attached, every hook runs, every denial is written to the ring, and none of
+/// them is applied. That is a good default for measuring a policy before it
+/// binds, and it is a terrible thing to mistake for enforcement.
+///
+/// Nothing on this side ever asked. [`PolicyStore::is_available`] answers
+/// "does the policy map open", the code deciding whether to confine read that
+/// as "the kernel is enforcing", and the two are not the same question — the
+/// same shape of mistake this type's own documentation records twice above,
+/// arriving from the opposite direction. Found on 2026-08-25 by Cesar running
+/// `ejecutar` after `verify.sh` had detached the LSM on its way out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Enforcement {
+    /// A denial reaches the caller as `-EPERM`.
+    Enforcing,
+    /// Attached, logging what it would have denied, denying nothing.
+    Observing,
+    /// Rule 10: a failure to read is not a failure to exist. A caller that
+    /// treats this as `Observing` is guessing, and one that treats it as
+    /// `Enforcing` is guessing in the dangerous direction — so it is neither,
+    /// and it carries what went wrong.
+    Unreadable(String),
+}
+
+impl Enforcement {
+    /// For a report meant for a human, in the same voice `make -C lsm status`
+    /// uses.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Enforcing => "enforcing".to_string(),
+            Self::Observing => "observing (denials are logged, not applied)".to_string(),
+            Self::Unreadable(reason) => format!("COULD NOT BE READ — {reason}"),
+        }
+    }
+}
+
 pub trait PolicyStore {
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError>;
     fn remove(&self, cgroup: u64) -> Result<(), StoreError>;
@@ -38,6 +76,17 @@ pub trait PolicyStore {
     /// it, since its map only exists while the kernel side is loaded.
     fn is_available(&self) -> bool {
         true
+    }
+
+    /// Whether what is attached is denying or only watching.
+    ///
+    /// Separate from [`is_available`](Self::is_available) because the two
+    /// failures are different and the human needs different words for them:
+    /// one is fixed with `make -C lsm load` and the other with
+    /// `make -C lsm enforce`. Defaults to `Enforcing` for stores that always
+    /// mean what they say; [`KernelStore`] reads the map.
+    fn enforcement(&self) -> Enforcement {
+        Enforcement::Enforcing
     }
 }
 
@@ -91,6 +140,17 @@ impl KernelStore {
         Self::new(Self::DEFAULT_MAP)
     }
 
+    /// The mode flag, beside the policy map in whatever directory that one was
+    /// pinned in.
+    ///
+    /// Derived rather than a second constant, so a `KernelStore` pointed at a
+    /// test pin cannot answer with the mode of the machine's real enforcement
+    /// — which would make the fake say `Enforcing` while the thing under test
+    /// enforced nothing.
+    fn enforcing_map(&self) -> PathBuf {
+        self.map.with_file_name("thalyx_enforcing")
+    }
+
     pub fn path(&self) -> &Path {
         &self.map
     }
@@ -120,6 +180,36 @@ impl PolicyStore for KernelStore {
     /// something else entirely.
     fn is_available(&self) -> bool {
         self.open().is_ok()
+    }
+
+    /// Reads the one-entry array the BPF side consults on every hook.
+    ///
+    /// Asked of the map rather than of `bpftool map dump`, for the reason the
+    /// type documentation gives twice: this project has now four times asked
+    /// something other than the kernel a question only the kernel can answer.
+    fn enforcement(&self) -> Enforcement {
+        let path = self.enforcing_map();
+        let map = match thalyx_syscall::bpf_obj_get(&path) {
+            Ok(map) => map,
+            Err(error) => {
+                return Enforcement::Unreadable(format!("opening {}: {error}", path.display()));
+            }
+        };
+
+        let mut value = [0u8; 4];
+        match thalyx_syscall::bpf_map_lookup(map.as_fd(), &0u32.to_ne_bytes(), &mut value) {
+            Ok(true) if u32::from_ne_bytes(value) != 0 => Enforcement::Enforcing,
+            Ok(true) => Enforcement::Observing,
+            // A BPF array map's entries all exist from the moment it is
+            // created, so a miss here means the pin is not the map this
+            // expects. Rule 9: that is the cautious answer, not `Observing`
+            // and not a panic.
+            Ok(false) => Enforcement::Unreadable(format!(
+                "{} answered that it has no entry 0, so it is not the mode flag",
+                path.display()
+            )),
+            Err(error) => Enforcement::Unreadable(format!("reading {}: {error}", path.display())),
+        }
     }
 
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError> {
@@ -167,6 +257,7 @@ impl PolicyStore for KernelStore {
 pub struct MemoryStore {
     entries: Mutex<std::collections::BTreeMap<u64, Policy>>,
     available: bool,
+    enforcement: Enforcement,
 }
 
 impl MemoryStore {
@@ -174,6 +265,7 @@ impl MemoryStore {
         Self {
             entries: Mutex::default(),
             available: true,
+            enforcement: Enforcement::Enforcing,
         }
     }
 
@@ -187,6 +279,30 @@ impl MemoryStore {
         Self {
             entries: Mutex::default(),
             available: false,
+            enforcement: Enforcement::Unreadable("nothing is loaded".to_string()),
+        }
+    }
+
+    /// A store that is loaded and denies nothing — the state
+    /// `make -C lsm load` leaves a machine in.
+    ///
+    /// Rule 8: a fake must model the property under test. A `MemoryStore` that
+    /// reported `Enforcing` no matter what could not be used to test the one
+    /// thing this distinction exists for.
+    pub fn observing() -> Self {
+        Self {
+            entries: Mutex::default(),
+            available: true,
+            enforcement: Enforcement::Observing,
+        }
+    }
+
+    /// A store that is loaded and cannot say which mode it is in.
+    pub fn mode_unreadable(reason: &str) -> Self {
+        Self {
+            entries: Mutex::default(),
+            available: true,
+            enforcement: Enforcement::Unreadable(reason.to_string()),
         }
     }
 
@@ -208,6 +324,10 @@ impl Default for MemoryStore {
 impl PolicyStore for MemoryStore {
     fn is_available(&self) -> bool {
         self.available
+    }
+
+    fn enforcement(&self) -> Enforcement {
+        self.enforcement.clone()
     }
 
     fn set(&self, cgroup: u64, policy: Policy) -> Result<(), StoreError> {
@@ -235,6 +355,52 @@ impl PolicyStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_mode_flag_that_is_not_pinned_is_unreadable_rather_than_observing() {
+        // Rule 10, at the place it costs the most. "Observing" is a claim
+        // about a loaded kernel; a missing pin is a claim about nothing. A
+        // caller that saw `Observing` here would print a remedy —
+        // `make -C lsm enforce` — for a machine where the fix is
+        // `make -C lsm load`.
+        let store = KernelStore::new("/nonexistent/thalyx/maps/thalyx_policy");
+
+        match store.enforcement() {
+            Enforcement::Unreadable(reason) => {
+                assert!(reason.contains("thalyx_enforcing"), "{reason}")
+            }
+            other => panic!("a missing pin answered {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_mode_flag_is_looked_for_beside_the_policy_map_it_was_given() {
+        // Not at the machine's real pin. A store pointed somewhere else — a
+        // test, a second machine's bpffs mounted for inspection — that read
+        // the running kernel's mode would report enforcement belonging to
+        // something other than the map it writes into.
+        let store = KernelStore::new("/tmp/somewhere/maps/thalyx_policy");
+
+        assert_eq!(
+            store.enforcing_map(),
+            Path::new("/tmp/somewhere/maps/thalyx_enforcing")
+        );
+    }
+
+    #[test]
+    fn the_fake_can_be_any_of_the_three_states() {
+        // Rule 8: a fake that could only say `Enforcing` would make every test
+        // of the refusal path a test of nothing.
+        assert_eq!(MemoryStore::new().enforcement(), Enforcement::Enforcing);
+        assert_eq!(
+            MemoryStore::observing().enforcement(),
+            Enforcement::Observing
+        );
+        assert!(matches!(
+            MemoryStore::mode_unreadable("because").enforcement(),
+            Enforcement::Unreadable(reason) if reason == "because"
+        ));
+    }
+
     use super::*;
     use crate::{FS_READ, NET_OUTBOUND};
 

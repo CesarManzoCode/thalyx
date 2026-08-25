@@ -141,7 +141,47 @@ verdad** y le pregunta a él qué ve, con la columna de afuera al lado — regla
 3. una ruta concedida para leer no se puede escribir;
 4. sin confirmación no corre nada, y el silencio no es un sí;
 5. el journal lo llama `run_foreign` y no `run_module`;
-6. sin nada que haga cumplir la política, el verbo se niega.
+6. sin nada que haga cumplir la política, el verbo se niega;
+7. **con la política cargada pero en modo observación, el verbo también se
+   niega** — ver la revisión de abajo.
+
+## Revisiones
+
+### 2026-08-25 — «cargado» y «negando» son dos preguntas
+
+**Qué decía antes.** El decreto decía *«si la máquina no puede hacer cumplir la
+política, el verbo se niega»*, y el código preguntaba eso con
+`policies.is_available()` — que responde **si el mapa de políticas se abre**.
+
+**Qué pasó.** Cesar corrió `ejecutar /usr/bin/node --version` justo después de
+`verify.sh`, que desengancha el LSM al salir, y leyó la negativa correcta. El
+remedio que le dio esa negativa es `make -C lsm load`. Y `make -C lsm load`
+**aterriza a propósito en modo observación**: los ganchos corren, cada negación
+se escribe en el anillo, y ninguna se aplica.
+
+O sea que el remedio del mensaje dejaba la máquina en el estado exacto donde el
+verbo *sí* arrancaba al invitado y el kernel no le negaba nada. Nadie en el lado
+de Rust había leído nunca el mapa `thalyx_enforcing`; sólo el `Makefile` lo
+consultaba, con `bpftool`. `thalyx enforce status` imprimía «kernel policy map:
+present» y se callaba.
+
+**Qué dice ahora.** Son dos preguntas y se hacen las dos:
+
+| | módulo firmado | programa ajeno |
+|---|---|---|
+| mapa sin cargar | se niega, ofrece `sin-confinar` | **se niega**, no hay a qué caer |
+| cargado, observando | **corre degradado, y el journal lo dice** | **se niega**: `make -C lsm enforce` |
+| no se pudo leer el modo | corre degradado, y el journal lo dice | **se niega**: regla 9 |
+| cargado, negando | corre | corre |
+
+La asimetría es la misma del resto de la nota, y por la misma razón. A un módulo
+lo firmó alguien y un humano leyó su manifiesto; correr degradado con el journal
+diciéndolo es una decisión que alguien puede auditar. Detrás de un invitado no
+hay nadie: el confinamiento es *todo* lo que lo respalda, y un confinamiento que
+no niega no es un confinamiento.
+
+**Lo que esto abrió.** Cambiar el modo todavía se hace con `bpftool`, que la
+imagen no tiene y no va a tener. Queda escrito en [[Tareas-Pendientes]].
 
 ## Relacionado
 - [[Superficie-para-el-LLM]]

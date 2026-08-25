@@ -25,6 +25,16 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Terminar una inferencia de verdad** — hecho el 2026-08-08, y después repetido en tres gamas. El primer intento falló porque Thalyx pedía `llama-cli`, que desde que `llama.cpp` partió sus herramientas es el frontend de chat y abre una sesión en vez de completar; con `llama-completion` la inferencia completó, y el 2026-08-08 corrieron `check`, `grammar-check` y el banco de 20 casos en ligera, media y alta. **La gama máxima no**: el proceso murió por falta de memoria antes de la primera inferencia. Ver [[Gamas-de-Modelo]] y [[Punto-Actual]].
 - [x] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio** — **hecho el 2026-08-25, y corre en el contenedor.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas eran directorios**. Ahora hay dos en `isolation.rs`: uno que concede **un archivo** con permiso de escritura, arma la raíz remapeada de verdad y comprueba en el anfitrión que lo escrito llegó al mismo archivo y que no cambió de dueño; y su control, que concede el archivo y afirma que **el vecino de al lado no viene con él** —que es la forma obvia de hacer funcionar un permiso sobre un archivo, montando su carpeta, y la que entrega todo lo demás—. Los dos se rompieron a propósito antes de creerles. De paso, el protocolo de lanzamiento remapeado dejó de estar copiado tres veces: es la lección de `create_target_like` una capa arriba. Ver [[Estrategia-de-Pruebas]].
 - [x] **G1: lanzar un programa que nadie firmó** — **hecho el 2026-08-25**, y es el punto que bloqueaba la vara de [[Filosofia-Fundacional]] desde que se midió el 23. `ejecutar <ruta>` corre un programa ajeno con el mismo confinamiento que un módulo —cgroup, usuario propio, pivote, filtro de llamadas— y **sin modo degradado**, porque `sin-confinar` se justifica en que alguien firmó el módulo y aquí nadie firmó nada. No recibe canal con la API: un invitado corre, no se le da la casa. Ve su propia carpeta, las rutas de sistema de sólo lectura y lo que se nombre con `leyendo`/`escribiendo`, cada cosa confirmada por el [[Camino-Confiable]] antes de que el proceso exista. El journal lo llama `run_foreign`. Etapa 36 de `verify.sh` más seis pruebas de integración; cuatro de ellas necesitan los controladores delegados y dicen `NOT PROVEN` donde no los hay. Ver [[Programas-Ajenos]].
+- [ ] **Que Thalyx encienda y apague el enforcement él mismo.** Encontrado el
+      2026-08-25 al arreglar la confusión entre *cargado* y *negando* (ver
+      [[Programas-Ajenos]], revisiones). Thalyx ya **lee** el modo —el mapa
+      `thalyx_enforcing`, con `bpf(2)`, sin `bpftool`— y por eso `ejecutar` se
+      niega mientras el kernel sólo observa. Pero **cambiarlo** sigue siendo
+      `make -C lsm enforce`, que es `bpftool`, que la imagen no tiene y no va a
+      tener: dentro de la máquina no hay forma de pasar de observar a negar. Es
+      el mismo hueco que [[Cargador-BPF-Propio]] cerró para cargar, sin cerrar
+      para el modo. Barato: una escritura de cuatro bytes en un mapa que ya se
+      abre.
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [x] **Consumir el ringbuf `thalyx_mutations`** — construido el 2026-08-10 como el verbo `cambios`, punto B3 de [[Superficie-para-el-LLM]]. `crates/thalyx-watch/src/ring.rs` sigue el protocolo del anillo sobre bytes (diez pruebas, incluido el registro que cruza el final) y `thalyx-syscall` hace los dos `mmap`. **Consumirlo no era código BPF**, que fue la razón por la que estuvo parado: el productor ya estaba escrito y el consumidor es código de usuario. Lo que un anillo **no** puede dar y la respuesta dice: no es una historia —leerlo lo vacía— y no nombra archivos, sólo cgroup, pid, tipo y programa. Para reindexar de forma incremental hace falta además que alguien lo vacíe continuamente y guarde lo vaciado, y **eso es una pieza que corre todo el tiempo, que la imagen no tiene**: es una decisión de Cesar, no un pendiente de código. Etapa 27 de `verify.sh`.
@@ -274,8 +284,8 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       reproduce con `dev/foreign-agent-needs.sh`. Ver
       [[Que-Necesita-Un-Agente-Ajeno]], que también dice **qué no contesta**:
       arrancar no es trabajar.
-- [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
-      instalados. Cruza con la decisión de `NOEXEC` en `/home`.
+- [x] **Ejecutar un proceso arbitrario** — **hecho el 2026-08-25** con
+      `ejecutar <ruta>`. Ver la entrada `G1` arriba y [[Programas-Ajenos]].
 - [ ] **Opción, no pendiente: supervisar `sched_setattr` con
       `SECCOMP_RET_USER_NOTIF`.** Cesar decidió el 2026-08-25 denegarla, porque
       su política vive detrás de un puntero y un filtro de seccomp no puede

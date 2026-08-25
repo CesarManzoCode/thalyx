@@ -3845,6 +3845,43 @@ paso, un `ok` en 0.03 s se lee idéntico a un salto silencioso.
 > creía saltada y pasa se rompe a propósito antes de creerle: la regla 3 dice
 > que un salto tiene que decirse, y ésta dice que un `ok` tiene que ganarse.
 
+## Regla derivada: una pregunta que se contesta sola no es la pregunta que importa — 2026-08-25
+
+Cesar corrió `ejecutar /usr/bin/node --version` en su máquina, justo después de
+`verify.sh`, y leyó la negativa correcta: *«the kernel policy map is not
+loaded»*. El remedio que ese mensaje da es `make -C lsm load`. Y
+`make -C lsm load` aterriza **a propósito** en modo observación.
+
+O sea que la única acción que el sistema le pedía dejaba la máquina en el estado
+donde el verbo sí arrancaba al invitado y el kernel no le negaba nada.
+
+La pregunta que el código hacía era `is_available()` — *¿se abre el mapa de
+políticas?* — y **se contesta sola**: es cierta en cuanto algo está cargado. La
+pregunta que importaba era *¿una negación llega como `-EPERM`?*, que vive en otro
+mapa, `thalyx_enforcing`, que **nada en el lado de Rust había leído nunca**. Sólo
+el `Makefile` lo consultaba, con `bpftool`.
+
+Lo que lo escondió es que las dos preguntas son verdaderas al mismo tiempo en la
+única máquina donde alguien miraba: la del demo de enforcement, que enciende el
+modo él mismo antes de medir y lo apaga después.
+
+Y ninguna prueba lo agarró porque **ninguna prueba lo podía agarrar**: el falso,
+`MemoryStore`, no tenía cómo representar «cargado y sin negar». No es que el
+falso fallara la propiedad — la regla 8 habría bastado —, es que **la propiedad
+no existía en el falso**, así que ni la prueba ni su control podían nombrarla.
+
+> Antes de creerle a una guarda, pregúntate **qué máquina la haría fallar**. Si
+> la respuesta es «ninguna que alguien vaya a correr», la guarda no está
+> midiendo lo que dice: está midiendo algo adyacente que siempre viene junto.
+> Y si el falso no tiene un estado para el modo de fallo, el modo de fallo no
+> tiene prueba, por muchas que haya.
+
+Es la treceava vez que el instrumento resulta ser el problema, y la cuarta que
+esta parte del sistema pregunta algo que no es lo que quiere saber. Las tres
+anteriores están arriba en el propio comentario de `KernelStore`: preguntarle a
+`bpftool` por algo que `bpftool` no hizo. Ésta llega por el lado contrario —
+preguntarle al kernel algo cierto que no es lo que se necesitaba.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -395,6 +395,22 @@ if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
         tail -20 "$WORK/lsm-load.log"
     fi
 
+    # Thalyx's own answer about the mode, not the Makefile's. Until 2026-08-25
+    # `thalyx enforce status` printed "kernel policy map: present" and stopped
+    # — so the one command a human runs to ask whether the machine is armed
+    # could not tell an enforcing kernel from a watching one, and the code
+    # deciding whether to confine could not either.
+    if [ "$LOADED" = 1 ]; then
+        "$THALYX" enforce status > "$WORK/enforce-status.log" 2>&1 || true
+        if grep -qi "mode: *observing" "$WORK/enforce-status.log"; then
+            proven "Thalyx says the kernel is attached and only observing, which is what it is"
+        elif grep -qi "^mode:" "$WORK/enforce-status.log"; then
+            failed "Thalyx named a mode this script did not put the machine in: $(grep -i '^mode:' "$WORK/enforce-status.log")"
+        else
+            failed "\`thalyx enforce status\` did not say whether the kernel is enforcing; see $WORK/enforce-status.log"
+        fi
+    fi
+
     if [ "$LOADED" = 1 ]; then
         if [ -e /sys/fs/bpf/thalyx/maps/thalyx_mutation_count ]; then
             proven "the mutation counter map is pinned"
@@ -576,6 +592,18 @@ fi
 if [ "$LOADED" = 1 ]; then
     if "$THALYX" module run org.thalyx.verify > "$WORK/run.log" 2>&1; then
         proven "the module ran confined"
+
+        # This script runs the whole way in observe mode — `make -C lsm load`
+        # lands there deliberately — so every module run here is a run under a
+        # kernel that denies nothing. Until 2026-08-25 nothing said so: the
+        # report and the journal described it exactly as they describe an
+        # enforced run, which is the "a run nobody can tell apart from a
+        # confined one" this project keeps arranging against.
+        if grep -q "only observing\|denials are logged" "$WORK/run.log"; then
+            proven "a module run under an observing kernel says the kernel was only observing"
+        else
+            failed "the run did not say the kernel was only watching; see $WORK/run.log"
+        fi
 
         # Each of these asks the module what it saw. Asking Thalyx whether it
         # confined the module would prove nothing.
@@ -5117,9 +5145,49 @@ else
     failed "the refusal did not report itself; see $WORK/exec-refused.log"
 fi
 
+# --- a kernel that only watches does not get to run a guest ----------------
+#
+# The state this script has been in the whole way, and the state
+# `make -C lsm load` leaves any machine in. A module may run here — somebody
+# signed it, and the journal calls the run degraded. A guest may not: the
+# confinement is the whole of what stands behind it.
+#
+# Checked before the flip below, because after it this state is gone.
+if [ "$LOADED" = 1 ]; then
+    at_the_guest_prompt "ejecutar $EXEC_HOME/guest" y salir \
+        > "$WORK/exec-observing.log" 2>&1
+    if grep -q "only observing" "$WORK/exec-observing.log"; then
+        proven "a guest is refused while the kernel is attached and denying nothing"
+    else
+        failed "an observing kernel ran a program nobody signed; see $WORK/exec-observing.log"
+    fi
+fi
+
 # --- and the run itself ---------------------------------------------------
+#
+# Enforcing, for this one run, and put back the way it was afterwards. The
+# verb refuses under anything else, which is the check directly above — so
+# without the flip the rest of this stage would report a refusal and call it a
+# machine that cannot enforce.
+EXEC_FLIPPED=0
+if [ "$LOADED" = 1 ]; then
+    if make -C lsm enforce > "$WORK/exec-enforce.log" 2>&1; then
+        EXEC_FLIPPED=1
+    else
+        unproven "could not switch enforcement on ($(head -1 "$WORK/exec-enforce.log")), so the guest could not be launched"
+    fi
+fi
+
 at_the_guest_prompt "ejecutar leyendo $EXEC_GRANTED $EXEC_HOME/guest" y salir \
     > "$WORK/exec-run.log" 2>&1
+
+# Before anything is read from that log. Leaving the machine enforcing would
+# make every later stage run under a kernel this script never told it to use,
+# and the report would be about a different machine from the one it names.
+if [ "$EXEC_FLIPPED" = 1 ]; then
+    make -C lsm observe > "$WORK/exec-observe-again.log" 2>&1 \
+        || red "   could not switch back to observe mode; run: sudo make -C lsm observe"
+fi
 
 if grep -q "granted content" "$WORK/exec-run.log"; then
     proven "a program nobody signed ran, and what it wrote came back through Thalyx"
@@ -5139,6 +5207,11 @@ if grep -q "granted content" "$WORK/exec-run.log"; then
     else
         failed "the guest ran as Thalyx; see $WORK/exec-run.log"
     fi
+elif grep -q "only observing\|could not be read" "$WORK/exec-run.log"; then
+    # The flip above did not take. Never a pass — nothing was confined — and
+    # never a FAILED either: the verb did the right thing with the machine it
+    # was handed.
+    unproven "enforcement stayed in observe mode, so the guest was refused: what a guest can see did not run"
 elif grep -q "policy map is not loaded" "$WORK/exec-run.log"; then
     # The decree's own refusal, and it is the right outcome on a machine with
     # nothing to enforce — never a pass, because nothing was confined.
