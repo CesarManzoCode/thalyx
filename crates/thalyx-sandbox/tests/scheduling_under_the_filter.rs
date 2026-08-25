@@ -2,21 +2,43 @@
 //!
 //! `seccomp.rs` already tests the guard by evaluating the compiled program
 //! against a syscall number and an argument, and that test passed on the day a
-//! confined `chrt --other 0 true` was killed with `SIGSYS`. It passed because
-//! it asked the only question it knew about: *given a call to
+//! confined `chrt` was killed with `SIGSYS` setting an ordinary policy. It
+//! passed because it asked the only question it knew about: *given a call to
 //! `sched_setscheduler` with this policy, what does the filter answer?* A real
 //! program does not arrive at that call first. `chrt` reads the legal priority
 //! range before it sets anything —
 //!
 //! ```text
-//! sched_get_priority_min(SCHED_OTHER)     = 0
-//! sched_get_priority_max(SCHED_OTHER)     = 0
-//! sched_setscheduler(0, SCHED_OTHER, [0]) = 0
+//! sched_get_priority_min(SCHED_IDLE)     = 0
+//! sched_get_priority_max(SCHED_IDLE)     = 0
+//! sched_setscheduler(0, SCHED_IDLE, [0]) = 0
 //! ```
 //!
 //! — and neither of the first two lines was on the allowlist. Rule 1 of
 //! `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`, exactly: the defect came
 //! from running the system, and a test of what was produced could not see it.
+//!
+//! ## Why `--idle` and not `--other`, which is the obvious one to write
+//!
+//! Because `chrt --other` stopped being one instrument and became two.
+//! util-linux 2.41 added `supports_custom_slice`, and with it `--other` and
+//! `--batch` set the policy through **`sched_setattr`** rather than
+//! `sched_setscheduler`. The policy then lives in a struct behind a pointer,
+//! and a seccomp filter cannot follow a pointer — so that call cannot be
+//! guarded by argument the way `sched_setscheduler` is, and Thalyx denies it
+//! outright rather than open a second door to a real-time policy.
+//!
+//! The first version of this test used `--other`, passed on util-linux 2.39 in
+//! the development container, and failed on 2.41 on Cesar's machine. It read as
+//! Thalyx denying what it exists to permit, and it was two programs wearing one
+//! name — the rule about an instrument's version, in
+//! `Estrategia-de-Pruebas.md`, for the second time.
+//!
+//! `--idle` is neither `SCHED_DEADLINE` nor a custom-slice policy, so every
+//! util-linux to date sets it with `sched_setscheduler`, and `SCHED_IDLE` is
+//! one of the three policies the guard permits. It is a real foreign program
+//! walking the whole road to the guarded call, which is the property that made
+//! `chrt` worth using and the one `--other` no longer has.
 //!
 //! ## Why it is worth two processes
 //!
@@ -53,6 +75,12 @@ const NO_SECCOMP: i32 = 90;
 /// `chrt` could not be started at all.
 const NO_CHRT: i32 = 91;
 
+/// The ordinary column: a policy every util-linux still sets with the call the
+/// guard guards. See the module docs for why it is not `--other`.
+const ORDINARY: [&str; 3] = ["--idle", "0", "true"];
+/// The column the guard exists for: holding a processor against the machine.
+const REAL_TIME: [&str; 3] = ["--fifo", "1", "true"];
+
 /// One column, run under the real filter, in a process of its own.
 ///
 /// Not a claim — it is the other half of the test below, and it does nothing at
@@ -72,9 +100,9 @@ fn the_arm_that_runs_under_the_filter() {
         std::process::exit(NO_SECCOMP);
     }
 
-    let arguments: &[&str] = match column.as_str() {
-        "ordinary" => &["--other", "0", "true"],
-        "realtime" => &["--fifo", "1", "true"],
+    let arguments = match column.as_str() {
+        "ordinary" => ORDINARY,
+        "realtime" => REAL_TIME,
         other => panic!("unknown column `{other}`"),
     };
 
@@ -159,7 +187,7 @@ const KILLED_BY_THE_FILTER: i32 = 128 + libc::SIGSYS;
 
 #[test]
 fn a_real_program_arranges_its_own_threads_and_cannot_take_the_machine() {
-    if !works_outside(&["--other", "0", "true"]) {
+    if !works_outside(&ORDINARY) {
         not_proven("chrt cannot set an ordinary policy outside any sandbox either");
         return;
     }
@@ -170,15 +198,17 @@ fn a_real_program_arranges_its_own_threads_and_cannot_take_the_machine() {
     };
 
     assert_eq!(
-        ordinary, 0,
+        ordinary,
+        0,
         "a confined program could not put its own thread on an ordinary policy: \
-         chrt exited {ordinary}, and {KILLED_BY_THE_FILTER} is the filter killing \
-         it. The guard exists to permit this call"
+         `chrt {}` exited {ordinary}, and {KILLED_BY_THE_FILTER} is the filter \
+         killing it. The guard exists to permit this call",
+        ORDINARY.join(" ")
     );
 
     // Only now does a denial mean anything: the same program, under the same
     // filter, got all the way through with an ordinary policy.
-    if !works_outside(&["--fifo", "1", "true"]) {
+    if !works_outside(&REAL_TIME) {
         not_proven(
             "chrt cannot set a real-time policy outside the sandbox either, so a \
              refusal inside it would prove nothing",
@@ -188,8 +218,10 @@ fn a_real_program_arranges_its_own_threads_and_cannot_take_the_machine() {
 
     let realtime = under_the_filter("realtime").expect("the filter installed a moment ago");
     assert_eq!(
-        realtime, KILLED_BY_THE_FILTER,
+        realtime,
+        KILLED_BY_THE_FILTER,
         "a confined program took a real-time policy and can hold a processor \
-         against the machine: chrt exited {realtime}"
+         against the machine: `chrt {}` exited {realtime}",
+        REAL_TIME.join(" ")
     );
 }
