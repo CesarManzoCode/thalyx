@@ -3821,6 +3821,30 @@ costo de la puerta cerrada tiene que verse en la máquina donde se paga.
 > lo que hace es estable entre las máquinas donde va a correr — y si no lo es,
 > pedirle lo que sí lo sea.
 
+## Regla derivada: «este contenedor no puede comprobarlo» también es una afirmación sin medir — 2026-08-25
+
+El pendiente del permiso sobre **un archivo** llevaba abierto desde el
+2026-08-04, y una de las razones por las que llevaba abierto es que se daba por
+hecho que arma una raíz remapeada de verdad y por lo tanto espera hierro.
+
+No espera hierro. `/proc/mounts` de este contenedor tiene un `cgroup2` montado en
+`/sys/fs/cgroup/unified`, y `mount_point()` lo encuentra: las veinticuatro
+pruebas de `isolation.rs` **corren aquí**, pivote y montaje remapeado incluidos.
+Lo que este contenedor no tiene son los **controladores delegados** —`memory` y
+`pids`—, que es otra cosa y es la que dice `THALYX_REQUIRE_CONTROLLER_TESTS`.
+
+Las dos pruebas nuevas se escribieron esperando un `NOT PROVEN`, y pasaron. La
+única razón por la que se supo que habían pasado *por haber corrido* es que se
+rompieron a propósito: cambiada la línea esperada, las dos fallan en la
+aserción del anfitrión, después de que el módulo confinado escribió. Sin ese
+paso, un `ok` en 0.03 s se lee idéntico a un salto silencioso.
+
+> Que el entorno de desarrollo no pueda comprobar algo es un hecho sobre el
+> entorno, y como cualquier hecho **se mide o no se sabe**. Cuesta un minuto
+> comprobarlo y puede tener un pendiente parado meses. Y una prueba que se
+> creía saltada y pasa se rompe a propósito antes de creerle: la regla 3 dice
+> que un salto tiene que decirse, y ésta dice que un `ok` tiene que ganarse.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

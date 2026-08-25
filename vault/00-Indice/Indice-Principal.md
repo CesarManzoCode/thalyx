@@ -72,6 +72,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ### 6. Decisiones y debates (el porqué de cada cosa)
 - [[Debates-Overview]] — mapa de todos los debates resueltos
+- [[Ritmo-de-Construccion]] — **agresivos sin ser estúpidos**: qué se le pregunta a Cesar y qué se hace sin preguntar
 
 ### 7. Pendientes (qué falta)
 - [[Punto-Actual]] — **dónde quedó el proyecto y qué sigue**; se actualiza cada vez que se termina algo

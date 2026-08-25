@@ -33,6 +33,23 @@ think about X?" in a paragraph, stop and turn it into options.
 If a question can be answered by reading the vault or the code, it is not a
 question for him.
 
+### And ask him less than feels safe
+
+`vault/05-Decisiones-y-Debates/Ritmo-de-Construccion.md`, decreed 2026-08-25
+after he pointed out that the project had spent days polishing and had not moved
+the bar in `Filosofia-Fundacional.md`. **A question costs his time and stops the
+build until he answers**, so it is spent only on what nobody else can answer:
+changing one of his decrees, writing where something of his can be lost,
+spending his hardware or his money, or scope the vault does not cover.
+
+Everything else — the order of two decided things, a stale paragraph, a name, a
+pendiente already written in `Tareas-Pendientes.md` — **gets done, and he gets
+told what was done.** A pendiente already written there was already decided by
+him; asking again is asking him to decide twice.
+
+None of that lowers a rule below. Fast is delivering the whole thing; fast is
+not delivering the easy half, and `NOT PROVEN` is still `NOT PROVEN`.
+
 ## Language
 
 - **Spanish** — neutral Mexican, **never voseo** — for conversation with him

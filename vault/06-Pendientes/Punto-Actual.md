@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-24
+fecha-actualizacion: 2026-08-25
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,92 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La segunda puerta: `chrt` medía la versión de util-linux, no el filtro — 2026-08-25
+> ## Verde, y la orden de dejar de pulir — 2026-08-25
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `verify.sh` en su máquina: **`156 proven · 2 not proven ·
+> 0 failed`**. Las dos fallas del día anterior están cerradas, y eran la misma
+> cosa vista dos veces —la prueba nueva y la etapa del módulo, las dos
+> preguntando con `chrt --other`, que en util-linux 2.41 sale por
+> `sched_setattr`—. El arreglo no tocó el filtro: cambió con qué se le pregunta.
+>
+> ### Y con eso, la corrección que importa más que el número
+>
+> Cesar cortó la pregunta de qué seguía, y con razón:
+>
+> > «llevamos mucho tiempo sin avanzar nada realmente, estamos siendo muy
+> > cautelosos […] le estamos dando demasiada importancia a cosas muy simples y
+> > faciles de hacer […] tenemos que empezar a ser agresivos sin ser estupidos,
+> > la perfeccion vendra despues».
+>
+> Medido contra el registro, tenía razón: del 23 al 25 se construyó un guardia
+> por argumento, dos llamadas de rango de prioridades, tres arreglos del arnés y
+> una prueba que pregunta con la herramienta correcta. Todo cierto, y ninguno de
+> esos días movió la vara de [[Filosofia-Fundacional]] —un agente ajeno
+> trabajando aquí— ni un milímetro.
+>
+> Quedó decretado en [[Ritmo-de-Construccion]], con sus palabras textuales, y
+> resumido en `CLAUDE.md` para que una sesión nueva lo lea antes de preguntar
+> nada. En una línea: **se le pregunta sólo lo que sólo él puede contestar**
+> —cambiar un decreto suyo, escribir donde se pierde algo suyo, gastar su hierro
+> o su dinero, alcance que la bóveda no cubre—. Todo lo demás se hace y se le
+> dice qué se hizo. Un pendiente ya escrito en [[Tareas-Pendientes]] ya fue
+> decidido por él; volver a preguntarlo es pedirle que decida dos veces.
+>
+> Lo que **no** baja: ninguna de las diez reglas de [[Estrategia-de-Pruebas]],
+> ningún decreto sin él, ninguna entrega a medias, y `NOT PROVEN` sigue siendo
+> `NOT PROVEN`.
+>
+> ### Lo que se hizo ese mismo día sin preguntar
+>
+> 1. **`README.md` y `docs/STATUS.md` dicen la corrida vigente.** Citaban la del
+>    23 —`134 proven`— porque la del 24 tenía fallas y no era la que correría
+>    ahora. Ya no hay una que esconder. El párrafo que explicaba una caída de
+>    conteo se volvió la regla que la caída enseñó: **un conteo que se mueve no
+>    es una calificación**, y lo que dice qué pasó es la lista de abajo, no el
+>    número.
+> 2. **El caso de aislamiento sobre un archivo, que llevaba abierto desde el
+>    2026-08-04.** Ver [[Tareas-Pendientes]]. Dos pruebas nuevas en
+>    `isolation.rs`: un permiso de escritura sobre **un solo archivo**, con la
+>    raíz remapeada de verdad, comprobado en el anfitrión —el contenido llegó al
+>    mismo archivo y el archivo no cambió de dueño—; y su control, que afirma
+>    que **el vecino de al lado no viene con él**. Las dos se rompieron a
+>    propósito antes de creerles, y las dos **corren en este contenedor**: hay
+>    un cgroup2 en `/sys/fs/cgroup/unified` y los montajes remapeados funcionan
+>    aquí, así que esto no espera hierro. `cargo test --workspace`: 1359 en
+>    verde.
+>
+> ### Las dos que quedan sin comprobar
+>
+> `verify.sh` las nombra en su propio resumen —el bloque `What this run could
+> not establish:`— y ésa es la autoridad, no lo que se escriba aquí. Si son las
+> del agente, se cierran así:
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/a/tu/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> ### Y lo siguiente, que sí es una decisión suya
+>
+> **G1 y G2 de [[Superficie-para-el-LLM]].** Es lo único que bloquea la vara del
+> proyecto, y lleva bloqueándola desde que se midió el 2026-08-23:
+>
+> - **G1** — hoy `correr` sólo lanza módulos **instalados y firmados**, y un
+>   agente ajeno no es ninguna de las dos cosas. El sandbox ya lo aguantaría: el
+>   filtro cubre 41 de 41 llamadas medidas. Lo que falta no es mecanismo, es
+>   **qué se permite lanzar**, y eso es un decreto suyo.
+> - **G2** — la imagen lleva el kernel y un programa, así que no hay libc, y un
+>   binario enlazado dinámicamente no arranca ahí. Ver
+>   [[Que-Necesita-Un-Agente-Ajeno]].
+>
+> Las dos son la misma pregunta vista desde dos lados, y ninguna se puede
+> construir sin que él decida primero.
+
+> ## La segunda puerta: `chrt` medía la versión de util-linux, no el filtro — 2026-08-25
 >
 > La corrida siguiente dio `155 proven · 2 not proven · 2 failed`, y las dos
 > fallas eran la misma cosa vista dos veces: la prueba nueva y la etapa del
