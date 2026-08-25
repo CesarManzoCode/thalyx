@@ -1379,6 +1379,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
+            println!("  and `ejecutar <ruta>` runs a program nobody signed —");
+            println!("  confined the same way, reaching nothing but its own");
+            println!("  folder and the system paths unless `leyendo <ruta>` or");
+            println!("  `escribiendo <ruta>` says otherwise, and always asking");
+            println!("  you first, because nobody vouched for it.");
             println!("  `discos` lists the disks I can see and `instalar-en <disco>`");
             println!("  puts this machine on one, so it stops needing this medium.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
@@ -1404,6 +1409,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `historia`, `intento`, `cambios`,");
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
+            println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
             println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`, `red`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
@@ -1828,6 +1834,15 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "nucleo lento" | "núcleo lento" | "kernel slow" => {
                 show_slowest(face);
+            }
+            // Before `correr`'s arms and deliberately its own verb: a program
+            // nobody signed never reaches the one that only takes modules.
+            _ if starts_any(line, &["ejecutar ", "execute "]) => {
+                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+                crate::foreign::execute(store, rest, face)?;
+            }
+            "ejecutar" | "execute" => {
+                crate::foreign::execute(store, "", face)?;
             }
             _ if line.starts_with("correr ") || line.starts_with("run ") => {
                 let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");

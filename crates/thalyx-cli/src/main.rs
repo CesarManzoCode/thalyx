@@ -13,6 +13,7 @@ mod dev;
 mod edit;
 mod enforce;
 mod files;
+mod foreign;
 mod graph;
 mod history;
 mod image;

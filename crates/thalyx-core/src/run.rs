@@ -152,7 +152,7 @@ const MAX_KEPT_OUTPUT: usize = 64 * 1024;
 /// A module that fills the pipe buffer while Thalyx waits for it to exit is a
 /// deadlock, and it is the ordinary case rather than a hostile one: the buffer
 /// is 64 KiB on Linux and a module that prints a directory can reach it.
-fn drain<R: std::io::Read + Send + 'static>(
+pub(crate) fn drain<R: std::io::Read + Send + 'static>(
     stream: Option<R>,
 ) -> std::thread::JoinHandle<(String, bool)> {
     std::thread::spawn(move || {
@@ -196,7 +196,7 @@ fn drain<R: std::io::Read + Send + 'static>(
 /// A panicked drain thread is reported as truncation rather than propagated:
 /// the module has already run, and losing its result because reading its
 /// output went wrong would turn a reporting fault into a failed run.
-fn collect(
+pub(crate) fn collect(
     out: std::thread::JoinHandle<(String, bool)>,
     err: std::thread::JoinHandle<(String, bool)>,
 ) -> ModuleOutput {
