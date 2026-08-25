@@ -14,9 +14,69 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Tres fallas en `verify.sh`: dos eran del arnés y una era del filtro — 2026-08-24
+> ## La segunda puerta: `chrt` medía la versión de util-linux, no el filtro — 2026-08-25
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida siguiente dio `155 proven · 2 not proven · 2 failed`, y las dos
+> fallas eran la misma cosa vista dos veces: la prueba nueva y la etapa del
+> módulo, las dos preguntando con `chrt --other`.
+>
+> ### Y corrige lo que se dijo ayer
+>
+> Ayer quedó escrito que las tres fallas se habían reproducido en el contenedor.
+> **La del filtro no.** El contenedor tiene util-linux 2.39 y su máquina tiene
+> 2.41, y desde 2.41 `chrt --other` pone una política ordinaria con
+> `sched_setattr` en vez de con `sched_setscheduler`. El verde de aquí fue
+> **suerte de versión**, no una comprobación — y la prueba se había escrito el
+> mismo día en que se anotó que un programa real es mejor instrumento que una
+> llamada aislada. Lo es; falta preguntarse qué llamada hace ese programa en la
+> máquina donde va a correr.
+>
+> ### Lo que había debajo, que sí es de diseño
+>
+> `sched_setattr` es **una segunda puerta a la misma capacidad**. Pone la
+> política igual que `sched_setscheduler`, pero la recibe dentro de una
+> estructura, detrás de un puntero — y un filtro de seccomp compara registros y
+> no puede seguir un puntero. Para esa puerta no existe guardia por argumento: o
+> se permite entera, con `SCHED_FIFO` adentro, o se deniega entera.
+>
+> **Cesar decidió el 2026-08-25 denegarla.** Queda en [[Sandbox-Ejecucion]] con
+> su costo escrito: un programa que ponga política ordinaria sólo por esa puerta
+> no puede hacerlo aquí, y `chrt --other` de util-linux 2.41 es uno. Ningún
+> runtime medido depende de ella —la traza del agente ajeno lo muestra
+> arrancando con `sched_setscheduler` y con nada más—. La única cosa que podría
+> mirar detrás del puntero, un supervisor con `SECCOMP_RET_USER_NOTIF`, queda
+> anotada en [[Tareas-Pendientes]] como opción y no como pendiente.
+>
+> ### Qué cambió, y qué no
+>
+> **El filtro no cambió hoy.** Lo que cambió es con qué se le pregunta:
+>
+> - La columna ordinaria pregunta con `chrt --idle 0 true`. Ninguna versión de
+>   util-linux lo manda por la puerta cerrada, y `SCHED_IDLE` es una de las tres
+>   políticas que el guardia permite: sigue siendo un programa ajeno recorriendo
+>   el camino entero hasta la llamada guardada, que es lo que hacía valioso a
+>   `chrt`.
+> - `--other` se sigue corriendo, como **reporte y nunca como veredicto**, con
+>   `strace` fuera del sandbox diciendo por cuál de las dos llamadas pasó este
+>   `chrt`. Así el costo de la puerta cerrada se ve en la máquina donde se paga,
+>   medido y no supuesto.
+> - El segundo `NOT PROVEN` de la corrida fue la baranda de ayer haciendo su
+>   trabajo: la denegación de tiempo real se calló porque la columna ordinaria no
+>   estaba en 0. Sin ella, esa línea habría dicho verde con el módulo muriendo
+>   antes de nombrar ninguna política.
+>
+> ### Para cerrar las dos que quedan
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/a/tu/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+
+> ## Tres fallas en `verify.sh`: dos eran del arnés y una era del filtro — 2026-08-24
 >
 > La corrida de Cesar en su máquina dio `154 proven · 1 not proven · 3 failed`.
 > Las tres fallas están diagnosticadas y arregladas, y **sólo una era de

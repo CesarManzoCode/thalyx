@@ -515,7 +515,15 @@ echo "granted=$(cat GRANTED_PATH/note 2>&1)"
 # `chrt` is a separate process, so a kill lands on it and this script survives
 # to report the status: 0 is the call going through, 159 is 128+31 — SIGSYS,
 # which is the only thing the filter does.
-chrt --other 0 true 2>/dev/null; echo "sched_ordinary=$?"
+#
+# `--idle` and not `--other` for the ordinary column: util-linux 2.41 sets an
+# ordinary policy through `sched_setattr`, whose policy is behind a pointer and
+# therefore cannot be guarded by a seccomp filter at all. `--idle` is set with
+# `sched_setscheduler` on every util-linux to date and is one of the three
+# policies the guard permits. `--other` is asked anyway, one line down, because
+# what it answers is worth seeing — but it is not the verdict.
+chrt --idle  0 true 2>/dev/null; echo "sched_ordinary=$?"
+chrt --other 0 true 2>/dev/null; echo "sched_other=$?"
 chrt --fifo  1 true 2>/dev/null; echo "sched_realtime=$?"
 MODULE
 sed -i "s|GRANTED_PATH|$GRANTED|" "$PAYLOAD/bin/demo"
@@ -605,12 +613,38 @@ if [ "$LOADED" = 1 ]; then
             grep -Eo "^  > $1=[0-9]+\$" "$WORK/run.log" | head -1 | sed 's/.*=//'
         }
         ORDINARY="$(sched_status sched_ordinary)"
+        OTHER="$(sched_status sched_other)"
         REALTIME="$(sched_status sched_realtime)"
 
         case "${ORDINARY:-none}" in
             0)   green "     it may put its own threads on an ordinary policy" ;;
             159) failed "the filter killed an ordinary sched_setscheduler — the guard denies what it exists to permit" ;;
             *)   unproven "the ordinary scheduling call exited ${ORDINARY:-with nothing reported}, which is neither the call working nor the filter stopping it" ;;
+        esac
+
+        # `--other`, which is a report and not a verdict. On util-linux 2.41 it
+        # asks through `sched_setattr`, and a seccomp filter cannot read a policy
+        # that lives behind a pointer — so Thalyx denies that call rather than
+        # open a second, unwatched door onto SCHED_FIFO. The cost is this line.
+        # Measured rather than asserted: `strace` outside the sandbox says which
+        # of the two calls this `chrt` makes, and says nothing if it is absent.
+        case "${OTHER:-none}" in
+            0)   green "     and this chrt sets an ordinary policy the guard can read" ;;
+            159) if ! command -v strace > /dev/null 2>&1; then
+                     # Rule 10: not being able to read the road is not the road
+                     # being clear. Without strace this line has no answer.
+                     unproven "chrt --other was killed and strace is not installed, so which call it died on could not be read"
+                 elif ! strace -f -e trace=sched_setattr -o "$WORK/chrt-other.strace" \
+                         chrt --other 0 true > /dev/null 2>&1; then
+                     unproven "chrt --other was killed and strace could not trace it, so which call it died on could not be read"
+                 elif grep -q sched_setattr "$WORK/chrt-other.strace"; then
+                     echo "     (this chrt sets an ordinary policy with sched_setattr, which"
+                     echo "      seccomp cannot guard — the policy is behind a pointer — so"
+                     echo "      Thalyx denies it. Decided, not broken: Sandbox-Ejecucion.md)"
+                 else
+                     unproven "chrt --other was killed and it does not use sched_setattr; something else on that road is denied"
+                 fi ;;
+            *)   : ;;
         esac
 
         # And the real-time column only says anything once the ordinary one

@@ -447,6 +447,15 @@ fn ret(action: u32) -> Instruction {
 /// that put it here — it is the one call of the forty-one a foreign agent makes
 /// to start that this list did not already have.
 ///
+/// **Absent, and it is the same capability**: `sched_setattr`. It sets a policy
+/// too, and a guard cannot be written for it: the policy lives in a struct
+/// behind a pointer, and a seccomp filter compares registers and cannot follow
+/// one. Allowing it would be a second door onto `SCHED_FIFO` with nothing
+/// watching it, so it stays shut — and that costs something real, named here
+/// because a cost nobody wrote down gets rediscovered as a bug: util-linux 2.41
+/// sets an *ordinary* policy through it, so `chrt --other` cannot run under this
+/// filter on a machine that new. `Sandbox-Ejecucion.md` carries the decision.
+///
 /// A module that **was** granted `net/outbound` gets them added, by
 /// [`for_permissions`]. That is not a weakening of this list — it is what
 /// makes the grant mean anything. See the note there.
@@ -491,13 +500,13 @@ pub fn module_standard() -> Allowlist {
             libc::SYS_sched_yield,
             // The two questions asked *before* the guarded call, and the reason
             // they are here is that leaving them out killed the program on its
-            // way to a call the guard permits. `chrt --other 0 true` — which is
+            // way to a call the guard permits. `chrt --idle 0 true` — which is
             // how `dev/verify.sh` asks a confined module whether it may arrange
             // its own threads — reads the legal priority range first:
             //
-            //     sched_get_priority_min(SCHED_OTHER)     = 0
-            //     sched_get_priority_max(SCHED_OTHER)     = 0
-            //     sched_setscheduler(0, SCHED_OTHER, [0]) = 0
+            //     sched_get_priority_min(SCHED_IDLE)     = 0
+            //     sched_get_priority_max(SCHED_IDLE)     = 0
+            //     sched_setscheduler(0, SCHED_IDLE, [0]) = 0
             //
             // With these absent it died with SIGSYS on the first line, and the
             // *real-time* column of that same check read as the guard working
