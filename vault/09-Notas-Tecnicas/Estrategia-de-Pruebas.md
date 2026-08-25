@@ -155,8 +155,8 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
-**Y van doce.** Cada una tiene su regla abajo, porque el mecanismo es distinto
-cada vez — las tres del 2026-08-07 y las dos del 2026-08-24:
+**Y van trece.** Cada una tiene su regla abajo, porque el mecanismo es distinto
+cada vez — las tres del 2026-08-07, las dos del 2026-08-24 y una del 2026-08-25:
 
 - **La octava**, el parser de headers que descartaba campos con comentario al
   final de la línea — está justo debajo.
@@ -172,6 +172,10 @@ cada vez — las tres del 2026-08-07 y las dos del 2026-08-24:
 - **La duodécima**, `foreign-agent-needs.sh` leyendo la lista de llamadas
   permitidas del archivo entero, que también nombra las que un módulo tiene
   prohibidas. Contaba como concedido lo que el archivo niega.
+- **La decimotercera**, una prueba que corría `chrt --other` para preguntar si un
+  módulo puede acomodar sus hilos. La respuesta dependía de la versión de
+  util-linux y no del filtro: hasta 2.40 hace la llamada guardada, desde 2.41
+  hace otra que Thalyx deniega. Es la regla de la versión otra vez, abajo.
 
 Y la octava, con detalle: el parser que comprueba los offsets de
 `thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con
@@ -3761,6 +3765,61 @@ cambió —41 de 41— y eso es suerte, no una razón para seguir preguntando ma
 > Cuando un conjunto se extrae por patrón, **el alcance del patrón es parte de
 > la afirmación**. Un archivo contiene la lista y también su negación, y un
 > patrón que no las distingue reporta lo negado como concedido.
+
+## Regla derivada: una capacidad con dos puertas se guarda por la que el filtro puede mirar, y la otra se cierra — 2026-08-25
+
+El guardia de `sched_setscheduler` quedó bien el 2026-08-24 y la prueba nueva
+—un programa real bajo el filtro real— pasó en el contenedor. En la máquina de
+Cesar falló: `chrt` moría con `SIGSYS` poniendo una política ordinaria, otra vez,
+con la lista ya corregida.
+
+No faltaba nada en la lista. **La capacidad tiene dos puertas.** `sched_setattr`
+pone la política igual que `sched_setscheduler`, pero la recibe dentro de una
+estructura, detrás de un puntero — y un filtro de seccomp compara registros y no
+puede seguir un puntero. Para esa puerta **no existe guardia por argumento**: o
+se permite entera, con `SCHED_FIFO` adentro, o se deniega entera.
+
+Lo que esto le enseña a una prueba es más general que el caso:
+
+> Cuando una capacidad se puede pedir por dos llamadas y el filtro sólo puede
+> leer los argumentos de una, **probar la que se puede leer no prueba la
+> capacidad**. Hay que buscar la segunda puerta antes de dar el guardia por
+> hecho, y decir en voz alta qué se hace con ella: cerrarla tiene un costo y ese
+> costo es parte del decreto, no un defecto que alguien redescubre.
+
+Cesar decidió cerrarla. El costo quedó escrito en [[Sandbox-Ejecucion]], junto
+con el único mecanismo que podría mirar detrás del puntero —un supervisor con
+`SECCOMP_RET_USER_NOTIF`— y la razón para no construirlo hoy.
+
+## Regla derivada: un instrumento tiene versión, segunda vez, y ahora la versión cambiaba la llamada — 2026-08-25
+
+La primera vez fue clippy: dos versiones, dos opiniones sobre el mismo código.
+Ésta es peor de leer, porque el instrumento no cambió de opinión sino **de
+llamada al sistema**.
+
+`chrt --other 0 true` pone una política ordinaria. Hasta util-linux 2.40 lo hace
+con `sched_setscheduler`; desde 2.41 —que agregó `supports_custom_slice`— lo hace
+con `sched_setattr`. El contenedor tiene 2.39 y su máquina 2.41, así que la
+misma prueba, sobre el mismo filtro, midió dos cosas distintas: en el contenedor
+la llamada guardada, y en su máquina una llamada denegada de plano.
+
+Y el verde del contenedor fue **suerte de versión**, no una comprobación. La
+prueba se escribió el mismo día en que se dijo, en el mismo archivo, que un
+programa real es mejor instrumento que una llamada aislada — y lo es; lo que
+faltó fue preguntarse *qué llamada hace ese programa en la máquina donde va a
+correr*, que es la misma pregunta de la regla 6 sobre las muestras capturadas.
+
+La corrección no fue quitar el programa real: fue elegir un pedido suyo que
+ninguna versión manda por la puerta cerrada. `chrt --idle 0 true` usa
+`sched_setscheduler` en todas, y `SCHED_IDLE` es una de las tres políticas que el
+guardia permite. `--other` se sigue corriendo, como **reporte y no como
+veredicto**, con `strace` diciendo por cuál de las dos llamadas pasó — porque el
+costo de la puerta cerrada tiene que verse en la máquina donde se paga.
+
+> Un programa ajeno es un buen instrumento y **su versión es parte del
+> instrumento**. Antes de apoyar una afirmación en lo que hace, hay que saber si
+> lo que hace es estable entre las máquinas donde va a correr — y si no lo es,
+> pedirle lo que sí lo sea.
 
 ## Regla de documentación
 

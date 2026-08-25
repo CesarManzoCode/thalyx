@@ -273,6 +273,14 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       arrancar no es trabajar.
 - [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
       instalados. Cruza con la decisión de `NOEXEC` en `/home`.
+- [ ] **Opción, no pendiente: supervisar `sched_setattr` con
+      `SECCOMP_RET_USER_NOTIF`.** Cesar decidió el 2026-08-25 denegarla, porque
+      su política vive detrás de un puntero y un filtro de seccomp no puede
+      seguirlo — ver [[Sandbox-Ejecucion]]. Un proceso supervisor sí podría
+      leerla mientras la llamada está detenida, y sería un componente nuevo vivo
+      durante toda la ejecución del módulo. Sólo vale la pena el día que un
+      runtime que haga falta dependa de esa puerta; ninguno de los medidos lo
+      hace.
 - [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
       está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
       no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback

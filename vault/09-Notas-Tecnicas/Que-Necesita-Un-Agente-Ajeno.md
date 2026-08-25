@@ -85,6 +85,19 @@ y vale igual para sus llamadas. La regla nueva quedó en
 [[Estrategia-de-Pruebas]]: el camino hasta una llamada permitida es parte de lo
 que hay que permitir.
 
+### La segunda puerta, y por qué el agente no la usa
+
+El 2026-08-25 se supo que la misma capacidad tiene dos llamadas:
+`sched_setattr` pone la política igual, dentro de una estructura detrás de un
+puntero, donde ningún filtro de seccomp puede leerla. Cesar decidió denegarla
+—[[Sandbox-Ejecucion]] lleva la decisión y su costo— y la pregunta que le toca a
+esta nota es si eso le cierra la puerta al agente ajeno.
+
+**No.** La traza lo muestra arrancando con `sched_setscheduler` seis veces y con
+`sched_setattr` ninguna; si la hubiera hecho, el script la habría nombrado entre
+las que faltan, porque no está en la lista. La medición contesta esto sin
+suponer nada, que es para lo que existe.
+
 ### Y el instrumento contaba mal las permitidas
 
 El script comparaba las 41 contra todos los `libc::SYS_…` del archivo, y el

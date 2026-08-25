@@ -123,7 +123,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened eleven times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened twelve times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -140,7 +140,11 @@ These were all learned by something going wrong. They are recorded in
    grepping for a sentence the probe had stopped printing, which turned seven
    denials into seven vacuous passes and was caught only by the positive
    control beside them; and `dev/foreign-agent-needs.sh` taking the permitted
-   syscalls out of a file that also names the forbidden ones.
+   syscalls out of a file that also names the forbidden ones. The twelfth is the
+   sharpest: a test that asked whether a module may arrange its own threads by
+   running `chrt --other`, which makes the guarded call on util-linux 2.40 and a
+   denied one on 2.41 — so it passed in the container and failed on his machine,
+   having measured util-linux rather than the filter.
 6. **A parser for another tool's output needs one captured real sample,
    verbatim.** A hand-written fixture proves the parser matches your model of
    the format, not the format.
