@@ -14,9 +14,97 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Verde, y la orden de dejar de pulir — 2026-08-25
+> ## G1: Thalyx ya puede correr un programa que nadie firmó — 2026-08-25
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar delegó la forma —*«lo que veas conveniente que sea coherente con nuestra
+> filosofía»*— y ésta es la forma, con la coherencia escrita en
+> [[Programas-Ajenos]] antes de escribir una línea de código.
+>
+> ### Qué se destrabó, y por qué llevaba parado desde el 23
+>
+> `G1` de [[Superficie-para-el-LLM]] era el punto que bloqueaba la vara del
+> proyecto. La medición del 23 lo había dejado sin ambigüedad: no faltaba una
+> llamada al sistema —el filtro cubre 41 de 41— ni una ruta. Faltaba que
+> `correr` sólo lanza **módulos instalados y firmados**, y un agente ajeno no es
+> ninguna de las dos cosas.
+>
+> Lo que lo destrabó no fue código, fue **no tocar la firma**. Si Thalyx firmara
+> al vuelo lo que se le pide ejecutar, la firma dejaría de significar *alguien
+> respondió por esto* y pasaría a significar *esto pasó por aquí* — la palabra
+> sin significado para quien lea la siguiente. Así que son dos verbos:
+>
+> | | `correr <id>` | `ejecutar <ruta>` |
+> |---|---|---|
+> | qué lanza | un módulo firmado | un programa cualquiera |
+> | quién respondió por él | su publicador | **nadie** |
+> | canal con la API | sí, nace con él | **no, nunca** |
+> | `sin-confinar` | existe, y queda como degradado | **no existe** |
+>
+> ### Las tres decisiones que aguantan el peso
+>
+> 1. **No hay canal.** Un módulo nace sosteniendo un socket a la API de Thalyx;
+>    un invitado no recibe ninguno. Eso es lo que impide que este verbo sea una
+>    puerta trasera: por aquí no se instala nada, no se concede nada persistente
+>    y no se pide nada, porque no hay por dónde pedirlo.
+> 2. **No hay modo degradado.** `sin-confinar` existe para módulos y se
+>    justifica en que un humano leyó ese manifiesto y su publicador respondió.
+>    De un programa ajeno nadie respondió nada, así que si la máquina no puede
+>    hacer cumplir la política, el verbo **se niega** — y el mensaje dice que ese
+>    modo no existe, en vez de ofrecerlo.
+> 3. **Ve lo que se le nombró.** Su propia carpeta de sólo lectura, las rutas de
+>    sistema, y lo que diga `leyendo <ruta>` o `escribiendo <ruta>` — cada cosa
+>    dibujada por Thalyx y confirmada antes de que el proceso exista. Su usuario
+>    se guarda con la llave `foreign:<ruta canónica>`, así que el mismo programa
+>    es el mismo usuario mañana y dos programas distintos nunca comparten uno.
+>
+> ### Qué se comprobó aquí y qué espera tu máquina
+>
+> Etapa **36** de `verify.sh`, con su columna de control: el mismo script corrido
+> **fuera** del sandbox tiene que alcanzar las dos rutas, o el «no las alcanzó»
+> de adentro no significa nada. En este contenedor da cinco `PROVEN` y un
+> `NOT PROVEN`:
+>
+> - **probado aquí** — el control de afuera; `ensayo ejecutar` resuelve el
+>   programa y no corre nada; **un `n` no corre el programa** (comprobado por lo
+>   que *no* apareció en el disco, no por lo que imprimió la sesión); el journal
+>   lo llama `run_foreign` y nunca `run_module`; y la cara estructurada se niega
+>   con `needs_a_human` / `confirm_at_a_terminal`.
+> - **espera tu máquina** — lo que un invitado ve. Aquí no hay mapa de política
+>   en el kernel, así que el verbo se niega, que es el decreto funcionando. El
+>   `NOT PROVEN` dice además algo cierto: esa negativa viene del núcleo, o sea
+>   que el `y` sí se leyó y se aceptó. Lo que no corrió es el invitado.
+>
+> Más seis pruebas de integración en `a_program_nobody_signed_can_run.rs`. Dos
+> corren aquí —la negativa sin nada que haga cumplir, y el journal—; las otras
+> cuatro necesitan los controladores `memory` y `pids` delegados y dicen
+> `NOT PROVEN` donde no los hay, con `THALYX_REQUIRE_CONTROLLER_TESTS`.
+>
+> **En tu máquina esas cuatro corren.** `cargo test --workspace`: 1377 en verde.
+>
+> ### Lo que esto no hizo
+>
+> - **No abrió la red** (`G3`), no es `E1` —las concesiones son de una corrida,
+>   no expiran porque terminan— y **no resolvió `G2`**: la imagen sigue sin
+>   libc, así que `ejecutar` sirve donde hay rutas de sistema que montar, o sea
+>   tu Fedora. Dentro de la imagen instalada sirve para lo que esté enlazado
+>   estáticamente.
+> - No le quitó nada a `correr`. El decreto de firma sigue entero.
+>
+> ### Para correrlo
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y para verlo con las manos, en una sesión:
+>
+> ```
+> ejecutar leyendo /home/cesarmanzocode/algo /usr/bin/ls /home/cesarmanzocode/algo
+> ```
+
+> ## Verde, y la orden de dejar de pulir — 2026-08-25
 >
 > Cesar corrió `verify.sh` en su máquina: **`156 proven · 2 not proven ·
 > 0 failed`**. Las dos fallas del día anterior están cerradas, y eran la misma

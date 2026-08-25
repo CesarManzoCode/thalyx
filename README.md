@@ -136,6 +136,19 @@ decree calls abstention the most important measurement, so that is the largest
 open result in the project. The grammar does not help — it constrains the
 *shape* of an answer, never its truth.
 
+**New, and proven only in part.** Thalyx can now run a program nobody signed.
+`ejecutar <ruta>` confines a foreign binary exactly the way it confines a module
+— its own cgroup, its own user, a pivoted root, the same syscall filter — and
+gives it **no channel to Thalyx's API and no unconfined mode**, because the
+signature that justifies both is what a guest does not have. It sees its own
+directory, the read-only system paths, and whatever `leyendo`/`escribiendo`
+named and a human confirmed at the terminal. That was the point blocking the
+project's own bar, which is a foreign agent working here. What is proven so far
+is everything around the run — the rehearsal, the refusal when the human says
+no, the journal calling it `run_foreign`, the structured face declining to
+consent on a human's behalf. What a confined guest can *see* needs a machine
+with the LSM attached, and is `NOT PROVEN` until the next run there.
+
 **Not proven.** `thalyx_watch` — the filesystem watcher, ten BPF hooks against
 the LSM's two — has never been loaded by Thalyx's own loader; `bpftool` still
 loads it, and *likely the same loader works* is not *proven*. An internal disk
