@@ -302,7 +302,7 @@ arriba describe un sistema en el que hoy **Claude Code no arrancaría**.
 
 | | Qué falta |
 |---|---|
-| **G1** | Ejecutar procesos: **lanzar** y **esperar**. *Matar* y *ver qué corre* existen desde el 2026-08-23 — ver [[Procesos]] — y son la mitad que no necesitaba decidir nada sobre módulos firmados. **Medido el 2026-08-23: éste es el que bloquea**, no el filtro de llamadas ni las rutas. Ver [[Que-Necesita-Un-Agente-Ajeno]] |
+| **G1** | ~~Ejecutar procesos: **lanzar** y **esperar**~~ — **construido el 2026-08-25 como `ejecutar`**, ver [[Programas-Ajenos]]. *Matar* y *ver qué corre* existían desde el 2026-08-23 ([[Procesos]]); lo que faltaba era lanzar algo que nadie firmó, y la decisión que lo destrabó fue **no tocar la firma**: dos verbos, y un invitado nunca se vuelve módulo. Se confina igual, sin modo degradado, y ve sólo lo que se nombró |
 | **G2** | Un runtime en el que un agente ajeno pueda correr. Con forma concreta desde el 2026-08-23: **la imagen no tiene libc** y el agente lo pide con el enlazador antes que nada |
 | **G3** | Red |
 | **G4** | Control de versiones, o la razón escrita de por qué no hace falta |
@@ -368,12 +368,12 @@ derecha está decidido**; es el catálogo, no un plan.
 | D1 | Ensayo en todo verbo que cambia | **Hecho en ocho de nueve** — archivos, `matar`, y desde el 2026-08-23 `instalar`, `revertir`, `instalar-en` y `apagar`. Falta `correr`, y dice que no puede |
 | D2 | El intento con nombre | **Hecho** — `intento empezar/confirmar/abandonar`; la política probada aquí, el Btrfs en la etapa 26 |
 | D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
-| E1 | El agente ajeno como tarea con concesión | **Bloqueado por G1 y G2**, no por dificultad: no hay a qué darle la concesión |
+| E1 | El agente ajeno como tarea con concesión | **Ya no lo bloquea G1**, que está construido desde el 2026-08-25: hay a qué darle la concesión. Lo que le falta es que expire y que sobreviva a la corrida, más G2 dentro de la imagen |
 | E2 | Pedir permiso en caliente | Fuera de la v1 de la API por decreto |
 | E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
 | F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
-| G1–G4 | El piso | No construido, y es lo que bloquea la vara. **G1 y G2 medidos el 2026-08-23** y con eso dejaron de ser una suposición: ver [[Que-Necesita-Un-Agente-Ajeno]]. El filtro de llamadas dejó de estar en la lista el 2026-08-24: 41 de 41 |
+| G1–G4 | El piso | **G1 construido el 2026-08-25** ([[Programas-Ajenos]]); quedan G2, G3 y G4. El filtro de llamadas dejó de estar en la lista el 2026-08-24: 41 de 41 |
 
 **Y desde el 2026-08-24 hay una segunda fila que no estaba en el catálogo:
 el modelo puede proponer los treinta y nueve `op` del catálogo, y la lista de

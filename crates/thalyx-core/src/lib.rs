@@ -13,6 +13,7 @@ pub mod attempt;
 pub mod bundle;
 pub mod commit;
 pub mod fault;
+pub mod foreign;
 pub mod install;
 pub mod keystore;
 pub mod permissions;
@@ -29,6 +30,7 @@ pub mod test_support;
 pub mod trusted_path;
 pub mod uids;
 
+pub use foreign::{ForeignOutcome, ForeignRequest, run_foreign};
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
 pub use run::{RunOutcome, RunRequest, run};
 pub use store::Store;
@@ -223,6 +225,35 @@ pub enum CoreError {
     NothingCanEnforce {
         module_id: String,
         permissions: usize,
+    },
+
+    /// A path the human named that this will not execute, and why.
+    ///
+    /// One variant with a reason rather than four variants, because the caller
+    /// does the same thing with all of them — says it back — and the human's
+    /// next move depends on the reason and not on the discriminant.
+    #[error("`{path}` is not something I can run: {reason}")]
+    NotExecutable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
+    /// The foreign half of `NothingCanEnforce`, and deliberately not the same
+    /// variant.
+    ///
+    /// The module message ends by offering `--unconfined`. There is no such
+    /// mode for a program nobody signed — see
+    /// `vault/02-Arquitectura/Programas-Ajenos.md` — so pointing at one would
+    /// be telling the human to do something that does not exist.
+    #[error(
+        "refusing to run `{program}`: the kernel policy map is not loaded, so none of the \
+         {grants} thing(s) this was granted would be enforced.\n  \
+         Load it with `make -C lsm load`. Nobody signed this program, so there is no \
+         unconfined mode to fall back to."
+    )]
+    NothingCanEnforceForeign {
+        program: std::path::PathBuf,
+        grants: usize,
     },
 
     #[error(

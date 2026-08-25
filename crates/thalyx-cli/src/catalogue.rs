@@ -461,6 +461,22 @@ pub const VERBS: &[Verb] = &[
         summary: "What is installed on this machine.",
     },
     Verb {
+        id: "execute",
+        names: &["ejecutar", "execute"],
+        takes: &["path", "arguments"],
+        flags: &["leyendo", "reading", "escribiendo", "writing"],
+        answers: Some("execute"),
+        changes: true,
+        errors: &[
+            "nothing_asked",
+            "grant_without_path",
+            "needs_a_human",
+            "unclosed_quote",
+            "trailing_backslash",
+        ],
+        summary: "Run a program nobody signed, confined, after a human says yes.",
+    },
+    Verb {
         id: "run",
         names: &["correr", "run"],
         takes: &["module-id"],
@@ -787,6 +803,10 @@ mod tests {
                 "stop",
                 "install",
                 "run",
+                // The only entry here whose change is somebody else's code
+                // running. It is on this list for the same reason `stop` is:
+                // what it does cannot be taken back once it has happened.
+                "execute",
                 "rollback",
                 "install_onto",
                 "power_off",

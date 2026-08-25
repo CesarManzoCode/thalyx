@@ -861,6 +861,11 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
         // real form cannot be taken back. It answers with everything that would
         // let somebody notice they typed the wrong four digits.
         "stop" => return crate::proc::rehearse_stop(arguments, face),
+        // Worth more here than anywhere else: the input that does the damage
+        // is a path to somebody else's code, and the wrong one and the right
+        // one differ by a few characters that the confirmation will draw
+        // either way.
+        "execute" => return crate::foreign::rehearse(arguments, face),
         // `intento` is the one changing verb that already answers this, and it
         // answers it better than a rehearsal could: `intento` alone says what
         // abandoning would cost right now, and `intento abandonar` without the

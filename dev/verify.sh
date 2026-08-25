@@ -5031,6 +5031,160 @@ else
     fi
 fi
 
+step "36. a program nobody signed runs, confined, and only after a human says yes"
+
+# G1, `vault/02-Arquitectura/Programas-Ajenos.md`. The bar of
+# `Filosofia-Fundacional.md` is a foreign agent working here, and until this
+# verb existed the honest answer was that Thalyx could not start one: `correr`
+# takes installed, signed modules and a foreign agent is neither.
+#
+# The suite already asks `run_foreign` these questions from inside the process.
+# What this stage adds is the thing rule 1 exists for: the real binary, at a
+# real prompt, on a real terminal, answering a real `y`. Every defect this
+# project has found came from running it.
+#
+# Rule 4 shapes the whole stage. The guest is asked about two paths in one run
+# — one granted, one not — and the *same script* is run outside the sandbox
+# first. Without that column, "it could not see the file" and "there was no
+# file" are the same output.
+
+EXEC_STORE="$WORK/exec-store"
+mkdir -p "$EXEC_STORE"
+
+EXEC_HOME="$WORK/exec-guest"
+EXEC_GRANTED="$WORK/exec-granted"
+EXEC_HIDDEN="$WORK/exec-hidden"
+mkdir -p "$EXEC_HOME" "$EXEC_GRANTED" "$EXEC_HIDDEN"
+
+printf 'granted content\n' > "$EXEC_GRANTED/note"
+printf 'never granted\n'   > "$EXEC_HIDDEN/secret"
+
+cat > "$EXEC_HOME/guest" <<GUEST
+#!/bin/sh
+cat $EXEC_GRANTED/note
+[ -e $EXEC_HIDDEN/secret ] && echo REACHABLE || echo absent
+GUEST
+chmod +x "$EXEC_HOME/guest"
+
+# --- the outside column, before anything is confined ----------------------
+#
+# The same script, unconfined, on this machine. It must see both, or the run
+# below proves nothing: a guest that saw neither would look identical to a
+# sandbox that worked and to a fixture that was never written.
+OUTSIDE=$("$EXEC_HOME/guest" 2>&1 | tr -d '\r')
+if [ "$OUTSIDE" = "granted content
+REACHABLE" ]; then
+    proven "the control: outside the sandbox the same program reaches both paths"
+else
+    failed "the control did not behave: outside the sandbox the guest said [$OUTSIDE]"
+fi
+
+at_the_guest_prompt() {
+    printf '%s\n' "$@" | \
+        THALYX_ROOT="$EXEC_STORE" "$THALYX" dev pty -- "$THALYX" session 2>&1 | tr -d '\r'
+}
+
+# --- what a program is told before it exists ------------------------------
+at_the_guest_prompt "ensayo ejecutar leyendo $EXEC_GRANTED $EXEC_HOME/guest" salir \
+    > "$WORK/exec-rehearse.log"
+if grep -q "would run: $EXEC_HOME/guest" "$WORK/exec-rehearse.log" &&
+   grep -q "Nothing ran" "$WORK/exec-rehearse.log"; then
+    proven "\`ensayo ejecutar\` resolves the program, says what it would reach, and runs nothing"
+else
+    failed "the rehearsal did not answer; see $WORK/exec-rehearse.log"
+fi
+
+# --- silence is not consent -----------------------------------------------
+#
+# Answered with `n`, and checked by what did **not** happen on the host rather
+# than by what the session printed: a refusal that printed the right sentence
+# and ran the program anyway would pass a check that only read the log.
+REFUSAL_MARK="$EXEC_GRANTED/the-guest-was-here"
+rm -f "$REFUSAL_MARK"
+cat > "$EXEC_HOME/marker" <<MARKER
+#!/bin/sh
+touch $REFUSAL_MARK
+MARKER
+chmod +x "$EXEC_HOME/marker"
+
+at_the_guest_prompt "ejecutar escribiendo $EXEC_GRANTED $EXEC_HOME/marker" n salir \
+    > "$WORK/exec-refused.log" 2>&1
+if [ -e "$REFUSAL_MARK" ]; then
+    failed "a program ran after the human said no; the marker at $REFUSAL_MARK is there"
+elif grep -q "Not run" "$WORK/exec-refused.log"; then
+    proven "a program nobody signed does not run when the human says no"
+else
+    failed "the refusal did not report itself; see $WORK/exec-refused.log"
+fi
+
+# --- and the run itself ---------------------------------------------------
+at_the_guest_prompt "ejecutar leyendo $EXEC_GRANTED $EXEC_HOME/guest" y salir \
+    > "$WORK/exec-run.log" 2>&1
+
+if grep -q "granted content" "$WORK/exec-run.log"; then
+    proven "a program nobody signed ran, and what it wrote came back through Thalyx"
+
+    # Both halves of the same run, read together on purpose: whether it reached
+    # what was granted is only meaningful beside whether it reached what was not.
+    if grep -q "REACHABLE" "$WORK/exec-run.log"; then
+        failed "the guest reached a path nobody granted it; see $WORK/exec-run.log"
+    elif grep -q "absent" "$WORK/exec-run.log"; then
+        proven "the guest reached the path it was granted and not the one beside it"
+    else
+        unproven "the guest said neither; see $WORK/exec-run.log"
+    fi
+
+    if grep -q "ran as user" "$WORK/exec-run.log"; then
+        proven "the guest ran as a user of its own rather than as Thalyx"
+    else
+        failed "the guest ran as Thalyx; see $WORK/exec-run.log"
+    fi
+elif grep -q "policy map is not loaded" "$WORK/exec-run.log"; then
+    # The decree's own refusal, and it is the right outcome on a machine with
+    # nothing to enforce — never a pass, because nothing was confined.
+    #
+    # It does say one thing, and it is worth saying: that sentence comes from
+    # the core, which is only reached after the `y` was read and accepted. So a
+    # machine that reports this has exercised the whole path down to the
+    # enforcement gate, and what it has not exercised is the guest.
+    unproven "nothing here enforces a policy, so the \`y\` was taken and no guest was launched: what a guest can see did not run"
+else
+    failed "the guest did not run; see $WORK/exec-run.log"
+fi
+
+# --- the record calls it what it is ---------------------------------------
+#
+# `Marcado-de-Origen`: what a program nobody signed did has to be separable
+# from what Thalyx did by reading the journal, not by remembering.
+if [ -f "$EXEC_STORE/journal.jsonl" ]; then
+    if grep -q '"operation":"run_foreign"' "$EXEC_STORE/journal.jsonl"; then
+        proven "the journal calls a guest a guest, and never \`run_module\`"
+    else
+        failed "the journal did not record the guest; see $EXEC_STORE/journal.jsonl"
+    fi
+else
+    unproven "no journal was written, so what it would have called the guest is unknown"
+fi
+
+# --- and the structured face refuses, in the same shape as everything else -
+printf '%s\n' "structured on" "ejecutar $EXEC_HOME/guest" salir | \
+    THALYX_ROOT="$EXEC_STORE" "$THALYX" session > "$WORK/exec-machine.log" 2>&1
+
+EXEC_SAID=$(grep '^{' "$WORK/exec-machine.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    said = json.loads(line)
+    if said.get("op") == "execute":
+        print(said.get("error", "none"), said.get("remedy", "none"), said.get("ran"))
+        break
+' 2>/dev/null)
+
+if [ "$EXEC_SAID" = "needs_a_human confirm_at_a_terminal False" ]; then
+    proven "the structured face refuses to run an unsigned program and names the way out"
+else
+    failed "the structured face answered [$EXEC_SAID]; see $WORK/exec-machine.log"
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

@@ -161,10 +161,12 @@ que con cualquier otra cosa.
 De los cuatro puntos de `G` en [[Superficie-para-el-LLM]], esta medición mueve
 uno y no mueve tres:
 
-- **G1, ejecutar un proceso arbitrario** — sigue entero. No es una llamada que
-  falte ni una ruta: es que hoy `correr` sólo lanza módulos instalados y
-  firmados, y un agente ajeno por definición no es ninguna de las dos cosas.
-  **Éste es el que bloquea, y la medición lo confirma en vez de contradecirlo.**
+- **G1, ejecutar un proceso arbitrario** — **construido el 2026-08-25**, y lo
+  que decía esta línea sigue siendo por qué costó tanto: no era una llamada que
+  faltara ni una ruta, era que `correr` sólo lanza módulos instalados y
+  firmados. La forma que lo destrabó fue **no tocar la firma**: `ejecutar` es
+  otro verbo, un invitado nunca se vuelve módulo, y no recibe canal con la API.
+  Ver [[Programas-Ajenos]].
 - **G2, un runtime donde pueda correr** — es la pregunta del libc de arriba, y
   ahora tiene una forma concreta: o la imagen deja de llevar un solo programa,
   o los módulos se enlazan estáticamente, o el agente ajeno vive en otra parte.

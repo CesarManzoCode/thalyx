@@ -208,6 +208,20 @@ to four thousand declared names over this repository's own sources. The BPF LSM
 has denied a real network connection to a process that lacked the permission,
 and only to that process.
 
+**Running a program nobody signed — built 2026-08-25, proven in part.**
+`ejecutar <ruta>` is stage 36. It confines a foreign binary the way a module is
+confined and withholds the two things a signature justifies: there is no channel
+to Thalyx's API, so nothing can be installed or granted through this verb, and
+there is no unconfined mode, so a machine that cannot enforce refuses instead of
+running it with a warning. What has been exercised in a container: the control
+column (the same script outside the sandbox reaches both paths, or "it could not
+reach them" inside means nothing), the rehearsal, a `n` at the prompt leaving
+nothing on disk, the journal recording `run_foreign` and never `run_module`, and
+the structured face refusing with `needs_a_human`. What a confined guest can see
+needs the LSM attached and is `NOT PROVEN` until the next run on hardware — and
+the `NOT PROVEN` line says one true thing besides: the refusal comes from the
+core, which is only reached after the `y` was read and accepted.
+
 **Still unproven, and named as such by the run itself.** `verify.sh`'s summary
 is the authority on this, not a count written down here: whatever it could not
 exercise on the day it ran comes back as `NOT PROVEN`, with the reason, and is

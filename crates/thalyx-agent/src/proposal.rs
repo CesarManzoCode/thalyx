@@ -149,6 +149,15 @@ pub enum ProposedOperation {
 
     InstallOnto,
 
+    /// Run a program nobody signed, confined —
+    /// `vault/02-Arquitectura/Programas-Ajenos.md`.
+    ///
+    /// Proposable like the rest of the catalogue, and no weaker for it: the
+    /// verb refuses on the structured face and asks a human at a terminal
+    /// whatever proposed it. A model that names this has named a question, not
+    /// an act.
+    Execute,
+
     Leave,
 
     PowerOff,
@@ -206,6 +215,7 @@ impl ProposedOperation {
             ProposedOperation::Disks => "disks",
             ProposedOperation::Network => "network",
             ProposedOperation::InstallOnto => "install_onto",
+            ProposedOperation::Execute => "execute",
             ProposedOperation::Leave => "leave",
             ProposedOperation::PowerOff => "power_off",
         }
@@ -250,7 +260,7 @@ impl ProposedOperation {
     }
 
     /// Every operation the agent can propose.
-    pub const ALL: [ProposedOperation; 40] = [
+    pub const ALL: [ProposedOperation; 41] = [
         ProposedOperation::Nothing,
         ProposedOperation::List,
         ProposedOperation::Read,
@@ -289,6 +299,7 @@ impl ProposedOperation {
         ProposedOperation::Disks,
         ProposedOperation::Network,
         ProposedOperation::InstallOnto,
+        ProposedOperation::Execute,
         ProposedOperation::Leave,
         ProposedOperation::PowerOff,
     ];
