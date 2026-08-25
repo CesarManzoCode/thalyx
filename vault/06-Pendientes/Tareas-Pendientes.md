@@ -35,6 +35,19 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
       el mismo hueco que [[Cargador-BPF-Propio]] cerró para cargar, sin cerrar
       para el modo. Barato: una escritura de cuatro bytes en un mapa que ya se
       abre.
+- [ ] **Cuánto dura una concesión a un invitado.** Encontrado el 2026-08-25 al
+      arreglar el piso de lectura (ver [[Programas-Ajenos]], revisiones). Una
+      entrada de política tiene **una** fecha de vencimiento, y las concesiones
+      de `ejecutar` son JIT: **treinta segundos**. Pasados, expira la entrada
+      entera —el piso de lectura incluido—, así que `ejecutar leyendo <ruta> …`
+      no puede correr más de medio minuto. Sin concesiones no vence, que es por
+      qué `node --version` sí sirve. **La vara del proyecto es un agente ajeno
+      trabajando aquí, y un agente corre minutos**, así que esto la bloquea.
+      Es decisión de Cesar y no un arreglo: las opciones son que la concesión
+      dure lo que dure la corrida —`release()` ya la retira al salir, pero se
+      pierde el respaldo del kernel contra un userspace colgado—, que el piso no
+      venza aunque las concesiones sí —cuesta cambiar el programa BPF—, o subir
+      el plazo, que sólo mueve el problema. Cruza con `E1`.
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [x] **Consumir el ringbuf `thalyx_mutations`** — construido el 2026-08-10 como el verbo `cambios`, punto B3 de [[Superficie-para-el-LLM]]. `crates/thalyx-watch/src/ring.rs` sigue el protocolo del anillo sobre bytes (diez pruebas, incluido el registro que cruza el final) y `thalyx-syscall` hace los dos `mmap`. **Consumirlo no era código BPF**, que fue la razón por la que estuvo parado: el productor ya estaba escrito y el consumidor es código de usuario. Lo que un anillo **no** puede dar y la respuesta dice: no es una historia —leerlo lo vacía— y no nombra archivos, sólo cgroup, pid, tipo y programa. Para reindexar de forma incremental hace falta además que alguien lo vacíe continuamente y guarde lo vaciado, y **eso es una pieza que corre todo el tiempo, que la imagen no tiene**: es una decisión de Cesar, no un pendiente de código. Etapa 27 de `verify.sh`.

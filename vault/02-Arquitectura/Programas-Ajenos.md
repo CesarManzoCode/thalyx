@@ -183,6 +183,55 @@ no niega no es un confinamiento.
 **Lo que esto abrió.** Cambiar el modo todavía se hace con `bpftool`, que la
 imagen no tiene y no va a tener. Queda escrito en [[Tareas-Pendientes]].
 
+### 2026-08-25 — un invitado sin concesiones no podía ni existir
+
+**Qué pasó.** Con el modo de enforcement ya corregido, Cesar corrió
+`ejecutar /usr/bin/node --version` — sin `leyendo`, sin `escribiendo`, el caso
+ordinario. El confinamiento se armó entero (cgroup 38600, usuario 700000,
+pivote, filtro de 130 llamadas) y murió antes de `node`:
+
+```
+thalyx: I/O error at /sys/fs/cgroup/thalyx/foreign.node-22.…/cgroup.procs:
+Operation not permitted
+```
+
+**Por qué.** Sin concesiones, la política sale `allowed=0x0`. El gancho
+`lsm/file_open` **no mira rutas**: mira si la operación es lectura o escritura y
+consulta el bit. Así que con `0x0` se niega *cualquier* apertura de archivo.
+
+El lanzador escribe su pid en `cgroup.procs` —desde **fuera** del cgroup, así que
+esa pasa— y acto seguido **lo vuelve a leer** para comprobar que la entrada tomó
+efecto. Esa lectura ya es desde dentro, y es la primera vez que la política del
+cgroup contesta algo. Ni siquiera llegaba a `exec`; y si hubiera llegado, abrir
+el binario también es una apertura de archivo.
+
+**Ya se había topado con esto, y se rodeó en vez de arreglarse.** La cabecera de
+`lsm/demo-enforcement.sh` dice que pone en el mapa *«filesystem allowed, network
+denied»*. Tenía que hacerlo: con el sistema de archivos negado, el `python3` que
+corre dentro del cgroup no habría arrancado, y el demo habría estado midiendo
+`exec` en vez de `connect`. Ese hecho nunca salió del script.
+
+**Qué dice ahora.** El espacio de nombres de montaje decide **qué** ve un
+programa confinado; la política decide **leer o escribir** sobre eso. Las dos
+sólo componen si el programa puede leer lo que se le montó. Así que la lectura
+de lo visible **no es una concesión**: es el piso que hace que el montaje
+signifique lo que al humano se le dijo que significa —«su propia carpeta, de
+sólo lectura, y las rutas de sistema»—, y `escribiendo` sigue siendo lo único
+que abre la escritura.
+
+Vive en `thalyx_permd::CONFINED_FLOOR`, se le da a la **política y nunca al
+perfil**: expresado como un permiso sobre `/` habría hecho que `RootFs` montara
+el sistema de archivos entero del anfitrión dentro del sandbox, que es lo
+contrario de lo que hace. Aplica a módulos igual que a invitados — un módulo sin
+permiso de lectura tampoco podía abrir su propio binario.
+
+**Lo que esto dejó ver, y no se cerró.** Una entrada de política tiene **una**
+fecha de vencimiento, y las concesiones de `ejecutar` son JIT: treinta segundos.
+Pasados, expira la entrada entera, el piso incluido. `ejecutar` sin concesiones
+no vence —no hay ninguna JIT—, pero **`ejecutar leyendo <ruta> …` no puede correr
+más de treinta segundos**, y la vara del proyecto es un agente que corre minutos.
+Está en [[Tareas-Pendientes]] y es una decisión de Cesar, no un arreglo.
+
 ## Relacionado
 - [[Superficie-para-el-LLM]]
 - [[Que-Necesita-Un-Agente-Ajeno]]

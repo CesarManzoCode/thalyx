@@ -133,6 +133,11 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
                 &permissions,
                 thalyx_permd::boot_ns(),
                 thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
+                // No floor. This binds a cgroup by hand, for inspection and
+                // for processes Thalyx did not start — so it has to write
+                // exactly what was asked for. A floor here would make the
+                // command's own report a lie about the map it just wrote.
+                0,
             )?;
 
             println!("{module_id} → cgroup {id}");

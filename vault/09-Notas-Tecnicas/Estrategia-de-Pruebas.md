@@ -3882,6 +3882,35 @@ anteriores están arriba en el propio comentario de `KernelStore`: preguntarle a
 `bpftool` por algo que `bpftool` no hizo. Ésta llega por el lado contrario —
 preguntarle al kernel algo cierto que no es lo que se necesitaba.
 
+## Regla derivada: un rodeo dentro de un fixture es un hallazgo que nadie escribió — 2026-08-25
+
+Media hora después de arreglar el modo de enforcement, el primer invitado que
+corrió bajo un kernel que **sí niega** murió antes de `exec`: sin concesiones la
+política sale `allowed=0x0`, `lsm/file_open` no mira rutas, y la primera lectura
+del lanzador después de entrar al cgroup es lo primero que esa política contesta.
+
+Lo que importa aquí no es el defecto. Es que **ya estaba escrito**, en la
+cabecera de `lsm/demo-enforcement.sh`:
+
+> *Creates one cgroup and puts a policy in the map for it: **filesystem
+> allowed**, network denied.*
+
+Quien escribió ese demo tuvo que permitir el sistema de archivos, porque si no
+el `python3` de adentro no arrancaba y el demo habría medido `exec` en vez de
+`connect`. O sea que **la conclusión —un proceso confinado necesita leer para
+existir— se descubrió, se rodeó, y se quedó dentro del script como un detalle de
+montaje.**
+
+Y nada la contradecía porque nada más corría bajo enforcement: `verify.sh` va de
+principio a fin en modo observación, así que durante semanas el único código que
+se ejecutó con la política aplicada de verdad fue el de ese demo.
+
+> Cuando un fixture tenga que **aflojar algo** para que el sujeto arranque, esa
+> línea no es configuración: es una medición. Escríbela donde se busque un
+> decreto, no donde se busque un fixture. Un rodeo que se queda en el arnés se
+> vuelve a encontrar desde cero, con el sistema real, delante de la persona que
+> confió en él.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -14,9 +14,73 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Lo primero que `ejecutar` dijo en su máquina encontró un hueco — 2026-08-25
+> ## Y el segundo intento encontró el de abajo — 2026-08-25
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Con el modo arreglado, Cesar corrió otra vez `ejecutar /usr/bin/node --version`
+> — sin `leyendo`, sin `escribiendo`. El confinamiento se armó **entero**:
+> cgroup 38600, usuario 700000, pivote, red cortada, 130 llamadas. Y murió
+> antes de `node`:
+>
+> ```
+> thalyx: I/O error at /sys/fs/cgroup/thalyx/foreign.node-22.…/cgroup.procs:
+> Operation not permitted
+> ```
+>
+> ### Qué pasaba
+>
+> Sin concesiones la política sale `allowed=0x0`, y el gancho `lsm/file_open`
+> **no mira rutas**: mira si es lectura o escritura y consulta el bit. Con `0x0`
+> se niega *cualquier* apertura de archivo.
+>
+> El lanzador escribe su pid en `cgroup.procs` desde **fuera** del cgroup —esa
+> pasa— y enseguida **lo vuelve a leer** para comprobar que la entrada tomó.
+> Esa lectura ya es desde dentro. Ni siquiera llegaba a `exec`, y abrir el
+> binario también habría sido una apertura de archivo.
+>
+> ### Lo que más vale la pena de esto
+>
+> **Ya estaba encontrado, y rodeado.** La cabecera de `lsm/demo-enforcement.sh`
+> dice que pone en el mapa *«filesystem allowed, network denied»*. Tenía que
+> hacerlo: con el sistema de archivos negado, el `python3` de adentro no
+> arrancaba. Esa conclusión —un proceso confinado necesita leer para existir—
+> se descubrió, se rodeó, y **se quedó dentro del script**. Nada la
+> contradecía porque nada más corría bajo enforcement: `verify.sh` va entero en
+> modo observación.
+>
+> ### Cómo quedó
+>
+> El montaje decide **qué** ve un programa confinado; la política decide **leer
+> o escribir** sobre eso. Las dos sólo componen si puede leer lo que se le
+> montó, así que la lectura de lo visible **no es una concesión**: es el piso
+> (`thalyx_permd::CONFINED_FLOOR`) que hace que el montaje signifique lo que la
+> confirmación ya prometía — *«su propia carpeta, de sólo lectura, y las rutas
+> de sistema»*. `escribiendo` sigue siendo lo único que abre la escritura.
+>
+> Se le da a la **política y nunca al perfil**: como permiso sobre `/` habría
+> hecho que `RootFs` montara el sistema de archivos entero del anfitrión dentro
+> del sandbox. Aplica a módulos igual — uno sin permiso de lectura tampoco podía
+> abrir su propio binario. `thalyx enforce apply`, que ata un cgroup a mano para
+> inspección, **no** lleva piso: tiene que escribir exactamente lo que se le
+> pidió.
+>
+> Y las dos aperturas de `cgroup.procs` ahora dan errores distintos. Decían la
+> misma frase, y esa frase era toda la evidencia de un fallo cuyas dos causas
+> candidatas necesitaban arreglos opuestos.
+>
+> ### Lo que abrió, y es tuyo
+>
+> Una entrada de política tiene **una** fecha de vencimiento, y las concesiones
+> de `ejecutar` son JIT: **treinta segundos**. Pasados, expira la entrada
+> entera, el piso incluido. Sin concesiones no vence — por eso `node --version`
+> sirve. Pero **`ejecutar leyendo <ruta> …` no puede correr más de medio
+> minuto**, y la vara es un agente que corre minutos. Está en
+> [[Tareas-Pendientes]] y es una decisión, no un arreglo.
+
+> ## Lo primero que `ejecutar` dijo en su máquina encontró un hueco — 2026-08-25
+>
+> Lo de arriba es lo que se vio en cuanto esto se arregló.
 >
 > Cesar corrió `ejecutar /usr/bin/node --version` en su Fedora, justo después de
 > `verify.sh`, y leyó:

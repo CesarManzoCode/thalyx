@@ -5094,6 +5094,15 @@ cat $EXEC_GRANTED/note
 GUEST
 chmod +x "$EXEC_HOME/guest"
 
+# A guest that asks for nothing and only has to start. Its own `/module` and
+# the system paths are all it touches — which is exactly what the confirmation
+# promises, and exactly what a policy of `allowed=0x0` refused.
+cat > "$EXEC_HOME/bare" <<'BARE'
+#!/bin/sh
+echo "a guest with nothing granted ran"
+BARE
+chmod +x "$EXEC_HOME/bare"
+
 # --- the outside column, before anything is confined ----------------------
 #
 # The same script, unconfined, on this machine. It must see both, or the run
@@ -5223,6 +5232,28 @@ elif grep -q "policy map is not loaded" "$WORK/exec-run.log"; then
     unproven "nothing here enforces a policy, so the \`y\` was taken and no guest was launched: what a guest can see did not run"
 else
     failed "the guest did not run; see $WORK/exec-run.log"
+fi
+
+# --- a guest granted nothing still gets to be a program --------------------
+#
+# `ejecutar <ruta>` with no words after it is the ordinary case, and until
+# 2026-08-25 it was the broken one. With no grants the policy came out
+# `allowed=0x0`, `lsm/file_open` is path-blind, and the launcher died on the
+# first file it opened after joining the cgroup — reading `cgroup.procs` back
+# to check the join had taken. Nothing had ever reached `exec`.
+#
+# The confirmation the human reads promises "its own directory, read-only, and
+# the system paths". This is the check that the promise is true.
+if [ "$EXEC_FLIPPED" = 1 ]; then
+    at_the_guest_prompt "ejecutar $EXEC_HOME/bare" y salir \
+        > "$WORK/exec-bare.log" 2>&1
+    if grep -q "a guest with nothing granted ran" "$WORK/exec-bare.log"; then
+        proven "a guest granted nothing runs: it can read what Thalyx mounted for it"
+    elif grep -q "cgroup.procs\|could not be read back" "$WORK/exec-bare.log"; then
+        failed "a guest granted nothing could not read its own cgroup back; see $WORK/exec-bare.log"
+    else
+        failed "a guest granted nothing did not run; see $WORK/exec-bare.log"
+    fi
 fi
 
 # --- the record calls it what it is ---------------------------------------
