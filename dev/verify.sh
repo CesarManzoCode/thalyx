@@ -97,6 +97,42 @@ for row in rows:
 # it reads what the *previous* stage left behind — which is the question.
 GUARD_EXPECT_OBSERVING=1
 
+# Whether this machine's loop driver makes partitions at all.
+#
+# A plain MBR, which every kernel since forever can parse, on a loop device of
+# its own. It is the control that tells "Thalyx wrote a table the kernel would
+# not take" apart from "nothing here could have worked" — and it already
+# existed, inline, consulted by exactly one of the two checks in §20 that
+# depend on it.
+#
+# The other one, the install itself, reported `FAILED` on 2026-08-26 in a
+# container whose loop devices support no partitions. Thalyx had refused to
+# finish because the kernel came back with 0 partitions of the 2 it wrote,
+# which is fail-closed and correct and even says so in its own words — and the
+# report called it "Something Thalyx claims is not true on this machine".
+# Counting a check the machine cannot make as a failure is the same mistake as
+# counting it as a pass, in the mirror.
+loop_partitions_work() {
+    command -v losetup > /dev/null 2>&1 || return 1
+
+    local image="$WORK/mbr-probe.img"
+    dd if=/dev/zero of="$image" bs=1M count=64 status=none
+    printf '\x80\x00\x02\x00\x83\xff\xff\xff\x00\x08\x00\x00\x00\x80\x00\x00' \
+        | dd of="$image" bs=1 seek=446 conv=notrunc status=none
+    printf '\x55\xaa' | dd of="$image" bs=1 seek=510 conv=notrunc status=none
+
+    local device parts=0
+    device="$(losetup -f -P --show "$image" 2>/dev/null || true)"
+    if [ -n "$device" ]; then
+        parts="$(find "/sys/block/$(basename "$device")" -mindepth 1 -maxdepth 1 \
+                 -name "$(basename "$device")p*" | wc -l)"
+        losetup -d "$device" 2>/dev/null
+    fi
+    rm -f "$image"
+
+    [ "$parts" != 0 ]
+}
+
 guard_check() {
     [ "$GUARD_EXPECT_OBSERVING" = 1 ] || return 0
     [ "$LOADED" = 1 ] || return 0
@@ -3109,9 +3145,25 @@ else
         "$THALYX" install "$ILOOP" --kernel "$IKERNEL" --plan \
             > "$WORK/install-plan.log" 2>&1
 
+        # Asked before the install, so its answer is about the machine and not
+        # about anything Thalyx has just written to this disk.
+        if loop_partitions_work; then LOOP_PARTS=1; else LOOP_PARTS=0; fi
+
         if "$THALYX" install "$ILOOP" --kernel "$IKERNEL" --yes --workspace "$IWS" \
                 > "$WORK/install.log" 2>&1; then
             proven "Thalyx partitioned a disk and made it a machine, with no sgdisk and no mkfs"
+        elif [ "$LOOP_PARTS" = 0 ]; then
+            # Thalyx refuses to finish an install whose partitions the kernel
+            # never made, which is the right answer and is not a defect. On a
+            # machine where a plain MBR produces nothing either, there is
+            # nothing here to conclude about Thalyx at all.
+            GAP="loop devices here support no partitions, so \`thalyx install\` could not finish and nothing about it was measured"
+            if [ "${THALYX_REQUIRE_LOOP_PARTITIONS:-0}" = 1 ]; then
+                failed "$GAP"
+            else
+                unproven "$GAP"
+            fi
+            excerpt "$WORK/install.log"
         else
             failed "thalyx install did not finish; see $WORK/install.log"
             tail -30 "$WORK/install.log" | sed 's/^/     /'
@@ -3124,22 +3176,12 @@ else
         if [ -d "$P1" ] && [ -d "$P2" ]; then
             proven "the kernel parsed the table and made both partitions, read from sysfs"
         else
-            GAP="this kernel made no partitions from the table Thalyx wrote"
-            # Told apart from Thalyx being wrong by a plain MBR, which every kernel
-            # can parse — if that produces no partitions either, the loop driver
-            # here supports none and there is nothing to conclude about the GPT.
-            dd if=/dev/zero of="$WORK/mbr.img" bs=1M count=64 status=none
-            printf '\x80\x00\x02\x00\x83\xff\xff\xff\x00\x08\x00\x00\x00\x80\x00\x00' \
-                | dd of="$WORK/mbr.img" bs=1 seek=446 conv=notrunc status=none
-            printf '\x55\xaa' | dd of="$WORK/mbr.img" bs=1 seek=510 conv=notrunc status=none
-            MLOOP="$(losetup -f -P --show "$WORK/mbr.img" 2>/dev/null || true)"
-            MPARTS=0
-            if [ -n "$MLOOP" ]; then
-                MPARTS="$(find "/sys/block/$(basename "$MLOOP")" -mindepth 1 -maxdepth 1 \
-                          -name "$(basename "$MLOOP")p*" | wc -l)"
-                losetup -d "$MLOOP" 2>/dev/null
-            fi
-            if [ "$MPARTS" = 0 ]; then
+            # The same control as above, and the same answer: probed once,
+            # before the install, so the two verdicts in this stage can never
+            # disagree about what kind of machine this is. They used to, and
+            # the disagreement was one FAILED and one NOT PROVEN for a single
+            # fact.
+            if [ "${LOOP_PARTS:-0}" = 0 ]; then
                 GAP="loop devices here support no partitions at all, so nothing could \
 read what Thalyx wrote"
                 if [ "${THALYX_REQUIRE_LOOP_PARTITIONS:-0}" = 1 ]; then
@@ -3148,7 +3190,8 @@ read what Thalyx wrote"
                     unproven "$GAP"
                 fi
             else
-                failed "$GAP, and a plain MBR on the same machine produced $MPARTS —"
+                failed "this kernel made no partitions from the table Thalyx wrote, and a \
+plain MBR on the same machine does produce them —"
                 echo "     so the partition table Thalyx wrote is the thing at fault"
             fi
         fi

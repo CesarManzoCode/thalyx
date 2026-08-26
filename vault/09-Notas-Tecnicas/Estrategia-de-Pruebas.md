@@ -4198,6 +4198,50 @@ la prueba:
 Se comprobó con una mutación: devolviendo el ingreso a `enter` —el orden viejo—
 la prueba falla nombrando al lanzador exterior dentro del cgroup.
 
+## Regla derivada: contar como falla lo que la máquina no puede hacer es el mismo error, en espejo — 2026-08-26
+
+Encontrado corriendo `verify.sh` entero en el contenedor, que es algo que no se
+había hecho después de editarlo ciento veinte veces. Salía con código 1 y la
+línea *«Something Thalyx claims is not true on this machine»* por **una** falla:
+
+```
+FAILED  thalyx install did not finish; see .../install.log
+```
+
+Y el log decía, con las palabras de Thalyx:
+
+> *the kernel read /dev/loop0's new partition table and made 0 partition(s) of
+> the 2 that were written.*
+
+O sea que Thalyx se negó a terminar una instalación cuyas particiones el kernel
+nunca creó — falla cerrada, correcta, y explicada por él mismo. Los dispositivos
+loop de este contenedor no soportan particiones. **No había nada que concluir
+sobre Thalyx**, y el guion lo contó como una afirmación falsa.
+
+Lo más incómodo: el control que lo distingue **ya existía en el mismo guion**, a
+veinte renglones de distancia — una MBR simple sobre otro loop, que todo kernel
+sabe parsear; si esa tampoco produce particiones, la máquina no puede y no hay
+juicio posible sobre la GPT. Ese control lo consultaba **una** de las dos
+comprobaciones de la etapa que dependen de él. La otra no. Así que un solo hecho
+del entorno producía un `NOT PROVEN` y un `FAILED` a la vez, en la misma etapa.
+
+> La regla 3 dice que no se cuenta como aprobado lo que la máquina no pudo
+> comprobar. **La otra mitad no estaba escrita: tampoco se cuenta como
+> reprobado.** Las dos convierten una propiedad de la máquina en una afirmación
+> sobre el sujeto, y la segunda además gasta el tiempo de alguien persiguiendo
+> un defecto que no existe.
+>
+> Y cuando un guion ya tiene el control que distingue las dos cosas, **úsalo en
+> todas las comprobaciones que dependen de él**, no en la que se te ocurrió
+> primero. Dos veredictos del mismo hecho que no coinciden es el arnés
+> contradiciéndose delante del lector.
+
+El sondeo se hace ahora una vez, antes de instalar nada, y las dos
+comprobaciones leen la misma respuesta. Con eso `verify.sh` sale **80 `PROVEN`,
+28 `NOT PROVEN`, 0 `FAILED`** y con código 0 en este contenedor, que es la
+primera vez: hasta hoy «el guion sale limpio aquí» no era una señal que se
+pudiera usar para nada.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
