@@ -51,6 +51,14 @@
 //! the two reads that remain (`cgroup.procs` and the module's own binary at
 //! `execve`) are what `permd::CONFINED_FLOOR` exists to allow.
 //!
+//! One consequence, small and worth being able to find: the profile's `memory`
+//! and `pids` limits are properties of the cgroup, so they now begin to apply
+//! at the join rather than at the first instruction of `enter`. What runs
+//! outside them is Thalyx assembling a root — five empty mount points and a
+//! `uid_map` — and the module's own tmpfs writes are all on the far side, so
+//! nothing a module does escapes its limits. Thalyx's helpers no longer spend
+//! the module's pid budget, which is the more honest accounting anyway.
+//!
 //! ## Failure is always closed
 //!
 //! Every step returns instead of continuing. A module that could not be
@@ -335,6 +343,16 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
         Ok(cgroup) => cgroup,
         Err(error) => return error,
     };
+    // `std::process::id()` is **1** here, and that is correct rather than a
+    // bug waiting to happen. `enter` already unshared `CLONE_NEWPID`, so this
+    // process is PID 1 of its own namespace, and the kernel resolves a pid
+    // written into `cgroup.procs` in the namespace of the task doing the
+    // writing (`cgroup_procs_write_start` → `find_task_by_vpid`). It reads back
+    // through the same translation, which is why `contains` below agrees.
+    //
+    // Under the old ordering this was a host pid, because the join happened
+    // before the unshare. Both work; they work for different reasons, and the
+    // one that looks wrong is the one in front of you.
     let pid = std::process::id();
     if let Err(error) = cgroup.join(pid) {
         return error;

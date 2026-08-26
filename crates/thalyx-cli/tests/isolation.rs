@@ -1277,3 +1277,128 @@ fn nothing_is_opened_for_writing_after_the_launcher_takes_the_module_s_identity(
             .join("\n")
     );
 }
+
+#[test]
+fn the_pid_the_launcher_writes_lands_the_right_task_in_the_cgroup() {
+    // The outside column for a subtlety the reorder of 2026-08-26 introduced,
+    // and the only place it can be seen.
+    //
+    // The join now happens in `init`, which is PID 1 of its own namespace — so
+    // `std::process::id()` is 1, and 1 is what gets written into `cgroup.procs`.
+    // That is correct only because the kernel resolves the number in the
+    // namespace of the task doing the writing. If it did not, writing "1" to a
+    // cgroup on the host would move **the machine's own init** into the
+    // module's cgroup, under the module's policy — which is not a bug that
+    // announces itself, and which nothing inside the sandbox could ever see.
+    //
+    // So this reads `cgroup.procs` from out here, in the host's pid namespace,
+    // with `std::fs` rather than through Thalyx: asking the code under test
+    // whether it put the right task in the right place is the failure mode this
+    // whole file exists to avoid.
+    let Some(arena) = arena("vpid") else { return };
+    let cgroup = cgroup_in(&arena);
+
+    let module = Module::with("sleep 3");
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), &[]).expect("rootfs");
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: cgroup.path().to_path_buf(),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: None,
+        channel_fd: None,
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .spawn()
+        .expect("launch");
+
+    // Poll rather than sleep once: a fixed wait is a race with a slow machine
+    // in one direction and wasted seconds in the other.
+    let procs = cgroup.path().join("cgroup.procs");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut members: Vec<i64> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        members = std::fs::read_to_string(&procs)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|pid| pid.parse().ok())
+            .collect();
+        if !members.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let outside = std::process::id() as i64;
+    let launcher = child.id() as i64;
+
+    // Corroborated here, while the module is still inside its `sleep`. The
+    // first version of this test waited for the launch to finish and then asked
+    // `/proc` about pids that had been gone for three seconds, which is a test
+    // measuring its own ordering rather than Thalyx's.
+    let mut corroborated = 0;
+    let name = cgroup
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a cgroup name")
+        .to_string();
+    for member in &members {
+        // Rule 10. A task that exited between the two reads cannot answer, and
+        // that is not the same as answering no.
+        let Ok(its_cgroup) = std::fs::read_to_string(format!("/proc/{member}/cgroup")) else {
+            continue;
+        };
+        assert!(
+            its_cgroup.contains(&name),
+            "pid {member} is listed in cgroup.procs and does not agree it is in \
+             this cgroup: {its_cgroup}"
+        );
+        corroborated += 1;
+    }
+
+    let _ = child.wait();
+
+    // The baseline: something joined at all. Without it every assertion below
+    // is true of an empty file, which is also what a launch that died early
+    // produces.
+    assert!(
+        !members.is_empty(),
+        "nothing ever appeared in {}, so the module never joined its cgroup",
+        procs.display()
+    );
+
+    // And the claim. `1` here would be the host's init, which is the whole
+    // reason this test exists; the test process and the launcher are the two
+    // other tasks that must never be in there.
+    assert!(
+        !members.contains(&1),
+        "pid 1 is in the module's cgroup: the vpid was written to the host's \
+         namespace and moved the machine's init under a module's policy"
+    );
+    assert!(
+        !members.contains(&outside),
+        "the test process itself is in the module's cgroup: {members:?}"
+    );
+    assert!(
+        !members.contains(&launcher),
+        "the outer launcher is in the module's cgroup, which it stopped joining \
+         when the join moved into `init`: {members:?}"
+    );
+
+    // And `/proc` agrees with `cgroup.procs`, which is a different answer from
+    // a different place. More than one member is the correct answer and was the
+    // first thing this test got wrong: the module is `sh`, `sleep` is its child,
+    // and a cgroup that did not hold the children would not confine much.
+    assert!(
+        corroborated > 0,
+        "not one of {members:?} could be corroborated at /proc, so cgroup.procs \
+         is the only thing that said any of this"
+    );
+}

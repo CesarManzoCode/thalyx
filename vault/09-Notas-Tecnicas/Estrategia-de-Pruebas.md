@@ -4158,6 +4158,46 @@ la otra pasó, que es toda máquina donde esto ha corrido. Y nombra `Operation n
 permitted` como su propio veredicto, para que si vuelve mande al lector a
 `RootFs::assemble` y no al módulo.
 
+## Regla derivada: un arreglo que cambia el mecanismo cambia lo que hay que medir — 2026-08-26
+
+Mover el ingreso al cgroup de `enter` a `init` arregló el defecto y **cambió en
+silencio otra cosa**: `init` es PID 1 de su propio espacio de nombres, así que
+`std::process::id()` ahora vale 1, y 1 es lo que se escribe en `cgroup.procs`.
+Antes era un pid del anfitrión, porque el ingreso ocurría antes del `unshare`.
+
+Las dos cosas funcionan, **y funcionan por razones distintas.** La nueva funciona
+sólo porque el kernel resuelve el número en el espacio de nombres de quien
+escribe. Si no lo hiciera, escribir «1» en un cgroup del anfitrión metería **al
+init de la máquina** dentro del cgroup del módulo, bajo la política del módulo —
+un defecto que no se anuncia, que ninguna prueba desde adentro del sandbox podría
+ver nunca, y que las 24 pruebas de aislamiento no habrían notado porque todas
+preguntan desde adentro.
+
+> Cuando un arreglo cambia **por qué** algo funciona, y no sólo si funciona, lo
+> que hay que medir cambió con él. La pregunta no es «¿sigue pasando la suite?»
+> — es «¿qué afirmación nueva estoy haciendo sin haberla escrito?».
+
+`the_pid_the_launcher_writes_lands_the_right_task_in_the_cgroup` es esa columna:
+lee `cgroup.procs` **desde fuera**, en el espacio de nombres del anfitrión, con
+`std::fs` y no a través de Thalyx, y afirma que el pid 1, el proceso de prueba y
+el lanzador exterior no están ahí; que lo que sí está lo corrobora `/proc`, que
+es otra respuesta desde otro lugar; y que al menos uno pudo corroborarse, porque
+una tarea que salió entre las dos lecturas no puede contestar y eso no es
+contestar que no.
+
+Dos cosas que la prueba tuvo mal antes de tenerlas bien, y las dos valen más que
+la prueba:
+
+- **Esperaba a que el módulo terminara y después le preguntaba a `/proc`** por
+  pids que llevaban tres segundos muertos. Una prueba midiendo su propio orden en
+  vez del del sujeto.
+- **Exigía exactamente un miembro.** Son dos: el módulo es `sh` y `sleep` es su
+  hijo. Un cgroup que no sostuviera a los hijos no estaría confinando gran cosa,
+  así que la suposición estaba mal, no el código.
+
+Se comprobó con una mutación: devolviendo el ingreso a `enter` —el orden viejo—
+la prueba falla nombrando al lanzador exterior dentro del cgroup.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
