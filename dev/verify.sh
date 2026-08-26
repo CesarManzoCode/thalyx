@@ -5351,10 +5351,18 @@ fi
 # machine that cannot enforce.
 EXEC_FLIPPED=0
 if [ "$LOADED" = 1 ]; then
-    if make -C lsm enforce > "$WORK/exec-enforce.log" 2>&1; then
-        EXEC_FLIPPED=1
-    else
+    if ! make -C lsm enforce > "$WORK/exec-enforce.log" 2>&1; then
         unproven "could not switch enforcement on ($(head -1 "$WORK/exec-enforce.log")), so the guest could not be launched"
+    elif command -v bpftool > /dev/null 2>&1 && [ "$(mode_now)" != "1" ]; then
+        # Rule 5, and not a formality. Everything below reads `ejecutar`'s
+        # output, and `ejecutar` refuses on an observing kernel — so an arm that
+        # silently did not take would produce a refusal this stage already knows
+        # how to report as NOT PROVEN. That is Thalyx telling this script what
+        # mode the machine is in, which is the subject answering a question
+        # about itself. bpftool is a different program and answers it directly.
+        unproven "enforcement reported success and bpftool does not read it back, so the guest was never run against a kernel that denies"
+    else
+        EXEC_FLIPPED=1
     fi
 fi
 
@@ -5724,10 +5732,18 @@ else
     if [ "$ENFORCED_BASELINE" = 1 ]; then
         # --- and the same run, denying ---------------------------------------
         ENFORCED_FLIPPED=0
-        if make -C lsm enforce > "$WORK/enforced-arm.log" 2>&1; then
-            ENFORCED_FLIPPED=1
-        else
+        if ! make -C lsm enforce > "$WORK/enforced-arm.log" 2>&1; then
             unproven "could not switch enforcement on ($(head -1 "$WORK/enforced-arm.log")), so the module was never run against a kernel that denies"
+        elif [ "$(mode_now)" != "1" ]; then
+            # Measured, not taken on trust. Rule 5: `make enforce` reporting
+            # success and the map actually holding a 1 are two facts, and the
+            # whole verdict below is the word "denies" — a run that quietly
+            # stayed in observe mode would pass every check in this stage while
+            # proving nothing at all, which is the vacuous pass rule 4 exists
+            # to forbid.
+            unproven "enforcement reported success and bpftool does not read it back, so this stage never armed the machine"
+        else
+            ENFORCED_FLIPPED=1
         fi
 
         if [ "$ENFORCED_FLIPPED" = 1 ]; then
@@ -5753,8 +5769,14 @@ else
             elif grep -q "the vault is the authority" "$WORK/enforced-run.log"; then
                 proven "a signed module launched and read its granted file on a kernel that denies"
 
-                # The control, in the same armed run: enforcement that lets
-                # everything through would pass the line above too.
+                # The second half of the same run, and it is a control for a
+                # different thing than the LSM: this refusal is Thalyx's own,
+                # at the API, because the manifest never granted `/etc/shadow`.
+                # What it establishes is that the armed run was an *ordinary*
+                # run — the module got far enough to ask, and the permission
+                # check on the far side of the channel still answered. A guest
+                # that merely printed one line and died would satisfy the
+                # verdict above and not this.
                 if grep -q "asked for /etc/shadow and was refused" "$WORK/enforced-run.log"; then
                     proven "the control: the same armed run still refused it a path nobody granted"
                 elif grep -q "AND GOT IT" "$WORK/enforced-run.log"; then
@@ -5769,6 +5791,28 @@ else
                 excerpt "$WORK/enforced-run.log"
             fi
         fi
+    fi
+fi
+
+# ------------------------------------------------- the machine, as it is left
+#
+# The last stage that arms the machine has no stage after it, so `step()` never
+# gets to check what it left behind — and the person reading this is looking at
+# the screen right now, which is a better moment to be told than the next run.
+#
+# `verify.sh` promises to give the machine back the way it found it, and until
+# 2026-08-26 that promise was made by three separate restores and checked by
+# nobody. One of the runs that day was still denying afterwards and nothing
+# said so; the twelve `FAILED` it produced were about a machine no one had
+# asked for.
+if [ "${LOADED:-0}" = 1 ] && command -v bpftool > /dev/null 2>&1; then
+    LEFT_AT=$(mode_now)
+    if [ "$LEFT_AT" = "0" ]; then
+        proven "the machine is being given back observing, which is how it was found"
+    elif [ "$LEFT_AT" = "1" ]; then
+        failed "this run is leaving the machine ENFORCING; run: sudo make -C lsm observe"
+    else
+        unproven "what mode this run is leaving the machine in could not be read"
     fi
 fi
 

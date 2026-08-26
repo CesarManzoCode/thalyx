@@ -14,9 +14,44 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El LSM le negaba a Thalyx confinar — 2026-08-26
+> ## El sprint de lo que no necesita el fierro — 2026-08-26
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar estaba fuera de casa y pidió acumular corridas: todo lo que se pueda sin
+> comprobar en hierro. Esto es lo que salió, y casi todo son instrumentos —
+> porque el defecto de abajo llegó al fierro por huecos del arnés, no por falta
+> de código.
+>
+> **Una prueba que mide el orden en vez del efecto.** El `-EPERM` del LSM no se
+> reproduce sin LSM, pero la propiedad de la que se sigue —toda escritura de
+> Thalyx antes de entrar al cgroup— sí se mide aquí, con `strace -f -y`. La
+> ventana va del `write` a `cgroup.procs` hasta el `execve`, y adentro no hay
+> una sola apertura con `O_WRONLY` ni `O_RDWR`. Comprobada revirtiendo el
+> arreglo.
+>
+> **La columna de afuera para el pid.** El arreglo cambió *por qué* funciona el
+> ingreso al cgroup: ahora se escribe «1», y sólo sirve porque el kernel traduce
+> en el espacio de nombres de quien escribe. Si no lo hiciera, metería al init de
+> la máquina bajo la política de un módulo. Se lee `cgroup.procs` desde el
+> anfitrión, con `std::fs` y no a través de Thalyx. Comprobada con una mutación.
+>
+> **La etapa 39.** §36 era la única que armaba la máquina y sólo corre invitados;
+> `correr` bajo un kernel que niega no lo había ejecutado nunca nada. Ahora el
+> mismo módulo corre observando y negando en la misma etapa, y `Operation not
+> permitted` tiene su propio veredicto que manda a `RootFs::assemble`.
+>
+> **Y cuatro cosas que el arnés daba por hechas y ahora mide:** el modo al
+> anunciar cada etapa; que `make -C lsm enforce` de verdad armó —§36 y §39, con
+> bpftool y no con Thalyx, que es el sujeto—; en qué modo queda la máquina al
+> terminar; y el `cleanup` del demo, que se tragaba el fallo de su restauración.
+>
+> **Lo que sigue esperando fierro:** que el `-EPERM` desapareció. Etapa 36 y
+> etapa 39.
+
+> ## El LSM le negaba a Thalyx confinar — 2026-08-26
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Segunda corrida en fierro: **169 `PROVEN`, 3 `NOT PROVEN`, 12 `FAILED`**, con
 > la anterior en 171/2/4 y ningún cambio de código entre las dos que tocara nada
