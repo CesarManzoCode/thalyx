@@ -47,6 +47,19 @@ pendiente already written in `Tareas-Pendientes.md` — **gets done, and he gets
 told what was done.** A pendiente already written there was already decided by
 him; asking again is asking him to decide twice.
 
+**A menu whose options are all cheap and already decided is a forbidden
+question** — revised 2026-08-26, after he was offered exactly that the day
+after the decree. Having a recommendation does not save it: the recommendation
+was the thing to have done instead of asking. If none of the options you are
+about to write down is one only he can answer, there is no question — there is
+work.
+
+**And cheap work does not ship one piece at a time.** Everything cheap that
+does not need him goes in **one sprint**, together, each piece arriving with
+the tests or the tool that shows it came out right. A whole sprint spent on one
+simple thing is the failure this decree exists to stop, and asking permission
+first makes it worse rather than better.
+
 None of that lowers a rule below. Fast is delivering the whole thing; fast is
 not delivering the easy half, and `NOT PROVEN` is still `NOT PROVEN`.
 
@@ -140,16 +153,20 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened twelve times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened fourteen times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
    — twice, for the same reason — a parser tested only against fixtures its
    author invented. The second of that pair accused llama.cpp of ignoring a
    grammar it had just obeyed, because every fixture agreed with the parser
-   about where an answer stops. The stale `main` is the cheapest of them and
-   worth remembering for it: `main` and `origin/main` are different questions,
-   and only the second one is about the repository. The ninth is the one that
+   about where an answer stops. The stale `main` is the cheapest of them, and it
+   came back on 2026-08-26 because the rule was written short: `main` and
+   `origin/main` are different questions, **and `origin/main` is only a
+   question about the repository after a `fetch`** — before that it is a
+   question about the last time this machine looked. Reading it unfetched
+   produced a whole diagnosis ("G1 is not on `main`") that was false end to
+   end. The ninth is the one that
    took a year: it failed once in twenty-five runs, was "fixed" by a guess that
    said it was a guess, and only became a diagnosis when a twelve-core machine
    failed it twice in one run and the error — `ETXTBSY` — was finally captured.

@@ -155,7 +155,7 @@ La generalización:
 
 **Un fallo del instrumento se ve exactamente igual que un fallo del sistema, y el instrumento incluye al arnés.** Antes de creer que algo que Thalyx afirma es falso, hay que descartar que el que se equivocó fue el que preguntó. Las tres veces anteriores que esto pasó fue con sondas de red y con permisos de bpffs; esta vez fue con una tubería de shell y con un directorio que nadie preparó.
 
-**Y van trece.** Cada una tiene su regla abajo, porque el mecanismo es distinto
+**Y van catorce.** Cada una tiene su regla abajo, porque el mecanismo es distinto
 cada vez — las tres del 2026-08-07, las dos del 2026-08-24 y una del 2026-08-25:
 
 - **La octava**, el parser de headers que descartaba campos con comentario al
@@ -176,6 +176,15 @@ cada vez — las tres del 2026-08-07, las dos del 2026-08-24 y una del 2026-08-2
   módulo puede acomodar sus hilos. La respuesta dependía de la versión de
   util-linux y no del filtro: hasta 2.40 hace la llamada guardada, desde 2.41
   hace otra que Thalyx deniega. Es la regla de la versión otra vez, abajo.
+- **La decimocuarta**, el 2026-08-26, y es la más barata de todas: se leyó
+  `origin/main` **sin haber hecho `fetch`**, o sea la copia local del puntero
+  remoto, que llevaba días vieja. De ahí salió un diagnóstico completo —«el
+  trabajo de G1 no está en `main`, por eso nadie lo ha podido correr»— que era
+  falso entero: `main` ya lo tenía. Es la misma falta que ya está escrita abajo
+  con las palabras *«`main` y `origin/main` son dos preguntas distintas»*, y
+  volvió porque a esa frase le faltaba la mitad operativa: **`origin/main` sólo
+  es una pregunta sobre el repositorio después de un `fetch`.** Antes de eso es
+  una pregunta sobre la última vez que esta máquina miró.
 
 Y la octava, con detalle: el parser que comprueba los offsets de
 `thalyx-btrfs` contra el header capturado **descartaba en silencio todo campo con

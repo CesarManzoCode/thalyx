@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-25
+fecha-actualizacion: 2026-08-26
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,121 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Y el segundo intento encontró el de abajo — 2026-08-25
+> ## Un sprint en vez de tres entregas, y el decreto que lo pidió — 2026-08-26
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar preguntó qué seguía. Se le contestó con tres opciones, y cortó:
+>
+> > «creo que ya habiamos dejado claro esto, me pones de opciones cosas
+> > sencillas de hacer, cuando algo es barato o no requiere de mi, hazlos todos
+> > de golpe en un sprint y deja listos los tests o herramientas para verificar
+> > que quedaron bien […] llevamos mucho tiempo haciendo sprints completos
+> > dedicados a algo super sencillo, debemos parar eso».
+>
+> Tenía razón: [[Ritmo-de-Construccion]] ya lo decía —«qué hacer con un
+> pendiente que ya está escrito» está en la columna de lo que **no** se
+> pregunta— y se preguntó igual. La revisión quedó escrita en esa nota y
+> resumida en `CLAUDE.md`, en la forma en que se rompió: **un menú donde todas
+> las opciones son baratas y ya están decididas es una pregunta prohibida**, y
+> **lo barato no se entrega de a uno**.
+>
+> ### Y antes de nada, el error que cometí al contestarle
+>
+> Se le dijo que el trabajo de G1 no estaba en `main` y que por eso nadie lo
+> había podido correr. **Era falso.** `main` ya lo tenía; lo que se leyó fue la
+> copia local de `origin/main`, sin `fetch`, con días de retraso. El merge que
+> salió de ahí no aportó nada —árbol idéntico— y quedó en `main` como un
+> commit vacío con un mensaje que dice algo que no pasó; quitarlo habría sido
+> reescribir `main` y no se hizo.
+>
+> Es la **decimocuarta** vez que el instrumento resulta ser el problema, y la
+> segunda de esta misma falta. Volvió porque la regla estaba escrita a medias:
+> ahora dice que `origin/main` **sólo es una pregunta sobre el repositorio
+> después de un `fetch`**. Ver [[Estrategia-de-Pruebas]].
+>
+> ### Lo que trae el sprint
+>
+> Tres pendientes, todos ya decididos, todos con su forma de comprobarlos.
+>
+> **1. Thalyx enciende y apaga su propio guardia.** El hueco que abrió el
+> arreglo del 25: Thalyx leía el modo del kernel y no podía cambiarlo, porque
+> cambiarlo era `bpftool` y la imagen no lo tiene. Dentro de la máquina no
+> había forma de pasar de observar a negar, así que cada negativa cuyo remedio
+> era *«hazlo vinculante»* nombraba un comando que ahí no existe.
+>
+> Ahora son dos verbos —`negar` y `observar`— más `thalyx enforce mode` para
+> una máquina con shell. Dos y no uno con argumento porque un typo no puede
+> desarmar la máquina, y **sólo el que afloja pregunta**: `negar` aprieta, y si
+> rompe algo el algo lo dice; `observar` le quita el confinamiento a todo lo que
+> esté corriendo, invitado incluido, y una máquina que dejó de negar en silencio
+> se ve idéntica a una que niega y no tiene qué negar. La cara estructurada no
+> puede pedir `observar` — `needs_a_human`, como `ejecutar`.
+>
+> **2. `ensayo correr`.** Era el único verbo que cambia la máquina y no se podía
+> ensayar, y la razón escrita a su lado dejó de ser cierta el 25: lo que a una
+> corrida se le va a permitir es una pregunta del kernel, y Thalyx ya la sabe
+> contestar. El ensayo **es el código de la corrida**, parado un renglón antes
+> de que el programa exista, así que no puede discrepar de ella. Dice qué
+> programa correría, con qué aislamiento, **qué tiene en vigor** —no lo que pide
+> el manifiesto—, si arrancaría, y si saldría **degradada**.
+>
+> **3. `ensayo editar`.** Salió mientras se cerraba el anterior: era el último
+> que contestaba «no se puede ensayar todavía», y no lo nombraba ningún
+> pendiente porque D1 lo contaba dentro de «archivos». Barato por la misma
+> razón: `change` ya aplicaba en memoria y después guardaba, así que el ensayo
+> es ese camino **sin la línea que guarda**.
+>
+> **Con esto D1 va nueve de nueve y la lista de verbos que cambian y no se
+> pueden ensayar está vacía**, con una prueba que lo afirma.
+>
+> ### Qué está comprobado, y dónde
+>
+> Aquí: **1408 pruebas en verde**, `clippy` y `fmt` limpios. Las dos guardas
+> nuevas se rompieron a propósito y cada mutación la agarró la prueba que le
+> toca — quitar la puerta humana de `observar` tumbó dos, y un falso que
+> reporta un cambio que no hizo tumbó exactamente una.
+>
+> Cada cosa lleva su control, porque sin él ninguna dice nada: `observar` y
+> `negar` se niegan aquí por razones **distintas** (esa palabra es la decisión
+> entera); el ensayo de `correr` no deja marca en el disco **y las mismas
+> palabras con `sin-confinar` sí la dejan**; el de `editar` no toca los bytes
+> **y sin `ensayo` sí los toca**, leídos con algo que no es Thalyx.
+>
+> **En tu máquina, dos etapas nuevas.** La **37** mide el guardia con
+> `bpftool` y no con Thalyx —regla 5: preguntarle a Thalyx si sus cuatro bytes
+> llegaron pasaría en una compilación donde la lectura y la escritura están mal
+> en la misma dirección— con línea base, el acto, el control que lo mueve de
+> vuelta, el verbo de sesión y el `n` con su `y` al lado. La **38** pregunta lo
+> único que un contenedor no puede decir: qué contesta `ensayo correr` en una
+> máquina que sí puede hacer cumplir, denegando y observando, que son las dos
+> respuestas que se ven iguales si `degraded` estuviera mal.
+>
+> ### Para correrlo
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y para verlo con las manos, en una sesión:
+>
+> ```
+> estado
+> negar
+> ensayo correr <id>
+> ```
+>
+> ### Lo que sigue, y ninguna de las dos es barata
+>
+> Lo que queda de la vara —un agente ajeno trabajando aquí— son **G2** y **G3**,
+> y G2 empieza con una decisión tuya, no con código: **de dónde saca su runtime
+> un programa que nadie firmó**. La imagen lleva el kernel y un programa, y no
+> hay libc; el agente pide el enlazador antes que nada. Las salidas son una
+> libc en la imagen, una raíz propia que el invitado trae y Thalyx monta, o
+> sólo binarios estáticos — y la primera toca [[Filosofia-Fundacional]], así que
+> es tuya. Ver [[Superficie-para-el-LLM]].
+
+> ## Y el segundo intento encontró el de abajo — 2026-08-25
 >
 > Con el modo arreglado, Cesar corrió otra vez `ejecutar /usr/bin/node --version`
 > — sin `leyendo`, sin `escribiendo`. El confinamiento se armó **entero**:

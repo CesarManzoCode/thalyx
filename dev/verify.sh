@@ -5318,6 +5318,206 @@ else
     failed "the structured face answered [$EXEC_SAID]; see $WORK/exec-machine.log"
 fi
 
+step "37. Thalyx switches its own kernel guard, with no bpftool"
+
+# The pendiente this closes was found on 2026-08-25, the day Thalyx learned to
+# *read* the mode. Reading it is why `ejecutar` refuses a guest while the
+# kernel only watches. Changing it was still `make -C lsm enforce`, which is
+# `bpftool`, which the image does not carry and is never going to — so on the
+# only machine that matters, every refusal whose remedy was "make it binding"
+# named a command that does not exist there.
+#
+# ## Why bpftool is the instrument and not the subject
+#
+# Rule 5: the instrument includes the harness. The thing under test is Thalyx
+# writing four bytes with `bpf(2)`; asking *Thalyx* whether they landed would
+# pass on a build where both the read and the write are wrong in the same
+# direction, which is the single most likely way to get this wrong. So every
+# measurement below is `bpftool map dump`, which is a different program written
+# by different people, and stage 14 already established that this machine's
+# `bpftool` and this machine's Thalyx agree about what is pinned.
+MODEPIN="/sys/fs/bpf/thalyx/maps/thalyx_enforcing"
+
+# The mode as bpftool reads it: 1 enforcing, 0 observing, empty if unreadable.
+mode_now() {
+    sudo bpftool map dump pinned "$MODEPIN" 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for row in rows:
+    value = row.get("value")
+    if isinstance(value, list):
+        value = value[0]
+    print(1 if int(str(value), 0) else 0)
+    break
+'
+}
+
+if [ "$LOADED" != 1 ] || ! command -v bpftool >/dev/null 2>&1; then
+    unproven "the kernel side is not loaded here, or bpftool is missing, so Thalyx switching the guard could not be measured"
+else
+    # The baseline. Without it, a machine already enforcing and a `negar` that
+    # works are the same picture — and rule 4 says that is not a test.
+    make -C lsm observe > "$WORK/guard-baseline.log" 2>&1 \
+        || red "   could not put the machine in observe mode to start from"
+    GUARD_BEFORE=$(mode_now)
+
+    if [ "$GUARD_BEFORE" != "0" ]; then
+        unproven "the machine could not be put in observe mode to start from (bpftool read [$GUARD_BEFORE]), so nothing below would mean anything"
+    else
+        # --- the act, through Thalyx, measured by bpftool -------------------
+        if sudo "$THALYX" enforce mode enforcing > "$WORK/guard-arm.log" 2>&1; then
+            GUARD_ARMED=$(mode_now)
+            if [ "$GUARD_ARMED" = "1" ]; then
+                proven "Thalyx moved the kernel guard from observing to denying, with no bpftool"
+            else
+                failed "Thalyx reported the switch and bpftool reads [$GUARD_ARMED]; see $WORK/guard-arm.log"
+            fi
+        else
+            failed "Thalyx could not switch the guard on; see $WORK/guard-arm.log"
+        fi
+
+        # --- the control ---------------------------------------------------
+        #
+        # A `set_enforcement` that writes 1 whatever it is asked passes
+        # everything above and is not a switch. This is the column that tells
+        # the two apart.
+        if sudo "$THALYX" enforce mode observing > "$WORK/guard-disarm.log" 2>&1; then
+            GUARD_BACK=$(mode_now)
+            if [ "$GUARD_BACK" = "0" ]; then
+                proven "the control: it moves the guard back, so it writes what it was asked and not a constant"
+            else
+                failed "the guard did not go back to observing (bpftool reads [$GUARD_BACK]); see $WORK/guard-disarm.log"
+            fi
+        else
+            failed "Thalyx could not switch the guard back; see $WORK/guard-disarm.log"
+        fi
+
+        # --- and the verb a person has, which is the whole point ------------
+        #
+        # `thalyx enforce mode` needs a shell. Inside the image there is none,
+        # so the thing that actually closes the pendiente is the session verb.
+        printf '%s\n' negar salir | \
+            THALYX_ROOT="$EXEC_STORE" sudo -E "$THALYX" session \
+            > "$WORK/guard-negar.log" 2>&1
+        GUARD_BY_VERB=$(mode_now)
+        if [ "$GUARD_BY_VERB" = "1" ]; then
+            proven "\`negar\` at a Thalyx prompt makes the kernel bind — no shell, no make, no bpftool"
+        else
+            failed "\`negar\` left the guard at [$GUARD_BY_VERB]; see $WORK/guard-negar.log"
+        fi
+
+        # --- the human gate, and it is a denial test so it gets a control ---
+        #
+        # `observar` asks before it takes the guard off the machine. An `n`
+        # must leave the flag where it was; the `y` below is the control,
+        # because a verb that ignored the answer and a verb that never switched
+        # look identical from the `n` alone.
+        printf '%s\n' observar n salir | \
+            THALYX_ROOT="$EXEC_STORE" sudo -E "$THALYX" dev pty -- "$THALYX" session \
+            > "$WORK/guard-no.log" 2>&1
+        GUARD_AFTER_NO=$(mode_now)
+        if [ "$GUARD_AFTER_NO" = "1" ]; then
+            proven "an \`n\` leaves the guard on: taking it off is not something silence can do"
+        else
+            failed "an \`n\` disarmed the machine (bpftool reads [$GUARD_AFTER_NO]); see $WORK/guard-no.log"
+        fi
+
+        printf '%s\n' observar y salir | \
+            THALYX_ROOT="$EXEC_STORE" sudo -E "$THALYX" dev pty -- "$THALYX" session \
+            > "$WORK/guard-yes.log" 2>&1
+        GUARD_AFTER_YES=$(mode_now)
+        if [ "$GUARD_AFTER_YES" = "0" ]; then
+            proven "the control: a \`y\` does take it off, so the \`n\` above refused something that works"
+        else
+            failed "a \`y\` did not take the guard off (bpftool reads [$GUARD_AFTER_YES]); see $WORK/guard-yes.log"
+        fi
+    fi
+
+    # However this stage ended. Every later reader of this machine — including
+    # the person running it — has to find it the way `make -C lsm load` leaves
+    # it, or the next thing they run is measuring a kernel this script armed
+    # and never said so.
+    make -C lsm observe > "$WORK/guard-restore.log" 2>&1 \
+        || red "   could not put the machine back in observe mode; run: sudo make -C lsm observe"
+fi
+
+step "38. a run can be rehearsed on a machine that can actually enforce"
+
+# D1 of `vault/02-Arquitectura/Superficie-para-el-LLM.md`, the ninth of nine.
+# `ensayo correr` has its own tests and they run in the container, so this
+# stage exists for the one thing a container cannot say: what the rehearsal
+# answers on a machine where the run would really go ahead.
+#
+# That is the case with something to get wrong. Where nothing enforces, "it
+# would not start" is right and easy. Where the kernel is loaded, the rehearsal
+# has to say `would_run` **and** whether the run would be degraded — and those
+# two together are the sentence a person reads before running something.
+GUARD_STORE="$WORK/rehearse-store"
+mkdir -p "$GUARD_STORE"
+THALYX_ROOT="$GUARD_STORE" "$THALYX" init > /dev/null 2>&1
+THALYX_ROOT="$GUARD_STORE" "$THALYX" module install "$WORK/verify.thmod" --yes \
+    > "$WORK/rehearse-install.log" 2>&1 || true
+
+rehearsed() {
+    printf '%s\n' "structured on" "ensayo correr org.thalyx.verify" salir | \
+        THALYX_ROOT="$GUARD_STORE" "$THALYX" session 2>/dev/null | \
+        python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    said = json.loads(line)
+    if said.get("op") == "rehearse":
+        print(said.get("enforcement"), said.get("would_run"), said.get("degraded"), said.get("count"))
+        break
+'
+}
+
+if [ "$LOADED" != 1 ]; then
+    unproven "the kernel side is not loaded here, so what a rehearsal says about a machine that can enforce is unknown"
+else
+    # Denying, and put back afterwards — by Thalyx, because stage 37 has just
+    # established that this works, and because using it here is what makes the
+    # two stages one claim instead of two.
+    sudo "$THALYX" enforce mode enforcing > "$WORK/rehearse-arm.log" 2>&1 || true
+    REHEARSED_ARMED=$(rehearsed)
+    # `set --` with `set -u` and an empty answer would make `$1` unbound and
+    # take the whole script down, so the fields are read with defaults: a
+    # rehearsal that answered nothing has to fail this stage, not end it.
+    set -- ${REHEARSED_ARMED:-}
+    if [ "${1:-}" = "enforcing" ] && [ "${2:-}" = "True" ] && [ "${3:-}" = "False" ]; then
+        proven "on a kernel that denies, the rehearsal says the run would go ahead and would not be degraded"
+    else
+        failed "the rehearsal answered [$REHEARSED_ARMED] on a denying kernel; see $WORK/rehearse-arm.log"
+    fi
+
+    # The control, and it is the whole point of the stage. A `foresee_run` that
+    # answered `degraded: false` unconditionally passes everything above, and
+    # the warning a person needs would never be printed.
+    sudo "$THALYX" enforce mode observing > "$WORK/rehearse-disarm.log" 2>&1 || true
+    REHEARSED_WATCHING=$(rehearsed)
+    set -- ${REHEARSED_WATCHING:-}
+    if [ "${1:-}" = "observing" ] && [ "${2:-}" = "True" ] && [ "${3:-}" = "True" ]; then
+        proven "the control: on a kernel that only watches, the same rehearsal calls the run degraded"
+    else
+        failed "the rehearsal answered [$REHEARSED_WATCHING] on an observing kernel; see $WORK/rehearse-disarm.log"
+    fi
+
+    # And it must not run the module. Checked by the journal, which is where a
+    # run leaves a mark that no printed sentence can fake.
+    if [ -f "$GUARD_STORE/journal.jsonl" ] \
+       && grep -q '"operation":"run_module"' "$GUARD_STORE/journal.jsonl"; then
+        failed "a rehearsal ran the module; see $GUARD_STORE/journal.jsonl"
+    else
+        proven "four rehearsals later the journal records no run at all"
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

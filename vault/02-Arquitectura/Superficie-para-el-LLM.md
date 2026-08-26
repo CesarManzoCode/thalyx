@@ -365,7 +365,7 @@ derecha está decidido**; es el catálogo, no un plan.
 | C1 | Índice semántico expuesto | **Hecho** — `indexar`, `depende`, `usan` |
 | C2 | Búsqueda por símbolos | **Hecho** — `buscar`, con la definición y los usos separados, sin comentarios ni cadenas |
 | C3 | Vigencia en toda respuesta | **Hecho donde hay caché**: cada respuesta del índice trae `fresh` |
-| D1 | Ensayo en todo verbo que cambia | **Hecho en ocho de nueve** — archivos, `matar`, y desde el 2026-08-23 `instalar`, `revertir`, `instalar-en` y `apagar`. Falta `correr`, y dice que no puede |
+| D1 | Ensayo en todo verbo que cambia | **Hecho** — archivos, `matar`, `ejecutar`, `instalar`, `revertir`, `instalar-en`, `apagar`, y desde el 2026-08-26 **`correr`**, que era el que decía que no podía: lo destrabó que Thalyx aprendiera a leer el modo del kernel el 25. El ensayo **es el código de la corrida**, parado un renglón antes de que el programa exista. y `editar`, cerrado el mismo día: es el camino de `editar` con el guardado quitado. **La lista de verbos que cambian y no se pueden ensayar está vacía** |
 | D2 | El intento con nombre | **Hecho** — `intento empezar/confirmar/abandonar`; la política probada aquí, el Btrfs en la etapa 26 |
 | D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
 | E1 | El agente ajeno como tarea con concesión | **Ya no lo bloquea G1**, que está construido desde el 2026-08-25: hay a qué darle la concesión. Lo que le falta es que expire y que sobreviva a la corrida, más G2 dentro de la imagen |
@@ -376,7 +376,7 @@ derecha está decidido**; es el catálogo, no un plan.
 | G1–G4 | El piso | **G1 construido el 2026-08-25** ([[Programas-Ajenos]]); quedan G2, G3 y G4. El filtro de llamadas dejó de estar en la lista el 2026-08-24: 41 de 41 |
 
 **Y desde el 2026-08-24 hay una segunda fila que no estaba en el catálogo:
-el modelo puede proponer los treinta y nueve `op` del catálogo, y la lista de
+el modelo puede proponer los cuarenta y dos `op` del catálogo, y la lista de
 palabras que la gramática no le da está vacía.** Decreto de Cesar del
 2026-08-24. La línea dejó de estar en lo que el modelo puede **decir** y pasó a
 estar en lo que la máquina **hace** sin un humano en una terminal diciendo que
@@ -386,7 +386,7 @@ pasa por el verbo con la confirmación que ese verbo ya pide. Ver
 decirse, y un plan que no es contrato no llegaba a `origins.validate()`.
 
 **Y desde el 2026-08-23 hay una fila que no estaba en el catálogo y decide si
-cualquiera de las de arriba sirve: los cuarenta verbos contestan por
+cualquiera de las de arriba sirve: los cuarenta y tres verbos contestan por
 estructura, y la lista de excepciones está vacía.** Catorce puntos hechos no
 servían de nada mientras los seis verbos de módulos —el ciclo entero de lo que
 Thalyx existe para hacer— sólo hablaran en prosa.

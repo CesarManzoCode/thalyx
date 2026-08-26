@@ -237,6 +237,35 @@ enforcement on for its own run and puts it back. No test caught this because the
 fake had no state for it: `MemoryStore` could not represent "loaded and denying
 nothing", so neither a test nor its control could name the failure. It can now.
 
+**And on 2026-08-26 Thalyx learned to change that mode itself.** Reading it was
+half the hole. Switching it was still `make -C lsm enforce` — `bpftool`, which
+the image does not carry and is never going to — so inside a running Thalyx
+every refusal whose remedy was "make it binding" named a command that does not
+exist there. The verbs are `negar` and `observar` at a prompt, and
+`thalyx enforce mode <enforcing|observing>` on a machine with a shell: four
+bytes written into `thalyx_enforcing` with `bpf(2)`, then read back, because
+`bpf_obj_get` succeeds on any map and a write into the wrong one would report a
+machine that had started denying. Two verbs rather than one with an argument, so
+a typo cannot disarm the machine, and only the direction that *takes protection
+away* asks a human — the structured face is refused outright there, the way it
+is for `ejecutar`. Stage 37 measures all of it with `bpftool` rather than with
+Thalyx, which is the harness rule: asking Thalyx whether its own four bytes
+landed would pass on a build where the read and the write are wrong in the same
+direction.
+
+**`ensayo` now reaches every verb that changes the machine.** `correr` was the
+last one that answered that it could not be rehearsed, and the reason was the
+same missing piece: what a run would be allowed to do is a question for the
+kernel side. `thalyx_core::foresee_run` is the run's own code stopped one line
+before the program exists — not a second implementation of it — so it reports
+the program, the isolation, the permissions **in force**, whether the run would
+start at all, and whether it would be degraded. `editar` was closed the same
+day and by the same shape: the edit applies in memory and then saves, so the
+rehearsal is that path with the save left out. Stage 38 asks the one question a
+container cannot: what the rehearsal says on a machine that can really enforce,
+denying and observing, which are the two answers that look identical if the
+degraded flag is wrong.
+
 **Still unproven, and named as such by the run itself.** `verify.sh`'s summary
 is the authority on this, not a count written down here: whatever it could not
 exercise on the day it ran comes back as `NOT PROVEN`, with the reason, and is

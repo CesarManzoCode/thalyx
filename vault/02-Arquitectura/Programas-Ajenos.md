@@ -257,6 +257,57 @@ y luego lee lo que se le concedió. Es la única forma que distingue las dos
 respuestas: la corrida tiene que ser más larga que el plazo que ya no debe
 existir. Cuesta 35 segundos de reloj en cada `verify.sh` y los vale.
 
+### 2026-08-26 — Thalyx enciende y apaga su propio guardia
+
+**El hueco que dejó abierto el arreglo del 25.** Ese día Thalyx aprendió a
+**leer** el modo del kernel —el mapa `thalyx_enforcing`, con `bpf(2)`, sin
+`bpftool`— y por eso `ejecutar` se niega mientras el kernel sólo observa.
+**Cambiarlo** seguía siendo `make -C lsm enforce`, que es `bpftool`, que la
+imagen no lleva y no va a llevar.
+
+O sea: dentro de la máquina, cada negativa cuyo remedio era *«hazlo vinculante»*
+nombraba un comando que ahí no existe. Es el mismo hueco que
+[[Cargador-BPF-Propio]] cerró para **cargar** y dejó abierto para el **modo**.
+
+**Dos verbos, no uno con argumento.** [[Busqueda]] ya había fijado la forma —un
+verbo cuyo significado depende de una palabra de después se puede pedir mal en
+silencio— y aquí pesa más que allá, porque las dos direcciones no son
+comparables:
+
+| | `negar` | `observar` |
+|---|---|---|
+| qué hace | el kernel empieza a negar de verdad | el kernel deja de negar |
+| a quién afecta | a lo que se salga de lo concedido | a **todo lo confinado en este momento** |
+| pide confirmación | no | **sí**, [[Camino-Confiable]] |
+| cara estructurada | contesta | **se niega**: `needs_a_human` |
+
+`negar` aprieta: si rompe algo, el algo lo dice, fuerte, en el momento.
+`observar` afloja, y una máquina que dejó de negar en silencio se ve idéntica a
+una que niega y no tiene qué negar — el fallo sin síntoma que todo este
+subsistema existe para no tener. Por eso pregunta el que afloja y no el que
+aprieta.
+
+Que el modelo **pueda proponer** `observe` no lo contradice: es el decreto del
+2026-08-24 funcionando como está escrito. La línea está en lo que la máquina
+**hace** sin un humano en una terminal, no en lo que el modelo puede **decir**.
+
+**Los remedios cambiaron de comando.** `make -C lsm enforce` salió de todos los
+mensajes: ahora dicen `negar`, o `thalyx enforce mode enforcing` fuera de una
+sesión. Los de «no está cargado» nombran `thalyx enforce attach` antes que el
+objetivo de `make`. Un remedio que no se puede correr donde se imprime es prosa.
+
+**Cómo se comprueba, y con qué instrumento.** Etapa **37** de `verify.sh`, y
+cada medición la hace **`bpftool map dump`** y no Thalyx. Regla 5: lo que está
+bajo prueba es Thalyx escribiendo cuatro bytes con `bpf(2)`, y preguntarle a
+Thalyx si llegaron pasaría en una compilación donde la lectura y la escritura
+están mal en la misma dirección — que es la forma más probable de equivocarse
+en esto. La etapa lleva línea base (la deja observando y lo confirma), el acto,
+**el control** (que la vuelve a mover, porque un `set_enforcement` que escribe
+`1` siempre pasa todo lo demás), el verbo de sesión, y el `n` con su `y` al
+lado. La escritura además se **relee**: `bpf_obj_get` sobre cualquier mapa tiene
+éxito, así que sin la relectura apuntar esto a algo con forma de mapa reportaría
+que la máquina ya niega.
+
 ## Relacionado
 - [[Superficie-para-el-LLM]]
 - [[Que-Necesita-Un-Agente-Ajeno]]

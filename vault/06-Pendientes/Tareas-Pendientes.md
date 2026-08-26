@@ -25,16 +25,21 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 - [x] **Terminar una inferencia de verdad** — hecho el 2026-08-08, y después repetido en tres gamas. El primer intento falló porque Thalyx pedía `llama-cli`, que desde que `llama.cpp` partió sus herramientas es el frontend de chat y abre una sesión en vez de completar; con `llama-completion` la inferencia completó, y el 2026-08-08 corrieron `check`, `grammar-check` y el banco de 20 casos en ligera, media y alta. **La gama máxima no**: el proceso murió por falta de memoria antes de la primera inferencia. Ver [[Gamas-de-Modelo]] y [[Punto-Actual]].
 - [x] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio** — **hecho el 2026-08-25, y corre en el contenedor.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas eran directorios**. Ahora hay dos en `isolation.rs`: uno que concede **un archivo** con permiso de escritura, arma la raíz remapeada de verdad y comprueba en el anfitrión que lo escrito llegó al mismo archivo y que no cambió de dueño; y su control, que concede el archivo y afirma que **el vecino de al lado no viene con él** —que es la forma obvia de hacer funcionar un permiso sobre un archivo, montando su carpeta, y la que entrega todo lo demás—. Los dos se rompieron a propósito antes de creerles. De paso, el protocolo de lanzamiento remapeado dejó de estar copiado tres veces: es la lección de `create_target_like` una capa arriba. Ver [[Estrategia-de-Pruebas]].
 - [x] **G1: lanzar un programa que nadie firmó** — **hecho el 2026-08-25**, y es el punto que bloqueaba la vara de [[Filosofia-Fundacional]] desde que se midió el 23. `ejecutar <ruta>` corre un programa ajeno con el mismo confinamiento que un módulo —cgroup, usuario propio, pivote, filtro de llamadas— y **sin modo degradado**, porque `sin-confinar` se justifica en que alguien firmó el módulo y aquí nadie firmó nada. No recibe canal con la API: un invitado corre, no se le da la casa. Ve su propia carpeta, las rutas de sistema de sólo lectura y lo que se nombre con `leyendo`/`escribiendo`, cada cosa confirmada por el [[Camino-Confiable]] antes de que el proceso exista. El journal lo llama `run_foreign`. Etapa 36 de `verify.sh` más seis pruebas de integración; cuatro de ellas necesitan los controladores delegados y dicen `NOT PROVEN` donde no los hay. Ver [[Programas-Ajenos]].
-- [ ] **Que Thalyx encienda y apague el enforcement él mismo.** Encontrado el
-      2026-08-25 al arreglar la confusión entre *cargado* y *negando* (ver
-      [[Programas-Ajenos]], revisiones). Thalyx ya **lee** el modo —el mapa
-      `thalyx_enforcing`, con `bpf(2)`, sin `bpftool`— y por eso `ejecutar` se
-      niega mientras el kernel sólo observa. Pero **cambiarlo** sigue siendo
-      `make -C lsm enforce`, que es `bpftool`, que la imagen no tiene y no va a
-      tener: dentro de la máquina no hay forma de pasar de observar a negar. Es
-      el mismo hueco que [[Cargador-BPF-Propio]] cerró para cargar, sin cerrar
-      para el modo. Barato: una escritura de cuatro bytes en un mapa que ya se
-      abre.
+- [x] **Que Thalyx encienda y apague el enforcement él mismo** — **hecho el
+      2026-08-26.** Encontrado el 2026-08-25 al arreglar la confusión entre
+      *cargado* y *negando*. Thalyx ya leía el modo; lo que faltaba era
+      cambiarlo sin `bpftool`, que la imagen no tiene, así que dentro de la
+      máquina no había forma de pasar de observar a negar y toda negativa cuyo
+      remedio era «hazlo vinculante» nombraba un comando inexistente ahí.
+      Ahora son **dos verbos de sesión** —`negar` y `observar`— más
+      `thalyx enforce mode <enforcing|observing>` para una máquina con shell.
+      Dos y no uno con argumento: un typo en un argumento no puede desarmar la
+      máquina. **`observar` pide confirmación por el [[Camino-Confiable]] y la
+      cara estructurada no puede pedirlo** (`needs_a_human`); `negar` no
+      pregunta, porque aprieta. Los mensajes dejaron de nombrar
+      `make -C lsm enforce`. Se comprueba en la etapa **37** de `verify.sh`,
+      con `bpftool` de instrumento —regla 5— más línea base, control, el verbo
+      de sesión y el `n` con su `y` al lado. Ver [[Programas-Ajenos]].
 - [x] **Cuánto dura una concesión a un invitado** — **decidido por Cesar el
       2026-08-25: dura la corrida.** Encontrado el 2026-08-25 al
       arreglar el piso de lectura (ver [[Programas-Ajenos]], revisiones). Una
@@ -49,6 +54,33 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
       segundos eran también el respaldo del kernel contra un Thalyx colgado que
       nunca llegue a `release()`. Se comprueba en la etapa 36 con un invitado
       que duerme 35 segundos y después lee lo concedido.
+- [x] **`ensayo correr`, el noveno de nueve de D1** — **hecho el 2026-08-26.**
+      Era el único verbo que cambia la máquina y no se podía ensayar, y la razón
+      escrita a su lado era cierta cuando se escribió: *lo que a una corrida se
+      le va a permitir es una pregunta del lado del kernel, y contestarla desde
+      el manifiesto describiría una corrida que la máquina quizá no puede dar*.
+      Dejó de ser cierta el 2026-08-25, cuando Thalyx aprendió a leer el modo.
+      `thalyx_core::foresee_run` **es el código de la corrida** parado un renglón
+      antes de que el programa exista —no una segunda implementación—, y contesta
+      qué programa correría, con qué aislamiento, **qué tiene en vigor** (no lo
+      que pide el manifiesto), si arrancaría, y si la corrida saldría
+      **degradada**. Seis pruebas más la cara humana, con su columna de control
+      (`sin-confinar` corre de verdad y deja la marca que el ensayo no deja), y
+      la etapa **38** de `verify.sh` para lo único que el contenedor no puede
+      decir: qué contesta en una máquina que sí puede hacer cumplir.
+
+- [x] **`ensayo editar`** — **hecho el 2026-08-26, el mismo día.** Encontrado al
+      cerrar `correr`: era el último verbo que cambia la máquina y contestaba
+      *«cannot be rehearsed yet»*, y no lo nombraba ningún pendiente porque la
+      fila D1 lo contaba dentro de «archivos». Salió barato porque `change` ya
+      aplicaba sobre un `Text` en memoria y después guardaba: el ensayo es ese
+      mismo camino **sin la línea que guarda**. `ver` y abrir la pantalla
+      contestan que no hay nada que ensayar, en vez de un segundo `ver` peor.
+      Con su control: las mismas palabras sin `ensayo` sí cambian el archivo, y
+      los bytes se leen con algo que no es Thalyx. **Con esto D1 va nueve de
+      nueve y la lista de verbos que cambian y no se pueden ensayar está
+      vacía.**
+
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [x] **Consumir el ringbuf `thalyx_mutations`** — construido el 2026-08-10 como el verbo `cambios`, punto B3 de [[Superficie-para-el-LLM]]. `crates/thalyx-watch/src/ring.rs` sigue el protocolo del anillo sobre bytes (diez pruebas, incluido el registro que cruza el final) y `thalyx-syscall` hace los dos `mmap`. **Consumirlo no era código BPF**, que fue la razón por la que estuvo parado: el productor ya estaba escrito y el consumidor es código de usuario. Lo que un anillo **no** puede dar y la respuesta dice: no es una historia —leerlo lo vacía— y no nombra archivos, sólo cgroup, pid, tipo y programa. Para reindexar de forma incremental hace falta además que alguien lo vacíe continuamente y guarde lo vaciado, y **eso es una pieza que corre todo el tiempo, que la imagen no tiene**: es una decisión de Cesar, no un pendiente de código. Etapa 27 de `verify.sh`.

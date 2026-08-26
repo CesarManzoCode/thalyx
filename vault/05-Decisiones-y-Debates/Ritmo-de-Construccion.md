@@ -2,6 +2,7 @@
 tipo: decision
 estado: decretado
 fecha-decreto: 2026-08-25
+fecha-revision: 2026-08-26
 tags: [ritmo, prioridades, cautela, no-negociable]
 ---
 
@@ -71,6 +72,39 @@ Una sesión que termina sin haber movido nada de [[Superficie-para-el-LLM]] ni d
 la lista de pendientes de [[Tareas-Pendientes]] no cumplió, por muy verde que
 esté la corrida. El conteo de `verify.sh` mide que lo construido es cierto; **no
 mide que se haya construido algo**.
+
+## Revisión del 2026-08-26: un menú de cosas baratas es la misma falta
+
+El día después del decreto se le preguntó qué construir, con tres opciones. Las
+tres estaban ya escritas en [[Tareas-Pendientes]] y una era explícitamente
+barata. Sus palabras:
+
+> «creo que ya habiamos dejado claro esto, me pones de opciones cosas sencillas
+> de hacer, cuando algo es barato o no requiere de mi, hazlos todos de golpe en
+> un sprint y deja listos los tests o herramientas para verificar que quedaron
+> bien, registra en tu memoria o como sea que debemos de empezar a ser mas
+> agresivos, llevamos mucho tiempo haciendo sprints completos dedicados a algo
+> super sencillo, debemos parar eso».
+
+El decreto de arriba ya lo cubría —«qué hacer con un pendiente que ya está
+escrito» está en la columna derecha— y aun así se preguntó. Así que la regla se
+escribe en la forma en que se rompió, que es la única que sirve:
+
+**Un menú de opciones donde todas las opciones son baratas y ya están
+decididas es una pregunta prohibida.** No se salva por venir con una
+recomendación: la recomendación es lo que se debía haber hecho en vez de
+preguntar. Si al armar las opciones ninguna cae en la columna izquierda de la
+tabla, no hay pregunta — hay trabajo.
+
+**Y lo barato no se entrega de a uno.** Todo lo barato que no lo necesita a él
+va en **un solo sprint**, junto, no en una entrega por pieza. Un sprint entero
+dedicado a una cosa sencilla es exactamente lo que este decreto existe para
+impedir, y hacerlo con permiso pedido es peor, no mejor.
+
+Lo que **no** baja, y él lo puso en la misma frase: **cada cosa del sprint sale
+con sus pruebas o su herramienta para comprobar que quedó bien.** Ir de golpe
+es entregar todo junto y comprobado, no entregar todo junto y averiguado
+después.
 
 ## Relacionado
 - [[Filosofia-Fundacional]]
