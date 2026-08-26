@@ -4097,6 +4097,67 @@ hacen el pivote completo aquí y siguen pasando, así que el reordenamiento no
 rompió el lanzamiento. Que el `-EPERM` desapareció **sólo lo puede decir una
 máquina que niegue**, y lo dice la etapa 36.
 
+## Regla derivada: cuando el efecto no se puede reproducir, se mide el orden — 2026-08-26
+
+El defecto de arriba —el LSM negándole a Thalyx confinar— tiene una propiedad
+incómoda: **este contenedor no lo puede reproducir**. Sin LSM, `check()` devuelve
+0 y las cinco aperturas de escritura pasan sin ruido. Cualquier prueba escrita
+contra el *efecto* diría `NOT PROVEN` aquí y sólo hablaría en la máquina de
+Cesar, o sea una vuelta completa por cada intento.
+
+Pero el efecto no es la propiedad. La propiedad es **el orden**: toda escritura
+de Thalyx tiene que ocurrir antes del renglón que entra al cgroup. Y el orden sí
+se puede medir aquí, con `strace`, que además es la clase correcta de
+instrumento — regla 5 — porque preguntarle a Thalyx si hizo las cosas en el orden
+correcto pasaría en cualquier compilación donde el orden y la creencia sobre el
+orden estén mal juntos, que es justo lo que pasó.
+
+`nothing_is_opened_for_writing_after_the_launcher_takes_the_module_s_identity`:
+
+1. Lanza un módulo real bajo `strace -f -y`. `-y` es lo que hace legible la
+   traza: un `write` lleva un número de descriptor, y `-y` le pega la ruta con
+   la que se abrió, así que el ingreso al cgroup se puede *encontrar*.
+2. La ventana va del `write` a `cgroup.procs` hasta el `execve` del módulo.
+3. **La afirmación**: en esa ventana no hay una sola apertura con `O_WRONLY` ni
+   `O_RDWR` — leído igual que lo lee el kernel, `flags & O_ACCMODE`, para que lo
+   que la prueba llama escritura sea lo que el kernel llama escritura y no una
+   segunda opinión.
+4. **La línea base**, regla 4: «no hay escrituras después» también es cierto de
+   un lanzador que no escribió nada. Se pide en dos mitades a propósito, porque
+   *«nunca creó el punto de montaje de `/dev/null`»* y *«lo creó del lado malo»*
+   son hallazgos distintos: el primero dice que la traza no prueba nada, el
+   segundo **es** el defecto.
+5. **Falla cerrada**, regla 9: si `strace -f` parte una apertura en dos por
+   interleaving, media llamada no dice para qué se abría, y una línea ilegible
+   no es una línea que dijo que no.
+6. **Regla 10**: si el `strace` de la máquina no tiene `-y`, la traza no lleva
+   rutas y el ingreso al cgroup es invisible — que se ve idéntico a un lanzador
+   que nunca entró a su cgroup. Eso es `NOT PROVEN` con su propia variable
+   (`THALYX_REQUIRE_STRACE_TESTS`), no una acusación contra Thalyx. Es la tercera
+   vez que un instrumento tiene versión en este proyecto.
+
+Se comprobó revirtiendo el arreglo: con el orden viejo falla, y el mensaje cita
+la línea de `openat` culpable.
+
+> Cuando el efecto de un defecto sólo aparece en una máquina que no tienes,
+> busca la **propiedad estructural** de la que el efecto se sigue. Casi siempre
+> es un orden, y un orden se mide con un tracer en cualquier máquina.
+
+### Y la columna que faltaba en `verify.sh`
+
+El defecto duró lo que duró por una razón aparte, y también del arnés: **§36 era
+la única etapa que armaba la máquina, y lo único que corre armada es un
+invitado.** Las etapas que corren un módulo firmado —6, 12, las de aislamiento—
+corren todas observando, donde toda apertura pasa. `correr` bajo un kernel que
+niega de verdad no lo había ejecutado nunca nada.
+
+La etapa **39** es esa columna: el mismo módulo, la misma concesión, el mismo
+comando, una vez observando y una vez negando, en la misma etapa y no repartidas
+en dos — repartirlas dejaría que la mitad que niega se salte en una máquina donde
+la otra pasó, que es toda máquina donde esto ha corrido. Y nombra `Operation not
+permitted` como su propio veredicto, para que si vuelve mande al lector a
+`RootFs::assemble` y no al módulo.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

@@ -5678,6 +5678,100 @@ else
     fi
 fi
 
+step "39. a signed module runs on a kernel that denies"
+
+# The gap that let the worst defect of 2026-08-26 ship, and it is a gap in this
+# script rather than in Thalyx.
+#
+# §36 is the only stage that ever armed the machine, and the only thing it runs
+# armed is a **guest**. Every stage that runs a signed module — 6, 12, the
+# isolation columns — runs in observe mode, where `lsm/file_open` returns 0 and
+# every open succeeds no matter what the policy says. So `correr` under a kernel
+# that actually denies had never been executed anywhere, by anything, and when
+# it turned out that the launcher was denied its own `/dev/null` the report
+# blamed the module.
+#
+# What this adds is the column that was missing: the same module, the same
+# grant, the same command, once observing and once denying. Rule 4 — without
+# the first the second says nothing, because a module that never worked and a
+# module a policy stopped look identical.
+#
+# It is deliberately *not* folded into §12. Two runs of one module in one stage
+# is the whole point; splitting them across stages would let the enforcing half
+# be skipped on a machine where the observing half passed, which is every
+# machine this has ever run on.
+
+if [ "${LOADED:-0}" != 1 ]; then
+    unproven "nothing here enforces a policy, so a module under an enforcing kernel could not be run"
+elif [ ! -d "${GCONF:-}" ]; then
+    # Said as its own reason: "the module was never installed" and "the module
+    # was denied" are different findings, and §12 is where the first one is
+    # diagnosed.
+    unproven "the confined greeter store was never built in stage 12, so there is no module to run here"
+else
+    # --- the baseline: observing, which is where every other stage lives -----
+    THALYX_ROOT="$GCONF" "$THALYX" module run dev.thalyx.greeter \
+        -- "$GRANTED_DIR/notes.txt" > "$WORK/enforced-baseline.log" 2>&1
+    if grep -q "the vault is the authority" "$WORK/enforced-baseline.log"; then
+        proven "the baseline: with the kernel only observing, the module runs and reads what it was granted"
+        ENFORCED_BASELINE=1
+    else
+        ENFORCED_BASELINE=0
+        failed "the module does not run even under an observing kernel, so nothing below could mean anything; see $WORK/enforced-baseline.log"
+        excerpt "$WORK/enforced-baseline.log"
+    fi
+
+    if [ "$ENFORCED_BASELINE" = 1 ]; then
+        # --- and the same run, denying ---------------------------------------
+        ENFORCED_FLIPPED=0
+        if make -C lsm enforce > "$WORK/enforced-arm.log" 2>&1; then
+            ENFORCED_FLIPPED=1
+        else
+            unproven "could not switch enforcement on ($(head -1 "$WORK/enforced-arm.log")), so the module was never run against a kernel that denies"
+        fi
+
+        if [ "$ENFORCED_FLIPPED" = 1 ]; then
+            THALYX_ROOT="$GCONF" "$THALYX" module run dev.thalyx.greeter \
+                -- "$GRANTED_DIR/notes.txt" > "$WORK/enforced-run.log" 2>&1
+
+            # Back before a single line of that log is read, and loudly if it
+            # will not go: every stage after this one is written for a machine
+            # that observes, and §36 already taught this script what it costs to
+            # leave the guard on and not say so.
+            make -C lsm observe > "$WORK/enforced-disarm.log" 2>&1 \
+                || red "   COULD NOT GO BACK TO OBSERVE MODE; run: sudo make -C lsm observe"
+
+            # Named on its own, and first. This exact sentence is what twelve
+            # stages reported on 2026-08-26, and every one of them was the LSM
+            # denying **Thalyx** the work of building the sandbox — not the
+            # module being stopped from anything it asked for. A reader who sees
+            # it again should be sent straight to `RootFs::assemble` and the
+            # cgroup join in `launch::init`, not to the module.
+            if grep -q "Operation not permitted" "$WORK/enforced-run.log"; then
+                failed "the launcher was denied its own setup work under enforcement — see RootFs::assemble and the join in launch::init"
+                excerpt "$WORK/enforced-run.log"
+            elif grep -q "the vault is the authority" "$WORK/enforced-run.log"; then
+                proven "a signed module launched and read its granted file on a kernel that denies"
+
+                # The control, in the same armed run: enforcement that lets
+                # everything through would pass the line above too.
+                if grep -q "asked for /etc/shadow and was refused" "$WORK/enforced-run.log"; then
+                    proven "the control: the same armed run still refused it a path nobody granted"
+                elif grep -q "AND GOT IT" "$WORK/enforced-run.log"; then
+                    failed "under enforcement the module read /etc/shadow; see $WORK/enforced-run.log"
+                    excerpt "$WORK/enforced-run.log"
+                else
+                    unproven "the module said neither about /etc/shadow; see $WORK/enforced-run.log"
+                    excerpt "$WORK/enforced-run.log"
+                fi
+            else
+                failed "the module did not run under an enforcing kernel; see $WORK/enforced-run.log"
+                excerpt "$WORK/enforced-run.log"
+            fi
+        fi
+    fi
+fi
+
 # ---------------------------------------------------------------- summary
 
 printf '\n\n'

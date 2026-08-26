@@ -1048,3 +1048,232 @@ fn a_granted_file_does_not_bring_the_directory_it_lives_in() {
         "the file's neighbour came along with it: {seen}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The order the confinement is built in, measured rather than reasoned about.
+// ---------------------------------------------------------------------------
+
+/// A launch traced by `strace`, so the *order* of its syscalls can be read.
+///
+/// `strace` and not Thalyx, and that is the whole design of this check: rule 5
+/// says the instrument includes the harness, and asking Thalyx whether it did
+/// its work in the right order would pass on any build where the ordering and
+/// the belief about it are wrong together — which is exactly what happened.
+/// `-y` is what makes it readable at all: a `write` carries a descriptor
+/// number, and `-y` annotates it with the path it was opened from.
+fn traced_launch(arena: &Arena, module: &Module) -> Option<(Output, String)> {
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), &[]).expect("rootfs");
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: None,
+        channel_fd: None,
+    };
+
+    let scratch = tempfile::tempdir().expect("temp dir");
+    let trace = scratch.path().join("trace");
+
+    let output = Command::new("strace")
+        .args(["-f", "-y", "-o"])
+        .arg(&trace)
+        .arg("--")
+        .arg(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return unmeasurable(&format!("strace could not be run: {error}")),
+    };
+
+    let text = std::fs::read_to_string(&trace).unwrap_or_default();
+    if text.is_empty() {
+        // `strace` exists but could not attach — a container without
+        // `CAP_SYS_PTRACE`, or `yama/ptrace_scope`. Never a pass: nothing was
+        // measured.
+        return unmeasurable("strace produced no trace, so it could not attach");
+    }
+
+    Some((output, text))
+}
+
+fn unmeasurable(reason: &str) -> Option<(Output, String)> {
+    let message = format!("NOT PROVEN: the order of the launch could not be traced ({reason})");
+    assert!(
+        std::env::var_os("THALYX_REQUIRE_STRACE_TESTS").is_none(),
+        "{message}"
+    );
+    eprintln!("{message}");
+    eprintln!("  This test did not run. It did not pass.");
+    None
+}
+
+/// The pid `strace -f` prefixes a line with.
+fn pid_of(line: &str) -> Option<&str> {
+    let pid = line.split_whitespace().next()?;
+    pid.chars().all(|c| c.is_ascii_digit()).then_some(pid)
+}
+
+/// The syscall name, as it appears after the pid.
+fn call_on(line: &str) -> &str {
+    line.split_whitespace().nth(1).unwrap_or("")
+}
+
+fn is_an_open(line: &str) -> bool {
+    let call = call_on(line);
+    call.starts_with("open(") || call.starts_with("openat(") || call.starts_with("openat2(")
+}
+
+/// Whether this line opens something in a mode the LSM counts as writing.
+///
+/// The same reading `lsm/file_open` does — `flags & O_ACCMODE`, where
+/// `O_RDONLY` is 0 — so what this test calls a write is what the kernel calls
+/// one, rather than a second opinion about it.
+fn opens_for_writing(line: &str) -> bool {
+    let call = call_on(line);
+    if call.starts_with("creat(") {
+        return true;
+    }
+    is_an_open(line) && (line.contains("O_WRONLY") || line.contains("O_RDWR"))
+}
+
+#[test]
+fn nothing_is_opened_for_writing_after_the_launcher_takes_the_module_s_identity() {
+    // The defect of 2026-08-26, and the only shape of test that could have
+    // caught it a day earlier.
+    //
+    // Joining the cgroup is the moment the process starts being governed by
+    // the module's permissions: `lsm/file_open` looks up the policy by cgroup
+    // id, asks for `FS_WRITE` on anything not opened read-only, and answers
+    // `-EPERM`. So every write Thalyx has to do to *build* the confinement has
+    // to happen before that line. It did not: the launcher joined first and
+    // assembled afterwards, the LSM denied Thalyx creating the mount point for
+    // `/dev/null`, and on an enforcing kernel nothing could be launched at all
+    // — not a guest, not a signed module.
+    //
+    // No test saw it because this container has no BPF LSM, so `check()`
+    // returns 0 and every one of those opens succeeds. The property that
+    // survives without an LSM is the **order**, and strace can read it.
+    let Some(arena) = arena("order") else { return };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with("echo inside");
+    let Some((output, trace)) = traced_launch(&arena, &module) else {
+        return;
+    };
+
+    // The control, first. Everything below is a claim about a window in a
+    // trace, and a launch that died early would have a very quiet one.
+    assert_eq!(
+        stdout(&output),
+        "inside",
+        "the module did not run, so the order of a launch is not what was measured: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lines: Vec<&str> = trace.lines().collect();
+
+    // Rule 10, and this is exactly the shape it warns about: a failure to read
+    // is not a failure to exist. The whole check hangs on `-y`, which annotates
+    // a descriptor with the path it was opened from — without it a `write` is a
+    // number and the join is invisible. An old `strace` would then look
+    // identical to a launcher that never joined its cgroup, which is a very
+    // loud accusation to make about somebody else's tooling. This project has
+    // already been caught twice measuring the instrument's version instead of
+    // the subject.
+    let Some(join) = lines
+        .iter()
+        .position(|line| line.contains("write(") && line.contains("cgroup.procs>"))
+    else {
+        if !trace.contains("cgroup.procs>") {
+            unmeasurable(
+                "this strace does not annotate descriptors with their paths, so the join cannot be located",
+            );
+            return;
+        }
+        panic!("the launcher never wrote its pid into cgroup.procs");
+    };
+    let pid = pid_of(lines[join]).expect("a pid on the join line");
+
+    let exec = lines[join + 1..]
+        .iter()
+        .position(|line| pid_of(line) == Some(pid) && call_on(line).starts_with("execve("))
+        .map(|offset| join + 1 + offset)
+        .expect("the launcher never reached execve after joining the cgroup");
+
+    // The baseline, and rule 4 is the whole reason it is here: "no writes
+    // after the join" is also true of a launcher that never wrote anything,
+    // and of one that never assembled a root at all.
+    //
+    // Asked in two halves on purpose. The mount point for `/dev/null` is the
+    // exact write the machine denied, so "it was never created" and "it was
+    // created on the wrong side of the join" are different findings and must
+    // not arrive as the same sentence — the first says this trace proves
+    // nothing, the second is the defect.
+    let created: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            pid_of(line) == Some(pid) && opens_for_writing(line) && line.contains("/dev/null")
+        })
+        .map(|(at, _)| at)
+        .collect();
+    assert!(
+        !created.is_empty(),
+        "the launcher never created a mount point for /dev/null anywhere in this trace, \
+         so the ordering was not exercised and nothing below means anything"
+    );
+    let late: Vec<&usize> = created.iter().filter(|&&at| at > join).collect();
+    assert!(
+        late.is_empty(),
+        "the mount point for /dev/null was created after the launcher joined the cgroup, \
+         which is the -EPERM that stopped every launch on an enforcing kernel:\n{}",
+        late.iter()
+            .map(|&&at| format!("  {}", lines[at]))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // And the claim.
+    let window = &lines[join + 1..exec];
+
+    let writes: Vec<&&str> = window
+        .iter()
+        .filter(|line| pid_of(line) == Some(pid) && opens_for_writing(line))
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "the launcher opened something for writing after joining the cgroup, \
+         which an enforcing kernel answers with -EPERM:\n{}",
+        writes
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Fail closed, rule 9. `strace -f` can split a syscall across two lines
+    // when another process interleaves, and half an `openat` does not say what
+    // it was opened for. An unreadable line is not a line that said no.
+    let unreadable: Vec<&&str> = window
+        .iter()
+        .filter(|line| {
+            pid_of(line) == Some(pid) && is_an_open(line) && line.contains("<unfinished")
+        })
+        .collect();
+    assert!(
+        unreadable.is_empty(),
+        "an open in the window was cut in half by strace, so what it asked for cannot be read:\n{}",
+        unreadable
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
