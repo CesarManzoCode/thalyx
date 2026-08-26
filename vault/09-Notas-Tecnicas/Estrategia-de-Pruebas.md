@@ -3920,6 +3920,79 @@ se ejecutó con la política aplicada de verdad fue el de ese demo.
 > vuelve a encontrar desde cero, con el sistema real, delante de la persona que
 > confió en él.
 
+## Regla derivada: mirar antes de crear es una carrera, y una prueba secuencial no la ve nunca — 2026-08-26
+
+`verify.sh` en el fierro de Cesar: 171 `PROVEN`, 2 `NOT PROVEN`, 4 `FAILED`. Uno
+de los cuatro era la suite, y dentro de la suite **un solo test de diez**:
+
+```
+a_path_granted_for_reading_cannot_be_written_by_the_guest --- FAILED
+I/O error at /sys/fs/cgroup/thalyx: File exists (os error 17)
+```
+
+El mensaje dice lo contrario de lo que pasó. `File exists` se lee como una
+máquina en mal estado, y la máquina estaba perfecta: el directorio existía
+porque **otro hilo de la misma suite acababa de crearlo**.
+
+`cgroup::parent()` preguntaba y después creaba:
+
+```rust
+if !path.exists() {
+    std::fs::create_dir(&path)?;   // otro llegó primero, entre las dos líneas
+}
+```
+
+Diez tests del mismo binario corren en paralelo y todos llaman a `run_foreign`,
+que empieza por `parent()`. En una máquina con suficientes núcleos, dos caen en
+la ventana entre las dos líneas: el primero crea, el segundo recibe `EEXIST`. En
+este contenedor no hay cgroup2, así que ese código nunca se ejecutó aquí; en su
+máquina falló una vez de cada diez, que es la peor forma de fallar que hay
+porque el que la ve no puede repetirla.
+
+Lo mismo estaba en `Cgroup::ensure` — dos `ejecutar` del mismo programa al mismo
+tiempo — y **el espejo estaba en el desmontaje**: `remove()` reportaba
+`No such file or directory` cuando otra instancia ya había borrado el cgroup, o
+sea una falla sobre un invitado que había corrido y salido exactamente como se
+le pidió.
+
+> **No preguntes si algo existe para después crearlo.** Créalo y decide qué
+> hacer con `EEXIST`; bórralo y decide qué hacer con `ENOENT`. El sistema de
+> archivos hace las dos cosas en una sola llamada, atómicamente, y la versión de
+> dos pasos tiene una ventana en medio donde cabe otro proceso.
+>
+> Y `EEXIST` se perdona **sólo para un directorio**. Un archivo ordinario con
+> ese nombre acepta que le escriban `cgroup.procs`, no confina nada, y cada paso
+> reporta éxito: es la falla sin síntoma que este módulo existe para rechazar.
+
+Lo que la prueba tiene de distinto: el defecto viejo era invisible para
+cualquier test secuencial, porque el `exists()` lo hacía imposible de provocar
+en un solo hilo. La prueba nueva pone ocho hilos contra una barrera y los suelta
+juntos —
+`two_runs_racing_to_create_the_same_cgroup_both_get_it` — y con el código viejo
+falla las ocho veces de ocho, no una de diez: sin el `exists()` de por medio, el
+segundo `mkdir` recibe `EEXIST` siempre. **La prueba de una carrera se vuelve
+determinista cuando se arregla la carrera**, y eso es lo que la hace sostener
+algo.
+
+Es la primera vez que un defecto de este proyecto es una carrera del sistema de
+archivos, y la tercera vez que la suite se pelea consigo misma por un recurso
+que creía suyo — `ETXTBSY` por el ejecutable que acababa de escribir es la que
+tardó un año. Las tres tienen la misma forma: **el test corre en la misma
+máquina que los otros tests.**
+
+### Y el reporte no traía con qué diagnosticarlo
+
+Los otros tres `FAILED` de esa corrida eran las tres etapas de §36 que lanzan un
+invitado, y lo único que el reporte decía de cada una era
+`see /tmp/tmp.XXXX/exec-run.log` — un archivo que sólo existe en la máquina de
+Cesar. Diagnosticarlos costaba una vuelta entera: pedirle que fuera a leerlo.
+
+> Un veredicto que nombra un archivo de log no se lee donde está el archivo.
+> Si el log es corto, imprímelo junto al veredicto.
+
+`verify.sh` ahora tiene `excerpt`, y las siete salidas de §36 que nombran un log
+imprimen su cola.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

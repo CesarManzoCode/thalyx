@@ -14,9 +14,50 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Un sprint en vez de tres entregas, y el decreto que lo pidió — 2026-08-26
+> ## La primera corrida del sprint en fierro, y la carrera que encontró — 2026-08-26
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `sudo ./dev/verify.sh` con el sprint dentro: **171 `PROVEN`,
+> 2 `NOT PROVEN`, 4 `FAILED`.**
+>
+> ### Lo que se arregló
+>
+> De los cuatro `FAILED`, uno estaba diagnosticado por su propio mensaje: la
+> suite, en un solo test de diez, con `I/O error at /sys/fs/cgroup/thalyx: File
+> exists`. Era una **carrera** — `cgroup::parent()` preguntaba si el directorio
+> existía y después lo creaba, y diez tests en paralelo caben de sobra en la
+> ventana entre las dos líneas. El mensaje decía lo contrario de lo que pasaba:
+> la máquina estaba bien.
+>
+> Arreglado en los tres lugares que tenían la misma forma —`parent()`,
+> `Cgroup::ensure()` y, del otro lado, `Cgroup::remove()`, que reportaba
+> `No such file or directory` sobre un invitado que ya había corrido bien— y
+> con una prueba de ocho hilos contra una barrera que con el código viejo falla
+> ocho de ocho. La regla quedó en [[Estrategia-de-Pruebas]]: **no preguntes si
+> algo existe para después crearlo.**
+>
+> Este contenedor no tiene cgroup2, así que ese código nunca se ejerció aquí.
+> Lo que aquí sí corre —la suite entera, `clippy`, `fmt`— está limpio.
+>
+> ### Lo que falta, y por qué no se pudo diagnosticar todavía
+>
+> Los otros tres `FAILED` son las tres etapas de §36 que **lanzan un invitado**
+> (`exec-run`, `exec-bare`, `exec-endure`). Fallaron las tres, y el reporte no
+> traía nada más que la ruta de un log que sólo existe en la máquina de Cesar.
+> No hay diagnóstico: lo que se sabe es que el kernel cargó y que el flip a
+> enforcement tomó —si no, `exec-bare` y `exec-endure` ni siquiera habrían
+> corrido— y que la salida no contenía ninguna de las frases que `verify.sh`
+> sabe reconocer.
+>
+> Para que la próxima corrida se conteste sola, `verify.sh` ahora imprime la
+> cola del log junto al veredicto en las siete salidas de §36 que nombran uno.
+>
+> **Lo siguiente es correr `verify.sh` otra vez y leer esas tres colas.**
+
+> ## Un sprint en vez de tres entregas, y el decreto que lo pidió — 2026-08-26
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Cesar preguntó qué seguía. Se le contestó con tres opciones, y cortó:
 >

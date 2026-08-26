@@ -44,6 +44,16 @@ proven()   { PROVEN=$((PROVEN + 1));     green   "   PROVEN      $*"; }
 unproven() { UNPROVEN=$((UNPROVEN + 1)); yellow  "   NOT PROVEN  $*"; NOTES+=("$*"); }
 failed()   { FAILED=$((FAILED + 1));     red     "   FAILED      $*"; NOTES+=("FAILED: $*"); }
 
+# What a verdict that only names a log file costs: a round trip to the machine
+# that holds the file, and that machine is never the one this was written on.
+# Three stages of §36 failed on 2026-08-26 and the report said only where to
+# look, so the next thing anybody could do was ask Cesar to go and look. These
+# logs are a handful of lines; print the tail beside the verdict.
+excerpt() {
+    [ -f "$1" ] || return 0
+    tail -n "${2:-15}" "$1" | sed 's/^/               | /'
+}
+
 # ---------------------------------------------------------------- teardown
 
 LOADED=0
@@ -5219,16 +5229,19 @@ if grep -q "granted content" "$WORK/exec-run.log"; then
     # what was granted is only meaningful beside whether it reached what was not.
     if grep -q "REACHABLE" "$WORK/exec-run.log"; then
         failed "the guest reached a path nobody granted it; see $WORK/exec-run.log"
+        excerpt "$WORK/exec-run.log"
     elif grep -q "absent" "$WORK/exec-run.log"; then
         proven "the guest reached the path it was granted and not the one beside it"
     else
         unproven "the guest said neither; see $WORK/exec-run.log"
+        excerpt "$WORK/exec-run.log"
     fi
 
     if grep -q "ran as user" "$WORK/exec-run.log"; then
         proven "the guest ran as a user of its own rather than as Thalyx"
     else
         failed "the guest ran as Thalyx; see $WORK/exec-run.log"
+        excerpt "$WORK/exec-run.log"
     fi
 elif grep -q "only observing\|could not be read" "$WORK/exec-run.log"; then
     # The flip above did not take. Never a pass — nothing was confined — and
@@ -5246,6 +5259,7 @@ elif grep -q "policy map is not loaded" "$WORK/exec-run.log"; then
     unproven "nothing here enforces a policy, so the \`y\` was taken and no guest was launched: what a guest can see did not run"
 else
     failed "the guest did not run; see $WORK/exec-run.log"
+    excerpt "$WORK/exec-run.log"
 fi
 
 # --- a guest granted nothing still gets to be a program --------------------
@@ -5265,8 +5279,10 @@ if [ "$EXEC_FLIPPED" = 1 ]; then
         proven "a guest granted nothing runs: it can read what Thalyx mounted for it"
     elif grep -q "cgroup.procs\|could not be read back" "$WORK/exec-bare.log"; then
         failed "a guest granted nothing could not read its own cgroup back; see $WORK/exec-bare.log"
+        excerpt "$WORK/exec-bare.log"
     else
         failed "a guest granted nothing did not run; see $WORK/exec-bare.log"
+        excerpt "$WORK/exec-bare.log"
     fi
 fi
 
@@ -5282,6 +5298,7 @@ if [ "$EXEC_FLIPPED" = 1 ]; then
         proven "a guest still holds what it was granted after 35s, past the old 30s deadline"
     else
         failed "a guest lost its grant while it was still running; see $WORK/exec-endure.log"
+        excerpt "$WORK/exec-endure.log"
     fi
 fi
 

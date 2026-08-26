@@ -59,10 +59,37 @@ pub fn mount_point() -> Result<PathBuf> {
 /// The Thalyx-owned parent, created if it is not there yet.
 pub fn parent() -> Result<PathBuf> {
     let path = mount_point()?.join(PARENT_NAME);
-    if !path.exists() {
-        std::fs::create_dir(&path).map_err(|source| SandboxError::io(&path, source))?;
-    }
+    create_or_reuse(&path)?;
     Ok(path)
+}
+
+/// Create a cgroup directory, accepting one that is already there.
+///
+/// Asked as `mkdir`-and-then-look rather than look-and-then-`mkdir`, because
+/// the second is a race and the race lands. Two `ejecutar` runs starting at the
+/// same moment both find `/sys/fs/cgroup/thalyx` missing, both call `mkdir`,
+/// and the loser used to be handed `File exists (os error 17)` — a machine
+/// reported as broken because it was *not* broken, and the cheapest possible
+/// reading of the error said the opposite of what happened. It cost a stage of
+/// `verify.sh` and one test in ten, non-deterministically, which is the worst
+/// way for anything to fail.
+///
+/// `EEXIST` is only forgiven for a directory. A *file* by this name is a
+/// machine that is genuinely not what Thalyx expects, and swallowing that would
+/// hand the caller a path no process can ever join, with every step reporting
+/// success — the failure with no symptom this module already exists to refuse.
+fn create_or_reuse(path: &Path) -> Result<()> {
+    match std::fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            if path.is_dir() {
+                Ok(())
+            } else {
+                Err(SandboxError::io(path, source))
+            }
+        }
+        Err(source) => Err(SandboxError::io(path, source)),
+    }
 }
 
 /// Whether a directory is really on a cgroup2 filesystem.
@@ -94,9 +121,7 @@ impl Cgroup {
         let name = validate_name(name)?;
         let path = parent.join(name);
 
-        if !path.exists() {
-            std::fs::create_dir(&path).map_err(|source| SandboxError::io(&path, source))?;
-        }
+        create_or_reuse(&path)?;
         Self::attach(&path)
     }
 
@@ -170,8 +195,18 @@ impl Cgroup {
     /// the id is an inode number, inode numbers are reused, and a map entry
     /// outliving its directory would hand a future cgroup permissions nobody
     /// granted it. See `Confinement::release`.
+    ///
+    /// A cgroup that is already gone is the outcome this asks for, not a
+    /// failure to reach it. The same race as `create_or_reuse`, from the other
+    /// end: two instances of one module can both find the cgroup empty and both
+    /// `rmdir` it, and the loser would report `No such file or directory` about
+    /// a guest that had already run and exited exactly as it was meant to.
     pub fn remove(&self) -> Result<()> {
-        std::fs::remove_dir(&self.path).map_err(|source| SandboxError::io(&self.path, source))
+        match std::fs::remove_dir(&self.path) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(SandboxError::io(&self.path, source)),
+        }
     }
 }
 
@@ -261,6 +296,73 @@ pub(crate) mod tests {
             Cgroup::attach(&dir.path().join("absent")),
             Err(SandboxError::NoSuchCgroup(_))
         ));
+    }
+
+    #[test]
+    fn two_runs_racing_to_create_the_same_cgroup_both_get_it() {
+        // The defect this replaced was invisible to every sequential test: the
+        // old code looked before it created, so the second caller only ever hit
+        // `EEXIST` when it looked *before* the first caller's `mkdir` landed.
+        // One test in ten failed, on a machine with enough cores to lose the
+        // race, and the message it produced — `File exists` — reads as a broken
+        // machine rather than as two callers agreeing.
+        //
+        // The barrier is what makes the two `mkdir` calls actually overlap
+        // rather than happen to.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thalyx");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let racers: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    create_or_reuse(&path)
+                })
+            })
+            .collect();
+
+        for racer in racers {
+            racer
+                .join()
+                .unwrap()
+                .expect("a racer was told the cgroup could not be created");
+        }
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn a_file_in_the_way_of_a_cgroup_is_still_refused() {
+        // The half of `EEXIST` that must never be forgiven. A regular file
+        // accepts a write to something called `cgroup.procs` and confines
+        // nothing, so a caller handed this path would report success at every
+        // step and run the guest completely free.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thalyx");
+        std::fs::write(&path, "not a directory").unwrap();
+
+        assert!(create_or_reuse(&path).is_err());
+    }
+
+    #[test]
+    fn removing_a_cgroup_that_is_already_gone_is_not_a_failure() {
+        // The same race from the teardown end: two instances of one module can
+        // both find the cgroup empty and both `rmdir` it. Reporting `No such
+        // file or directory` would fail a run whose guest had already done
+        // exactly what it was asked, and rule 10 cuts the other way here —
+        // this is not a failure to read, it is the outcome, reached by somebody
+        // else.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cgroup2");
+        fake_cgroup2(&path);
+        let cgroup = Cgroup::attach(&path).unwrap();
+
+        std::fs::remove_dir_all(&path).unwrap();
+        cgroup
+            .remove()
+            .expect("a cgroup already gone was reported as a failure");
     }
 
     #[test]
