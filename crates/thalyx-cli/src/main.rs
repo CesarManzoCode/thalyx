@@ -10,8 +10,10 @@ mod attempt;
 mod catalogue;
 mod changes;
 mod dev;
+mod edit;
 mod enforce;
 mod files;
+mod foreign;
 mod graph;
 mod history;
 mod image;
@@ -19,13 +21,18 @@ mod index;
 mod init;
 mod install;
 mod memory;
+mod modules;
+mod net;
+mod proc;
 mod render;
 mod restore;
 mod run;
+mod search;
 mod session;
 mod snapshot;
 mod store_disk;
 mod term;
+mod words;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -409,15 +416,19 @@ fn run_module(
             entrypoint,
             unconfined,
             args,
-        } => run::run(
+        } => run::run(run::Asked {
             root,
-            &module_id,
-            &profile,
-            &entrypoint,
+            module_id: &module_id,
+            profile: &profile,
+            entrypoint: &entrypoint,
             args,
             unconfined,
-            new_request_id(),
-        ),
+            request_id: new_request_id(),
+            // The host CLI has no session face to carry; `thalyx module run`
+            // from a shell is the human route, and the structured one is the
+            // session's `correr`.
+            face: files::Face::Human,
+        }),
         ModuleCommand::List => render::module_list(&store),
         ModuleCommand::Remove { module_id } => {
             let version = thalyx_core::remove(&store, &module_id, &new_request_id())?;

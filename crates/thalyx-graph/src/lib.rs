@@ -54,20 +54,12 @@ pub enum GraphError {
     TreeTooLarge { root: PathBuf, ceiling: usize },
 }
 
-/// How many files an index will build over before it refuses.
+/// How many files an index will take before refusing to build.
 ///
-/// A refusal and not a longer wait. `indexar` with nothing after it indexes the
-/// tree the session stands in, and a session starts at `/home` — which on an
-/// ordinary developer's machine contains `.cargo/registry` and `.rustup`, every
-/// source file of every crate they have downloaded plus the whole Rust standard
-/// library. On 2026-08-10 that ran for more than three minutes and was killed;
-/// what it cost was a verification run.
-///
-/// The number is not tuned. It is far above any tree somebody means — this
-/// repository is 179 files, its whole vault included — and far below the point
-/// where an answer stops being worth waiting for. An answer that never arrives
-/// is worse than a refusal, and the refusal says what to do instead.
-pub const CEILING: usize = 20_000;
+/// One number for every whole-tree walk in Thalyx, kept in `thalyx-files` where
+/// the walk itself is. Two ceilings that had to agree would have drifted the
+/// first time one of them was tuned.
+pub use thalyx_files::CEILING;
 
 pub type Result<T> = std::result::Result<T, GraphError>;
 
@@ -819,51 +811,14 @@ fn normalise(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Directories never worth indexing.
+/// The walk, in one place, because everything that walks has to agree exactly.
 ///
-/// Build outputs and version control internals would swamp the graph with
-/// nodes no one asks about, and `.git` alone can be larger than the project.
-///
-/// **Anything beginning with a dot**, and that rule is the one that matters.
-/// The named list was a list of the things that had gone wrong so far, and it
-/// went wrong again on 2026-08-10: a session starts at `/home`, `indexar` with
-/// nothing after it indexes where it stands, and on Cesar's machine that walked
-/// into `.cargo/registry` and `.rustup` — every source file of every crate he
-/// has ever downloaded, plus the whole Rust standard library. The run never
-/// finished.
-///
-/// A hidden directory is where a machine keeps what it manages for itself. A
-/// person indexing their work does not mean their caches, and adding `.cargo`
-/// to a list of names would only have waited for `.local/share` to be next.
-fn is_ignored(path: &Path) -> bool {
-    match path.file_name().and_then(|n| n.to_str()) {
-        Some("target" | "node_modules" | "__pycache__" | "dist" | "build") => true,
-        Some(name) => name.starts_with('.'),
-        None => false,
-    }
-}
-
-/// The walk, in one place, because two of them have to agree exactly.
-///
-/// The build records the set of files a tree holds and the freshness check
-/// counts that set again. If the two ever disagree about which files belong,
-/// **every index is stale the moment it is written** — and it looks like a
-/// staleness bug rather than like two walks. That is what happened the first
-/// time the hidden-directory rule was added to only one of them: eleven tests
-/// failed, none of them about hidden directories, because `tempfile` names its
-/// directories `.tmpXXXXXX`.
-///
-/// The root itself is never filtered. A person who names `~/.config` has named
-/// it on purpose, and a filter that refused the tree it was handed would answer
-/// "nothing here" about a directory full of files.
-pub(crate) fn walk(
-    root: &Path,
-) -> walkdir::FilterEntry<walkdir::IntoIter, fn(&walkdir::DirEntry) -> bool> {
-    walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path()))
-}
+/// It lives in `thalyx-files` since 2026-08-23, when `encontrar` and
+/// `contenido` became the third and fourth things that walk a tree. The reason
+/// it is one function is unchanged and is written where it now lives: two walks
+/// that disagree about which files belong make every index stale the moment it
+/// is written, and it reads as a staleness bug rather than as two walks.
+pub(crate) use thalyx_files::walk;
 
 #[cfg(test)]
 mod tests {

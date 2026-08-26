@@ -108,16 +108,21 @@ in **[docs/STATUS.md](docs/STATUS.md)**.
 its own firmware, used HDMI and a real xHCI keyboard, listed its disks,
 installed itself onto a second disk, and booted again without the installation
 medium. That closed Phase 1. The most recent run of `verify.sh` on that machine,
-on 2026-08-10, reported **143 proven, 2 not proven, 1 failed**, and the whole
-kernel side came back proven for the first time: the LSM denied a real network
-connection to a process that lacked the permission and only to that process, a
-module ran confined, Thalyx attached its own LSM with no `bpftool`, and the
-kernel mounted a Btrfs filesystem Thalyx had written byte by byte with no
-`mkfs.btrfs`. The one failure was the test harness — `ETXTBSY` between `fork`
-and `exec` — and it is written up in [docs/STATUS.md](docs/STATUS.md) because it
-took a year to diagnose.
+on 2026-08-25, reported **156 proven, 2 not proven, 0 failed**. The kernel side
+is proven: the LSM denies a real network connection to a process that lacks the
+permission and only to that process, a module runs confined, Thalyx attaches its
+own LSM with no `bpftool`, the kernel mounts a Btrfs filesystem Thalyx wrote
+byte by byte with no `mkfs.btrfs`, and the mutation ring buffer is mapped and
+drained from a real kernel pin.
 
-**Built and covered by over 1,100 tests**, including fault injection that kills
+What that number is not is a score. A count that moves says nothing until you
+know which checks ran: the run before it reported 134 on a machine with no
+kernel built, where the stage that boots it in QEMU — thirteen checks —
+contracted into a single `NOT PROVEN` line. A marker and the lines under it are
+one result, and the two lines this run could not establish are named in its own
+summary rather than here. See [docs/STATUS.md](docs/STATUS.md).
+
+**Built and covered by over 1,300 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
 
@@ -130,6 +135,30 @@ utterance produced a module id instead of a request for clarification, and the
 decree calls abstention the most important measurement, so that is the largest
 open result in the project. The grammar does not help — it constrains the
 *shape* of an answer, never its truth.
+
+**New, and proven only in part.** Thalyx can now run a program nobody signed.
+`ejecutar <ruta>` confines a foreign binary exactly the way it confines a module
+— its own cgroup, its own user, a pivoted root, the same syscall filter — and
+gives it **no channel to Thalyx's API and no unconfined mode**, because the
+signature that justifies both is what a guest does not have. It sees its own
+directory, the read-only system paths, and whatever `leyendo`/`escribiendo`
+named and a human confirmed at the terminal. That was the point blocking the
+project's own bar, which is a foreign agent working here. What is proven so far
+is everything around the run — the rehearsal, the refusal when the human says
+no, the journal calling it `run_foreign`, the structured face declining to
+consent on a human's behalf. What a confined guest can *see* needs a machine
+with the LSM attached, and is `NOT PROVEN` until the next run there.
+
+The first thing that verb ever said on real hardware found a hole. "The kernel
+policy map is not loaded" was the right refusal, and the remedy it named —
+`make -C lsm load` — lands a machine in **observe mode**, where every hook runs,
+every denial is written to a ring, and none of them is applied. So the one
+action the system asked for left the machine in the state where a guest would
+have run and the kernel would have denied it nothing. `is_available()` answers
+"does the policy map open"; nothing on this side had ever read the map that says
+whether a denial is real. Now a guest is refused there too, a module runs but
+the journal calls it degraded, and `thalyx enforce status` says which mode the
+machine is in.
 
 **Not proven.** `thalyx_watch` — the filesystem watcher, ten BPF hooks against
 the LSM's two — has never been loaded by Thalyx's own loader; `bpftool` still
@@ -241,8 +270,10 @@ crates/
   thalyx-snapshot/  Btrfs subvolumes and snapshots
   thalyx-btrfs/     Btrfs written directly, with no mkfs.btrfs
   thalyx-install/   turning a disk with no OS on it into a Thalyx machine
-  thalyx-files/     the file verbs, in one place, for both faces
+  thalyx-files/     the file verbs and the tree search, for both faces
   thalyx-term/      a terminal that is a terminal: line editing, history
+  thalyx-edit/      changing text in a file, for a screen and for a program
+  thalyx-proc/      what runs, what memory is left, and stopping one
   thalyx-syscall/   the only crate where `unsafe` is permitted
 
 lsm/      BPF LSM programs: enforcement, and the filesystem watcher

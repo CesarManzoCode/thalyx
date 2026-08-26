@@ -920,18 +920,22 @@ dependencies = [
  "thalyx-btrfs",
  "thalyx-contract",
  "thalyx-core",
+ "thalyx-edit",
  "thalyx-files",
  "thalyx-graph",
  "thalyx-install",
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-memory",
+ "thalyx-net",
  "thalyx-permd",
+ "thalyx-proc",
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",
  "thalyx-term",
  "thalyx-watch",
+ "thiserror",
  "toml",
  "uuid",
 ]
@@ -973,6 +977,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-edit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thalyx-term",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-files"
 version = "0.1.0"
 dependencies = [
@@ -980,6 +994,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
@@ -989,9 +1004,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "tempfile",
+ "thalyx-files",
  "thalyx-parser",
  "thiserror",
- "walkdir",
 ]
 
 [[package]]
@@ -1043,6 +1058,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-net"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-parser"
 version = "0.1.0"
 dependencies = [
@@ -1055,6 +1078,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thalyx-manifest",
+ "thalyx-syscall",
+ "thiserror",
+]
+
+[[package]]
+name = "thalyx-proc"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "thalyx-syscall",
  "thiserror",
 ]

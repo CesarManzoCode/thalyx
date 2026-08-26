@@ -133,6 +133,11 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
                 &permissions,
                 thalyx_permd::boot_ns(),
                 thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
+                // No floor. This binds a cgroup by hand, for inspection and
+                // for processes Thalyx did not start — so it has to write
+                // exactly what was asked for. A floor here would make the
+                // command's own report a lie about the map it just wrote.
+                0,
             )?;
 
             println!("{module_id} → cgroup {id}");
@@ -217,6 +222,12 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         if available { "present" } else { "NOT PRESENT" }
     );
 
+    // Attached and enforcing are two questions. Printing only the first is
+    // what let a machine in observe mode read as armed for three weeks.
+    if available {
+        println!("mode:              {}", kernel.enforcement().describe());
+    }
+
     let registry = Registry::load(store.permissions_path())?;
     let installed = store.installed()?;
 
@@ -236,6 +247,14 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         println!();
         println!("  make -C lsm load     attach the enforcement programs");
         return Ok(());
+    }
+
+    if kernel.enforcement() != thalyx_permd::Enforcement::Enforcing {
+        println!("The kernel side is attached and is not denying anything.");
+        println!("Every policy below is written into a map nothing acts on.");
+        println!();
+        println!("  make -C lsm enforce  start denying");
+        println!();
     }
 
     if recorded > 0 {

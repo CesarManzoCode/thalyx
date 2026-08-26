@@ -33,6 +33,23 @@ think about X?" in a paragraph, stop and turn it into options.
 If a question can be answered by reading the vault or the code, it is not a
 question for him.
 
+### And ask him less than feels safe
+
+`vault/05-Decisiones-y-Debates/Ritmo-de-Construccion.md`, decreed 2026-08-25
+after he pointed out that the project had spent days polishing and had not moved
+the bar in `Filosofia-Fundacional.md`. **A question costs his time and stops the
+build until he answers**, so it is spent only on what nobody else can answer:
+changing one of his decrees, writing where something of his can be lost,
+spending his hardware or his money, or scope the vault does not cover.
+
+Everything else — the order of two decided things, a stale paragraph, a name, a
+pendiente already written in `Tareas-Pendientes.md` — **gets done, and he gets
+told what was done.** A pendiente already written there was already decided by
+him; asking again is asking him to decide twice.
+
+None of that lowers a rule below. Fast is delivering the whole thing; fast is
+not delivering the easy half, and `NOT PROVEN` is still `NOT PROVEN`.
+
 ## Language
 
 - **Spanish** — neutral Mexican, **never voseo** — for conversation with him
@@ -123,7 +140,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened nine times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened twelve times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -136,6 +153,15 @@ These were all learned by something going wrong. They are recorded in
    took a year: it failed once in twenty-five runs, was "fixed" by a guess that
    said it was a guess, and only became a diagnosis when a twelve-core machine
    failed it twice in one run and the error — `ETXTBSY` — was finally captured.
+   The tenth and eleventh are both a set read from the wrong place: `verify.sh`
+   grepping for a sentence the probe had stopped printing, which turned seven
+   denials into seven vacuous passes and was caught only by the positive
+   control beside them; and `dev/foreign-agent-needs.sh` taking the permitted
+   syscalls out of a file that also names the forbidden ones. The twelfth is the
+   sharpest: a test that asked whether a module may arrange its own threads by
+   running `chrt --other`, which makes the guarded call on util-linux 2.40 and a
+   denied one on 2.41 — so it passed in the container and failed on his machine,
+   having measured util-linux rather than the filter.
 6. **A parser for another tool's output needs one captured real sample,
    verbatim.** A hand-written fixture proves the parser matches your model of
    the format, not the format.

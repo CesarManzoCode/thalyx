@@ -12,6 +12,7 @@ name = "thalyx"
 path = "src/main.rs"
 
 [dependencies]
+thiserror.workspace = true
 thalyx-agent.workspace = true
 thalyx-abi.workspace = true
 thalyx-core.workspace = true
@@ -27,7 +28,10 @@ thalyx-memory.workspace = true
 thalyx-watch.workspace = true
 thalyx-snapshot.workspace = true
 thalyx-files.workspace = true
+thalyx-proc.workspace = true
+thalyx-net.workspace = true
 thalyx-term.workspace = true
+thalyx-edit.workspace = true
 thalyx-contract.workspace = true
 thalyx-permd.workspace = true
 thalyx-sandbox.workspace = true
@@ -42,6 +46,11 @@ serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Not for driving anything: the integration test reads `ring::DEFAULT_RING` so
+# it can ask the filesystem whether the watcher is loaded. Asking Thalyx that
+# question and then checking Thalyx against the answer is a test agreeing with
+# itself.
+thalyx-watch.workspace = true
 serde_json.workspace = true
 thalyx-permd.workspace = true
 thalyx-agent.workspace = true

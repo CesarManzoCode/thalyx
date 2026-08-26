@@ -43,6 +43,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Core-Nucleo]] — el núcleo del sistema operativo
 - [[Core]] — el orquestador del flujo, y por qué es un solo proceso con módulos internos
 - [[Sistema-de-Modulos]] — el ecosistema de módulos `.thmod`
+- [[Programas-Ajenos]] — **`ejecutar`**: correr un programa que nadie firmó, confinado, y por qué eso no toca la firma
 - [[Formato-Manifiesto-Thmod]] — el schema del manifiesto
 - [[Agente-Conversacional]] — el traductor de intención
 - [[Gamas-de-Modelo]] — cuatro gamas que elige el usuario, y qué garantiza la gramática
@@ -72,6 +73,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ### 6. Decisiones y debates (el porqué de cada cosa)
 - [[Debates-Overview]] — mapa de todos los debates resueltos
+- [[Ritmo-de-Construccion]] — **agresivos sin ser estúpidos**: qué se le pregunta a Cesar y qué se hace sin preguntar
 
 ### 7. Pendientes (qué falta)
 - [[Punto-Actual]] — **dónde quedó el proyecto y qué sigue**; se actualiza cada vez que se termina algo
@@ -93,6 +95,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Construccion-del-ISO]] — **la imagen es el kernel y un programa**, y cómo se cuenta
 - [[Primer-Arranque]] — los comandos para arrancarla, y qué significa cada fallo
 - [[Cargador-BPF-Propio]] — cómo Thalyx carga su enforcement sin bpftool
+- [[Que-Necesita-Un-Agente-Ajeno]] — **medido**: 40 de 41 llamadas ya permitidas, y dónde sí bloquea
 
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]

@@ -4,6 +4,8 @@
 //! half: it collects arguments, hands them over, and reports what happened
 //! plainly enough that "confined" and "unconfined" cannot be confused.
 
+use crate::files::Face;
+use serde_json::json;
 use std::ffi::OsString;
 use thalyx_core::Store;
 use thalyx_journal::Origin;
@@ -11,15 +13,36 @@ use thalyx_permd::KernelStore;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
-pub fn run(
-    root: &std::path::Path,
-    module_id: &str,
-    profile: &str,
-    entrypoint: &str,
-    args: Vec<OsString>,
-    unconfined: bool,
-    request_id: String,
-) -> Fallible {
+/// One request to run a module, as one value.
+///
+/// Gathered into a struct when adding the face made it eight loose arguments.
+/// Seven positional arguments of which three are strings and two are booleans is
+/// a call nobody can read at the call site, and the way it breaks is a
+/// transposition the compiler accepts: `profile` and `entrypoint` are both
+/// `&str`, and swapping them produces a run that fails somewhere much later.
+pub struct Asked<'a> {
+    pub root: &'a std::path::Path,
+    pub module_id: &'a str,
+    pub profile: &'a str,
+    pub entrypoint: &'a str,
+    pub args: Vec<OsString>,
+    pub unconfined: bool,
+    pub request_id: String,
+    pub face: Face,
+}
+
+pub fn run(asked: Asked<'_>) -> Fallible {
+    let Asked {
+        root,
+        module_id,
+        profile,
+        entrypoint,
+        args,
+        unconfined,
+        request_id,
+        face,
+    } = asked;
+
     let store = Store::open(root)?;
     let policies = KernelStore::default_map();
 
@@ -43,6 +66,11 @@ pub fn run(
         },
     )?;
 
+    if face.is_machine() {
+        say_it(&outcome);
+        return Ok(());
+    }
+
     println!();
     println!("{} {}", outcome.module_id, outcome.version);
     println!("  ran: {}", outcome.program.display());
@@ -61,6 +89,15 @@ pub fn run(
             }
             if outcome.permissions.is_empty() {
                 println!("    (no permissions; every guarded operation is denied)");
+            }
+            match &outcome.enforcement {
+                Some(thalyx_permd::Enforcement::Enforcing) | None => {}
+                Some(mode) => {
+                    println!();
+                    println!("  WARNING: the kernel side is {}.", mode.describe());
+                    println!("  The policy above was written and nothing applied it. Make it");
+                    println!("  binding with `make -C lsm enforce`.");
+                }
             }
             if !outcome.isolated {
                 println!();
@@ -160,4 +197,118 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// One run, as one object.
+///
+/// ## Why nothing here goes through `sanitise`
+///
+/// The human face routes every line a module produced through
+/// `trusted_path::sanitise_block`, and the reason is written there: routing a
+/// module's text through Thalyx accomplishes nothing if that text can then
+/// contain a newline and repaint the marker, or an escape sequence and repaint
+/// the screen. **The marker is only a marker if the module cannot draw one.**
+///
+/// On this face the marker is not drawn, it is structural: the module's text is
+/// the value of a named field of an object, and `serde_json` escapes every
+/// control character on the way out. A module cannot end the object early, cannot
+/// start a second one, and cannot move a byte from `wrote` into `said` — the
+/// framing that `sanitise` is defending in the terminal is defended here by the
+/// encoding, and it does not depend on anyone remembering to call a function.
+///
+/// So the bytes are carried through as they were written. That is the tie-break
+/// rule of `Superficie-para-el-LLM.md` applied honestly: a caller asking what a
+/// module wrote is asking what it wrote, and handing it a cleaned copy would be
+/// answering a different question. The human keeps the sanitised route, which is
+/// the one where the risk actually lives.
+fn say_it(outcome: &thalyx_core::run::RunOutcome) {
+    const OP: &str = "run";
+
+    let said: Vec<serde_json::Value> = outcome
+        .said
+        .iter()
+        .map(|(level, text)| {
+            json!({
+                "level": match level {
+                    thalyx_abi::Level::Info => "info",
+                    thalyx_abi::Level::Warning => "warning",
+                    thalyx_abi::Level::Error => "error",
+                },
+                "text": text,
+            })
+        })
+        .collect();
+
+    println!(
+        "{}",
+        thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("module_id", json!(outcome.module_id)),
+                ("version", json!(outcome.version)),
+                ("program", json!(outcome.program.display().to_string())),
+                // The one field that decides whether anything else here can be
+                // believed as enforcement. `confined: false` and a policy that
+                // denied nothing are the same run, and the journal calls it
+                // degraded — so a caller must not have to derive it from the
+                // absence of a cgroup id.
+                ("confined", json!(outcome.cgroup_id.is_some())),
+                // Beside `confined`, and for its reason. A confined run under
+                // an observing kernel and a confined run under an enforcing
+                // one are the same JSON without this, and they are not the
+                // same run.
+                (
+                    "enforcing",
+                    json!(matches!(
+                        outcome.enforcement,
+                        Some(thalyx_permd::Enforcement::Enforcing)
+                    ))
+                ),
+                (
+                    "enforcement",
+                    json!(outcome.enforcement.as_ref().map(|mode| mode.describe()))
+                ),
+                ("cgroup_id", json!(outcome.cgroup_id)),
+                ("isolated", json!(outcome.isolated)),
+                ("isolation", json!(outcome.isolation)),
+                ("uid", json!(outcome.uid)),
+                (
+                    "permissions",
+                    json!(
+                        outcome
+                            .permissions
+                            .iter()
+                            .map(|permission| permission.describe())
+                            .collect::<Vec<_>>()
+                    )
+                ),
+                ("said", json!(said)),
+                // `wrote` apart from `said`, and named for what it is. The
+                // channel is the surface Thalyx mediates; this is bytes at a
+                // descriptor, and a module writing `granted=reachable` there has
+                // told nobody anything Thalyx checked.
+                (
+                    "wrote",
+                    json!({
+                        // Kept apart because they arrived on separate pipes: any
+                        // interleaving would be one Thalyx invented.
+                        "stdout": outcome.wrote.stdout,
+                        "stderr": outcome.wrote.stderr,
+                        "truncated": outcome.wrote.truncated,
+                    })
+                ),
+                // Output that silently stopped growing and a module that stopped
+                // talking look identical, so the count is said out loud.
+                ("dropped_notices", json!(outcome.dropped_notices)),
+                (
+                    "channel_error",
+                    json!(outcome.channel_error.as_ref().map(|e| e.to_string()))
+                ),
+                // `null` is *terminated by a signal*, and it is a third answer
+                // rather than a missing one — which is why it is written out
+                // instead of left off when there is no code.
+                ("exit_code", json!(outcome.exit_code)),
+            ],
+        )
+    );
 }

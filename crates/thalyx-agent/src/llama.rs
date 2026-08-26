@@ -1559,7 +1559,38 @@ esac"#,
         // readable as a proposal, every arm of the check above would invert and
         // the whole thing would report the opposite of what it saw.
         assert!(crate::proposal::Proposal::completion_in(crate::prompt::PROBE_WORD).is_none());
-        assert!(crate::grammar::gbnf().contains(r#"root       ::= "{""#));
+
+        // `root` is three alternatives now rather than one object, so it is no
+        // longer enough to read the first production and see a brace. Every
+        // one of them has to open on `ROOT_FIRST_CHAR`, because a constrained
+        // decode can take any of them and the probe rests on all of them
+        // starting the same way.
+        let grammar = crate::grammar::gbnf();
+        let root = grammar
+            .lines()
+            .find(|line| line.starts_with("root "))
+            .expect("the grammar has a root");
+        let alternatives: Vec<&str> = root
+            .split("::=")
+            .nth(1)
+            .expect("root has a body")
+            .split('|')
+            .map(str::trim)
+            .collect();
+        assert!(alternatives.len() > 1, "read {root:?} as one alternative");
+
+        for alternative in alternatives {
+            let production = grammar
+                .lines()
+                .find(|line| line.starts_with(&format!("{alternative} ")))
+                .unwrap_or_else(|| panic!("{alternative} is named by root and never defined"));
+            assert!(
+                production.contains(&format!(r#"::= "{}""#, crate::grammar::ROOT_FIRST_CHAR)),
+                "{alternative} does not open on {:?}, so a constrained decode \
+                 can put something else first and the probe proves nothing",
+                crate::grammar::ROOT_FIRST_CHAR
+            );
+        }
     }
 
     #[test]

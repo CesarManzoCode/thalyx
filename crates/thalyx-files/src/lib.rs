@@ -46,6 +46,7 @@
 //! name.
 
 pub mod machine;
+pub mod search;
 pub mod window;
 
 use std::ffi::OsString;
@@ -249,6 +250,36 @@ pub enum FileError {
     /// somebody a file when it is guessed at.
     #[error("{0} is already there, and I will not write over it")]
     Exists(PathBuf),
+
+    /// A search was pointed at something that is not a directory.
+    ///
+    /// Its own variant rather than folded into [`Self::IsDirectory`]'s
+    /// opposite-shaped sibling, because the remedy differs: this one is fixed
+    /// by naming a folder, and the caller that gets it typed a file where a
+    /// tree goes.
+    #[error("{0} is not a directory, and a search walks a tree")]
+    NotADirectory(PathBuf),
+
+    /// A verb that needs something to look for was given nothing.
+    ///
+    /// Refused rather than answered with everything. `contenido` with an empty
+    /// text matches every line of every file — a technically correct answer
+    /// that is never what anybody meant, and one that costs the whole context
+    /// window to receive.
+    #[error("say what to look for")]
+    NothingAsked,
+
+    /// A tree nobody would wait for.
+    ///
+    /// Deliberately not [`Self::Unreadable`]. A caller told "unreadable" about
+    /// `/home` goes looking for a permission problem that does not exist; the
+    /// tree is perfectly readable and simply too big to answer about.
+    #[error(
+        "`{root}` holds more than {ceiling} files.\n  \
+         Searching it would take long enough that nobody would wait for the \
+         answer. Name a smaller tree."
+    )]
+    TreeTooLarge { root: PathBuf, ceiling: usize },
 }
 
 /// List a directory, keeping what could not be established rather than dropping it.
@@ -316,7 +347,7 @@ pub fn list_one(path: &Path) -> Result<Listing, FileError> {
     })
 }
 
-fn kind_of(path: &Path, meta: &std::fs::Metadata) -> Kind {
+pub(crate) fn kind_of(path: &Path, meta: &std::fs::Metadata) -> Kind {
     let file_type = meta.file_type();
     if file_type.is_symlink() {
         let to = std::fs::read_link(path).unwrap_or_else(|_| PathBuf::from("?"));
@@ -451,7 +482,7 @@ pub fn read(path: &Path) -> Result<Excerpt, FileError> {
 /// has and every executable does. Control characters catch the rest: a file can
 /// be valid UTF-8 and still be full of escape sequences that repaint the screen,
 /// and "valid UTF-8" alone would wave those straight through to the terminal.
-fn not_text(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn not_text(bytes: &[u8]) -> Option<&'static str> {
     let head = &bytes[..bytes.len().min(SNIFF)];
 
     if head.contains(&0) {
@@ -478,7 +509,7 @@ fn not_text(bytes: &[u8]) -> Option<&'static str> {
 /// `NotFound` is split out from everything else because "it is not there" and
 /// "it is there and something went wrong" send a person to opposite places, and
 /// an error type that merges them sends them to the wrong one half the time.
-fn classify(path: &Path, error: std::io::Error) -> FileError {
+pub(crate) fn classify(path: &Path, error: std::io::Error) -> FileError {
     if error.kind() == std::io::ErrorKind::NotFound {
         FileError::Absent(path.to_path_buf())
     } else {
@@ -1254,6 +1285,23 @@ impl Did {
             Did::Removed => "removed",
         }
     }
+
+    /// The same fact in the conditional, for a rehearsal.
+    ///
+    /// It lives beside [`Did::word`] so that a new variant cannot be added with
+    /// only half of it. A rehearsal that reports `removed` teaches that Thalyx
+    /// destroys things it did not destroy, and the person who reads it learns
+    /// not to trust the next sentence either — the same fault as `matar` saying
+    /// it stopped a kernel thread.
+    pub fn would(self) -> &'static str {
+        match self {
+            Did::MadeDirectory => "would make the directory",
+            Did::MadeFile => "would make the file",
+            Did::Copied => "would copy",
+            Did::Moved => "would move",
+            Did::Removed => "would remove",
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────── rehearsing before doing
@@ -1487,6 +1535,74 @@ pub fn remove(path: &Path) -> Result<Done, FileError> {
 }
 
 // ──────────────────────────────────────────────────────────────────── `*.txt`
+
+// ─────────────────────────────────────────────────────── walking a whole tree
+
+/// How many files a whole-tree walk will look at before refusing.
+///
+/// Twenty thousand, and the number is about time rather than memory: past it,
+/// every answer this machine can give arrives after the person has stopped
+/// waiting for it. `Superficie-para-el-LLM.md` counts an answer that never
+/// arrives as the most expensive kind of being wrong, because it costs the
+/// whole session and leaves nothing to learn from.
+///
+/// It moved here from `thalyx-graph` when a second thing started walking trees.
+/// Two ceilings that had to be the same number would have drifted the first
+/// time one of them was tuned, and the symptom would have been `buscar` and
+/// `contenido` disagreeing about whether a tree is searchable.
+pub const CEILING: usize = 20_000;
+
+/// Directories never worth walking into.
+///
+/// Build outputs and version control internals would swamp any answer with
+/// paths no one asks about, and `.git` alone can be larger than the project.
+///
+/// **Anything beginning with a dot**, and that rule is the one that matters.
+/// The named list was a list of the things that had gone wrong so far, and it
+/// went wrong again on 2026-08-10: a session starts at `/home`, `indexar` with
+/// nothing after it indexes where it stands, and on Cesar's machine that walked
+/// into `.cargo/registry` and `.rustup` — every source file of every crate he
+/// has ever downloaded, plus the whole Rust standard library. The run never
+/// finished.
+///
+/// A hidden directory is where a machine keeps what it manages for itself. A
+/// person indexing their work does not mean their caches, and adding `.cargo`
+/// to a list of names would only have waited for `.local/share` to be next.
+fn is_ignored(path: &Path) -> bool {
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("target" | "node_modules" | "__pycache__" | "dist" | "build") => true,
+        Some(name) => name.starts_with('.'),
+        None => false,
+    }
+}
+
+/// The walk, in one place, because everything that walks has to agree exactly.
+///
+/// The index records the set of files a tree holds and the freshness check
+/// counts that set again. If the two ever disagree about which files belong,
+/// **every index is stale the moment it is written** — and it looks like a
+/// staleness bug rather than like two walks. That is what happened the first
+/// time the hidden-directory rule was added to only one of them: eleven tests
+/// failed, none of them about hidden directories, because `tempfile` names its
+/// directories `.tmpXXXXXX`.
+///
+/// There are now four callers and not two — the index build, the freshness
+/// count, `encontrar` and `contenido` — and the third and fourth are the ones a
+/// person compares against the first. A `contenido` that reached into `.git`
+/// where `buscar` does not would answer about a file the index has never heard
+/// of, and the person would conclude the index is broken.
+///
+/// The root itself is never filtered. A person who names `~/.config` has named
+/// it on purpose, and a filter that refused the tree it was handed would answer
+/// "nothing here" about a directory full of files.
+pub fn walk(
+    root: &Path,
+) -> walkdir::FilterEntry<walkdir::IntoIter, fn(&walkdir::DirEntry) -> bool> {
+    walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path()))
+}
 
 /// Whether a name matches a pattern of `*` and `?`.
 ///

@@ -23,7 +23,32 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 > ciertas; dejan de leerse como deuda de una fase.
 
 - [x] **Terminar una inferencia de verdad** — hecho el 2026-08-08, y después repetido en tres gamas. El primer intento falló porque Thalyx pedía `llama-cli`, que desde que `llama.cpp` partió sus herramientas es el frontend de chat y abre una sesión en vez de completar; con `llama-completion` la inferencia completó, y el 2026-08-08 corrieron `check`, `grammar-check` y el banco de 20 casos en ligera, media y alta. **La gama máxima no**: el proceso murió por falta de memoria antes de la primera inferencia. Ver [[Gamas-de-Modelo]] y [[Punto-Actual]].
-- [ ] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas son directorios**. Lo cubre ahora una prueba unitaria de `create_target_like` y la etapa 16 en hardware; falta un caso en `isolation.rs` que arme la raíz remapeada de verdad sobre un archivo. Ver [[Estrategia-de-Pruebas]].
+- [x] **Un caso de aislamiento con un permiso sobre un archivo y usuario propio** — **hecho el 2026-08-25, y corre en el contenedor.** El 2026-08-04 un punto de montaje creado como directorio sobre un archivo rompió el `correr` de la máquina, y ninguna prueba lo vio porque **todos los permisos de todas las pruebas eran directorios**. Ahora hay dos en `isolation.rs`: uno que concede **un archivo** con permiso de escritura, arma la raíz remapeada de verdad y comprueba en el anfitrión que lo escrito llegó al mismo archivo y que no cambió de dueño; y su control, que concede el archivo y afirma que **el vecino de al lado no viene con él** —que es la forma obvia de hacer funcionar un permiso sobre un archivo, montando su carpeta, y la que entrega todo lo demás—. Los dos se rompieron a propósito antes de creerles. De paso, el protocolo de lanzamiento remapeado dejó de estar copiado tres veces: es la lección de `create_target_like` una capa arriba. Ver [[Estrategia-de-Pruebas]].
+- [x] **G1: lanzar un programa que nadie firmó** — **hecho el 2026-08-25**, y es el punto que bloqueaba la vara de [[Filosofia-Fundacional]] desde que se midió el 23. `ejecutar <ruta>` corre un programa ajeno con el mismo confinamiento que un módulo —cgroup, usuario propio, pivote, filtro de llamadas— y **sin modo degradado**, porque `sin-confinar` se justifica en que alguien firmó el módulo y aquí nadie firmó nada. No recibe canal con la API: un invitado corre, no se le da la casa. Ve su propia carpeta, las rutas de sistema de sólo lectura y lo que se nombre con `leyendo`/`escribiendo`, cada cosa confirmada por el [[Camino-Confiable]] antes de que el proceso exista. El journal lo llama `run_foreign`. Etapa 36 de `verify.sh` más seis pruebas de integración; cuatro de ellas necesitan los controladores delegados y dicen `NOT PROVEN` donde no los hay. Ver [[Programas-Ajenos]].
+- [ ] **Que Thalyx encienda y apague el enforcement él mismo.** Encontrado el
+      2026-08-25 al arreglar la confusión entre *cargado* y *negando* (ver
+      [[Programas-Ajenos]], revisiones). Thalyx ya **lee** el modo —el mapa
+      `thalyx_enforcing`, con `bpf(2)`, sin `bpftool`— y por eso `ejecutar` se
+      niega mientras el kernel sólo observa. Pero **cambiarlo** sigue siendo
+      `make -C lsm enforce`, que es `bpftool`, que la imagen no tiene y no va a
+      tener: dentro de la máquina no hay forma de pasar de observar a negar. Es
+      el mismo hueco que [[Cargador-BPF-Propio]] cerró para cargar, sin cerrar
+      para el modo. Barato: una escritura de cuatro bytes en un mapa que ya se
+      abre.
+- [x] **Cuánto dura una concesión a un invitado** — **decidido por Cesar el
+      2026-08-25: dura la corrida.** Encontrado el 2026-08-25 al
+      arreglar el piso de lectura (ver [[Programas-Ajenos]], revisiones). Una
+      entrada de política tiene **una** fecha de vencimiento, y las concesiones
+      de `ejecutar` son JIT: **treinta segundos**. Pasados, expira la entrada
+      entera —el piso de lectura incluido—, así que `ejecutar leyendo <ruta> …`
+      no puede correr más de medio minuto. Sin concesiones no vence, que es por
+      qué `node --version` sí sirve. **La vara del proyecto es un agente ajeno
+      trabajando aquí, y un agente corre minutos**, así que esto la bloquea.
+      El tipo es `Session`, que no lleva plazo, y `release()` la retira al
+      salir. Lo que se cede está escrito en [[Programas-Ajenos]]: los treinta
+      segundos eran también el respaldo del kernel contra un Thalyx colgado que
+      nunca llegue a `release()`. Se comprueba en la etapa 36 con un invitado
+      que duerme 35 segundos y después lee lo concedido.
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
 - [x] **Consumir el ringbuf `thalyx_mutations`** — construido el 2026-08-10 como el verbo `cambios`, punto B3 de [[Superficie-para-el-LLM]]. `crates/thalyx-watch/src/ring.rs` sigue el protocolo del anillo sobre bytes (diez pruebas, incluido el registro que cruza el final) y `thalyx-syscall` hace los dos `mmap`. **Consumirlo no era código BPF**, que fue la razón por la que estuvo parado: el productor ya estaba escrito y el consumidor es código de usuario. Lo que un anillo **no** puede dar y la respuesta dice: no es una historia —leerlo lo vacía— y no nombra archivos, sólo cgroup, pid, tipo y programa. Para reindexar de forma incremental hace falta además que alguien lo vacíe continuamente y guarde lo vaciado, y **eso es una pieza que corre todo el tiempo, que la imagen no tiene**: es una decisión de Cesar, no un pendiente de código. Etapa 27 de `verify.sh`.
@@ -93,36 +118,106 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
 > los puntos de ese catálogo que ya tienen orden; los demás siguen ahí sin
 > decidirse, y **estar en el catálogo no autoriza construir nada**.
 
-- [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** — hecho en
-      parte el 2026-08-09. `estado` y `recuerdos` tienen su objeto, y el índice
-      semántico llegó entero a la sesión (`indexar`, `depende`, `usan`). Falta
-      el journal (**F2** del catálogo) y los verbos de módulos. Ver
-      [[Superficie-para-el-LLM]].
-- [ ] **Los tres que necesitan hierro, y hay que correrlos de uno en uno.** Del
-      catálogo de [[Superficie-para-el-LLM]], y ninguno se puede comprobar en el
-      contenedor: **D2** el intento con nombre (Btrfs — un falso de un snapshot
-      que no falla como falla un snapshot no es un falso, es otro sistema),
-      **B3** qué cambió desde X (BPF — un programa que falla el verificador
-      tumba al watcher entero), y **E1** el agente ajeno como tarea con
-      concesión (LSM y cgroups delegados, y es lo único del catálogo que toca
-      seguridad). **Decisión de Cesar**, uno por corrida.
-- [ ] **Los tres que se pueden hacer aquí y quedaron por tiempo.** **B1** acotar
-      toda respuesta larga con su total, **C2** búsqueda por símbolos sobre el
-      parser que ya existe, y **F2** el journal legible desde afuera.
-- [ ] **5. Editor de texto.** Depende del 2 y del 4. Sin uno no se puede
-      corregir un archivo de configuración desde la máquina.
-- [ ] **6. `buscar`** por nombre y por contenido.
-- [ ] **7. Procesos** — qué corre, matarlo, cuánta memoria queda. Independiente,
-      va sobre `/proc`.
-- [ ] **8. Red.** **De las 110 opciones del kernel, ninguna es una tarjeta de
-      red** — ni Ethernet ni WiFi. `CONFIG_NET` e `INET` están porque el LSM los
-      necesita. Una máquina instalada está sola, y eso se cruza con «qué lleva
-      el store de una máquina recién instalada», que es la Fase 2. **Sólo se
-      puede verificar en el hierro de Cesar.**
-- [ ] **9. Decidir si Thalyx tiene lenguaje de shell** — tuberías, redirección,
-      comodines, variables. **Decreto antes que código.** Trece verbos sueltos y
-      un lenguaje que los compone son proyectos distintos, y es la diferencia
-      entre que alguien que viene de Linux sienta que sigue en casa o no.
+- [x] **4c. Las otras cosas que la sesión sabe, con su segunda cara** —
+      **cerrado del todo el 2026-08-23.** `estado` y `recuerdos` tuvieron su
+      objeto el 2026-08-09, el índice entero llegó ese mismo día (`indexar`,
+      `depende`, `usan`) y el journal (**F2**) el 2026-08-10 como `historia`. Lo
+      que faltaba eran **los seis verbos de módulos** —`disponibles`, `instalar`,
+      `modulos`, `correr`, `permisos`, `revertir`— más `nucleo`, `discos` e
+      `instalar-en`, y con ellos el ciclo completo de lo único que Thalyx existe
+      para dejar hacer estaba en prosa. Ahora ese ciclo se corre entero por la
+      cara estructurada. Se cerraron también los tres que se creían sin nada que
+      contestar (`limpiar`, `salir`, `apagar`), que eran el último sitio donde
+      quedaba silencio. **La lista de verbos sólo-prosa está vacía y hay una
+      prueba que lo afirma**; la etapa 22 maneja veintiún verbos y compara el
+      cable contra `describe`. Ver [[Superficie-para-el-LLM]].
+- [x] **Los tres que se dijeron «sólo hierro»** — **cerrado el 2026-08-10, y dos
+      de los tres no necesitaban hierro.** `D2` (el intento con nombre) y `B3`
+      (qué cambió desde X) se construyeron: el primero porque la propiedad bajo
+      prueba era la política y no Btrfs, el segundo porque consumir un ringbuf
+      es código de usuario y no código BPF. **`E1` es el único que queda**, y la
+      razón cambió dos veces: primero no era hierro sino que **no había a qué
+      darle la concesión** —faltaban `G1` y `G2`—; desde el 2026-08-25 `G1` está
+      construido como `ejecutar` ([[Programas-Ajenos]]) y sí hay a qué dársela.
+      Lo que le falta a `E1` ahora es lo suyo: que la concesión **expire** y que
+      la tarea sobreviva a la corrida. Ver [[Superficie-para-el-LLM]].
+- [x] **Los tres que se pueden hacer aquí y quedaron por tiempo** — **hechos el
+      2026-08-10.** `B1` acotar toda respuesta larga con su total (`limite=` y
+      `cursor=`), `C2` búsqueda por símbolos (`buscar`), y `F2` el journal
+      legible desde afuera (`historia`). Con eso el catálogo va **catorce de
+      diecinueve** y lo único suyo que falta es `E1`.
+- [x] **5. Editor de texto** — hecho el 2026-08-22, **las dos caras en una
+      entrega** por decisión de Cesar. `crates/thalyx-edit` es el motor y las dos
+      caras lo llaman: `editar <archivo>` abre una pantalla, `editar <archivo>
+      cambiar 12 <texto>` direcciona renglones y contesta un objeto. Es el primer
+      verbo donde las dos caras difieren de *forma*, y por qué se resolvió así
+      está en [[Editor-de-Texto]]. Etapa 29 de `verify.sh`; la mitad de pantalla
+      se ejerce con un pty de verdad, así que **no espera hierro**. Tres cosas que
+      construirlo enseñó están en [[Estrategia-de-Pruebas]]: una tecla que el
+      kernel se come, un pty sin tamaño de ventana, y una confirmación que se
+      traga la tecla que la contesta.
+- [x] **6. `buscar` por nombre y por contenido** — hecho el 2026-08-23, y son
+      **dos verbos nuevos** por decisión de Cesar: `encontrar <patrón>` por
+      nombre y `contenido <texto>` por texto, con `buscar` intacto en su tercera
+      pregunta —dónde se declara un nombre y quién lo usa, desde el índice—.
+      Tres preguntas, tres verbos, porque un verbo cuyo significado depende de
+      una bandera se puede pedir mal en silencio y las tres respuestas se ven
+      igual. El texto es **literal**, también decisión suya: la imagen lleva el
+      kernel y un programa, y un dialecto de regex aquí sería decidir un pedazo
+      del punto 9 adentro de una caja donde nadie lo buscaría. Las banderas van
+      adelante y el sujeto es el resto del renglón, así que un texto con espacios
+      no necesita comillas —que también son el punto 9—. La caminata del árbol se
+      movió a `thalyx-files` para que siga siendo una sola: son cuatro llamadores
+      ahora, y los dos nuevos son los que una persona compara contra el índice.
+      Etapa 30 de `verify.sh`, con `find(1)` y `sed(1)` de controles. Ver
+      [[Busqueda]].
+- [x] **7. Procesos** — hecho el 2026-08-23. `procesos [patrón]`, `memoria` y
+      `matar <numero> [forzar]`, todo sobre `/proc`. `matar` manda la señal por
+      un **pidfd**, así que no puede caer en un número reciclado: llega al
+      proceso para el que se abrió el descriptor o falla, y no hay tercer
+      resultado. Por omisión `TERM` —que un programa puede atrapar para guardar
+      lo que tenía— y `forzar` manda `KILL`. Se niegan PID 1 y la propia sesión,
+      cada uno nombrando el verbo que hace ese trabajo bien (`apagar`, `salir`),
+      y también el `0` y los negativos, que para `kill(2)` son *todo* y un
+      *grupo*. `ensayo matar` es el ensayo que más importa, porque un proceso no
+      se puede volver a escribir. `memoria` mantiene `libre` y `disponible`
+      separados y nombra cuál contesta la pregunta. Etapa 31 de `verify.sh`, con
+      línea base y controles. Ver [[Procesos]].
+- [x] **Instalar dos veces sobre el mismo disco** — **arreglado y comprobado en
+      hierro el 2026-08-23** (`proven 138 · not proven 2 · failed 0`). La espera
+      por las particiones preguntaba si existía el nodo, y en una segunda
+      instalación los nodos de la tabla anterior siguen ahí: la condición estaba
+      cumplida antes de empezar. Ahora la espera **abre** la partición, y las
+      particiones se devuelven ya abiertas y se sostienen así hasta el final,
+      porque cerrar el disco entero hace que el kernel lo reexamine por su cuenta
+      y ese segundo barrido borra y rehace cada partición. Ver [[Punto-Actual]].
+- [x] **8. Red** — **decidido por Cesar el 2026-08-23: se ve, no se usa.** De las
+      110 opciones del kernel ninguna era una tarjeta de red; ahora son 118 y las
+      ocho nuevas son los menús y cuatro drivers —`virtio_net`, `e1000`,
+      `e1000e`, `r8169`— cada uno con su razón escrita al lado. El verbo es
+      `red`, con dos caras, y **dice en la respuesta que no se puede usar**: no
+      hay dirección, no hay DHCP y no sale un paquete. Etapa 35, con `iproute2`
+      de control porque lee netlink y no sysfs. Ver [[Red]].
+- [ ] **Salir a internet, cuando la Fase 2 diga a dónde** — DHCP, DNS y TLS, los
+      tres dentro de `thalyx` porque aquí no hay programas aparte. No se hizo con
+      el punto 8 porque lo que compraría —que el store traiga módulos de algún
+      lado— depende de una pregunta de Fase 2 que sigue sin contestarse: de
+      dónde. Ver [[Red]].
+- [x] **9. Decidir si Thalyx tiene lenguaje de shell** — **decidido por Cesar el
+      2026-08-23: hay citado y no hay lenguaje**, *«lo que sea más fácil de
+      cubrir por ahora, pero en un futuro sí tendremos que hacer shell completo,
+      no ahora, pero estemos preparados»*. El renglón se parte en palabras con
+      las reglas de POSIX hasta donde POSIX llega hoy, y una comilla sin cerrar
+      se niega en vez de adivinarse. **La expansión se queda en el verbo y eso es
+      decreto**: `rm "*.log"` es un nombre y `encontrar "*.rs"` sigue siendo un
+      patrón, igual que en bash y en `find`. El texto de `editar` es la única
+      excepción y se toma del renglón, porque una sangría perdida no se ve.
+      Etapa 33. Ver [[Palabras]].
+- [ ] **El shell completo, cuando toque** — tuberías, redirección, variables.
+      Decidido que llega algún día y que **hoy no**. Lo que ya quedó preparado
+      está en [[Palabras]]; lo que falta cuando se retome: qué hace `|` con dos
+      caras, si lo que viaja son bytes o filas, y el completado con tabulador,
+      que hoy no sabe de comillas.
 - [ ] **Decidir si `/home` deja de estar montado `NOEXEC`.** Aplazado por Cesar
       el 2026-08-09 —*«déjalo bloqueado pero cuando tengamos que decidir,
       explícamelos bien»*— así que **queda una deuda de explicación, no sólo una
@@ -157,32 +252,62 @@ orden es por dependencia y lo eligió él. Del 1 al 7 se prueba en el contenedor
       [[Filosofia-Fundacional]] apuntaba con *«no a través de scripts de
       shell»*.
 
-- [ ] **Ampliar la gramática del agente más allá de `install_module`.** Es el
-      techo real de lo que el agente puede hacer, y no es filosófico: la
-      producción `operation ::= "install_module"` tiene **una sola
-      alternativa**, así que el modelo no puede pedir ver una carpeta porque no
-      existe la forma de decirlo. Bajo el decreto del 2026-08-09
-      ([[Filosofia-Fundacional]], «el LLM es para quien se construye») esto deja
-      de ser una decisión abierta y pasa a ser trabajo pendiente: cada verbo que
-      el humano gana debe tener su operación. Va **después** de que existan los
-      verbos, porque una operación que nombra algo que la máquina no sabe hacer
-      no se puede probar. Dos cosas que hay que resolver al hacerlo: que la
-      abstención siga siendo expresable —fue imposible una vez y nadie lo notó
-      hasta escribir el banco— y que cada argumento nuevo tenga dónde
-      comprobarse contra los canales, como los ids tienen la atribución.
+- [x] **Ampliar la gramática del agente más allá de `install_module`.**
+      Hecho el 2026-08-24, por decreto de Cesar: **todo el catálogo**. Las dos
+      condiciones que este pendiente ponía se resolvieron, y ninguna de las dos
+      era la que parecía.
+
+      La abstención dejó de ser expresable exactamente como se temía, y la
+      salida fue darle palabra propia (`nothing`) en vez de quitarle el
+      significado a la lista vacía: **todas las muestras capturadas de un
+      modelo real absteniéndose usan la lista vacía**, y la regla 6 dice que
+      una muestra reescrita ya no es la muestra. Las dos siguen valiendo.
+
+      Lo de los argumentos resultó ser más grande de lo escrito, y no estaba
+      en el lado del argumento. `assemble` escribía `InstallModule` en cada
+      contrato porque no había otra cosa que escribir, así que un `disks`
+      habría producido un contrato para instalar un disco. Un plan tiene dos
+      formas ahora, y la de verbo **no llegaba a `origins.validate()`** — la
+      regla de procedencia habría quedado con una puerta rotulada `read`. Se
+      valida en los dos caminos. Ver [[Punto-Actual]].
+
+      Lo que **no** se decidió y sigue abierto: `agent do` sólo lleva a cabo
+      instalaciones. Poder decir una cosa no es poder que se haga; todo lo
+      demás pasa por el verbo, en una terminal. Ensancharlo es otra decisión
+      de Cesar.
 
 ## Que un agente ajeno pueda trabajar aquí
 
 Decretado el 2026-08-09: la vara es que **Claude Code y cualquier otro agente ya
 escrito corran sobre Thalyx mejor que sobre Linux o macOS**. Ver
-[[Filosofia-Fundacional]]. Hoy **no arrancarían**, así que esto no es afinar,
-es construir.
+[[Filosofia-Fundacional]]. Hoy **no arrancarían** — y desde el 2026-08-23 se
+sabe por qué y por qué no: el filtro de llamadas casi no estorba, y lo que
+bloquea es que nada lanza un proceso arbitrario y que la imagen no tiene libc.
+Ver [[Que-Necesita-Un-Agente-Ajeno]].
 
-- [ ] **Averiguar qué necesita exactamente un agente ajeno para arrancar.** No
-      por suposición: tomar Claude Code, mirar qué llama, y hacer la lista. Es
-      barato y no se ha hecho, y sin ella todo lo de abajo es adivinado.
-- [ ] **Ejecutar un proceso arbitrario.** Hoy `correr` sólo lanza módulos
-      instalados. Cruza con la decisión de `NOEXEC` en `/home`.
+- [x] **Averiguar qué necesita exactamente un agente ajeno para arrancar** —
+      **medido el 2026-08-23**, con Claude Code 2.1.241 bajo `strace`. Era
+      barato, como decía, y **la respuesta corrige la frase que estaba debajo**:
+      de las 41 llamadas al sistema que hace para arrancar, `module_standard` ya
+      permite 40, y la que falta era una sola (`sched_setscheduler`, resuelta el
+      2026-08-24 con un guardia por argumento: **41 de 41**). De las 19
+      rutas que abre, 13 caen dentro de lo que un módulo ve. Donde «no
+      arrancaría» sí es cierto es en el enlazador: la imagen lleva `/init` y
+      nada más, así que no hay libc — que es exactamente la pregunta abierta del
+      ABI de los módulos, hecha por el agente antes que ninguna otra. Se
+      reproduce con `dev/foreign-agent-needs.sh`. Ver
+      [[Que-Necesita-Un-Agente-Ajeno]], que también dice **qué no contesta**:
+      arrancar no es trabajar.
+- [x] **Ejecutar un proceso arbitrario** — **hecho el 2026-08-25** con
+      `ejecutar <ruta>`. Ver la entrada `G1` arriba y [[Programas-Ajenos]].
+- [ ] **Opción, no pendiente: supervisar `sched_setattr` con
+      `SECCOMP_RET_USER_NOTIF`.** Cesar decidió el 2026-08-25 denegarla, porque
+      su política vive detrás de un puntero y un filtro de seccomp no puede
+      seguirlo — ver [[Sandbox-Ejecucion]]. Un proceso supervisor sí podría
+      leerla mientras la llamada está detenida, y sería un componente nuevo vivo
+      durante toda la ejecución del módulo. Sólo vale la pena el día que un
+      runtime que haga falta dependa de esa puerta; ninguno de los medidos lo
+      hace.
 - [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
       está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
       no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback

@@ -144,8 +144,12 @@ impl Cgroup {
     /// The processes currently in this cgroup.
     pub fn members(&self) -> Result<Vec<u32>> {
         let procs = self.path.join(PROCS);
-        let contents =
-            std::fs::read_to_string(&procs).map_err(|source| SandboxError::io(&procs, source))?;
+        let contents = std::fs::read_to_string(&procs).map_err(|source| {
+            SandboxError::MembershipUnreadable {
+                cgroup: self.path.clone(),
+                source,
+            }
+        })?;
         Ok(contents
             .split_whitespace()
             .filter_map(|pid| pid.parse().ok())

@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-21
+fecha-actualizacion: 2026-08-25
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -13,6 +13,1429 @@ tags: [continuidad, punto-actual, sesiones]
 > conversación, esa conversación se pierde y el conocimiento con ella.
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
+
+> ## Y el segundo intento encontró el de abajo — 2026-08-25
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Con el modo arreglado, Cesar corrió otra vez `ejecutar /usr/bin/node --version`
+> — sin `leyendo`, sin `escribiendo`. El confinamiento se armó **entero**:
+> cgroup 38600, usuario 700000, pivote, red cortada, 130 llamadas. Y murió
+> antes de `node`:
+>
+> ```
+> thalyx: I/O error at /sys/fs/cgroup/thalyx/foreign.node-22.…/cgroup.procs:
+> Operation not permitted
+> ```
+>
+> ### Qué pasaba
+>
+> Sin concesiones la política sale `allowed=0x0`, y el gancho `lsm/file_open`
+> **no mira rutas**: mira si es lectura o escritura y consulta el bit. Con `0x0`
+> se niega *cualquier* apertura de archivo.
+>
+> El lanzador escribe su pid en `cgroup.procs` desde **fuera** del cgroup —esa
+> pasa— y enseguida **lo vuelve a leer** para comprobar que la entrada tomó.
+> Esa lectura ya es desde dentro. Ni siquiera llegaba a `exec`, y abrir el
+> binario también habría sido una apertura de archivo.
+>
+> ### Lo que más vale la pena de esto
+>
+> **Ya estaba encontrado, y rodeado.** La cabecera de `lsm/demo-enforcement.sh`
+> dice que pone en el mapa *«filesystem allowed, network denied»*. Tenía que
+> hacerlo: con el sistema de archivos negado, el `python3` de adentro no
+> arrancaba. Esa conclusión —un proceso confinado necesita leer para existir—
+> se descubrió, se rodeó, y **se quedó dentro del script**. Nada la
+> contradecía porque nada más corría bajo enforcement: `verify.sh` va entero en
+> modo observación.
+>
+> ### Cómo quedó
+>
+> El montaje decide **qué** ve un programa confinado; la política decide **leer
+> o escribir** sobre eso. Las dos sólo componen si puede leer lo que se le
+> montó, así que la lectura de lo visible **no es una concesión**: es el piso
+> (`thalyx_permd::CONFINED_FLOOR`) que hace que el montaje signifique lo que la
+> confirmación ya prometía — *«su propia carpeta, de sólo lectura, y las rutas
+> de sistema»*. `escribiendo` sigue siendo lo único que abre la escritura.
+>
+> Se le da a la **política y nunca al perfil**: como permiso sobre `/` habría
+> hecho que `RootFs` montara el sistema de archivos entero del anfitrión dentro
+> del sandbox. Aplica a módulos igual — uno sin permiso de lectura tampoco podía
+> abrir su propio binario. `thalyx enforce apply`, que ata un cgroup a mano para
+> inspección, **no** lleva piso: tiene que escribir exactamente lo que se le
+> pidió.
+>
+> Y las dos aperturas de `cgroup.procs` ahora dan errores distintos. Decían la
+> misma frase, y esa frase era toda la evidencia de un fallo cuyas dos causas
+> candidatas necesitaban arreglos opuestos.
+>
+> ### Lo que abrió, y Cesar cerró el mismo día
+>
+> Una entrada de política tiene **una** fecha de vencimiento, y las concesiones
+> de `ejecutar` eran JIT: **treinta segundos**. Pasados, expiraba la entrada
+> entera, el piso incluido — así que `ejecutar leyendo <ruta> …` no podía correr
+> más de medio minuto, y la vara es un agente que corre minutos. El comentario
+> encima de esa línea ya decía lo correcto —*«vive lo que vive el proceso»*—; el
+> tipo elegido hacía lo contrario.
+>
+> **Cesar decidió: la concesión dura la corrida.** Tipo `Session`, sin plazo, y
+> `release()` la retira al salir. Lo que se cede está dicho: los treinta
+> segundos eran también el respaldo del kernel contra un Thalyx colgado que
+> nunca llegue a `release()`; lo acota que el nombre del cgroup es determinista,
+> así que la siguiente corrida del mismo programa sobrescribe la entrada.
+>
+> Se comprueba en la etapa 36 con un invitado que **duerme 35 segundos** y
+> después lee lo concedido. Es la única forma que distingue las dos respuestas:
+> la corrida tiene que ser más larga que el plazo que ya no debe existir.
+
+> ## Lo primero que `ejecutar` dijo en su máquina encontró un hueco — 2026-08-25
+>
+> Lo de arriba es lo que se vio en cuanto esto se arregló.
+>
+> Cesar corrió `ejecutar /usr/bin/node --version` en su Fedora, justo después de
+> `verify.sh`, y leyó:
+>
+> ```
+> refusing to run `/usr/bin/node-22`: the kernel policy map is not loaded, so
+> none of the 0 thing(s) this was granted would be enforced.
+>   Load it with `make -C lsm load`. Nobody signed this program, so there is no
+>   unconfined mode to fall back to.
+> ```
+>
+> La negativa era correcta: `verify.sh` desengancha el LSM al salir. Dos cosas
+> estaban mal de todos modos.
+>
+> ### La chica: la frase contaba cero
+>
+> «none of the 0 thing(s) this was granted» es el caso **ordinario** —
+> `ejecutar <ruta>` sin palabras después no concede nada—, así que el caso
+> ordinario era el roto. Ahora la cuenta es una cláusula que desaparece cuando
+> no hay nada que contar, y hay una prueba que falla si vuelve a aparecer un
+> cero.
+>
+> ### La grande: `make -C lsm load` no es lo que el mensaje creía
+>
+> El remedio que ese mensaje da deja la máquina en **modo observación** —
+> `make -C lsm load` aterriza ahí a propósito, para poder medir una política
+> antes de que ate. Los ganchos corren, cada negación se escribe en el anillo, y
+> **ninguna se aplica**.
+>
+> O sea: la única acción que el sistema le pedía a Cesar lo dejaba justo donde
+> `ejecutar` **sí** arrancaba al invitado y el kernel no le negaba nada.
+>
+> La causa: `is_available()` contesta *«¿se abre el mapa de políticas?»*, y todo
+> el que decidía si confinar lo leía como *«el kernel está negando»*. El modo
+> vive en otro mapa, `thalyx_enforcing`, que **nada en el lado de Rust había
+> leído nunca** — sólo el `Makefile`, con `bpftool`. `thalyx enforce status`
+> imprimía «kernel policy map: present» y se callaba.
+>
+> ### Qué se hizo
+>
+> | | módulo firmado | programa ajeno |
+> |---|---|---|
+> | mapa sin cargar | se niega, ofrece `sin-confinar` | **se niega**, no hay a qué caer |
+> | cargado, observando | **corre degradado, y el journal lo dice** | **se niega**: `make -C lsm enforce` |
+> | no se pudo leer el modo | corre degradado, y el journal lo dice | **se niega**: regla 9 |
+> | cargado, negando | corre | corre |
+>
+> La asimetría es la de [[Programas-Ajenos]] entera: a un módulo lo firmó
+> alguien y un humano leyó su manifiesto, así que un run degradado que el
+> journal nombra es auditable. Detrás de un invitado no hay nadie, y un
+> confinamiento que no niega no es un confinamiento.
+>
+> `thalyx enforce status` ahora dice el modo. La cara de máquina de `correr`
+> lleva `enforcing` al lado de `confined`, por la misma razón que `confined`
+> está ahí. El falso, `MemoryStore`, ganó los tres estados — porque el motivo de
+> que ninguna prueba agarrara esto es que **el modo de fallo no existía en el
+> falso**, y lo que no se puede nombrar no se puede probar.
+>
+> ### Qué está comprobado
+>
+> Aquí: 1384 pruebas en verde (siete nuevas), `clippy` y `fmt` limpios. Las tres
+> guardas nuevas se rompieron a propósito y cada mutación la agarró **la prueba
+> que le toca** — incluida la columna de control, que atrapó la versión que se
+> niega siempre y se vería idéntica a una que funciona.
+>
+> En su máquina, tres etapas nuevas de `verify.sh`: que `thalyx enforce status`
+> diga «observing» cuando el script lo dejó observando, que un módulo corrido
+> bajo un kernel que observa **lo diga**, y que un invitado sea rechazado ahí
+> mismo. Y la etapa 36 ahora **enciende el enforcement para su corrida real y lo
+> vuelve a dejar como estaba** — sin eso, la etapa entera reportaría una
+> negativa y la llamaría una máquina que no puede hacer cumplir nada.
+>
+> ### Lo que abrió
+>
+> Thalyx **lee** el modo sin `bpftool`. **Cambiarlo** todavía es
+> `make -C lsm enforce`, o sea `bpftool`, que la imagen no tiene: dentro de la
+> máquina no hay forma de pasar de observar a negar. Escrito en
+> [[Tareas-Pendientes]]; es una escritura de cuatro bytes en un mapa que ya se
+> abre.
+
+> ## G1: Thalyx ya puede correr un programa que nadie firmó — 2026-08-25
+>
+> Lo de arriba corrige un hueco que esto dejó abierto.
+>
+> Cesar delegó la forma —*«lo que veas conveniente que sea coherente con nuestra
+> filosofía»*— y ésta es la forma, con la coherencia escrita en
+> [[Programas-Ajenos]] antes de escribir una línea de código.
+>
+> ### Qué se destrabó, y por qué llevaba parado desde el 23
+>
+> `G1` de [[Superficie-para-el-LLM]] era el punto que bloqueaba la vara del
+> proyecto. La medición del 23 lo había dejado sin ambigüedad: no faltaba una
+> llamada al sistema —el filtro cubre 41 de 41— ni una ruta. Faltaba que
+> `correr` sólo lanza **módulos instalados y firmados**, y un agente ajeno no es
+> ninguna de las dos cosas.
+>
+> Lo que lo destrabó no fue código, fue **no tocar la firma**. Si Thalyx firmara
+> al vuelo lo que se le pide ejecutar, la firma dejaría de significar *alguien
+> respondió por esto* y pasaría a significar *esto pasó por aquí* — la palabra
+> sin significado para quien lea la siguiente. Así que son dos verbos:
+>
+> | | `correr <id>` | `ejecutar <ruta>` |
+> |---|---|---|
+> | qué lanza | un módulo firmado | un programa cualquiera |
+> | quién respondió por él | su publicador | **nadie** |
+> | canal con la API | sí, nace con él | **no, nunca** |
+> | `sin-confinar` | existe, y queda como degradado | **no existe** |
+>
+> ### Las tres decisiones que aguantan el peso
+>
+> 1. **No hay canal.** Un módulo nace sosteniendo un socket a la API de Thalyx;
+>    un invitado no recibe ninguno. Eso es lo que impide que este verbo sea una
+>    puerta trasera: por aquí no se instala nada, no se concede nada persistente
+>    y no se pide nada, porque no hay por dónde pedirlo.
+> 2. **No hay modo degradado.** `sin-confinar` existe para módulos y se
+>    justifica en que un humano leyó ese manifiesto y su publicador respondió.
+>    De un programa ajeno nadie respondió nada, así que si la máquina no puede
+>    hacer cumplir la política, el verbo **se niega** — y el mensaje dice que ese
+>    modo no existe, en vez de ofrecerlo.
+> 3. **Ve lo que se le nombró.** Su propia carpeta de sólo lectura, las rutas de
+>    sistema, y lo que diga `leyendo <ruta>` o `escribiendo <ruta>` — cada cosa
+>    dibujada por Thalyx y confirmada antes de que el proceso exista. Su usuario
+>    se guarda con la llave `foreign:<ruta canónica>`, así que el mismo programa
+>    es el mismo usuario mañana y dos programas distintos nunca comparten uno.
+>
+> ### Qué se comprobó aquí y qué espera tu máquina
+>
+> Etapa **36** de `verify.sh`, con su columna de control: el mismo script corrido
+> **fuera** del sandbox tiene que alcanzar las dos rutas, o el «no las alcanzó»
+> de adentro no significa nada. En este contenedor da cinco `PROVEN` y un
+> `NOT PROVEN`:
+>
+> - **probado aquí** — el control de afuera; `ensayo ejecutar` resuelve el
+>   programa y no corre nada; **un `n` no corre el programa** (comprobado por lo
+>   que *no* apareció en el disco, no por lo que imprimió la sesión); el journal
+>   lo llama `run_foreign` y nunca `run_module`; y la cara estructurada se niega
+>   con `needs_a_human` / `confirm_at_a_terminal`.
+> - **espera tu máquina** — lo que un invitado ve. Aquí no hay mapa de política
+>   en el kernel, así que el verbo se niega, que es el decreto funcionando. El
+>   `NOT PROVEN` dice además algo cierto: esa negativa viene del núcleo, o sea
+>   que el `y` sí se leyó y se aceptó. Lo que no corrió es el invitado.
+>
+> Más seis pruebas de integración en `a_program_nobody_signed_can_run.rs`. Dos
+> corren aquí —la negativa sin nada que haga cumplir, y el journal—; las otras
+> cuatro necesitan los controladores `memory` y `pids` delegados y dicen
+> `NOT PROVEN` donde no los hay, con `THALYX_REQUIRE_CONTROLLER_TESTS`.
+>
+> **En tu máquina esas cuatro corren.** `cargo test --workspace`: 1384 en verde.
+>
+> ### Lo que esto no hizo
+>
+> - **No abrió la red** (`G3`), no es `E1` —las concesiones son de una corrida,
+>   no expiran porque terminan— y **no resolvió `G2`**: la imagen sigue sin
+>   libc, así que `ejecutar` sirve donde hay rutas de sistema que montar, o sea
+>   tu Fedora. Dentro de la imagen instalada sirve para lo que esté enlazado
+>   estáticamente.
+> - No le quitó nada a `correr`. El decreto de firma sigue entero.
+>
+> ### Para correrlo
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y para verlo con las manos, en una sesión:
+>
+> ```
+> ejecutar leyendo /home/cesarmanzocode/algo /usr/bin/ls /home/cesarmanzocode/algo
+> ```
+
+> ## Verde, y la orden de dejar de pulir — 2026-08-25
+>
+> Cesar corrió `verify.sh` en su máquina: **`156 proven · 2 not proven ·
+> 0 failed`**. Las dos fallas del día anterior están cerradas, y eran la misma
+> cosa vista dos veces —la prueba nueva y la etapa del módulo, las dos
+> preguntando con `chrt --other`, que en util-linux 2.41 sale por
+> `sched_setattr`—. El arreglo no tocó el filtro: cambió con qué se le pregunta.
+>
+> ### Y con eso, la corrección que importa más que el número
+>
+> Cesar cortó la pregunta de qué seguía, y con razón:
+>
+> > «llevamos mucho tiempo sin avanzar nada realmente, estamos siendo muy
+> > cautelosos […] le estamos dando demasiada importancia a cosas muy simples y
+> > faciles de hacer […] tenemos que empezar a ser agresivos sin ser estupidos,
+> > la perfeccion vendra despues».
+>
+> Medido contra el registro, tenía razón: del 23 al 25 se construyó un guardia
+> por argumento, dos llamadas de rango de prioridades, tres arreglos del arnés y
+> una prueba que pregunta con la herramienta correcta. Todo cierto, y ninguno de
+> esos días movió la vara de [[Filosofia-Fundacional]] —un agente ajeno
+> trabajando aquí— ni un milímetro.
+>
+> Quedó decretado en [[Ritmo-de-Construccion]], con sus palabras textuales, y
+> resumido en `CLAUDE.md` para que una sesión nueva lo lea antes de preguntar
+> nada. En una línea: **se le pregunta sólo lo que sólo él puede contestar**
+> —cambiar un decreto suyo, escribir donde se pierde algo suyo, gastar su hierro
+> o su dinero, alcance que la bóveda no cubre—. Todo lo demás se hace y se le
+> dice qué se hizo. Un pendiente ya escrito en [[Tareas-Pendientes]] ya fue
+> decidido por él; volver a preguntarlo es pedirle que decida dos veces.
+>
+> Lo que **no** baja: ninguna de las diez reglas de [[Estrategia-de-Pruebas]],
+> ningún decreto sin él, ninguna entrega a medias, y `NOT PROVEN` sigue siendo
+> `NOT PROVEN`.
+>
+> ### Lo que se hizo ese mismo día sin preguntar
+>
+> 1. **`README.md` y `docs/STATUS.md` dicen la corrida vigente.** Citaban la del
+>    23 —`134 proven`— porque la del 24 tenía fallas y no era la que correría
+>    ahora. Ya no hay una que esconder. El párrafo que explicaba una caída de
+>    conteo se volvió la regla que la caída enseñó: **un conteo que se mueve no
+>    es una calificación**, y lo que dice qué pasó es la lista de abajo, no el
+>    número.
+> 2. **El caso de aislamiento sobre un archivo, que llevaba abierto desde el
+>    2026-08-04.** Ver [[Tareas-Pendientes]]. Dos pruebas nuevas en
+>    `isolation.rs`: un permiso de escritura sobre **un solo archivo**, con la
+>    raíz remapeada de verdad, comprobado en el anfitrión —el contenido llegó al
+>    mismo archivo y el archivo no cambió de dueño—; y su control, que afirma
+>    que **el vecino de al lado no viene con él**. Las dos se rompieron a
+>    propósito antes de creerles, y las dos **corren en este contenedor**: hay
+>    un cgroup2 en `/sys/fs/cgroup/unified` y los montajes remapeados funcionan
+>    aquí, así que esto no espera hierro. `cargo test --workspace`: 1359 en
+>    verde.
+>
+> ### Las dos que quedan sin comprobar
+>
+> `verify.sh` las nombra en su propio resumen —el bloque `What this run could
+> not establish:`— y ésa es la autoridad, no lo que se escriba aquí. Si son las
+> del agente, se cierran así:
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/a/tu/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> ### Y lo siguiente, que sí es una decisión suya
+>
+> **G1 y G2 de [[Superficie-para-el-LLM]].** Es lo único que bloquea la vara del
+> proyecto, y lleva bloqueándola desde que se midió el 2026-08-23:
+>
+> - **G1** — hoy `correr` sólo lanza módulos **instalados y firmados**, y un
+>   agente ajeno no es ninguna de las dos cosas. El sandbox ya lo aguantaría: el
+>   filtro cubre 41 de 41 llamadas medidas. Lo que falta no es mecanismo, es
+>   **qué se permite lanzar**, y eso es un decreto suyo.
+> - **G2** — la imagen lleva el kernel y un programa, así que no hay libc, y un
+>   binario enlazado dinámicamente no arranca ahí. Ver
+>   [[Que-Necesita-Un-Agente-Ajeno]].
+>
+> Las dos son la misma pregunta vista desde dos lados, y ninguna se puede
+> construir sin que él decida primero.
+
+> ## La segunda puerta: `chrt` medía la versión de util-linux, no el filtro — 2026-08-25
+>
+> La corrida siguiente dio `155 proven · 2 not proven · 2 failed`, y las dos
+> fallas eran la misma cosa vista dos veces: la prueba nueva y la etapa del
+> módulo, las dos preguntando con `chrt --other`.
+>
+> ### Y corrige lo que se dijo ayer
+>
+> Ayer quedó escrito que las tres fallas se habían reproducido en el contenedor.
+> **La del filtro no.** El contenedor tiene util-linux 2.39 y su máquina tiene
+> 2.41, y desde 2.41 `chrt --other` pone una política ordinaria con
+> `sched_setattr` en vez de con `sched_setscheduler`. El verde de aquí fue
+> **suerte de versión**, no una comprobación — y la prueba se había escrito el
+> mismo día en que se anotó que un programa real es mejor instrumento que una
+> llamada aislada. Lo es; falta preguntarse qué llamada hace ese programa en la
+> máquina donde va a correr.
+>
+> ### Lo que había debajo, que sí es de diseño
+>
+> `sched_setattr` es **una segunda puerta a la misma capacidad**. Pone la
+> política igual que `sched_setscheduler`, pero la recibe dentro de una
+> estructura, detrás de un puntero — y un filtro de seccomp compara registros y
+> no puede seguir un puntero. Para esa puerta no existe guardia por argumento: o
+> se permite entera, con `SCHED_FIFO` adentro, o se deniega entera.
+>
+> **Cesar decidió el 2026-08-25 denegarla.** Queda en [[Sandbox-Ejecucion]] con
+> su costo escrito: un programa que ponga política ordinaria sólo por esa puerta
+> no puede hacerlo aquí, y `chrt --other` de util-linux 2.41 es uno. Ningún
+> runtime medido depende de ella —la traza del agente ajeno lo muestra
+> arrancando con `sched_setscheduler` y con nada más—. La única cosa que podría
+> mirar detrás del puntero, un supervisor con `SECCOMP_RET_USER_NOTIF`, queda
+> anotada en [[Tareas-Pendientes]] como opción y no como pendiente.
+>
+> ### Qué cambió, y qué no
+>
+> **El filtro no cambió hoy.** Lo que cambió es con qué se le pregunta:
+>
+> - La columna ordinaria pregunta con `chrt --idle 0 true`. Ninguna versión de
+>   util-linux lo manda por la puerta cerrada, y `SCHED_IDLE` es una de las tres
+>   políticas que el guardia permite: sigue siendo un programa ajeno recorriendo
+>   el camino entero hasta la llamada guardada, que es lo que hacía valioso a
+>   `chrt`.
+> - `--other` se sigue corriendo, como **reporte y nunca como veredicto**, con
+>   `strace` fuera del sandbox diciendo por cuál de las dos llamadas pasó este
+>   `chrt`. Así el costo de la puerta cerrada se ve en la máquina donde se paga,
+>   medido y no supuesto.
+> - El segundo `NOT PROVEN` de la corrida fue la baranda de ayer haciendo su
+>   trabajo: la denegación de tiempo real se calló porque la columna ordinaria no
+>   estaba en 0. Sin ella, esa línea habría dicho verde con el módulo muriendo
+>   antes de nombrar ninguna política.
+>
+> ### Para cerrar las dos que quedan
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/a/tu/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+
+> ## Tres fallas en `verify.sh`: dos eran del arnés y una era del filtro — 2026-08-24
+>
+> La corrida de Cesar en su máquina dio `154 proven · 1 not proven · 3 failed`.
+> Las tres fallas están diagnosticadas y arregladas, y **sólo una era de
+> Thalyx**. Ninguna de las tres necesitó su hardware para reproducirse: las tres
+> se reprodujeron en el contenedor.
+>
+> ### 1. El guardia mataba la llamada que existe para dejar pasar — era real
+>
+> `sched_ordinary=159`: el módulo confinado murió con `SIGSYS` al poner un hilo
+> suyo en una política ordinaria. El guardia por argumento de ayer estaba bien
+> escrito; **el camino hasta él no estaba permitido**. `chrt` pregunta primero
+> el rango legal de prioridades —`sched_get_priority_min` y
+> `sched_get_priority_max`— y ninguna de las dos estaba en la lista. Las dos
+> contestan una constante y no cambian nada. Ya están permitidas.
+>
+> Lo que vale más que el arreglo: **la columna de al lado estaba en verde por la
+> razón equivocada.** `chrt --fifo 1 true` moría en esa misma primera línea, sin
+> haber nombrado jamás una política de tiempo real, y eso se lee idéntico a que
+> el guardia lo haya rechazado. La denegación se estaba afirmando sin medirse.
+> Ahora `verify.sh` se calla ahí mientras la columna ordinaria no dé 0, y hay una
+> prueba en el workspace que **instala el filtro de verdad** en un proceso
+> aparte y corre `chrt` bajo él, con las dos columnas en una sola prueba para
+> que nadie las lea por separado. Falla sin el arreglo; se comprobó.
+>
+> ### 2. Las siete sondas de inyección estaban pasando por vacías — era el arnés
+>
+> `verify.sh` buscaba `A CONTRACT WAS PRODUCED` en la salida de
+> `dev agent-probe`. La sonda dejó de imprimir esa frase el mismo 24, cuando un
+> plan pasó a poder ser un verbo y no sólo un contrato. Las siete comprobaciones
+> de «ninguna forma de portarse mal produjo nada» **pasaban sin mirar nada**.
+>
+> Lo agarró el control positivo —el que exige que el mismo modelo, preguntado
+> por lo que el humano tecleó, sí produzca uno—, que es la falla que Cesar vio
+> como «the control behaved as neither a refusal nor a contract». La regla 4
+> pagándose sola.
+>
+> ### 3. `agent grammar` sí imprimía la gramática — era el arnés
+>
+> La etapa exigía la palabra `install_module`. La gramática deletrea el verbo
+> como lo deletrea la sesión, `install`; `install_module` es como se llama la
+> operación en el **contrato** y sigue siendo alias aceptado por el analizador.
+> La etapa pedía una palabra que no está ahí.
+>
+> ### De pasada: el instrumento del agente ajeno contaba mal
+>
+> `dev/foreign-agent-needs.sh` sacaba las llamadas permitidas de todo
+> `seccomp.rs`, que también nombra 32 que un módulo tiene **prohibidas** —las de
+> las pruebas que afirman su ausencia y las que sólo agrega un permiso de red—.
+> Un agente que llamara a `socket` habría salido como cubierto. Corregido a leer
+> el cuerpo de `module_standard`, y **vuelto a correr**: la respuesta no cambió,
+> 41 de 41.
+>
+> ### El `NOT PROVEN` no es una falla, y sigue en pie
+>
+> Ningún modelo real corrió: `llama-completion` está instalado y no en el `PATH`
+> de root, y `THALYX_AGENT_WEIGHTS` no estaba puesto. Es la etapa diciendo
+> exactamente lo que no pudo comprobar. Para cerrarla:
+>
+> ```sh
+> git pull && cargo install --path crates/thalyx-cli
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/ruta/al/modelo.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Las asignaciones van **después** de `sudo`, porque `sudo` no lleva el entorno.
+>
+> ### Lo que falta y sólo se puede hacer en su máquina
+>
+> Volver a correr `verify.sh`. Lo que este contenedor no puede decir sigue sin
+> decirlo: el LSM, los controladores de cgroup y Btrfs. Lo que sí quedó
+> comprobado aquí es el filtro sobre un programa real, que es donde estaba el
+> defecto.
+>
+> Y con el resultado de esa corrida se actualiza el párrafo de estado de
+> `README.md` y de `docs/STATUS.md`, que todavía citan la corrida del 23 —`134
+> proven · 2 not proven · 0 failed`—. No se cambió con los números de hoy a
+> propósito: citar el conteo de una corrida que falló, y que ya no es la que
+> correría ahora, es escribir un número que nadie midió.
+
+> ## La gramática del agente es el catálogo entero — 2026-08-24
+>
+> Cesar decidió las dos cosas que quedaban abiertas y que no eran código sino
+> alcance. Las dos están construidas.
+>
+> ### 1. Qué puede proponer el modelo: todo el catálogo
+>
+> `Superficie-para-el-LLM.md` dejaba la pregunta abierta y le ponía dos
+> condiciones. Las dos se resolvieron construyendo, y ninguna de las dos era la
+> que parecía.
+>
+> **La abstención dejó de ser expresable, y se dio cuenta sola.** Mientras
+> `install_module` era la única operación, una lista de objetivos vacía la
+> decía: nada que instalar es nada que hacer. La mayoría de los verbos del
+> catálogo no toman argumentos, así que una lista vacía en `disks` es una
+> petición completa. Uno de los dos significados tenía que mudarse, y la
+> abstención tiene ahora palabra propia: `nothing`. Las dos siguen valiendo,
+> porque **todas las muestras capturadas de un modelo real absteniéndose usan
+> la lista vacía** y la regla 6 dice que una muestra reescrita ya no es la
+> muestra.
+>
+> **El otro condicionante era el que importaba, y no estaba escrito así.**
+> `assemble` escribía `Operation::InstallModule` en cada contrato que armaba,
+> porque mientras había una sola operación no había otra cosa que escribir. El
+> día que el modelo pudiera proponer `disks`, esa línea habría producido **un
+> contrato para instalar un disco**: un plan que se llama a sí mismo otra cosa,
+> que es la única forma de estar mal que quien lo lee no puede ver.
+>
+> Así que un plan tiene dos formas. Un contrato es lo que
+> [[Contrato-Estructurado]] le da a una operación que **cambia la máquina y
+> necesita que un humano diga que sí**. Preguntar qué discos hay no es eso, y
+> vestirlo de contrato deja la palabra sin significado para quien lea el
+> siguiente.
+>
+> **Y ahí apareció el hueco.** Un plan de verbo no tiene contrato, así que
+> nunca llegaba a `Contract::validate`, así que nunca llegaba a
+> `origins.validate()` — que es la comprobación que rechaza una operación
+> concluida mientras se leía una página hostil. La regla de procedencia habría
+> quedado con **una puerta rotulada `read`**. Se valida en los dos caminos, con
+> prueba en los dos sentidos: la lectura inyectada se rechaza, la que pidió el
+> humano no.
+>
+> La gramática son tres formas de objeto en vez de una, así que ensancharla no
+> costó nada de lo que ya compraba: `install` y `run` conservan la regla de
+> DNS inverso, todo lo demás recibe una clase de caracteres que cubre rutas y
+> nombres y **no puede cerrar la cadena JSON en la que está**, y `nothing` tiene
+> un objeto sin argumentos.
+>
+> Tres pruebas cayeron y ninguna era por este cambio: **las palabras del
+> catálogo son inglés ordinario**. `permissions` es un verbo ahora, así que una
+> prueba que buscaba la palabra en cualquier parte reportó el catálogo como una
+> fuga de procedencia; el brazo de prosa del experimento de gramática "nombraba
+> una operación" porque contiene la palabra `where`; y la sonda leía una
+> producción `root` donde ahora hay tres. Las tres son el instrumento.
+>
+> ### 2. `sched_setscheduler`: sí, pero sin tiempo real
+>
+> Cesar entendió el problema y me dejó decidir los costos. La llamada son dos
+> peticiones con un solo nombre. Un runtime acomodando sus propios hilos dentro
+> del pedazo de procesador que el cgroup ya le dio es ordinario y lo hace antes
+> que nada. Un programa pidiendo política de **tiempo real** está pidiendo
+> quedarse un procesador contra todo lo demás de la máquina, Thalyx incluido, y
+> ningún límite de cgroup se lo quita.
+>
+> El filtro aprendió a mirar un argumento. Y lo que ese cambio enseñó **sólo
+> aparece corriendo**: la primera versión del guardia permitía `SCHED_OTHER`,
+> `SCHED_BATCH` y `SCHED_IDLE`, que es lo que sugiere el manual y lo que
+> cualquiera escribiría. Node pide `0x40000000` —`SCHED_OTHER |
+> SCHED_RESET_ON_FORK`— en cada hilo. **Ese guardia habría matado al agente
+> ajeno en la llamada exacta que el guardia existe para dejar pasar, y habría
+> parecido el guardia funcionando.**
+>
+> Con eso, `dev/foreign-agent-needs.sh` dice **41 de 41**. En la capa de seccomp
+> ya no falta nada para que un agente ajeno arranque. Lo que bloquea sigue
+> siendo G1 y G2, que es lo que la medición del 2026-08-23 ya decía.
+>
+> ### Lo que queda
+>
+> - **`thalyx agent bench`** — el único `NOT PROVEN`. No es una decisión, es una
+>   medición que necesita su máquina y unos minutos:
+>   `sudo THALYX_AGENT_BENCH=1 ./dev/verify.sh`.
+> - **`agent do` sólo lleva a cabo instalaciones.** Poder decir una cosa no es
+>   poder que se haga: todo lo demás pasa por el verbo, en una terminal, con la
+>   confirmación que ese verbo ya pide. Ensancharlo es otra decisión de Cesar y
+>   no se tomó.
+> - Lo de siempre que necesita hierro: `net/outbound` de punta a punta, cargar
+>   `thalyx_watch` con el cargador propio, la deuda de explicación de `/home`
+>   `NOEXEC`.
+
+> ## Qué necesita un agente ajeno para arrancar, medido — 2026-08-23
+>
+> Los bloques de abajo son cómo se llegó.
+>
+> Tercera entrega del sprint, y es la que más cambia lo que creíamos. El
+> pendiente decía *«tomar Claude Code, mirar qué llama, y hacer la lista; es
+> barato y no se ha hecho, y sin ella todo lo de abajo es adivinado»*. Estaba
+> abierto desde el 2026-08-09. Se hizo con `strace`, en veinte minutos.
+>
+> **De las 41 llamadas al sistema que Claude Code hace para arrancar,
+> `module_standard` ya permite 40.** La que falta es una: `sched_setscheduler`.
+> De las 19 rutas que abre, 13 caen dentro de lo que un módulo ve.
+>
+> Eso contradice de frente la frase que estaba escrita debajo del decreto —*«hoy
+> no arrancarían, así que esto no es afinar, es construir»*—. En la capa donde
+> más caro parecía, el filtro de llamadas de este proyecto ya cubre el 97.5% de
+> lo que un agente ajeno pide para existir. **La afirmación era razonable y
+> nadie la había medido.**
+>
+> **Dónde sí es cierta**, y ahora con nombre en vez de por suposición:
+>
+> - **El enlazador.** El agente abre `/etc/ld.so.cache` y cinco objetos
+>   compartidos. La imagen lleva `/init`, unos directorios y `/dev/console` — no
+>   hay libc. Un binario enlazado dinámicamente no arranca ahí, y eso es
+>   **exactamente la pregunta abierta del ABI de los módulos**, hecha por el
+>   agente antes que ninguna otra.
+> - **`G1`, lanzar un proceso arbitrario.** No es una llamada que falte ni una
+>   ruta: es que `correr` sólo lanza módulos instalados y firmados. La medición
+>   lo confirma como el que bloquea en vez de contradecirlo.
+> - **`/home` montado `NOEXEC`.** Un agente que aterrice ahí no se ejecuta
+>   aunque todo lo demás esté resuelto. La deuda de explicación que aplazaste el
+>   2026-08-09 ahora tiene un caso concreto detrás en lugar de ser hipotética.
+>
+> Y **seis rutas bajo `/sys`** que un módulo no ve. De las seis sólo se puede
+> afirmar algo de una: `trace_marker` dio `ENOENT` y arrancó igual, o sea que no
+> hace falta. De las otras cinco lo único cierto es que aquí no tuvo que
+> arreglárselas sin ellas — la sospecha razonable es que degrada a valores por
+> omisión, y una sospecha razonable no se apunta como medición.
+>
+> La lista entera está en [[Que-Necesita-Un-Agente-Ajeno]], **con la mitad que
+> dice qué NO contesta**: arrancar no es trabajar. No hubo red, ni terminal, ni
+> subprocesos, ni una sola escritura.
+>
+> Se reproduce con `dev/foreign-agent-needs.sh`, que es un script y no un
+> párrafo porque un procedimiento impreso para una persona es código que no
+> corre.
+
+> ## El ensayo llegó a los verbos que cambian la máquina — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Segunda entrega del sprint. El punto **D1** de [[Superficie-para-el-LLM]]
+> —ensayo en todo verbo que cambia— estaba en «hecho para los verbos de
+> archivos, los otros cinco dicen que no pueden». Ahora está en **ocho de
+> nueve**.
+>
+> Y salió casi gratis, por una razón que vale más que los cuatro verbos:
+> **cuatro de los cinco ya tenían escrita la mitad que averigua**, separada de la
+> que actúa. `revertir` tiene `plan` aparte de `apply` desde que se escribió.
+> `instalar` resuelve el candidato y lee su manifiesto antes de preguntar nada.
+> Y `instalar-en` calcula la distribución entera, encuentra el kernel y lee qué
+> hay en el disco **antes** de la confirmación — decisión del 2026-08-07, tomada
+> por otra razón completamente distinta: que un borrado ya confirmado no
+> descubriera después que no había kernel que escribir.
+>
+> Así que el ensayo no fue una segunda implementación de nada: **fue parar en la
+> línea que ya estaba dibujada.** Para el único verbo irreversible del sistema,
+> que no exista una segunda implementación que se pueda desalinear no es un
+> detalle.
+>
+> `ensayo instalar` es el que más se usa y contesta lo que una persona sólo podía
+> ver empezando la instalación y declinando: qué pide el módulo, si alguno de
+> esos permisos necesita a alguien en una terminal, y si reemplaza algo que ya
+> está.
+>
+> **Comprobado con su control, que es lo que lo hace valer**: el ensayo deja el
+> store sin journal y sin módulos, y la instalación de verdad del mismo bundle
+> deja las dos cosas. Sin esa segunda columna, un ensayo que se cayera antes de
+> hacer nada se vería igual.
+>
+> `correr` es el único que queda y se queda diciendo que no puede: qué podría
+> hacer un módulo al correr es una pregunta del lado del kernel, y contestarla
+> desde el manifiesto describiría una corrida que la máquina quizá no puede dar.
+>
+> **Y una prueba estaba tapando dos hechos con una sola palabra.** `cannot`
+> significaba a la vez *este verbo no tiene ensayo* y *aquí no hay nada que
+> deshacer*. El primero manda al que preguntó a otro lado para siempre; el
+> segundo deja de ser cierto en cuanto se instale algo.
+
+> ## Los cuarenta verbos contestan por estructura — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar leyó la lista de pendientes y contestó lo que había que contestar: que
+> íbamos innecesariamente lento, que **todo eso es horizontal y ninguna pieza es
+> difícil**, y que en vez de elegir una hiciéramos un sprint para eliminar el
+> horizonte barato entero. Ésta es la primera entrega.
+>
+> Nueve verbos no tenían cara estructurada, más tres que se creían sin nada que
+> contestar. **Ninguno era difícil.** Lo que los dejó así es que el catálogo de
+> [[Superficie-para-el-LLM]] trata de superficie *nueva*, y éstos son anteriores
+> al decreto de las dos caras.
+>
+> **Lo que eso costaba, dicho bien:** `disponibles`, `instalar`, `modulos`,
+> `correr`, `permisos` y `revertir` son el ciclo completo de lo único que Thalyx
+> existe para dejar hacer. Catorce de diecinueve puntos del catálogo hechos, y el
+> ciclo entero en prosa — un programa no podía saber si lo que iba a instalar ya
+> estaba instalado, ni qué había en el repositorio, ni qué concedió la vez
+> pasada.
+>
+> Ahora el ciclo entero se corre por la cara estructurada, y quedó capturado en
+> una sola sesión por tubería:
+>
+> ```
+> {"op":"available","ok":true,"total":1}
+> {"op":"install","ok":true,"module_id":"org.thalyx.face"}
+> {"op":"modules","ok":true,"total":1}
+> {"op":"run","ok":false,"error":"cannot_enforce","remedy":"run_unconfined"}
+> {"op":"rollback","ok":true,"undid":"undo install_module of org.thalyx.face 1.0.0"}
+> {"op":"modules","ok":true,"total":0}
+> ```
+>
+> **El camino confiable no se debilitó, se reporta.** [[Camino-Confiable]] queda
+> intacto: sin terminal no hay confirmación y no hay instalación, y `instalar-en`
+> sigue pidiendo la ruta del disco tecleada. Lo único que cambia es que la
+> negativa vuelve como objeto en vez de una línea en `stderr`, donde un parser
+> que lee un solo flujo no la veía nunca.
+>
+> **Y salió una afirmación falsa, de correrlo y no de leerlo.** El primer campo
+> de esa negativa decía `wrote_anything: false`. El journal **sí** guarda una
+> entrada `rejected` — que es justamente el punto: una negativa del camino
+> confiable que no dejara rastro sería un camino confiable que nadie puede
+> auditar. Dice `installed: false`, que es lo cierto. La cara humana llevaba el
+> mismo exceso en prosa y también se corrigió.
+>
+> Los tres que "no tenían nada que contestar" eran el último sitio donde quedaba
+> silencio, y las tres razones son distintas: `limpiar` no limpia nada porque del
+> otro lado no hay pantalla, `salir` contesta **antes** de que el pipe se cierre
+> porque un pipe cerrado y vacío es exactamente lo que parece un cierre
+> inesperado, y `apagar` contesta antes de la llamada al sistema porque cuando
+> funciona no regresa.
+>
+> Lo que lo sostiene: la prueba del catálogo **afirma que la lista de verbos
+> sólo-prosa está vacía**, y la etapa 22 pasó de catorce verbos manejados a
+> veintiuno. Control corrido en los dos sentidos.
+>
+> **Nada de esto necesita hierro.** Sigue faltando el banco de gamas, que es una
+> medición y no una comprobación.
+
+> ## `describe` prometía prosa donde había un objeto — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Revisando qué quedó desalineado después de la corrida en verde salió **un
+> defecto real, y no estaba en la bóveda sino en el código**: `red` se construyó
+> ese mismo día con sus dos caras y quedó declarado `answers: None` en el
+> catálogo. `describe` es lo primero que lee un programa y por cada verbo dice si
+> contesta por estructura; **un verbo declarado sólo-prosa es un verbo que un
+> programa nunca llama**. La única lista de hardware de red que esta máquina
+> tiene fue invisible para eso durante el día entero, sin producir un solo error.
+>
+> Nadie lo vio porque **el catálogo y el despacho son dos archivos y cada uno
+> concuerda consigo mismo**: las pruebas de `net` ejercen la cara estructurada y
+> pasan, y la prueba del catálogo afirmaba que `modules` seguía siendo sólo-prosa
+> —un `contains` sobre un ejemplo no ve que otro se movió—.
+>
+> Tres cosas cambiaron:
+>
+> - `red` declara `answers: Some("network")`;
+> - la prueba del catálogo **fija la lista entera** de verbos sólo-prosa, así que
+>   agregar una cara obliga a editar ese renglón;
+> - la **etapa 22** corre los catorce verbos que aquí se pueden correr sin
+>   argumentos y compara el cable contra lo que `describe` prometió, en las dos
+>   direcciones. Con el defecto devuelto a mano dice
+>   `red:promised-prose-answered-network`; sin él, `ok:14`.
+>
+> La regla nueva está en [[Estrategia-de-Pruebas]]: **una afirmación que un
+> sistema hace sobre sí mismo se comprueba corriéndolo, no leyendo los dos lados
+> del código.**
+>
+> Y de paso quedaron alineados dos pendientes de [[Tareas-Pendientes]] que
+> seguían marcados abiertos y estaban cerrados desde el 2026-08-10: los tres de
+> «sólo hierro» —de los que `D2` y `B3` se construyeron y sólo queda `E1`— y los
+> tres que se podían hacer aquí —`B1`, `C2` y `F2`, los tres hechos—.
+>
+> **Nada de esto necesita hierro**, así que no interrumpe nada.
+
+> ## `proven 159 · not proven 1 · failed 0` — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **Cero fallos, y por primera vez con un modelo de verdad.** La corrida de Cesar
+> cierra todo lo que este día abrió:
+>
+> - la terminal usable está en **9 de 9**;
+> - el kernel construye con las ocho opciones de red nuevas y `red` coincide con
+>   `iproute2` en su máquina;
+> - las cuatro afirmaciones que sólo un modelo real puede contestar —que este
+>   build de llama.cpp acepta las banderas que Thalyx le pasa, que una inferencia
+>   real vuelve como algo que el parser acepta, y que `--grammar-file` restringe
+>   en vez de ser ignorada— **quedaron probadas**, después de meses reportándose
+>   como `NOT PROVEN`.
+>
+> Lo único que queda es **la única cosa que no es una comprobación sino una
+> medición**: `thalyx agent bench`, que no corre sola porque tarda minutos.
+>
+> ```
+> sudo THALYX_AGENT_BENCH=1 \
+>      THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Eso da **la primera tabla de acierto por gama que ha existido** y es la entrada
+> a la pregunta de abstención cero de [[Gamas-de-Modelo]], que lleva meses parada
+> por no tener con qué medirla.
+>
+> **Falta que Cesar decida si se corre ahora.** Nada más está bloqueado.
+
+> ## Corregido: una interfaz abajo no tiene una sola respuesta — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Cesar trajo `proven 153 · not proven 1 · failed 1`, y el que
+> falló fue **una prueba mía**, no Thalyx.
+>
+> Antes de eso, lo que su corrida sí probó, y es lo que importaba:
+>
+> - **el kernel construyó con las ocho opciones nuevas.** `config-check` no tiró
+>   ninguna, así que las dependencias de `NETDEVICES`, `ETHERNET` y los cuatro
+>   drivers estaban bien;
+> - **la etapa 35 pasó**: `red` y `iproute2` nombran las mismas interfaces en su
+>   máquina, leídas por sysfs y por netlink;
+> - **la etapa 34 pasó**: los ensayos hablan en condicional y el verbo de verdad
+>   no.
+>
+> Lo que falló: la prueba afirmaba que **una interfaz abajo se niega a contestar
+> si tiene cable**. Aquí es cierto —`ifb0` da `EINVAL`—; en su Fedora un puente
+> de Docker abajo contesta `0` con toda honestidad. **Negarse o contestar es del
+> driver, no de estar abajo.**
+>
+> El módulo nunca necesitó eso. Necesita que una lectura fallida jamás se reporte
+> como cable ausente, y eso es cierto en toda máquina. La prueba ahora lee el
+> mismo archivo por su cuenta y compara el mapeo; la negativa de verdad, que no
+> toda máquina tiene, sale como `NOT PROVEN` con su propia variable.
+>
+> **Es la misma regla que la del `ENXIO` contra `EACCES` y es la segunda vez en
+> dos días.** Lo nuevo es qué la produjo: la primera fue una opción de montaje,
+> ésta fue contar dos ejemplos de la misma clase en la misma máquina y llamarlo
+> la regla. Está en [[Estrategia-de-Pruebas]].
+>
+> **Lo único que falta para cerrar el modelo** es lo que su propia corrida ya le
+> dijo, palabra por palabra:
+>
+> ```
+> git pull
+> sudo THALYX_AGENT_BINARY=/home/cesarmanzocode/src/llama.cpp/build/bin/llama-completion \
+>      THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+
+> ## Punto 8: la red se ve y no se usa — la terminal usable está en 9 de 9 — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió así: **verla, no usarla.** El decreto entero está en [[Red]],
+> con la razón de por qué no es lo mismo un poco más de lo otro — DHCP, DNS y TLS
+> son programas aparte en todos lados y aquí tendrían que vivir dentro de
+> `thalyx`, y lo que comprarían depende de una pregunta de Fase 2 que no está
+> contestada: de dónde saldría un módulo.
+>
+> El kernel pasó de **110 opciones a 118**. Las nuevas son dos menús y cuatro
+> drivers, cada uno con su razón al lado: `virtio_net`, `e1000`, `e1000e` y
+> `r8169`. Nada de WiFi.
+>
+> El verbo es `red`, motor en `thalyx-net`, dos caras. Y **dice en la respuesta
+> que no se puede usar** —`addressable: false` para un programa, una frase para
+> una persona— porque es la única lista del sistema cuyas cosas ningún verbo
+> puede tocar, y quien lea una lista de tarjetas va a ir a buscar el verbo que
+> las usa.
+>
+> **Lo que salió de correrlo, que ninguna prueba de fixture vio:** la primera
+> versión reportó **tres tarjetas en una máquina con una.** `ifb0` e `ifb1` dicen
+> `type 1` y traen dirección física, y son software puro. Lo que separa una
+> tarjeta es que cuelga de un bus. Regla nueva en [[Estrategia-de-Pruebas]].
+>
+> Las otras dos, medidas y no citadas: una interfaz abajo **no dice que no tiene
+> cable, no dice nada** (`EINVAL`, no `0`), y `speed` tiene tres estados —número,
+> `-1` con el enlace arriba, y no legible—. Las dos sobreviven a lo que se
+> imprime: `cable unknown` es una columna distinta de `no cable`.
+>
+> 18 pruebas nuevas y la **etapa 35**, cuyo control es `iproute2` porque lee
+> netlink y no sysfs: pedirle a Thalyx que se compruebe contra su propia lectura
+> de `/sys` sólo probaría que es consistente. 1340 pruebas, clippy limpio.
+>
+> **Lo que falta correr, y sólo tu máquina puede:**
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> make -C image kernel        # los ocho CONFIG_ nuevos
+> sudo THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> `make -C image kernel` es lo primero porque **`config-check` falla la
+> construcción si `olddefconfig` tira cualquiera de las ocho opciones nuevas**, y
+> las nombra. Es la única manera de saber si acerté las dependencias: aquí no se
+> puede compilar un kernel.
+>
+> Y en tu Fedora, `red` a secas ya enseña tu tarjeta real — con su driver y su
+> velocidad negociada— sin necesidad de arrancar la imagen.
+
+> ## Un ensayo ya no dice que borró nada — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió: se arregla. `ensayo rm notas.txt` imprimía
+> `removed /ruta/notas.txt` para un archivo que seguía ahí, y lo mismo `cp`, `mv`
+> y `mkdir`. Ahora dicen `would remove`, `would copy`, `would move` y
+> `would make the directory` — y el verbo de verdad sigue diciendo `removed`,
+> que es la mitad que hace que esto signifique algo.
+>
+> **Una sola frase, dos tiempos.** El tiempo verbal viaja como un dato desde
+> quien sabe si esto es un ensayo hasta quien imprime, y `Did::would()` vive
+> pegado a `Did::word()` para que no se pueda agregar un verbo nuevo con la
+> mitad. Un segundo impresor para los ensayos sería exactamente la segunda
+> versión de los hechos que este módulo existe para no tener.
+>
+> **Por qué nadie lo vio en meses:** la cara de máquina estaba bien todo el
+> tiempo — su `op` dice `rehearse`— así que las cuatro pruebas del ensayo, que
+> leen objetos, no podían verlo. Regla nueva en [[Estrategia-de-Pruebas]]: cuando
+> un hecho se dice en dos caras, una prueba que sólo lee una de ellas prueba una
+> de ellas.
+>
+> Prueba nueva y **etapa 34**, las dos comprobadas de las dos maneras: fallan con
+> el defecto puesto de vuelta y pasan sin él. 1322 pruebas, clippy limpio.
+>
+> **Lo que sigue es el punto 8, la red**, que Cesar también decidió. Es el último
+> de los nueve de la terminal usable.
+
+> ## La imagen está construida, y el modelo sí corrió — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar construyó la imagen en su máquina. La corrida pasó de `139 · 2 · 0` a
+> **`152 · 1 · 0`**: son las trece comprobaciones de la etapa 16, que arranca la
+> imagen en QEMU y le habla, y que llevaban meses fuera del reporte por no haber
+> kernel construido. **Con eso el punto 8 —la red— queda desbloqueado**, porque se
+> prueba con `make -C image run-hardware`, que necesita justamente esa imagen.
+>
+> El NOT PROVEN que quedó **no era suyo, era del instrumento.** Corrió
+> `thalyx agent model check` y el modelo contestó de verdad —una inferencia
+> parseada, 7.28 s, 4.77 GB de pico— y la etapa siguió diciendo *«no real model
+> has run: llama-completion is not installed»*. Las dos cosas ciertas a la vez:
+> el `check` lo corrió él con su `PATH`, y la etapa corre bajo `sudo`, que tira el
+> `PATH` y usa `secure_path`. Regla nueva en [[Estrategia-de-Pruebas]], la quince.
+>
+> Arreglado: la etapa busca el binario también en el `PATH` de `$SUDO_USER` y,
+> cuando lo encuentra, **dice dónde está y qué escribir** para que la corrida lo
+> vea. Las dos mitades del hueco se reportan por separado, y la de los pesos
+> distingue «no la nombraste» de «nombraste un archivo que no está» — y en el
+> primer caso dice que `sudo` no lleva el entorno.
+>
+> Comprobado corriendo los cuatro caminos, no leyéndolos. El segundo destapó un
+> defecto del arreglo mismo: una cuenta con `nologin` imprime una frase en inglés
+> y la primera versión la ofreció como si fuera la ruta del binario.
+>
+> **Lo que falta correr:**
+>
+> ```
+> git pull
+> sudo THALYX_AGENT_WEIGHTS=/home/cesarmanzocode/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+>      ./dev/verify.sh
+> ```
+>
+> Si aun así dice NOT PROVEN, ahora la línea trae la ruta exacta que falta poner
+> en `THALYX_AGENT_BINARY`.
+
+> ## Punto 9: hay citado y no hay lenguaje — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar lo decidió así: *«lo que sea más fácil de cubrir por ahora, pero en un
+> futuro sí tendremos que hacer shell completo, no ahora, pero estemos
+> preparados»*. La segunda mitad es la que mandó sobre el diseño — **nada de lo
+> que se aprenda hoy puede tener que desaprenderse el día del shell completo** —
+> y el decreto entero está en [[Palabras]].
+>
+> Antes de preguntarle fui a ver qué faltaba de verdad, corriéndolo: **un archivo
+> con un espacio en el nombre se podía listar y nada más.** `cp mi archivo.txt x`
+> eran tres palabras y los tres verbos se negaban. Nunca se destruyó nada por
+> eso, pero no había forma de nombrar el archivo.
+>
+> Lo que hay ahora:
+>
+> - `'…'`, `"…"` y `\x` con las reglas de POSIX hasta donde POSIX llega hoy, así
+>   que el día que `$` signifique algo no cambia nada de lo escrito;
+> - una comilla sin cerrar **se niega** —`unclosed_quote` / `close_the_quote`— en
+>   vez de adivinarse, que es como un `rm` acaba actuando sobre algo que nadie
+>   nombró. Una diagonal al final tiene su propia palabra, porque es otro error;
+> - **la expansión se queda en el verbo, y eso es decreto**. `rm "*.log"` borra el
+>   archivo que se llama así y `encontrar "*.rs"` sigue siendo un patrón — las
+>   dos costumbres de Unix, cada una donde estaba, igual que bash y `find`.
+>
+> Una palabra recuerda qué caracteres venían citados **carácter por carácter**,
+> porque `"a"*` es un patrón y `a"*"` es un nombre.
+>
+> **Dos cosas cambiaron de significado y hay que decirlas:** una corrida de
+> espacios ahora se colapsa (`contenido fn  main` busca `fn main`; la forma de
+> pedir lo otro es `contenido "fn  main"`), y el texto de `editar` es la única
+> excepción — se toma del renglón byte por byte, porque una sangría perdida en un
+> archivo de configuración no se ve hasta que algo no arranca.
+>
+> Ocho pruebas en el prompt de verdad y la **etapa 33**, comprobada de las dos
+> maneras: pasa con el cambio y falla sin él.
+>
+> **Con esto la terminal usable llega a 8 de 9.** Queda el punto 8, la red, que
+> sólo se verifica en su hierro y se cruza con la Fase 2.
+>
+> **Y una cosa encontrada de paso, que no toqué:** `ensayo rm x` imprime
+> `removed /ruta/x` sin haber borrado nada. Ya estaba en `main` desde antes —lo
+> comprobé con el binario anterior— y es de la misma familia que lo de `matar`:
+> una respuesta que dice que algo pasó cuando no pasó. La cara de máquina está
+> bien (el `op` es `rehearse`); la humana no. **Falta que Cesar decida si se
+> arregla.**
+
+> ## Comprobado en el hierro: 138 · 2 · 0 — 2026-08-23
+>
+> Cómo se llegó.
+>
+> La corrida de Cesar cerró el lazo de verificación de los tres arreglos de este
+> día: `proven 138 · not proven 2 · failed 0`. Los dos NOT PROVEN son los de
+> siempre y no son defectos — no hay modelo instalado y no hay imagen construida
+> (`make -C image`).
+>
+> Lo que eso deja probado **en hierro**, que es lo único que cuenta para estas
+> tres cosas:
+>
+> - `matar` se niega ante un hilo del kernel y ante un proceso que ya terminó, en
+>   vez de decir que los detuvo (etapa 32, con la línea base y el control);
+> - **instalar dos veces sobre el mismo disco funciona** — que era el `failed 1`
+>   de la corrida anterior. Sostener las particiones abiertas sí impide el segundo
+>   barrido del kernel; era lo único de ese arreglo que este contenedor no podía
+>   contestar;
+> - la prueba del nodo ya no afirma un errno, así que la suite pasa en una máquina
+>   que monta `/tmp` con `nodev`.
+>
+> **La terminal usable llega a 7 de 9 y los dos que faltan son decisiones suyas:**
+> el punto 8 (red) sólo se verifica en su hierro y se cruza con la Fase 2, y el
+> punto 9 (lenguaje de shell) es decreto antes que código. Nada más está
+> bloqueado.
+
+> ## Instalar dos veces sobre el mismo disco — 2026-08-23
+>
+> Cómo se llegó.
+>
+> **Corregido el mismo día:** la prueba nueva afirmaba que abrir el nodo da
+> `ENXIO`, y en tu Fedora dio `EACCES` — porque `/tmp` está montado con `nodev` y
+> ahí no se puede abrir ningún nodo de dispositivo, haya algo detrás o no. La
+> prueba tumbó la suite entera por una opción de montaje. Ahora afirma lo que se
+> estaba probando: que el nombre resuelve y el dispositivo no. Regla en
+> [[Estrategia-de-Pruebas]], y es la catorceava vez que el instrumento miente.
+>
+> La corrida de Cesar del 2026-08-23 trajo `proven 137 · not proven 2 · failed 1`.
+> El que falló: **instalar dos veces no funcionaba**, con
+> `opening /dev/loop0p1: No such device or address`.
+>
+> `instalar-en` escribe la tabla, le pide al kernel que la relea, y espera a que
+> aparezcan las particiones antes de escribir dentro de ellas. La espera
+> preguntaba **si existía el nodo**. La primera instalación no tiene nodos, así
+> que la espera espera; la segunda los tiene de la tabla anterior, así que la
+> condición ya estaba cumplida antes de empezar y la espera terminó sin haber
+> esperado.
+>
+> Y hay algo que esperar de verdad: **cerrar el descriptor que tenía el disco
+> entero abierto para escritura hace que el kernel lo reexamine por su cuenta**,
+> en su propio tiempo. Ese segundo barrido borra cada partición y la vuelve a
+> hacer, y un nodo abierto dentro de esa ventana da `ENXIO` — *No such device or
+> address*, para un nombre que está ahí en `/dev`.
+>
+> Dos cambios, y el segundo es el que cierra la ventana en vez de esquivarla:
+>
+> 1. la espera **abre** la partición en vez de preguntar si el nombre existe;
+> 2. las particiones se devuelven **ya abiertas** y se sostienen abiertas hasta el
+>    final. El kernel se niega a soltar las particiones de un disco mientras
+>    alguna esté abierta, así que el segundo barrido encuentra el disco ocupado y
+>    lo deja en paz.
+>
+> **Lo que está probado y lo que no.** Que `stat` y abrir contestan cosas distintas
+> quedó fijado con una prueba que hace `mknod` con un major que ningún driver
+> registró: el nombre existe y abrirlo da `ENXIO`, el mismo errno de tu corrida.
+> Que montar funciona con un descriptor abierto encima también se comprobó
+> corriéndolo. **Que sostener la partición bloquea el segundo barrido no se puede
+> comprobar en este contenedor**, que no sabe hacer particiones sobre un loop. Eso
+> lo dice tu máquina:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo ./dev/verify.sh
+> ```
+>
+> La regla que lo habría atrapado está en [[Estrategia-de-Pruebas]]: **una
+> condición de espera tiene que ser falsa al principio.** Si la puede satisfacer lo
+> que quedó de la vez pasada, no está esperando a nada — y el caso que la deja
+> pre-satisfecha es justamente el que nadie prueba, porque es el segundo.
+>
+> ## `matar` ya no dice que detuvo lo que no se puede detener — 2026-08-23
+>
+> Lo encontró Cesar en su primera sesión con el punto 7: ensayó `matar` sobre un
+> `kworker` y Thalyx contestó *«5 would ask to stop»*. A un hilo del kernel no le
+> llega ninguna señal. Que `pidfd_send_signal` conteste `0` significa que el
+> kernel se quedó con la señal, **no que le vaya a pasar algo a alguien**.
+>
+> Son dos los sujetos que la aceptan y la tiran, y los dos quedan negados antes
+> de mandar nada:
+>
+> | sujeto | palabra | remedio |
+> |---|---|---|
+> | un hilo del kernel | `is_kernel_thread` | `cannot` |
+> | un proceso que ya terminó (zombi) | `already_ended` | `stop_the_parent`, con el número del padre |
+>
+> Es peor que un error: una respuesta que dice *«se le pidió que pare»* sobre algo
+> que nunca se movió enseña que Thalyx no es confiable, cuando Thalyx sólo era
+> crédulo — y quien la vea va a probar `forzar`, que hace exactamente lo mismo.
+>
+> `ensayo matar` se niega igual, desde la misma función: un ensayo que predice
+> algo que el verbo no hace es una respuesta equivocada que hay que desaprender
+> tecleando la de verdad.
+>
+> El hilo del kernel se reconoce por el bit `PF_KTHREAD` del campo 9 de
+> `/proc/<pid>/stat`, **medido y no citado**: ese valor no está en ningún
+> encabezado que se le entregue al espacio de usuario, así que se sacó
+> comparando los 66 hilos cuyo padre es `kthreadd` contra los 6 procesos
+> ordinarios de un sistema corriendo. No se reconoce por la línea de comandos
+> vacía, que también la tiene un zombi.
+>
+> Lo que esto enseñó de las pruebas: **`matar` se había probado once veces en el
+> prompt de verdad y las once con un proceso que sí se podía detener.** La regla
+> nueva está en [[Estrategia-de-Pruebas]] — cuando el éxito de un verbo se toma
+> del valor de retorno de una llamada al sistema, hay que probarlo sobre un
+> sujeto que la llamada acepta y no obedece. Y la línea base de la etapa 32 es el
+> defecto mismo: `kill -9` al zombi, que se acepta y no hace nada.
+>
+> Falta correrlo en tu máquina:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo ./dev/verify.sh
+> ```
+>
+> Revisión completa en [[Procesos]].
+>
+> ## Procesos: el punto 7, y una señal que no puede caer en el número equivocado — 2026-08-23
+>
+> `procesos`, `memoria` y `matar` — todo sobre `/proc`, decreto entero en
+> [[Procesos]]. Con esto la terminal usable llega al punto 7 de 9; quedan la red
+> (punto 8, sólo hierro) y el lenguaje de shell (punto 9, decreto antes que
+> código y decisión tuya).
+>
+> ### Lo que hace a `matar` distinto de un `kill`
+>
+> **El número no es el proceso.** Entre leer `/proc/4711` y señalar 4711, ese
+> proceso puede terminar y el kernel puede darle el número a otro; toda
+> herramienta que recibe un pid tiene ese hueco y vive con él. `matar` abre un
+> `pidfd` y manda la señal por ahí, así que llega al proceso para el que se abrió
+> el descriptor o falla — no hay un tercero donde le llegue a un desconocido.
+>
+> Eso decide el orden y es el contrario del obvio: **primero el descriptor,
+> después la descripción, después la señal.**
+>
+> Por omisión `TERM`, que un programa puede atrapar para guardar lo que tenía;
+> `matar <numero> forzar` manda `KILL`, que no. Se niegan PID 1 y la propia
+> sesión, cada uno nombrando el verbo que hace ese trabajo bien —`apagar` y
+> `salir`—; no es una política sobre quién manda en la máquina, que eres tú, es
+> que una señal hace esos dos trabajos de la única forma que no deja dicho por
+> qué la máquina se detuvo. También se niegan el `0` y los negativos, que para
+> `kill(2)` son *todo lo que alcance* y un *grupo*.
+>
+> ### `ensayo matar` es el ensayo que más importa
+>
+> Un archivo se puede volver a escribir; un proceso no, y la entrada que causa el
+> error son cuatro dígitos. Así que contesta el nombre, la línea de comandos
+> entera, cuánto lleva corriendo y quién lo arrancó — y que no manda nada sólo
+> queda probado por una aserción: el proceso sigue vivo después.
+>
+> ### `libre` no es `disponible`
+>
+> `memoria` contesta las dos y nombra cuál contesta la pregunta. Un Linux sano
+> mantiene `free` cerca de cero a propósito, y quien lee sólo ese número concluye
+> que la máquina está llena y empieza a matar cosas. `en uso` se calcula como
+> `total − disponible`, nunca como `total − libre`.
+>
+> ### Dos cosas que construirlo enseñó
+>
+> - **El nombre en `/proc/<pid>/stat` puede llevar paréntesis.** Se capturó un
+>   renglón real de un proceso llamado `we (ird) x`; partirlo por espacios pone
+>   el estado cinco campos antes y reporta un padre inventado. Regla 6.
+> - **`kill -0` contesta si el número existe, no si el proceso corre** —
+>   decimotercera vez que el arnés miente. La etapa 31 dijo que `forzar` no había
+>   funcionado sobre una shell que llevaba rato muerta: era un zombi, porque en
+>   este contenedor **PID 1 es `process_api` y no cosecha huérfanos**. En tu
+>   Fedora systemd los cosecha y las dos preguntas se ven iguales. Ambas en
+>   [[Estrategia-de-Pruebas]].
+>
+> ### Y un hueco de A2 que apareció por segunda vez
+>
+> `machine::declined` no tiene dónde poner un remedio, así que los verbos que la
+> usaban contestaban `remedy: null`. La primera vez lo parché en `search`; al
+> necesitarlo un segundo crate se volvió forma: `machine::refused(op, palabra,
+> remedio, mensaje)`.
+>
+> ### Qué correr
+>
+> Nada de esto necesita hierro. La etapa 31 corrió verde aquí.
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx session
+> procesos
+> memoria
+> ensayo matar <numero>
+> ```
+>
+> El `ensayo` primero, siempre. Son 39 verbos ahora.
+
+> ## Encontrar y contenido: el punto 6, con tres preguntas separadas — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Thalyx podía listar una carpeta y leer un archivo, y no podía contestar *dónde
+> está el archivo que se llama así* ni *qué archivos dicen esto*. Ya contesta las
+> dos, y el decreto entero está en [[Busqueda]].
+>
+> ### Las dos decisiones fueron de Cesar
+>
+> **Dos verbos nuevos, no uno con banderas.** `encontrar <patrón>` por nombre,
+> `contenido <texto>` por texto, y `buscar` intacto en su tercera pregunta —del
+> índice, no del disco—. Un verbo cuyo significado depende de una bandera se
+> puede pedir mal en silencio, y las tres respuestas se ven igual: una lista de
+> `ruta:línea` no dice de dónde salió.
+>
+> **Texto literal, sin expresiones regulares.** Un punto es un punto. Dos
+> razones: la imagen lleva el kernel y un programa, y un dialecto de regex aquí
+> sería decidir a escondidas un pedazo del punto 9 —si Thalyx tiene lenguaje de
+> shell—, que es decreto antes que código. Los nombres sí llevan `*` y `?`,
+> porque es el vocabulario que `rm`, `cp` y `mv` ya usan.
+>
+> ### Lo que construirlo obligó a mover
+>
+> `walk` vivía en `thalyx-graph` con dos llamadores. Ahora son cuatro, y los dos
+> nuevos son justo los que una persona compara contra el índice: un `contenido`
+> que entrara a `.git` donde `buscar` no entra contestaría sobre un archivo del
+> que el índice nunca supo, y la conclusión sería *el índice está roto*. Se movió
+> a `thalyx-files`, con el techo de 20 000 archivos, para que sigan siendo una
+> sola caminata y un solo número.
+>
+> ### Dos cosas nuevas en [[Estrategia-de-Pruebas]]
+>
+> - **Un hecho que la shell va a leer se cita** — duodécima vez que el
+>   instrumento miente, y esta vez el instrumento era mío. La etapa 30 escribía
+>   `names=a.rs b.rs` sin comillas, la shell asignó el primero y trató de
+>   ejecutar el segundo, y la etapa acusó al verbo de no contestar cuando había
+>   contestado las tres cosas bien.
+> - **Una prueba que este usuario no puede hacer fallar tampoco prueba** — quitar
+>   todos los permisos no detiene a root, así que la prueba de la regla 10 dice
+>   `NOT PROVEN` y `THALYX_REQUIRE_UNREADABLE_TESTS=1` la convierte en falla. Es
+>   la regla 3 con una cara nueva: hasta ahora los saltos eran por lo que a la
+>   máquina le falta, y éste es por quién está corriendo.
+>
+> ### Un defecto que sólo salió al correrlo
+>
+> El refuso estructurado usaba `machine::declined`, que no tiene dónde poner un
+> remedio, así que `not_a_directory` llegaba con `remedy: null` — el punto A2 de
+> [[Superficie-para-el-LLM]] perdido calladamente en dos verbos. Lo encontró una
+> prueba que pidió el remedio. Ahora usa `machine::failure`, que sí lo lleva.
+>
+> ### Qué correr
+>
+> Nada de esto necesita hierro; la etapa 30 corre entera en el contenedor y ya
+> corrió. Cuando quieras verlo:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> thalyx session
+> encontrar *.rs
+> contenido fn main
+> ```
+>
+> Y `sudo ./dev/verify.sh 2>&1 | tee /tmp/verify.log` cuando toque la próxima
+> corrida completa — con `tee`, porque el conteo de la corrida pasada costó una
+> ida y vuelta por haber pedido nada más la cola.
+
+> ## Verde en hierro, y las diez comprobaciones que faltaban eran el arranque — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar volvió a correr `verify.sh` con la precondición arreglada:
+> **134 probadas, 2 no probadas, 0 fallas.** La sexta corrida en hierro, y la
+> primera sin ninguna falla.
+>
+> ### La rama con watcher se ejerció por primera vez
+>
+> La etapa 27 imprimió *«the mutation ring was mapped and read: 4 record(s)
+> named thalyx-ringmark, and a second read had none of them left»*. Es la etapa
+> completa: el anillo mapeado, los registros leídos, y la segunda lectura vacía
+> —que es la mitad que prueba que leer consume—. Y la suite pasó, o sea que
+> `what_the_kernel_saw.rs` corrió su rama de watcher cargado sin haberse podido
+> ejecutar nunca aquí.
+>
+> ### Las diez comprobaciones que faltaban, contestadas por el reporte mismo
+>
+> El bloque anterior dejó abierto por qué esta corrida traía menos
+> comprobaciones que la del 2026-08-10, y pedía el resumen completo antes de
+> afirmar nada. Con el resumen, la respuesta está en la segunda línea de lo que
+> la corrida no pudo establecer:
+>
+> ```
+>   · no kernel or image built yet, so there is nothing to boot; run 'make -C image'
+> ```
+>
+> **Lo que faltó es la etapa 16 entera —arrancar la máquina en QEMU—**, que en
+> esa máquina no tenía qué arrancar porque `image/build/` está vacío;
+> `image/build/` no está en el repositorio, así que se pierde con cualquier
+> limpieza y `git pull` no lo trae de vuelta.
+>
+> Y cuadra por conteo, que es la forma comprobable de decirlo: la etapa 16 tiene
+> **trece comprobaciones**, y aquí se contrajeron a **un solo NOT PROVEN**.
+> 136 − 1 + 13 = 148, menos la etapa 29 que el 2026-08-10 no existía = 147 …
+> contra las **146** que contó aquella corrida. Una de diferencia, que es el
+> tamaño de un `if`/`else` de esa etapa. La dirección no admite otra lectura: no
+> se perdió nada, no se arrancó nada.
+>
+> Para recuperarlas, `make -C image` y luego el disco de store. **No es urgente**
+> — no hay nada nuevo que sólo el arranque compruebe desde el 2026-08-07 — pero
+> mientras `image/build/` esté vacío el reporte va a seguir diciendo 134.
+>
+> ### Regla nueva
+>
+> Un conteo que baja no es una regresión hasta que se sabe *qué* dejó de
+> correr, y el reporte ya lo decía: **las líneas de NOT PROVEN son parte del
+> resultado, no una nota al pie.** Leer sólo el marcador es leer la mitad. En
+> [[Estrategia-de-Pruebas]].
+
+> ## La corrida en hierro: el anillo funciona, y la prueba era la equivocada — 2026-08-23
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `verify.sh`: **133 probadas, 2 no probadas, 1 falla.** La falla era
+> la etapa 5 —la suite— por dos pruebas de `what_the_kernel_saw.rs`.
+>
+> ### Thalyx estaba bien y la prueba estaba mal
+>
+> Las dos pruebas suponían **una máquina sin watcher**. Lo decía el encabezado del
+> archivo y lo decía el nombre de una de ellas, y ninguna de las dos lo
+> comprobaba. Era cierto durante meses porque este contenedor no puede cargar BPF,
+> así que la negativa era la única respuesta posible.
+>
+> En la máquina de Cesar el watcher **sí** estaba cargado — porque las
+> instrucciones de esa corrida le decían `make -C lsm load` antes de correr. Así
+> que `cambios` contestó correctamente y la prueba dijo que Thalyx se equivocaba.
+>
+> **Undécima instancia de la regla 5**, y la variante de «una prueba que infiere
+> su propia precondición». Arreglado: las dos preguntan si el pin existe en el
+> sistema de archivos —un hecho en el que `cambios` no participa— y **ninguna de
+> las dos ramas es un salto**, así que el archivo prueba algo dondequiera que
+> corra. Ver [[Estrategia-de-Pruebas]].
+>
+> ### Lo bueno, y estaba en la misma salida
+>
+> La corrida imprimió esto:
+>
+> ```
+>     created    by thalyx (41513), in cgroup 22518
+>     retitled   by thalyx (41510), in cgroup 22518
+> ```
+>
+> Son **registros reales drenados de un anillo real del kernel**, con su cgroup,
+> desde una sesión. El consumidor del ringbuf funciona en hierro. Lo que la
+> etapa 27 persigue está vivo.
+>
+> ### Lo que falta saber de esa corrida
+>
+> **133 probadas contra las 143 del 2026-08-10, y se agregó una etapa.** Diez
+> comprobaciones menos no se explican con la falla de la etapa 5, y con la cola
+> del reporte no alcanza para decir por qué. Hace falta el resumen completo —
+> las dos líneas de `not proven` y el bloque final— antes de afirmar nada.
+
+> ## El editor existe, con sus dos caras — 2026-08-22
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Es el punto 5 de la terminal usable, y lo que lo justificaba desde el
+> principio: **sin un editor no se puede corregir un archivo de configuración
+> desde la máquina.** Thalyx podía hacer un archivo, copiarlo, moverlo, borrarlo
+> e imprimirlo, y no podía cambiarle un byte por dentro.
+>
+> Cesar decidió **las dos caras en una entrega**, que era la opción cara de las
+> tres. El decreto entero está en [[Editor-de-Texto]]; lo corto:
+>
+> - `editar <archivo>` abre una **pantalla** — flechas, `Ctrl-O` guarda, `Ctrl-X`
+>   sale, `Ctrl-U` deshace, `Ctrl-K` corta.
+> - `editar <archivo> cambiar 12 <texto>` direcciona **renglones** y contesta un
+>   objeto, porque un programa no puede manejar una pantalla que se redibuja.
+> - `crates/thalyx-edit` es **un solo motor** y las dos caras lo llaman, así que
+>   no pueden acabar en desacuerdo sobre lo que el archivo dice ahora.
+>
+> Es el primer verbo donde las dos caras difieren de **forma**, y por eso valía
+> la pena decidirlo en la bóveda antes de escribirlo.
+>
+> ### Lo que se puede correr aquí, y ya corrió
+>
+> **1 231 pruebas en verde, clippy limpio.** La etapa **29** de `verify.sh` está
+> escrita y **ya pasó en este contenedor**: no necesita hierro. Ejerce las tres
+> cosas que sólo una máquina contesta, cada una con su control —
+>
+> - un renglón cambiado por dirección y **leído de vuelta con `cat`**, no con
+>   Thalyx;
+> - una persona tecleando en la pantalla **a través de un pty de verdad**, con
+>   pulsaciones reales, y el trabajo escrito;
+> - un archivo binario **negado sin que se moviera un byte**, que es el control:
+>   un editor que negara todo pasaría las dos primeras y sería inútil.
+>
+> ### Tres defectos que salieron de correrlo, y uno que ya estaba
+>
+> Todos están escritos como reglas en [[Estrategia-de-Pruebas]]:
+>
+> 1. **`Ctrl-S` no habría funcionado nunca.** El modo crudo deja `IXON` e `ISIG`
+>    encendidos a propósito, así que la disciplina de línea se come `Ctrl-C`,
+>    `Ctrl-Z`, `Ctrl-S` y `Ctrl-Q` antes de que Thalyx vea un byte — y `Ctrl-S` es
+>    XOFF, o sea que habría dejado la terminal aparentemente muerta. Por eso
+>    guarda `Ctrl-O`. Hay una prueba que falla si alguien enlaza una de las cuatro.
+> 2. **La décima instancia de la regla 5.** Las pruebas de pantalla se colgaron:
+>    un pty recién hecho no tiene tamaño de ventana, el editor se negó a dibujar
+>    —correctamente— y las teclas se tecleraon en el prompt. **El arnés estaba
+>    incompleto, no Thalyx.** Ahora `thalyx dev pty` le pone tamaño al pty. Lo
+>    hizo barato el reloj de la prueba, que al vencerse imprime lo que se había
+>    dibujado: ahí estaba la oración que decía la respuesta entera.
+> 3. **La confirmación de salida se tragaba la tecla que la contestaba.**
+>    `Ctrl-X` y luego `Ctrl-O` no guardaba nada. Era una lectura anidada haciendo
+>    de segundo intérprete del teclado; ahora es una bandera y toda tecla pasa por
+>    el único bucle que sabe qué significan.
+> 4. **Y una que ya llevaba un día roja en `main`**: la reescritura de la portada
+>    del 2026-08-21 movió la ruta de construcción a `docs/BOOT.md` y la prueba
+>    que la ata seguía afirmando sobre el README. Arreglada, y ahora comprueba
+>    también que la portada apunte ahí — una ruta de construcción en un archivo
+>    al que nada apunta es una ruta que nadie encuentra.
+>
+> ### Lo que sigue sin correrse en hierro
+>
+> **Nada de lo del 2026-08-10 se ha vuelto a correr en tu máquina**, y hay cuatro
+> arreglos de ese día esperando: el techo de `indexar`, la etapa 14 que devuelve
+> el watcher, el `ETXTBSY` de `grammar_check` y el control del anillo. La etapa
+> 27 —el ring buffer— es la que más falta hace, porque la 14 la estaba tumbando.
+>
+> ### Qué correr
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli
+> sudo chown -R "$USER" lsm
+> make -C lsm unload && make -C lsm load
+> sudo ./dev/verify.sh
+> ```
 
 > ## La portada del repositorio, rehecha — 2026-08-21
 >

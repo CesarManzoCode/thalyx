@@ -903,6 +903,114 @@ pub enum RebootCommand {
     Restart = libc::RB_AUTOBOOT,
 }
 
+/// A handle on a *process*, not on a number.
+///
+/// A pid is not an identity. Between reading `/proc/4711` and signalling 4711,
+/// that process can exit and the kernel can hand the number to something else —
+/// on a busy machine minutes of work can pass in that window. Every tool that
+/// takes a pid on the command line has this hole and lives with it.
+///
+/// A pidfd closes it. The handle refers to the process itself, so a signal sent
+/// through it either reaches the process it was opened for or fails with
+/// `ESRCH`, and there is no third outcome where it reaches a stranger. That
+/// difference is the whole reason `matar` goes through here rather than through
+/// `kill(2)`.
+#[derive(Debug)]
+pub struct ProcessHandle {
+    fd: std::os::fd::OwnedFd,
+    pid: i32,
+}
+
+impl ProcessHandle {
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+}
+
+/// Take a handle on a living process.
+///
+/// `ESRCH` means it is not there — which after a `procesos` listing means it
+/// exited in between, and is a different fact from "no such process ever".
+/// Reported as it comes so the caller can tell a person which one happened.
+pub fn open_process(pid: i32) -> io::Result<ProcessHandle> {
+    // SAFETY: `pidfd_open` takes a pid and a flag word and touches no memory of
+    // ours. There is no libc wrapper on every target this builds for, so it
+    // goes through `syscall(2)`.
+    #[allow(unsafe_code)]
+    let raw = unsafe { libc::syscall(SYS_PIDFD_OPEN, pid as libc::c_long, 0 as libc::c_long) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the kernel just returned this descriptor and nothing else holds
+    // it, so taking ownership here is the only claim on it.
+    #[allow(unsafe_code)]
+    let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw as i32) };
+    Ok(ProcessHandle { fd, pid })
+}
+
+/// Ask a process to stop, or make it.
+///
+/// Through the handle, so it cannot land on a recycled pid. `siginfo` is passed
+/// as null, which tells the kernel to build the same `siginfo` an ordinary
+/// `kill(2)` would — deliberately not a hand-built one, because a caller that
+/// forged `si_code` would be lying to the receiving process about who signalled
+/// it.
+pub fn signal_process(handle: &ProcessHandle, signal: Signal) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor is owned and open for the length of the call, and
+    // the two null pointers are the documented way to ask for the default
+    // `siginfo` and no flags.
+    #[allow(unsafe_code)]
+    let outcome = unsafe {
+        libc::syscall(
+            SYS_PIDFD_SEND_SIGNAL,
+            handle.fd.as_raw_fd() as libc::c_long,
+            signal as libc::c_long,
+            std::ptr::null::<libc::c_void>(),
+            0 as libc::c_long,
+        )
+    };
+    if outcome < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The two signals `matar` sends, and nothing else.
+///
+/// Not an integer, so no caller can send signal 9 believing it sent 15. The
+/// distinction is the whole decision a person makes when they type `forzar`:
+/// one lets a program save its work and the other does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Signal {
+    /// Asked to stop. A program can catch this, write what it was holding, and
+    /// exit — which is why it is the default and `forzar` is a word somebody
+    /// has to type.
+    Terminate = libc::SIGTERM,
+    /// Made to stop. Cannot be caught, so nothing gets written on the way out.
+    Kill = libc::SIGKILL,
+}
+
+/// `syscall(2)` by number, because glibc grew wrappers for these later than the
+/// kernels this has to run on and there is no reason to depend on which.
+#[cfg(target_arch = "x86_64")]
+const SYS_PIDFD_OPEN: libc::c_long = 434;
+#[cfg(target_arch = "aarch64")]
+const SYS_PIDFD_OPEN: libc::c_long = 434;
+#[cfg(target_arch = "x86_64")]
+const SYS_PIDFD_SEND_SIGNAL: libc::c_long = 424;
+#[cfg(target_arch = "aarch64")]
+const SYS_PIDFD_SEND_SIGNAL: libc::c_long = 424;
+
+/// Clock ticks in a second, which is what `/proc/<pid>/stat` counts time in.
+pub fn clock_ticks() -> u64 {
+    // SAFETY: as above.
+    #[allow(unsafe_code)]
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 { ticks as u64 } else { 100 }
+}
+
 /// Reap one exited child, if any has exited.
 ///
 /// PID 1 inherits every orphan on the system, and an init that does not reap
@@ -1313,6 +1421,79 @@ pub fn is_a_terminal(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     #[allow(unsafe_code)]
     let answer = unsafe { libc::isatty(fd.as_raw_fd()) };
     answer == 1
+}
+
+/// Tell a terminal how big it is.
+///
+/// A pty the kernel has just made has **no window size** — `TIOCGWINSZ` on it
+/// answers zero rows — and a full-screen program that asks correctly refuses to
+/// draw on it. That is the right refusal and it made `thalyx dev pty` unable to
+/// exercise the editor at all: rule 5 again, the instrument includes the
+/// harness, and a pty with no window is not the terminal the harness exists to
+/// supply.
+///
+/// So whoever makes a pty says how big it is. This is not a fallback inside
+/// [`terminal_size`] — a program guessing its own screen size is the failure
+/// that one refuses to commit.
+pub fn set_terminal_size(
+    fd: std::os::fd::BorrowedFd<'_>,
+    rows: u16,
+    columns: u16,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        // The pixel dimensions. Zero is what every terminal emulator reports for
+        // these unless it is drawing graphics, and nothing here reads them.
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `TIOCSWINSZ` reads one `winsize` through the pointer, which is to
+    // a live, fully initialised local. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let set = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// How many rows and columns the terminal has, or `None` if it will not say.
+///
+/// `None` rather than a default, and that is the decision worth writing down.
+/// Assuming 80x24 when the kernel declines is how a full-screen editor draws
+/// twenty-four rows onto a screen with ten and leaves fourteen rows of a file on
+/// a screen that scrolled them away — the person sees a mangled file and
+/// concludes the editor corrupted it. A caller that gets `None` must decide what
+/// to do about it in the open, which is rule 10: this is a failure to *read* the
+/// size, and it is not a size.
+///
+/// A pipe has no window, so this answering `None` down a pipe is correct and
+/// not a fallback.
+pub fn terminal_size(fd: std::os::fd::BorrowedFd<'_>) -> Option<(u16, u16)> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `TIOCGWINSZ` writes one `winsize` through the pointer, which is to
+    // a live local zeroed first so a driver that fills only part of it cannot
+    // leave the rest reading as stack garbage. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let size = unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) != 0 {
+            return None;
+        }
+        size
+    };
+    // A terminal that reports zero of either is one that does not know, and it
+    // does happen — a serial console before anything has asked it. Zero rows is
+    // not a small screen, it is no answer, and treating it as one divides the
+    // editor's arithmetic by nothing.
+    if size.ws_row == 0 || size.ws_col == 0 {
+        return None;
+    }
+    Some((size.ws_row, size.ws_col))
 }
 
 // ────────────────────────────────────────────── what the kernel has been saying
@@ -2263,6 +2444,10 @@ pub fn map_shared(
 /// begins one page into the producer mapping — so a wrong answer here does not
 /// produce a smaller mapping, it produces one that reads the position where the
 /// data should be.
+///
+/// `/proc/<pid>/statm` counts in pages too, so `procesos` reads this as well.
+/// It is 16384 on some aarch64 kernels, and a memory figure four times too
+/// small is worse than none — it is one somebody would act on.
 pub fn page_size() -> usize {
     // SAFETY: `sysconf` reads a kernel-provided constant and touches no memory
     // this side owns. It returns -1 only for an unknown name, which
