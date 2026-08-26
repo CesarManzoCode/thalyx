@@ -418,6 +418,7 @@ if [ "$HAVE_BPF_LSM" = 1 ] && [ "$KERNEL_OK" = 1 ]; then
             failed "Thalyx named a mode this script did not put the machine in: $(grep -i '^mode:' "$WORK/enforce-status.log")"
         else
             failed "\`thalyx enforce status\` did not say whether the kernel is enforcing; see $WORK/enforce-status.log"
+            excerpt "$WORK/enforce-status.log"
         fi
     fi
 
@@ -589,6 +590,7 @@ if "$THALYX" dev pack "$PAYLOAD" --manifest "$WORK/manifest.toml" \
     proven "a module was packed and signed"
 else
     failed "packing failed; see $WORK/pack.log"
+    excerpt "$WORK/pack.log"
 fi
 
 if "$THALYX" module install "$WORK/verify.thmod" --yes > "$WORK/install.log" 2>&1; then
@@ -613,6 +615,7 @@ if [ "$LOADED" = 1 ]; then
             proven "a module run under an observing kernel says the kernel was only observing"
         else
             failed "the run did not say the kernel was only watching; see $WORK/run.log"
+            excerpt "$WORK/run.log"
         fi
 
         # Each of these asks the module what it saw. Asking Thalyx whether it
@@ -752,6 +755,7 @@ if "$THALYX" graph build "$ROOT/crates" > "$WORK/graph.log" 2>&1; then
     proven "the index built: $(grep -Eo '[0-9]+ file\(s\), [0-9]+ parsed' "$WORK/graph.log" | head -1)"
 else
     failed "the index did not build; see $WORK/graph.log"
+    excerpt "$WORK/graph.log"
 fi
 
 "$THALYX" graph status "$ROOT/crates" 2>&1 | sed 's/^/     /'
@@ -850,6 +854,7 @@ if [ "$LOADED" = 1 ]; then
 
         if [ -z "$INSIDE_BEFORE" ] || [ -z "$OUTSIDE_AFTER" ]; then
             unproven "this tree's own count could not be read; see $WORK/scoped-build.log"
+            excerpt "$WORK/scoped-build.log"
         else
             INSIDE=$((INSIDE_AFTER - INSIDE_BEFORE))
             OUTSIDE=$((OUTSIDE_AFTER - OUTSIDE_BEFORE))
@@ -1035,6 +1040,7 @@ if "$THALYX" memory recall verify-run > "$WORK/mem-before.log" 2>&1; then
     proven "a fact recorded against a real path recalls as verified"
 else
     failed "recall failed; see $WORK/mem-before.log"
+    excerpt "$WORK/mem-before.log"
 fi
 
 # Facts and inferences are never interleaved: a reader skimming the output must
@@ -1081,6 +1087,7 @@ if "$THALYX" memory recall verify-run > "$WORK/mem-after.log" 2>&1; then
     fi
 else
     failed "recall failed after the edit; see $WORK/mem-after.log"
+    excerpt "$WORK/mem-after.log"
 fi
 
 # Inferences are discardable; facts are not. There is no command that deletes a
@@ -1108,6 +1115,7 @@ if "$THALYX" memory search "login" > "$WORK/mem-search.log" 2>&1; then
     fi
 else
     failed "search failed; see $WORK/mem-search.log"
+    excerpt "$WORK/mem-search.log"
 fi
 
 # ----------------------------------------------------------- 10. the agent
@@ -1252,6 +1260,7 @@ thalyx install dev.thalyx.demo" \
         :
     else
         failed "the probe itself failed to run for $BEHAVIOUR; see $WORK/probe-$BEHAVIOUR.log"
+        excerpt "$WORK/probe-$BEHAVIOUR.log"
         INJECT_OK=0
         continue
     fi
@@ -1294,6 +1303,7 @@ if "$THALYX" agent grammar > "$WORK/proposal.gbnf" 2>/dev/null &&
     proven "the grammar is printable, so an inference can be repeated by hand"
 else
     failed "\`agent grammar\` did not print a grammar; see $WORK/proposal.gbnf"
+    excerpt "$WORK/proposal.gbnf"
 fi
 
 # And the part none of that touches, which is the only place a real model is.
@@ -1626,6 +1636,7 @@ MANIFEST
             proven "a module asked Thalyx who it was and was told"
         else
             failed "the module did not learn its identity; see $WORK/greeter-run.log"
+            excerpt "$WORK/greeter-run.log"
         fi
 
         # The baseline: something it may do.
@@ -1633,6 +1644,7 @@ MANIFEST
             proven "a module read a file its manifest granted, through the API"
         else
             failed "the module could not read a granted file; see $WORK/greeter-run.log"
+            excerpt "$WORK/greeter-run.log"
         fi
 
         # The denial. Without the baseline above this would also pass on a
@@ -1641,12 +1653,14 @@ MANIFEST
             proven "a module was refused a file nobody granted it"
         else
             failed "the module was not refused /etc/shadow; see $WORK/greeter-run.log"
+            excerpt "$WORK/greeter-run.log"
         fi
         if grep -q "AND GOT IT" "$WORK/greeter-run.log"; then
             failed "a module read /etc/shadow through the API"
         fi
     else
         failed "the module did not run; see $WORK/greeter-run.log"
+        excerpt "$WORK/greeter-run.log"
     fi
 
     # It does not run anywhere else. Not by checking a licence — by there being
@@ -1942,6 +1956,7 @@ else
             proven "detaching removed every pin it made, and left no hook live"
         else
             failed "Thalyx did not detach cleanly; see $WORK/loader-detach.log"
+            excerpt "$WORK/loader-detach.log"
             "$THALYX" enforce attached --any 2>&1 | sed 's/^/     /'
         fi
 
@@ -2039,6 +2054,7 @@ else
         proven "the machine lists what its repository holds, with no shell to look with"
     else
         failed "\`disponibles\` did not show the bundle; see $WORK/session-available.log"
+        excerpt "$WORK/session-available.log"
     fi
 
     # --- the baseline for step 6 -------------------------------------------
@@ -2052,6 +2068,7 @@ else
         proven "a machine that has done nothing says it remembers nothing"
     else
         failed "\`recuerdos\` claimed a memory on an untouched machine; see $WORK/session-memory-empty.log"
+        excerpt "$WORK/session-memory-empty.log"
     fi
 
     # --- the control: refusing must not install ----------------------------
@@ -2064,6 +2081,7 @@ else
         proven "answering no left the machine with nothing installed"
     else
         failed "a refused install did not leave the machine empty; see $WORK/session-refused.log"
+        excerpt "$WORK/session-refused.log"
     fi
 
     # And it remembered nothing either. The record is written after the commit
@@ -2075,6 +2093,7 @@ else
         proven "a refused install left nothing in the machine's memory either"
     else
         failed "the machine remembered an install that never happened; see $WORK/session-memory-refused.log"
+        excerpt "$WORK/session-memory-refused.log"
     fi
 
     # --- the trusted path, and the install ---------------------------------
@@ -2092,12 +2111,14 @@ else
         proven "the permission was shown, identified as Thalyx's, and confirmed before anything was written"
     else
         failed "the trusted path did not present the capability; see $WORK/session-install.log"
+        excerpt "$WORK/session-install.log"
     fi
 
     if grep -q "dev.thalyx.greeter 1.0.0 installed" "$WORK/session-install.log"; then
         proven "a signed module installed from a local repository, typed at the machine's own prompt"
     else
         failed "the module did not install from the session; see $WORK/session-install.log"
+        excerpt "$WORK/session-install.log"
     fi
 
     # --- and it is really there --------------------------------------------
@@ -2127,6 +2148,7 @@ else
         proven "the prompt's own route to running a module reaches the kernel"
     else
         failed "\`correr\` broke before the kernel had a say; see $WORK/session-run.log"
+        excerpt "$WORK/session-run.log"
         grep -A4 "did not run" "$WORK/session-run.log" | sed 's/^/     /'
     fi
 
@@ -2146,12 +2168,14 @@ else
         proven "a new session recalls what was asked of the one before it"
     else
         failed "the machine forgot the request across processes; see $WORK/session-memory.log"
+        excerpt "$WORK/session-memory.log"
     fi
     if grep -q "still checks out" "$WORK/session-memory.log" \
        && grep -q "installed dev.thalyx.greeter 1.0.0" "$WORK/session-memory.log"; then
         proven "and says the install still checks out, having gone and looked"
     else
         failed "the install was not recalled as holding; see $WORK/session-memory.log"
+        excerpt "$WORK/session-memory.log"
     fi
 
     # And it is on the store, not beside it. A memory in the tmpfs root reads
@@ -2170,6 +2194,7 @@ else
         proven "the same prompt took the module back off the machine"
     else
         failed "\`revertir\` did not undo the install; see $WORK/session-revert.log"
+        excerpt "$WORK/session-revert.log"
     fi
 
     # And the repository still holds it, because reverting an install is not
@@ -2197,6 +2222,7 @@ else
         proven "after the rollback the machine stops standing behind the install, on its own"
     else
         failed "the memory still asserts an install that was undone; see $WORK/session-memory-after.log"
+        excerpt "$WORK/session-memory-after.log"
     fi
 
     # And the request itself is untouched by that. Nothing on disk can make it
@@ -2207,6 +2233,7 @@ else
         proven "and still knows what was asked, which no file can falsify"
     else
         failed "the request went stale along with the install; see $WORK/session-memory-after.log"
+        excerpt "$WORK/session-memory-after.log"
     fi
 fi
 
@@ -3412,10 +3439,13 @@ else:
         proven "the session answers a program in parseable facts, and a person in prose"
     elif [ "$OBJECTS" -lt 2 ]; then
         failed "the session did not answer in objects a parser accepts; see $WORK/face-machine.log"
+        excerpt "$WORK/face-machine.log"
     elif [ "$HIDDEN_SHOWN" != "yes" ]; then
         failed "the structured listing hid a name from something that asked; see $WORK/face-machine.log"
+        excerpt "$WORK/face-machine.log"
     else
         failed "the session answered a person in JSON without being asked; see $WORK/face-human.log"
+        excerpt "$WORK/face-human.log"
     fi
 fi
 
@@ -3472,6 +3502,7 @@ else:
         proven "the machine describes its own $VERB_COUNT verbs to something that asks"
     else
         failed "\`describe\` reported $VERB_COUNT verbs; see $WORK/surface-describe.log"
+        excerpt "$WORK/surface-describe.log"
     fi
 
     # --- D1: a rehearsal works out the answer and touches nothing -----------
@@ -3498,8 +3529,10 @@ else:
         proven "a rehearsed delete worked out what would go and the file is still there"
     elif [ ! -f "$SURFACE_STORE/no-tocar.txt" ]; then
         failed "the rehearsal deleted the file; see $WORK/surface-rehearse.log"
+        excerpt "$WORK/surface-rehearse.log"
     else
         failed "the rehearsal did not work out an answer ($REHEARSED); see $WORK/surface-rehearse.log"
+        excerpt "$WORK/surface-rehearse.log"
     fi
 
     # --- A1's own claim, checked against what the verbs actually do ---------
@@ -3659,8 +3692,10 @@ else:
             # machine where installing writes nothing either, the two are the
             # same store and the rehearsal is indistinguishable from a no-op.
             failed "the real install wrote nothing either (journal $CTL_JOURNAL, modules $CTL_MODULES); see $WORK/real-install.log"
+            excerpt "$WORK/real-install.log"
         elif [ "$REH_SAID" != "yes" ]; then
             failed "the rehearsal did not answer ($REH_SAID); see $WORK/rehearse-install.log"
+            excerpt "$WORK/rehearse-install.log"
         elif [ "$REH_JOURNAL" -ne 0 ] || [ "$REH_MODULES" -ne 0 ]; then
             failed "the rehearsal wrote something: journal $REH_JOURNAL, modules $REH_MODULES"
         else
@@ -3696,9 +3731,11 @@ else:
             ;;
         none:*)
             failed "the index answered nothing; see $WORK/surface-index.log"
+            excerpt "$WORK/surface-index.log"
             ;;
         *)
             failed "the index answered '$FOUND'; see $WORK/surface-index.log"
+            excerpt "$WORK/surface-index.log"
             ;;
     esac
 fi
@@ -3801,10 +3838,13 @@ else:
         proven "a 500-file directory answers a program with 200 rows, the true total, and a cursor that resumes"
     elif [ "$W_TOTAL" != "500" ] || [ "$W_SENT" != "200" ] || [ "$W_ROWS" != "200" ]; then
         failed "the window reported total=$W_TOTAL sent=$W_SENT rows=$W_ROWS; see $WORK/window-first.log"
+        excerpt "$WORK/window-first.log"
     elif [ "$RESUMED" != "file-00200.txt" ]; then
         failed "the cursor resumed at '$RESUMED' instead of file-00200.txt; see $WORK/window-second.log"
+        excerpt "$WORK/window-second.log"
     else
         failed "the person was cut off from their own directory; see $WORK/window-human.log"
+        excerpt "$WORK/window-human.log"
     fi
 fi
 
@@ -3872,10 +3912,13 @@ print("%s %s %s %s" % (built, defined, used, control))
         proven "the index found where a name is declared in $S_BUILT real ones, and a word that is only ever prose has no symbol"
     elif [ "$S_DEFINED" != "thalyx-files/src/machine.rs" ]; then
         failed "\`window_fields\` was reported as declared in '$S_DEFINED'; see $WORK/symbol.log"
+        excerpt "$WORK/symbol.log"
     elif [ "$S_CONTROL" != "0" ]; then
         failed "a word that appears only in prose came back with $S_CONTROL symbol rows — this is a text search; see $WORK/symbol.log"
+        excerpt "$WORK/symbol.log"
     else
         failed "the index reported $S_BUILT symbols and $S_USED uses; see $WORK/symbol.log"
+        excerpt "$WORK/symbol.log"
     fi
 fi
 
@@ -3937,10 +3980,13 @@ else:
         proven "a session can read the $H_TOTAL things this machine recorded doing, and is told what that does not cover"
     elif [ "$H_TOTAL" = "none" ]; then
         failed "the session answered nothing to \`historia\`; see $WORK/history.log"
+        excerpt "$WORK/history.log"
     elif [ "$H_INSTALL" != "True" ]; then
         failed "the history does not mention the install this script performed; see $WORK/history.log"
+        excerpt "$WORK/history.log"
     else
         failed "the history did not say what it does not cover (covers=$H_COVERS complete=$H_COMPLETE); see $WORK/history.log"
+        excerpt "$WORK/history.log"
     fi
 fi
 
@@ -4075,12 +4121,16 @@ else:
         proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, and / was refused (atomic swap: $A_ATOMIC)"
     elif [ "$ROOT_REFUSED" != "False:the_whole_system" ]; then
         failed "standing at / and asking for an attempt answered '$ROOT_REFUSED' instead of refusing; see $WORK/attempt-root.log"
+        excerpt "$WORK/attempt-root.log"
     elif [ "$A_KEPT" != "before" ] || [ "$A_MADE" != "no" ]; then
         failed "abandoning did not put the tree back (kept.txt='$A_KEPT', made.txt present=$A_MADE); see $WORK/attempt-abandon.log"
+        excerpt "$WORK/attempt-abandon.log"
     elif [ "$K_MADE" != "yes" ]; then
         failed "confirming an attempt destroyed the work it was supposed to keep; see $WORK/attempt-keep.log"
+        excerpt "$WORK/attempt-keep.log"
     else
         failed "the machine reported would_delete=$A_WOULD_DELETE for one file made during the attempt; see $WORK/attempt-abandon.log"
+        excerpt "$WORK/attempt-abandon.log"
     fi
 fi
 
@@ -4246,12 +4296,16 @@ else:
             proven "the mutation ring was mapped and read: $R_FIRST record(s) named $RING_MARK_NAME, and a second read had none of them left"
         elif [ "$R_FIRST" = "refused" ]; then
             failed "reading the ring was refused with '$R_PATHS'; see $WORK/ring-first.log"
+            excerpt "$WORK/ring-first.log"
         elif [ "$R_FIRST" = "none" ] || [ "$R_FIRST" -lt 1 ]; then
             failed "the ring named no record from $RING_MARK_NAME, which made a file while it was running; see $WORK/ring-first.log"
+            excerpt "$WORK/ring-first.log"
         elif [ "$R_SECOND" != "0" ]; then
             failed "a record already read came back $R_SECOND time(s) — the consumer position is not being written back; see $WORK/ring-second.log"
+            excerpt "$WORK/ring-second.log"
         else
             failed "the answer claimed paths=$R_PATHS history=$R_HISTORY, neither of which a ring buffer can give; see $WORK/ring-first.log"
+            excerpt "$WORK/ring-first.log"
         fi
     fi
 fi
@@ -4328,10 +4382,13 @@ if [ "$BIG_SAID" = "refused" ] && [ "$BIG_WHY" = "tree_too_large" ] \
     proven "20001 files were refused as tree_too_large, and a two-file tree indexed the one that is not in a hidden directory"
 elif [ "$BIG_SAID" != "refused" ] || [ "$BIG_WHY" != "tree_too_large" ]; then
     failed "a tree of 20001 files answered '$BIG_SAID $BIG_WHY' instead of refusing; see $WORK/index-big.log"
+    excerpt "$WORK/index-big.log"
 elif [ "$SMALL_SAID" != "indexed" ]; then
     failed "the control tree answered '$SMALL_SAID $SMALL_COUNT' — the ceiling or the hidden rule is refusing everything; see $WORK/index-small.log"
+    excerpt "$WORK/index-small.log"
 else
     failed "the control tree indexed $SMALL_COUNT files instead of 1: a hidden directory was read, or the ordinary one was not; see $WORK/index-small.log"
+    excerpt "$WORK/index-small.log"
 fi
 
 step "29. a file's text can be changed, on a screen and by line"
@@ -4405,12 +4462,16 @@ elif [ "$BY_LINE" != "uno
 DOS
 tres" ]; then
     failed "editing by line left '$BY_LINE' on disk instead of the text asked for; see $WORK/edit-lines.log"
+    excerpt "$WORK/edit-lines.log"
 elif [ "$ON_SCREEN" != "ADIOS HOLA" ]; then
     failed "the screen editor left '$ON_SCREEN' on disk; see $WORK/edit-screen.log"
+    excerpt "$WORK/edit-screen.log"
 elif [ "$REFUSED" != "not_text" ]; then
     failed "a binary file answered '$REFUSED' instead of refusing as not_text; see $WORK/edit-lines.log"
+    excerpt "$WORK/edit-lines.log"
 else
     failed "a file Thalyx refused to edit changed anyway — that is the one thing a refusal must never do; see $WORK/edit-lines.log"
+    excerpt "$WORK/edit-lines.log"
 fi
 
 # ------------------------------------------------ 30. finding things in a tree
@@ -4515,16 +4576,21 @@ if [ "$names" = "$CONTROL_NAMES" ] \
     proven "the tree was searched by name and by text: find(1) agrees on the $(echo "$names" | wc -w) names it found, sed(1) agrees on the line it named, .git was never walked and the binary was skipped rather than printed"
 elif [ "$names" != "$CONTROL_NAMES" ]; then
     failed "encontrar said '$names' where find(1) says '$CONTROL_NAMES'; see $WORK/search.log"
+    excerpt "$WORK/search.log"
 elif [ "$no_names" != "0" ] || [ "${looked_at:-0}" -le 3 ]; then
     failed "a pattern that matches nothing answered $no_names match(es) after looking at ${looked_at:-0} files; see $WORK/search.log"
+    excerpt "$WORK/search.log"
 elif [ "$strict" != "src/auth.rs:1 src/main.rs:2" ]; then
     failed "contenido 'login()' answered '$strict'; the text is supposed to be literal, so the prose saying 'login' must not match; see $WORK/search.log"
+    excerpt "$WORK/search.log"
 elif [ "$CONTROL_LINE" != "login();" ]; then
     failed "the control is wrong, not Thalyx: line 2 of main.rs is '$CONTROL_LINE'"
 elif [ "$loose" != "notas.txt src/auth.rs src/deep/util.rs src/main.rs" ]; then
     failed "contenido 'login' answered about '$loose' — .git/config says login and must never be reached; see $WORK/search.log"
+    excerpt "$WORK/search.log"
 else
     failed "the binary in the tree was counted as $not_text file(s) skipped instead of 1; see $WORK/search.log"
+    excerpt "$WORK/search.log"
 fi
 
 # ------------------------------------------------ 31. what runs, and stopping it
@@ -4680,18 +4746,25 @@ if [ "$listed_doomed" = "yes" ] && [ "$listed_name" = "sleep" ] \
     proven "a real process was listed and stopped while one nobody named kept running, a shell that ignores TERM survived \`matar\` and not \`matar forzar\`, the rehearsal sent nothing, and memoria agrees with /proc/meminfo on $(( KERNEL_TOTAL / 1024 / 1024 )) MiB"
 elif [ "$listed_doomed" != "yes" ] || [ "$listed_name" != "sleep" ]; then
     failed "procesos did not list the process this stage started (listed=$listed_doomed name=$listed_name); see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 elif [ "$REHEARSED_ALIVE" != "yes" ] || [ "$rehearsal" != "False" ]; then
     failed "\`ensayo matar\` killed the process it was rehearsing, or did not say it changed nothing; see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 elif [ "$DOOMED_GONE" != "yes" ] || [ "$first_signal" != "terminate" ]; then
     failed "matar answered '$first_signal' and the process is gone=$DOOMED_GONE; see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 elif [ "$UNTOUCHED_ALIVE" != "yes" ]; then
     failed "a process nobody named was stopped — that is the one thing this must never do; see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 elif [ "$STUBBORN_SURVIVED_TERM" != "yes" ]; then
     failed "the baseline is broken or matar sent KILL when asked for TERM: a shell trapping TERM died anyway; see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 elif [ "$FORCED_SIGNAL" != "kill" ] || [ "$STUBBORN_GONE" != "yes" ]; then
     failed "\`matar forzar\` answered '$FORCED_SIGNAL' and the stubborn process gone=$STUBBORN_GONE; see $WORK/proc-force.log"
+    excerpt "$WORK/proc-force.log"
 else
     failed "memoria says $memory_total bytes where /proc/meminfo says $KERNEL_TOTAL; see $WORK/proc.log"
+    excerpt "$WORK/proc.log"
 fi
 
 # ------------------------- 32. a signal that is accepted and then quietly dropped
@@ -4835,9 +4908,11 @@ EXPECTED=1
 
 if [ "$wrongly_allowed" != 0 ]; then
     failed "$wrongly_allowed signal(s) were sent to something no signal can stop, and reported as having stopped it; see $WORK/undead.log"
+    excerpt "$WORK/undead.log"
 elif [ "$control_stopped" != yes ] || [ "$CONTROL_GONE" != yes ] \
    || [ "$stop_answers" != "$EXPECTED" ]; then
     failed "the control was not stopped, so nothing this stage refused means anything (answers=$stop_answers expected=$EXPECTED stopped=$control_stopped gone=$CONTROL_GONE); see $WORK/undead.log"
+    excerpt "$WORK/undead.log"
 else
     if [ "$HAVE_KTHREAD" != 1 ]; then
         GAP="pid 2 is not kthreadd on this machine, so no kernel thread could be tried"
@@ -4847,6 +4922,7 @@ else
         proven "kthreadd was refused with remedy 'cannot' rather than signalled, \`ensayo\` refused it the same way, and an ordinary process was stopped in the same session"
     else
         failed "a kernel thread was not refused as one (remedy=$kthread_remedy rehearsal=$rehearsal_error alive=$KTHREADD_ALIVE); see $WORK/undead.log"
+        excerpt "$WORK/undead.log"
     fi
 
     if [ -z "$ZOMBIE" ]; then
@@ -4854,11 +4930,13 @@ else
         if [ "${THALYX_REQUIRE_ZOMBIE_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
     elif [ "$BASELINE_DROPPED" != yes ]; then
         failed "the baseline is broken: \`kill -9\` on a zombie removed it, so this stage guards nothing; see $WORK/undead.log"
+        excerpt "$WORK/undead.log"
     elif [ "$zombie_remedy" = stop_the_parent ] && [ "$zombie_parent_named" = yes ] \
          && [ "$ZOMBIE_STILL" = yes ]; then
         proven "a zombie \`kill -9\` could not touch was refused by \`matar forzar\` with the number of the parent that can clear it"
     else
         failed "a process that had already ended was not refused as one (remedy=$zombie_remedy parent_named=$zombie_parent_named still=$ZOMBIE_STILL); see $WORK/undead.log"
+        excerpt "$WORK/undead.log"
     fi
 fi
 
@@ -4926,10 +5004,13 @@ if [ "$COPIED" = yes ] && [ "$MOVED" = yes ] && [ "$ORIGINAL" = no ] \
     proven "a file named with a space was copied, moved and removed; \`rm \"*.log\"\` took the file actually called that and left the ones a pattern would have caught; an unclosed quote refused and the closed one did not"
 elif [ "$COPIED" != yes ] || [ "$MOVED" != yes ] || [ "$ORIGINAL" != no ]; then
     failed "a quoted name did not reach the verb (copy_made=$COPIED move_made=$MOVED original_still_there=$ORIGINAL); see $WORK/words.log"
+    excerpt "$WORK/words.log"
 elif [ "$LITERAL_STAR" != no ] || [ "$PATTERN_SURVIVORS" != yes ]; then
     failed "a quoted star was expanded as a pattern, or stopped naming anything (literal_still_there=$LITERAL_STAR others_kept=$PATTERN_SURVIVORS); see $WORK/words.log"
+    excerpt "$WORK/words.log"
 elif [ "$UNTOUCHED" != yes ]; then
     failed "something nobody named was removed — the one thing this must never do; see $WORK/words.log"
+    excerpt "$WORK/words.log"
 else
     failed "the baseline is broken: with the quote closed, \`rm \"a b.log\"\` did not remove it, so the refusal above proves nothing; see $WORK/words-closed.log"
 fi
@@ -4995,12 +5076,16 @@ if [ "$CONDITIONAL" = yes ] && [ "$CLAIMED" = no ] && [ "$NOTHING_HAPPENED" = ye
     proven "the four rehearsals answered in the conditional and touched nothing, while the real \`rm\` still reported the past and removed the file"
 elif [ "$CLAIMED" = yes ]; then
     failed "a rehearsal reported a completed act; see $WORK/tense.log"
+    excerpt "$WORK/tense.log"
 elif [ "$CONDITIONAL" != yes ]; then
     failed "a rehearsal did not say what it would do; see $WORK/tense.log"
+    excerpt "$WORK/tense.log"
 elif [ "$NOTHING_HAPPENED" != yes ]; then
     failed "a rehearsal changed the disk — the one thing it must never do; see $WORK/tense.log"
+    excerpt "$WORK/tense.log"
 else
     failed "the baseline is broken: the real \`rm\` no longer reports what it did (says_past=$REAL_SAYS_PAST removed_it=$REAL_DID_IT), so the rehearsal's wording above proves nothing; see $WORK/tense-real.log"
+    excerpt "$WORK/tense-real.log"
 fi
 
 step "35. the network can be seen, and Thalyx says it cannot use it"
@@ -5050,10 +5135,13 @@ grep -q "cannot use them" "$WORK/net-human.log" && SAYS_SO=yes
 
 if [ -z "$THALYX_NAMES" ]; then
     failed "\`red\` answered nothing a program can read; see $WORK/net.log"
+    excerpt "$WORK/net.log"
 elif [ "$ADDRESSABLE" != "False" ]; then
     failed "\`red\` told a caller this machine is addressable, which is the one thing point 8 does not do; see $WORK/net.log"
+    excerpt "$WORK/net.log"
 elif [ "$SAYS_SO" != yes ]; then
     failed "the human face listed interfaces without saying Thalyx cannot use them; see $WORK/net-human.log"
+    excerpt "$WORK/net-human.log"
 elif ! command -v ip > /dev/null 2>&1; then
     GAP="\`red\` listed [$THALYX_NAMES] and said it cannot use them, but iproute2 is absent so nothing independent confirmed the list"
     if [ "${THALYX_REQUIRE_NETWORK_CONTROL:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
@@ -5066,6 +5154,7 @@ else
         proven "\`red\` and iproute2 name the same interfaces on this machine [$THALYX_NAMES], read through sysfs and through netlink, and Thalyx says it cannot use them"
     else
         failed "\`red\` and iproute2 disagree about what this machine has: thalyx=[$THALYX_NAMES] ip=[$IP_NAMES]; see $WORK/net.log"
+        excerpt "$WORK/net.log"
     fi
 fi
 
@@ -5153,6 +5242,7 @@ if grep -q "would run: $EXEC_HOME/guest" "$WORK/exec-rehearse.log" &&
     proven "\`ensayo ejecutar\` resolves the program, says what it would reach, and runs nothing"
 else
     failed "the rehearsal did not answer; see $WORK/exec-rehearse.log"
+    excerpt "$WORK/exec-rehearse.log"
 fi
 
 # --- silence is not consent -----------------------------------------------
@@ -5176,6 +5266,7 @@ elif grep -q "Not run" "$WORK/exec-refused.log"; then
     proven "a program nobody signed does not run when the human says no"
 else
     failed "the refusal did not report itself; see $WORK/exec-refused.log"
+    excerpt "$WORK/exec-refused.log"
 fi
 
 # --- a kernel that only watches does not get to run a guest ----------------
@@ -5193,6 +5284,7 @@ if [ "$LOADED" = 1 ]; then
         proven "a guest is refused while the kernel is attached and denying nothing"
     else
         failed "an observing kernel ran a program nobody signed; see $WORK/exec-observing.log"
+        excerpt "$WORK/exec-observing.log"
     fi
 fi
 
@@ -5311,6 +5403,7 @@ if [ -f "$EXEC_STORE/journal.jsonl" ]; then
         proven "the journal calls a guest a guest, and never \`run_module\`"
     else
         failed "the journal did not record the guest; see $EXEC_STORE/journal.jsonl"
+        excerpt "$EXEC_STORE/journal.jsonl"
     fi
 else
     unproven "no journal was written, so what it would have called the guest is unknown"
@@ -5333,6 +5426,7 @@ if [ "$EXEC_SAID" = "needs_a_human confirm_at_a_terminal False" ]; then
     proven "the structured face refuses to run an unsigned program and names the way out"
 else
     failed "the structured face answered [$EXEC_SAID]; see $WORK/exec-machine.log"
+    excerpt "$WORK/exec-machine.log"
 fi
 
 step "37. Thalyx switches its own kernel guard, with no bpftool"
@@ -5392,9 +5486,11 @@ else
                 proven "Thalyx moved the kernel guard from observing to denying, with no bpftool"
             else
                 failed "Thalyx reported the switch and bpftool reads [$GUARD_ARMED]; see $WORK/guard-arm.log"
+                excerpt "$WORK/guard-arm.log"
             fi
         else
             failed "Thalyx could not switch the guard on; see $WORK/guard-arm.log"
+            excerpt "$WORK/guard-arm.log"
         fi
 
         # --- the control ---------------------------------------------------
@@ -5408,9 +5504,11 @@ else
                 proven "the control: it moves the guard back, so it writes what it was asked and not a constant"
             else
                 failed "the guard did not go back to observing (bpftool reads [$GUARD_BACK]); see $WORK/guard-disarm.log"
+                excerpt "$WORK/guard-disarm.log"
             fi
         else
             failed "Thalyx could not switch the guard back; see $WORK/guard-disarm.log"
+            excerpt "$WORK/guard-disarm.log"
         fi
 
         # --- and the verb a person has, which is the whole point ------------
@@ -5425,6 +5523,7 @@ else
             proven "\`negar\` at a Thalyx prompt makes the kernel bind — no shell, no make, no bpftool"
         else
             failed "\`negar\` left the guard at [$GUARD_BY_VERB]; see $WORK/guard-negar.log"
+            excerpt "$WORK/guard-negar.log"
         fi
 
         # --- the human gate, and it is a denial test so it gets a control ---
@@ -5441,6 +5540,7 @@ else
             proven "an \`n\` leaves the guard on: taking it off is not something silence can do"
         else
             failed "an \`n\` disarmed the machine (bpftool reads [$GUARD_AFTER_NO]); see $WORK/guard-no.log"
+            excerpt "$WORK/guard-no.log"
         fi
 
         printf '%s\n' observar y salir | \
@@ -5451,6 +5551,7 @@ else
             proven "the control: a \`y\` does take it off, so the \`n\` above refused something that works"
         else
             failed "a \`y\` did not take the guard off (bpftool reads [$GUARD_AFTER_YES]); see $WORK/guard-yes.log"
+            excerpt "$WORK/guard-yes.log"
         fi
     fi
 
@@ -5511,6 +5612,7 @@ else
         proven "on a kernel that denies, the rehearsal says the run would go ahead and would not be degraded"
     else
         failed "the rehearsal answered [$REHEARSED_ARMED] on a denying kernel; see $WORK/rehearse-arm.log"
+        excerpt "$WORK/rehearse-arm.log"
     fi
 
     # The control, and it is the whole point of the stage. A `foresee_run` that
@@ -5523,6 +5625,7 @@ else
         proven "the control: on a kernel that only watches, the same rehearsal calls the run degraded"
     else
         failed "the rehearsal answered [$REHEARSED_WATCHING] on an observing kernel; see $WORK/rehearse-disarm.log"
+        excerpt "$WORK/rehearse-disarm.log"
     fi
 
     # And it must not run the module. Checked by the journal, which is where a
@@ -5530,6 +5633,7 @@ else
     if [ -f "$GUARD_STORE/journal.jsonl" ] \
        && grep -q '"operation":"run_module"' "$GUARD_STORE/journal.jsonl"; then
         failed "a rehearsal ran the module; see $GUARD_STORE/journal.jsonl"
+        excerpt "$GUARD_STORE/journal.jsonl"
     else
         proven "four rehearsals later the journal records no run at all"
     fi

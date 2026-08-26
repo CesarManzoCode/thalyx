@@ -3990,8 +3990,11 @@ Cesar. Diagnosticarlos costaba una vuelta entera: pedirle que fuera a leerlo.
 > Un veredicto que nombra un archivo de log no se lee donde está el archivo.
 > Si el log es corto, imprímelo junto al veredicto.
 
-`verify.sh` ahora tiene `excerpt`, y las siete salidas de §36 que nombran un log
-imprimen su cola.
+`verify.sh` ahora tiene `excerpt`, y **las 111 salidas del script que nombran un
+log imprimen su cola** — no sólo las de §36. Las que ya volcaban el archivo
+entero se quedaron como estaban: dos copias de un log es ruido, y la
+comprobación que las distingue no acepta un `grep` como «ya lo imprime», porque
+un `elif grep -q … ; then` nombra el mismo archivo y no imprime nada.
 
 ## Regla de documentación
 

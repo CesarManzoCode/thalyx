@@ -51,7 +51,8 @@ tags: [continuidad, punto-actual, sesiones]
 > sabe reconocer.
 >
 > Para que la próxima corrida se conteste sola, `verify.sh` ahora imprime la
-> cola del log junto al veredicto en las siete salidas de §36 que nombran uno.
+> cola del log junto al veredicto en **las 111 salidas del script que nombran
+> uno**, no sólo las de §36.
 >
 > **Lo siguiente es correr `verify.sh` otra vez y leer esas tres colas.**
 
