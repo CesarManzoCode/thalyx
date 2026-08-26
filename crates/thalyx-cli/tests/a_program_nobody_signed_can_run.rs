@@ -135,9 +135,16 @@ fn a_kernel_that_is_only_watching_does_not_get_to_run_a_guest() {
     let said = error.to_string();
     assert!(said.contains("only observing"), "{said}");
     // The remedy has to be the one that fixes *this*. Sending the human back
-    // to `make -C lsm load` is what the other refusal says, and following it
-    // here would leave them exactly where they started.
-    assert!(said.contains("make -C lsm enforce"), "{said}");
+    // to attaching the kernel side is what the other refusal says, and
+    // following it here would leave them exactly where they started.
+    //
+    // And it has to be a remedy that exists where the message is printed. On
+    // 2026-08-26 this said `make -C lsm enforce`, which is `bpftool`, which
+    // the image does not carry: inside the machine the only instruction the
+    // system gave could not be carried out at all.
+    assert!(said.contains("negar"), "{said}");
+    assert!(!said.contains("bpftool"), "{said}");
+    assert!(!said.contains("make -C lsm"), "{said}");
     assert!(!said.contains("--unconfined"), "{said}");
 }
 

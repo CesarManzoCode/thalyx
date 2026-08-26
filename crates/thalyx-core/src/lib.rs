@@ -32,7 +32,7 @@ pub mod uids;
 
 pub use foreign::{ForeignOutcome, ForeignRequest, run_foreign};
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
-pub use run::{RunOutcome, RunRequest, run};
+pub use run::{RunForeseen, RunOutcome, RunRequest, foresee_run, run};
 pub use store::Store;
 
 /// The permissions a module actually holds right now.
@@ -236,8 +236,8 @@ pub enum CoreError {
     #[error(
         "refusing to run `{module_id}`: the kernel policy map is not loaded, so nothing in the \
          kernel would decide what it may touch{}.\n  \
-         Load it with `make -C lsm load`, or pass --unconfined to run it anyway and have the \
-         journal say so.",
+         Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine), \
+         or pass --unconfined to run it anyway and have the journal say so.",
         also_granted(*permissions, "recorded permission")
     )]
     NothingCanEnforce {
@@ -266,8 +266,8 @@ pub enum CoreError {
     #[error(
         "refusing to run `{program}`: the kernel policy map is not loaded, so nothing in the \
          kernel would decide what it may touch{}.\n  \
-         Load it with `make -C lsm load`. Nobody signed this program, so there is no \
-         unconfined mode to fall back to.",
+         Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine). \
+         Nobody signed this program, so there is no unconfined mode to fall back to.",
         also_granted(*grants, "path you granted")
     )]
     NothingCanEnforceForeign {
@@ -278,7 +278,7 @@ pub enum CoreError {
     /// Attached, and logging what it would have denied instead of denying it.
     ///
     /// A separate refusal from the one above because it is a separate mistake
-    /// with a separate fix — `make -C lsm enforce`, not `make -C lsm load` —
+    /// with a separate fix — `negar`, not attaching the kernel side —
     /// and because for three weeks nothing on this side could tell the two
     /// apart. `is_available()` answers "does the map open"; every caller read
     /// that as "the kernel is enforcing". `make -C lsm load` lands in observe
@@ -287,8 +287,8 @@ pub enum CoreError {
     #[error(
         "refusing to run `{program}`: the kernel side is attached but only observing, so every \
          denial would be written to the log and none of them applied.\n  \
-         Make it binding with `make -C lsm enforce`. Nobody signed this program, so there is \
-         no unconfined mode to fall back to."
+         Make it binding with `negar` — or `thalyx enforce mode enforcing`, outside a session. \
+         Nobody signed this program, so there is no unconfined mode to fall back to."
     )]
     ObservingNotEnforcing { program: std::path::PathBuf },
 

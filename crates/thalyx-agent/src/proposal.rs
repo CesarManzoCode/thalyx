@@ -137,6 +137,17 @@ pub enum ProposedOperation {
 
     Permissions,
 
+    /// Make the kernel guard binding.
+    Deny,
+
+    /// Stop the kernel guard from denying.
+    ///
+    /// Proposable, and that is the decree of 2026-08-24 working as written:
+    /// the line is what the machine *does* without a human at a terminal, not
+    /// what the model may *say*. The structured face refuses this one with
+    /// `needs_a_human` no matter who asked.
+    Observe,
+
     Rollback,
 
     State,
@@ -209,6 +220,8 @@ impl ProposedOperation {
             ProposedOperation::Modules => "modules",
             ProposedOperation::Run => "run",
             ProposedOperation::Permissions => "permissions",
+            ProposedOperation::Deny => "deny",
+            ProposedOperation::Observe => "observe",
             ProposedOperation::Rollback => "rollback",
             ProposedOperation::State => "state",
             ProposedOperation::Kernel => "kernel",
@@ -260,7 +273,7 @@ impl ProposedOperation {
     }
 
     /// Every operation the agent can propose.
-    pub const ALL: [ProposedOperation; 41] = [
+    pub const ALL: [ProposedOperation; 43] = [
         ProposedOperation::Nothing,
         ProposedOperation::List,
         ProposedOperation::Read,
@@ -293,6 +306,8 @@ impl ProposedOperation {
         ProposedOperation::Modules,
         ProposedOperation::Run,
         ProposedOperation::Permissions,
+        ProposedOperation::Deny,
+        ProposedOperation::Observe,
         ProposedOperation::Rollback,
         ProposedOperation::State,
         ProposedOperation::Kernel,

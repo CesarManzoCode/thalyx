@@ -74,6 +74,36 @@ pub enum EnforceCommand {
     Attach,
     /// Detach thalyx-lsm by removing what holds it
     Detach,
+    /// Switch what is attached between denying and only watching
+    ///
+    /// The same four bytes `make -C lsm enforce` writes, written with `bpf(2)`
+    /// instead of `bpftool` — which the image does not carry, so until this
+    /// existed a running Thalyx could read that it was merely observing and
+    /// had no way to stop.
+    ///
+    /// The session verbs are `negar` and `observar`. This is the face for a
+    /// machine with a shell, which is every machine that verifies the project.
+    Mode {
+        #[arg(value_enum)]
+        mode: ModeArg,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ModeArg {
+    /// Denials reach the caller as -EPERM
+    Enforcing,
+    /// Denials are logged and applied to nothing
+    Observing,
+}
+
+impl From<ModeArg> for thalyx_permd::Mode {
+    fn from(arg: ModeArg) -> Self {
+        match arg {
+            ModeArg::Enforcing => Self::Enforcing,
+            ModeArg::Observing => Self::Observing,
+        }
+    }
 }
 
 pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
@@ -101,6 +131,18 @@ pub fn run(store_root: &std::path::Path, command: EnforceCommand) -> Fallible {
 
         EnforceCommand::Attach => attach(),
         EnforceCommand::Detach => detach(),
+
+        EnforceCommand::Mode { mode } => {
+            let asked: thalyx_permd::Mode = mode.into();
+            let before = kernel.enforcement();
+            kernel.set_enforcement(asked)?;
+            // What it was as well as what it is. A line saying only the new
+            // mode reads the same whether it moved or was already there, and
+            // this command exists precisely because "attached" and "denying"
+            // had been the same sentence for three weeks.
+            println!("mode: {} (was {})", asked.describe(), before.describe());
+            Ok(())
+        }
 
         EnforceCommand::Apply { module_id, cgroup } => {
             require_kernel(&kernel)?;
@@ -245,7 +287,7 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         println!("Whatever the permission registry says, every installed module");
         println!("currently runs unconstrained.");
         println!();
-        println!("  make -C lsm load     attach the enforcement programs");
+        println!("  thalyx enforce attach   attach the enforcement programs");
         return Ok(());
     }
 
@@ -253,7 +295,8 @@ fn status(store: &Store, kernel: &KernelStore) -> Fallible {
         println!("The kernel side is attached and is not denying anything.");
         println!("Every policy below is written into a map nothing acts on.");
         println!();
-        println!("  make -C lsm enforce  start denying");
+        println!("  thalyx enforce mode enforcing   start denying");
+        println!("  (or `negar`, at a Thalyx prompt)");
         println!();
     }
 
@@ -273,7 +316,7 @@ fn require_kernel(kernel: &KernelStore) -> Fallible {
     if kernel.is_available() {
         return Ok(());
     }
-    Err("the kernel policy map is not present; run `make -C lsm load` first".into())
+    Err("the kernel policy map is not present; run `thalyx enforce attach` first".into())
 }
 
 /// Where PID 1 pins what it loads. The same path, because a loader that pinned

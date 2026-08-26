@@ -15,6 +15,7 @@ mod enforce;
 mod files;
 mod foreign;
 mod graph;
+mod guard;
 mod history;
 mod image;
 mod index;

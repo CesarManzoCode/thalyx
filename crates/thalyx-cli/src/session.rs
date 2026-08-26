@@ -973,7 +973,7 @@ fn revert(store: &Store, utterance: &str, face: crate::files::Face) {
 const SESSION_TASK: &str = "session";
 
 /// The word that makes running without enforcement a thing somebody typed.
-const UNCONFINED_WORD: &str = "sin-confinar";
+pub const UNCONFINED_WORD: &str = "sin-confinar";
 
 /// The profile a module gets when it is started from the prompt.
 ///
@@ -988,7 +988,7 @@ const UNCONFINED_WORD: &str = "sin-confinar";
 /// as far as the name. The one machine that could enforce was the image. See
 /// `thalyx_core::run` — the lookup now happens before that gate, so a name no
 /// profile has is a wrong name everywhere.
-const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
+pub const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
 
 /// What the machine still knows, re-checked against the disk right now.
 ///
@@ -1386,6 +1386,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  you first, because nobody vouched for it.");
             println!("  `discos` lists the disks I can see and `instalar-en <disco>`");
             println!("  puts this machine on one, so it stops needing this medium.");
+            println!("  `negar` makes the kernel guard binding and `observar`");
+            println!("  stops it denying — the second asks you first, because it");
+            println!("  takes the confinement off everything running right now.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
             println!("  `intento empezar <etiqueta>` opens something that can be");
@@ -1410,7 +1413,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
-            println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
+            println!("  `permisos`, `negar`, `observar`, `revertir`, `recuerdos`,");
+            println!("  `estado`, `nucleo`,");
             println!("  `discos`, `instalar-en <disco>`, `red`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
             println!("  because this machine is not mine to turn off.");
@@ -1559,6 +1563,24 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             }
             "permisos" | "permissions" => {
                 crate::modules::permissions(store, face)?;
+            }
+            // The two directions of the kernel guard. `permisos` says what is
+            // granted; these two decide whether any of it is real.
+            "negar" | "deny" => {
+                crate::guard::set(
+                    &thalyx_permd::KernelStore::default_map(),
+                    thalyx_permd::Mode::Enforcing,
+                    face,
+                    false,
+                )?;
+            }
+            "observar" | "observe" => {
+                crate::guard::set(
+                    &thalyx_permd::KernelStore::default_map(),
+                    thalyx_permd::Mode::Observing,
+                    face,
+                    false,
+                )?;
             }
             "revertir" | "rollback" => {
                 revert(store, line, face);

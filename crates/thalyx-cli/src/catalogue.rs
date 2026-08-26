@@ -496,6 +496,42 @@ pub const VERBS: &[Verb] = &[
         errors: &[],
         summary: "What is granted right now, and to whom.",
     },
+    // The two directions of the kernel guard, and two verbs rather than one
+    // with an argument. `crate::guard` carries the reason; the short version is
+    // that a typo in an argument must not be able to disarm the machine.
+    Verb {
+        id: "deny",
+        names: &["negar", "deny"],
+        takes: &[],
+        flags: &[],
+        answers: Some("deny"),
+        changes: true,
+        errors: &[
+            "unreadable",
+            "not_loaded",
+            "did_not_take",
+            "no_mode_flag",
+            "kernel_refused",
+        ],
+        summary: "Make the kernel guard binding, so written policy is really enforced.",
+    },
+    Verb {
+        id: "observe",
+        names: &["observar", "observe"],
+        takes: &[],
+        flags: &[],
+        answers: Some("observe"),
+        changes: true,
+        errors: &[
+            "needs_a_human",
+            "unreadable",
+            "not_loaded",
+            "did_not_take",
+            "no_mode_flag",
+            "kernel_refused",
+        ],
+        summary: "Stop the kernel guard from denying. Asks a human, and only a human.",
+    },
     Verb {
         id: "rollback",
         names: &["revertir", "rollback"],
@@ -797,6 +833,8 @@ mod tests {
                 "move",
                 "remove",
                 "edit",
+                "deny",
+                "observe",
                 // The one whose change cannot be taken back at all. Every
                 // other entry on this list either has a rollback or writes
                 // something that can be written again.

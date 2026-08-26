@@ -96,7 +96,7 @@ pub fn run(asked: Asked<'_>) -> Fallible {
                     println!();
                     println!("  WARNING: the kernel side is {}.", mode.describe());
                     println!("  The policy above was written and nothing applied it. Make it");
-                    println!("  binding with `make -C lsm enforce`.");
+                    println!("  binding with `negar`.");
                 }
             }
             if !outcome.isolated {
@@ -311,4 +311,155 @@ fn say_it(outcome: &thalyx_core::run::RunOutcome) {
             ],
         )
     );
+}
+
+/// `ensayo correr <id>` — D1's last hole, closed on 2026-08-26.
+///
+/// The reason it stayed open was written next to it and was true when it was
+/// written: what a run would be allowed to do is a question for the kernel
+/// side, and answering it from the manifest would describe a run the machine
+/// may not be able to give. That stopped being true on 2026-08-25, when Thalyx
+/// learned to read the mode.
+///
+/// Nothing here works anything out. `thalyx_core::foresee_run` is the code that
+/// would do the run, stopped one line before the program exists — so a
+/// rehearsal that disagreed with the verb would be the verb changing, not this.
+pub fn foresee(asked: Asked<'_>) -> Fallible {
+    const OP: &str = "rehearse";
+
+    let Asked {
+        root,
+        module_id,
+        profile,
+        entrypoint,
+        args,
+        unconfined,
+        request_id,
+        face,
+    } = asked;
+
+    let store = Store::open(root)?;
+    let policies = KernelStore::default_map();
+
+    let foreseen = match thalyx_core::foresee_run(
+        &store,
+        &policies,
+        &thalyx_core::RunRequest {
+            module_id,
+            profile,
+            entrypoint,
+            args,
+            // Never used: this stops before anything is spawned. Named rather
+            // than left out because `RunRequest` is the request the run takes,
+            // and a rehearsal built on a different request would be answering
+            // about a different run.
+            helper: std::env::current_exe()?,
+            request_id,
+            origin: Origin::UserUtterance,
+            unconfined,
+        },
+    ) {
+        Ok(foreseen) => foreseen,
+        Err(error) => {
+            // A module that cannot be resolved is not a run that would be
+            // refused — it is a question with no subject. Two different words,
+            // because the caller's next move differs.
+            if face.is_machine() {
+                face.say(thalyx_files::machine::declined(
+                    OP,
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  {error}");
+                println!();
+            }
+            return Ok(());
+        }
+    };
+
+    if face.is_machine() {
+        let holds: Vec<serde_json::Value> = foreseen
+            .permissions
+            .iter()
+            .map(|permission| {
+                json!({
+                    "resource": permission.resource,
+                    "action": permission.action,
+                    "kind": format!("{:?}", permission.kind).to_lowercase(),
+                })
+            })
+            .collect();
+
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("verb", json!("run")),
+                ("module_id", json!(foreseen.module_id)),
+                ("version", json!(foreseen.version)),
+                ("program", json!(foreseen.program.display().to_string())),
+                ("would_run", json!(foreseen.would_run)),
+                // Rule 10 reaches the wire: three states, not two. A kernel
+                // whose mode could not be read is neither denying nor watching,
+                // and a caller that saw `null` for both cases could not tell a
+                // machine with nothing loaded from one that would not answer.
+                (
+                    "enforcement",
+                    match &foreseen.enforcement {
+                        None => json!(null),
+                        Some(thalyx_permd::Enforcement::Enforcing) => json!("enforcing"),
+                        Some(thalyx_permd::Enforcement::Observing) => json!("observing"),
+                        Some(thalyx_permd::Enforcement::Unreadable(_)) => json!("unreadable"),
+                    },
+                ),
+                ("degraded", json!(foreseen.degraded)),
+                ("unconfined", json!(foreseen.unconfined)),
+                ("isolation", json!(foreseen.isolation)),
+                ("isolates", json!(foreseen.isolates)),
+                ("own_user", json!(foreseen.own_user)),
+                ("holds", json!(holds)),
+                ("count", json!(foreseen.permissions.len())),
+                ("refusal", json!(foreseen.refusal)),
+            ],
+        ));
+        return Ok(());
+    }
+
+    println!();
+    println!("{} {}", foreseen.module_id, foreseen.version);
+    println!("  would run: {}", foreseen.program.display());
+    println!("  {}", foreseen.isolation);
+    if foreseen.own_user {
+        println!("  as a user of its own");
+    }
+    if foreseen.permissions.is_empty() {
+        println!("  holding nothing; every guarded operation would be denied");
+    } else {
+        println!("  holding:");
+        for permission in &foreseen.permissions {
+            println!("    {}", permission.describe());
+        }
+    }
+
+    match &foreseen.refusal {
+        Some(why) => {
+            println!();
+            println!("  It would not start: {why}");
+        }
+        None if foreseen.degraded => {
+            println!();
+            // The whole reason this rehearsal is worth having. "It would run"
+            // and "it would run with nothing enforcing it" are the same
+            // sentence to anyone who is not told, and this is the moment where
+            // being told still costs nothing.
+            println!("  WARNING: it would run degraded. The policy above would be");
+            println!("  written and nothing would apply it. `negar` makes it binding.");
+        }
+        None => {}
+    }
+    println!();
+    println!("  Nothing ran.");
+    println!();
+    Ok(())
 }
