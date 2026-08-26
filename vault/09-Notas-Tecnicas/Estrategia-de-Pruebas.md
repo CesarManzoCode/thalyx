@@ -4043,6 +4043,60 @@ como dos `FAILED` de G1, o sea acusando al sujeto de lo que hacía el arnés —
 decimoquinta vez. La restauración ahora va después del último invitado, que es
 donde siempre debió estar.
 
+## Regla derivada: el confinamiento se arma antes de ponérselo, no después — 2026-08-26
+
+El defecto que estaba debajo de las doce fallas de la segunda corrida, y es uno
+solo:
+
+```
+thalyx: I/O error at /run/thalyx/sandbox/dev/null: Operation not permitted (os error 1)
+```
+
+La cadena, leída renglón por renglón y no supuesta:
+
+1. `launch::enter` entraba al cgroup **antes que nada**.
+2. Ya adentro, armaba la raíz. Las rutas de sistema son directorios, y `mkdir`
+   no pasa por `lsm/file_open`.
+3. `/dev/null` es un dispositivo de caracteres. Su punto de montaje se crea con
+   `File::create`, o sea `open(O_WRONLY|O_CREAT)`.
+4. `lsm/file_open` hace `writing = flags & 3`, distinto de cero, y pregunta por
+   `THALYX_FS_WRITE`.
+5. La política decía `allowed=0x2` — `FS_READ`, el piso, y nada más.
+6. `check()` devuelve `-EPERM` cuando está negando.
+
+O sea: **el LSM le negaba a Thalyx el trabajo de confinar.** En una máquina que
+niega de verdad no se podía lanzar absolutamente nada — ni un invitado ni un
+módulo firmado — y la única razón por la que no se había visto es que
+`verify.sh` corre en observación, donde `check()` devuelve 0 y la apertura pasa.
+
+Es **el mismo defecto del 2026-08-25**, el que produjo `CONFINED_FLOOR`: el
+lanzador muere en el primer archivo que abre después de entrar al cgroup. Aquel
+se arregló para las lecturas. Nadie preguntó qué escribe el lanzador, y escribe
+dos cosas: los puntos de montaje de los cinco nodos de dispositivo, y el
+`uid_map` del ayudante que hace un bind remapeado.
+
+> Un arreglo que resuelve *la lectura* de un problema que es «el sujeto no puede
+> hacer su propio trabajo bajo su propia política» no lo resolvió: lo resolvió
+> para la mitad que falló ese día. Cuando encuentres que **el que aplica la
+> regla queda sujeto a ella**, la pregunta no es qué operación falló, es
+> **cuáles operaciones hace** — todas.
+
+Y la salida no era ampliar el piso. `FS_WRITE` en el piso le daría a todo módulo
+y a todo invitado escritura sobre todo lo que alcanza a ver, que es exactamente
+lo que la etapa 36 comprueba que no pasa. La salida es que el trabajo de Thalyx
+**no corra bajo la política del módulo**: `RootFs` se partió en `assemble()` —
+donde está toda la escritura— y `pivot_into()`, y el cgroup se toma entre las
+dos. Nada del módulo corre antes por eso: `execve` sigue siendo el último
+renglón, y `pivot_root`, `chdir`, `umount2`, `rmdir`, `sethostname`, `setuid` y
+`seccomp` no abren archivos. Las dos lecturas que quedan de ese lado —
+`cgroup.procs` y el binario del módulo en `execve`— son justo para lo que existe
+el piso.
+
+**Lo que el contenedor comprueba y lo que no.** Las 24 pruebas de aislamiento
+hacen el pivote completo aquí y siguen pasando, así que el reordenamiento no
+rompió el lanzamiento. Que el `-EPERM` desapareció **sólo lo puede decir una
+máquina que niegue**, y lo dice la etapa 36.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

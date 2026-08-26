@@ -14,9 +14,51 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La primera corrida del sprint en fierro, y la carrera que encontró — 2026-08-26
+> ## El LSM le negaba a Thalyx confinar — 2026-08-26
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Segunda corrida en fierro: **169 `PROVEN`, 3 `NOT PROVEN`, 12 `FAILED`**, con
+> la anterior en 171/2/4 y ningún cambio de código entre las dos que tocara nada
+> de lo que se rompió. Doce fallas y una sola frase debajo de casi todas:
+> `I/O error at /run/thalyx/sandbox/dev/null: Operation not permitted`.
+>
+> **El lanzador entraba al cgroup antes de armar la raíz**, así que el LSM leía
+> la política del módulo y le negaba a Thalyx crear el punto de montaje de
+> `/dev/null` — una escritura que el módulo nunca pidió y que el confinamiento
+> necesita. En una máquina que niega no se podía lanzar nada, ni invitado ni
+> módulo firmado. Es el defecto del 25 de agosto otra vez, arreglado entonces
+> sólo para las lecturas.
+>
+> `RootFs` quedó partido en `assemble()` —toda la escritura— y `pivot_into()`, y
+> el cgroup se toma entre las dos. La regla completa está en
+> [[Estrategia-de-Pruebas]].
+>
+> ### Y dos defectos del arnés que acusaban a Thalyx
+>
+> **Por qué las dos corridas no dieron lo mismo:** la segunda corrió *negando*
+> en etapas escritas para una máquina que sólo observa. `verify.sh` lo daba por
+> hecho de principio a fin y no lo medía en ninguna parte. Ahora `step()` lee el
+> modo al anunciar cada etapa, así que la próxima corrida **nombra la etapa que
+> lo dejó armado** en vez de que nadie lo sepa. Hay un sospechoso —el `cleanup`
+> del demo se traga el fallo de su restauración— y no está probado.
+>
+> **`exec-bare` y `exec-endure` nunca pasaron**, ni una vez desde que se
+> escribieron: el guion devolvía la máquina a observación *antes* de que esas
+> dos etapas lanzaran su invitado, y `ejecutar` se negaba, correctamente. El
+> reporte las contaba como fallas de G1. La restauración va ahora después del
+> último invitado.
+>
+> ### Qué falta comprobar
+>
+> Las 24 pruebas de aislamiento hacen el pivote completo en el contenedor y
+> pasan, así que el reordenamiento no rompió el lanzamiento. **Que el `-EPERM`
+> desapareció sólo lo puede decir una máquina que niegue**, y es la etapa 36.
+> Lo siguiente es correr `verify.sh` otra vez.
+
+> ## La primera corrida del sprint en fierro, y la carrera que encontró — 2026-08-26
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Cesar corrió `sudo ./dev/verify.sh` con el sprint dentro: **171 `PROVEN`,
 > 2 `NOT PROVEN`, 4 `FAILED`.**
