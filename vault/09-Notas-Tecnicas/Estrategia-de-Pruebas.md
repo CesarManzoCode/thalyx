@@ -3996,6 +3996,53 @@ entero se quedaron como estaban: dos copias de un log es ruido, y la
 comprobación que las distingue no acepta un `grep` como «ya lo imprime», porque
 un `elif grep -q … ; then` nombra el mismo archivo y no imprime nada.
 
+## Regla derivada: la precondición que todo el guion da por hecha es la que nadie mide — 2026-08-26
+
+Segunda corrida en el fierro, el mismo día: **169 `PROVEN`, 3 `NOT PROVEN`, 12
+`FAILED`**, con la corrida anterior en 171/2/4 y **ningún cambio de código entre
+las dos que tocara nada de lo que se rompió**. Doce fallas nuevas y la misma
+frase debajo de casi todas:
+
+```
+thalyx: I/O error at /run/thalyx/sandbox/dev/null: Operation not permitted (os error 1)
+```
+
+El diagnóstico está abajo, en su propia regla. Lo que importa aquí es **por qué
+las dos corridas no dieron lo mismo**: en la segunda, el kernel estaba
+*negando* durante etapas escritas para una máquina que sólo observa.
+
+`verify.sh` corre en modo observación de principio a fin, salvo donde §36 y §37
+arman la máquina a propósito. Eso está escrito en la bóveda, está escrito en los
+comentarios del guion, y **no lo medía nadie**. Ni una línea del reporte decía
+en qué modo estaba el kernel cuando corrió la etapa 6.
+
+> Una precondición que todo el guion da por hecha, y que alguna de sus propias
+> etapas puede cambiar, tiene que **medirse donde se usa**, no declararse arriba.
+> Mientras no se mida, «el módulo no pudo» y «al módulo nunca se le dejó
+> intentar» son la misma salida — que es la regla 4 vista desde el otro lado — y
+> lo que se movió fue el instrumento, que es la 5.
+
+Se arregló donde no hace falta saber cuál etapa lo movió: **`step()` lee el modo
+al anunciar cada etapa.** Corre antes de que la etapa arme nada, así que lo que
+lee es lo que dejó la *anterior*, y por eso §36 y §37 no necesitan excepción. Si
+encuentra la máquina negando, lo dice como `FAILED` con el nombre de la etapa y
+la devuelve a observación, para que lo que sigue vuelva a ser sobre la máquina
+que el reporte nombra.
+
+### Y la etapa que nunca pudo pasar
+
+En la misma corrida, `exec-bare` y `exec-endure` fallaron con el invitado
+diciendo *«the kernel side is attached but only observing»*. No era el kernel: el
+guion devolvía la máquina a observación **inmediatamente después de `exec-run`**,
+y las dos etapas que lanzan invitados vienen *después* de esa línea. Les pedía a
+las dos que arrancaran un programa ajeno en una máquina que él mismo acababa de
+desarmar, y `ejecutar` hacía lo único correcto: negarse.
+
+**Nunca pasaron, ni una vez, desde que se escribieron.** Y el reporte las contaba
+como dos `FAILED` de G1, o sea acusando al sujeto de lo que hacía el arnés — la
+decimoquinta vez. La restauración ahora va después del último invitado, que es
+donde siempre debió estar.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

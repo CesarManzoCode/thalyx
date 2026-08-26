@@ -38,6 +38,7 @@ red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 step() {
     printf '\n'
     bold "── $* "
+    guard_check "$*"
 }
 
 proven()   { PROVEN=$((PROVEN + 1));     green   "   PROVEN      $*"; }
@@ -52,6 +53,60 @@ failed()   { FAILED=$((FAILED + 1));     red     "   FAILED      $*"; NOTES+=("F
 excerpt() {
     [ -f "$1" ] || return 0
     tail -n "${2:-15}" "$1" | sed 's/^/               | /'
+}
+
+# ------------------------------------------------- the mode the script assumes
+
+MODEPIN="/sys/fs/bpf/thalyx/maps/thalyx_enforcing"
+
+# The mode as bpftool reads it: 1 enforcing, 0 observing, empty if unreadable.
+mode_now() {
+    sudo bpftool map dump pinned "$MODEPIN" 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for row in rows:
+    value = row.get("value")
+    if isinstance(value, list):
+        value = value[0]
+    print(1 if int(str(value), 0) else 0)
+    break
+'
+}
+
+# This script runs in observe mode from end to end, except where §36 and §37
+# arm the machine on purpose. That is not a detail — it is the precondition
+# every stage in between is written against, and **nothing measured it** until
+# 2026-08-26.
+#
+# What that cost: a run came back with twelve `FAILED`, among them the module
+# denied its own `/dev/null`, and the report had no line anywhere saying the
+# guard was on. A stage that runs enforcing when the script believes it is
+# observing measures a different machine and calls it this one. It is rule 4
+# from the other side — without a baseline, "the module could not do it" and
+# "the module was never allowed to try" are the same output — and rule 5, since
+# the thing that moved was the instrument.
+#
+# Checked at the top of every stage rather than at the four places somebody
+# thought of, because the whole point is that nobody knew which stage moved it.
+# The two stages that arm the machine need no exception for the same reason:
+# the check runs when the stage is announced, before it has armed anything, so
+# it reads what the *previous* stage left behind — which is the question.
+GUARD_EXPECT_OBSERVING=1
+
+guard_check() {
+    [ "$GUARD_EXPECT_OBSERVING" = 1 ] || return 0
+    [ "$LOADED" = 1 ] || return 0
+    command -v bpftool > /dev/null 2>&1 || return 0
+
+    [ "$(mode_now)" = 1 ] || return 0
+
+    failed "the machine was left enforcing before [$1]: whatever ran since the previous stage was measured against a kernel this script never asked for"
+    make -C lsm observe > "$WORK/guard-restore.log" 2>&1 \
+        || red "   and it could not be put back; run: sudo make -C lsm observe"
 }
 
 # ---------------------------------------------------------------- teardown
@@ -5306,14 +5361,6 @@ fi
 at_the_guest_prompt "ejecutar leyendo $EXEC_GRANTED $EXEC_HOME/guest" y salir \
     > "$WORK/exec-run.log" 2>&1
 
-# Before anything is read from that log. Leaving the machine enforcing would
-# make every later stage run under a kernel this script never told it to use,
-# and the report would be about a different machine from the one it names.
-if [ "$EXEC_FLIPPED" = 1 ]; then
-    make -C lsm observe > "$WORK/exec-observe-again.log" 2>&1 \
-        || red "   could not switch back to observe mode; run: sudo make -C lsm observe"
-fi
-
 if grep -q "granted content" "$WORK/exec-run.log"; then
     proven "a program nobody signed ran, and what it wrote came back through Thalyx"
 
@@ -5394,6 +5441,18 @@ if [ "$EXEC_FLIPPED" = 1 ]; then
     fi
 fi
 
+# Now, and not one line earlier. This used to sit immediately after `exec-run`,
+# before the two stages below had launched anything — so `ejecutar` was asked to
+# start a guest on a machine this script had just put back into observe mode,
+# and the verb did the only correct thing: it refused. Both stages reported
+# `FAILED` for a guest that was never allowed to exist, and they had never once
+# passed. Leaving the machine enforcing past this point would be the mirror
+# mistake, so the restore stays — it just belongs after the last guest.
+if [ "$EXEC_FLIPPED" = 1 ]; then
+    make -C lsm observe > "$WORK/exec-observe-again.log" 2>&1 \
+        || red "   could not switch back to observe mode; run: sudo make -C lsm observe"
+fi
+
 # --- the record calls it what it is ---------------------------------------
 #
 # `Marcado-de-Origen`: what a program nobody signed did has to be separable
@@ -5447,26 +5506,6 @@ step "37. Thalyx switches its own kernel guard, with no bpftool"
 # measurement below is `bpftool map dump`, which is a different program written
 # by different people, and stage 14 already established that this machine's
 # `bpftool` and this machine's Thalyx agree about what is pinned.
-MODEPIN="/sys/fs/bpf/thalyx/maps/thalyx_enforcing"
-
-# The mode as bpftool reads it: 1 enforcing, 0 observing, empty if unreadable.
-mode_now() {
-    sudo bpftool map dump pinned "$MODEPIN" 2>/dev/null \
-        | python3 -c '
-import json, sys
-try:
-    rows = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for row in rows:
-    value = row.get("value")
-    if isinstance(value, list):
-        value = value[0]
-    print(1 if int(str(value), 0) else 0)
-    break
-'
-}
-
 if [ "$LOADED" != 1 ] || ! command -v bpftool >/dev/null 2>&1; then
     unproven "the kernel side is not loaded here, or bpftool is missing, so Thalyx switching the guard could not be measured"
 else
