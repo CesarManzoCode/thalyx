@@ -861,6 +861,13 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
         // real form cannot be taken back. It answers with everything that would
         // let somebody notice they typed the wrong four digits.
         "stop" => return crate::proc::rehearse_stop(arguments, face),
+        // The last verb that changed the machine and could not be rehearsed,
+        // closed on 2026-08-26. It is `editar`'s own path with the save left
+        // out — see `crate::edit::foresee`.
+        "edit" => {
+            crate::edit::foresee(here, arguments, face)?;
+            return Ok(());
+        }
         // Worth more here than anywhere else: the input that does the damage
         // is a path to somebody else's code, and the wrong one and the right
         // one differ by a few characters that the confirmation will draw
@@ -901,6 +908,19 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
             crate::session::foresee_install_onto(arguments, face);
             return Ok(());
         }
+        // The kernel guard, both directions. Its rehearsal reads the flag
+        // rather than answering from the word that was typed, which is the
+        // only thing that makes it worth having: "would this change anything"
+        // and "is this machine denying" are the same question here.
+        "deny" | "observe" => {
+            let mode = if verb.id == "deny" {
+                thalyx_permd::Mode::Enforcing
+            } else {
+                thalyx_permd::Mode::Observing
+            };
+            crate::guard::set(&thalyx_permd::KernelStore::default_map(), mode, face, true)?;
+            return Ok(());
+        }
         // `apagar`. Everything not written to the store is lost and that is all
         // there is to say, but it has to be said: this is the one verb where a
         // person finds out by losing it.
@@ -921,10 +941,36 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
             }
             return Ok(());
         }
-        // `correr`. The only one left, and it stays honest rather than guessing:
-        // what a run would be allowed to do is a question for the kernel side,
-        // and answering it from the manifest would describe a run that the
-        // machine may not be able to give.
+        // `correr`, and with it D1 is nine of nine. The reason this one had
+        // stayed open was that what a run would be allowed to do is a question
+        // for the kernel side, and Thalyx could not read the answer until
+        // 2026-08-25. It can now, so the rehearsal asks it.
+        "run" => {
+            let (id, unconfined) = match arguments.split_once(' ') {
+                Some((id, tail)) => (id.trim(), tail.trim() == crate::session::UNCONFINED_WORD),
+                None => (arguments, false),
+            };
+            if id.is_empty() {
+                incomplete(face, "rehearse", "which one", "Which one.");
+                return Ok(());
+            }
+            crate::run::foresee(crate::run::Asked {
+                root: store.root(),
+                module_id: id,
+                profile: crate::session::SESSION_PROFILE,
+                entrypoint: thalyx_core::run::DEFAULT_ENTRYPOINT,
+                args: Vec::new(),
+                unconfined,
+                request_id: crate::new_request_id(),
+                face,
+            })?;
+            return Ok(());
+        }
+        // Unreachable as of 2026-08-26: every verb whose `changes` is true has
+        // an arm above, and a test asserts that set. Kept because the match is
+        // on a string and the compiler cannot say so — and because the way a
+        // new consequential verb will arrive is by landing here, where it says
+        // so out loud instead of being rehearsed as nothing.
         _ => {
             let why = format!(
                 "`{}` changes the machine and cannot be rehearsed yet",

@@ -464,3 +464,102 @@ fn ctrl_u_takes_back_the_last_change_on_the_screen() {
 
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "uno\n");
 }
+
+/// D1 for the last verb that changes the machine and could not be rehearsed,
+/// closed on 2026-08-26.
+///
+/// The assertion that matters is the bytes on disk, read with something that
+/// is not Thalyx — for the reason this whole file exists: "it reported that it
+/// wrote nothing" and "it wrote nothing" are different claims, and a rehearsal
+/// is entirely the second one.
+#[test]
+fn a_rehearsed_edit_answers_what_it_would_do_and_the_bytes_on_disk_do_not_move() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("thalyx.conf");
+    std::fs::write(&file, "uno\ndos\ntres\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("ensayo editar {} cambiar 2 DOS", file.display()),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "rehearse");
+    assert_eq!(said["verb"], "edit");
+    assert_eq!(said["would"], "replaced");
+    assert_eq!(said["wrote"], false);
+    // The same arithmetic the verb does, because it is the verb's own code:
+    // the size it foresees is the size the real edit would produce.
+    assert_eq!(said["lines_after"], 3);
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "uno\ndos\ntres\n",
+        "the rehearsal wrote to the file"
+    );
+}
+
+/// The control, and without it the test above passes on an `editar` that
+/// stopped working entirely.
+#[test]
+fn the_same_words_without_ensayo_do_change_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("thalyx.conf");
+    std::fs::write(&file, "uno\ndos\ntres\n").unwrap();
+
+    let rehearsed = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("ensayo editar {} cambiar 2 DOS", file.display()),
+            "salir",
+        ],
+    );
+    answer_to(&rehearsed, "rehearse");
+    let after_rehearsal = std::fs::read_to_string(&file).unwrap();
+
+    let real = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("editar {} cambiar 2 DOS", file.display()),
+            "salir",
+        ],
+    );
+    answer_to(&real, "edit");
+    let after_the_verb = std::fs::read_to_string(&file).unwrap();
+
+    assert_eq!(after_rehearsal, "uno\ndos\ntres\n");
+    assert_eq!(after_the_verb, "uno\nDOS\ntres\n");
+    assert_ne!(
+        after_rehearsal, after_the_verb,
+        "the verb and its rehearsal did the same thing, so one of them is wrong"
+    );
+}
+
+/// A refusal from a rehearsal comes back under `rehearse` and not under `edit`.
+///
+/// `describe` promises that, and a caller that saw `op: edit` here would read
+/// it as the file having been touched and the write having failed.
+#[test]
+fn a_rehearsal_that_cannot_be_done_still_answers_as_a_rehearsal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("short.conf");
+    std::fs::write(&file, "uno\ndos\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("ensayo editar {} cambiar 40 nada", file.display()),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "rehearse");
+    assert_eq!(said["ok"], false);
+    assert_eq!(said["error"], "no_such_line");
+}

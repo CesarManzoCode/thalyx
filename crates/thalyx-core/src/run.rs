@@ -63,6 +63,37 @@ pub struct RunRequest<'a> {
     pub unconfined: bool,
 }
 
+/// What a run would be, answered before it is one.
+///
+/// Every field here is read by the same code that would run it, in the same
+/// order — see [`foresee_run`]. The two things it deliberately does not
+/// contain are the two a rehearsal cannot know: the exit code and what the
+/// module would say. Nothing is invented for them.
+#[derive(Debug)]
+pub struct RunForeseen {
+    pub module_id: String,
+    pub version: String,
+    pub program: PathBuf,
+    /// How the resolved profile would isolate it, in the profile's own words.
+    pub isolation: String,
+    /// Whether that profile isolates anything at all.
+    pub isolates: bool,
+    /// Whether it would be given a user of its own.
+    pub own_user: bool,
+    /// What it holds **in force**, which is not what its manifest asks for.
+    pub permissions: Vec<thalyx_manifest::Permission>,
+    /// What the kernel is doing. `None` when there is no policy map to ask.
+    pub enforcement: Option<thalyx_permd::Enforcement>,
+    /// Whether the run would be recorded as degraded — asked for unconfined,
+    /// or confined under a kernel that is not denying.
+    pub degraded: bool,
+    pub unconfined: bool,
+    /// Whether it would start at all.
+    pub would_run: bool,
+    /// Why not, in the words the real verb would use. `None` when it would run.
+    pub refusal: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct RunOutcome {
     pub module_id: String,
@@ -319,11 +350,22 @@ pub fn run(
     }
 }
 
-fn run_inner(
-    store: &Store,
-    policies: &dyn PolicyStore,
-    request: &RunRequest<'_>,
-) -> Result<RunOutcome> {
+/// Everything a run works out before anything of it has happened.
+///
+/// Split out of [`run_inner`] on 2026-08-26 so that `ensayo correr` could exist
+/// without being a second implementation of it. D1 of
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md` had been eight of nine for
+/// that reason: a rehearsal built beside the verb answers a question about
+/// itself, and this project has already paid twice for two copies of one
+/// judgement drifting apart.
+struct Resolved {
+    manifest: thalyx_manifest::Manifest,
+    module_dir: std::path::PathBuf,
+    program: std::path::PathBuf,
+    permissions: Vec<thalyx_manifest::Permission>,
+}
+
+fn resolve(store: &Store, request: &RunRequest<'_>) -> Result<Resolved> {
     // The manifest is re-verified against the pinned publisher key on this
     // read. It is the authority on the entrypoint, so believing a tampered
     // copy would mean launching something else with this module's permissions.
@@ -356,6 +398,84 @@ fn run_inner(
                 kind: grant.kind,
             })
             .collect();
+
+    Ok(Resolved {
+        manifest,
+        module_dir,
+        program,
+        permissions,
+    })
+}
+
+/// What `correr <id>` would do, worked out by the code that would do it.
+///
+/// D1 says every verb that changes the machine can be rehearsed, and `correr`
+/// was the one that could not. The reason written beside it was real at the
+/// time — *"what a run would be allowed to do is a question for the kernel
+/// side, and answering it from the manifest would describe a run that the
+/// machine may not be able to give"* — and it stopped being real on
+/// 2026-08-25, when Thalyx learned to read the mode. This asks the kernel the
+/// same two questions the run asks, in the same order, and stops one line
+/// before the program exists.
+pub fn foresee_run(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &RunRequest<'_>,
+) -> Result<RunForeseen> {
+    let resolved = resolve(store, request)?;
+
+    // In the order the run asks them, because the order is a decision this
+    // file's comments defend twice: a profile nothing resolves is wrong on a
+    // machine with no BPF at all, so it is reported before the kernel is asked
+    // anything.
+    let profile = thalyx_sandbox::profile::resolve(request.profile)?;
+
+    let available = policies.is_available();
+    let enforcement = available.then(|| policies.enforcement());
+    // Worked out before the value moves into the answer, and worth naming: a
+    // module may run under a kernel that denies nothing — somebody signed it —
+    // and the run is recorded as degraded. So is this, before it happens.
+    let degraded = request.unconfined
+        || (available && !matches!(enforcement, Some(thalyx_permd::Enforcement::Enforcing)));
+
+    // Exactly the gate `run_inner` applies, and nothing else: a rehearsal that
+    // invented a reason to refuse would be worse than none, because the person
+    // reading it would go and fix something that was never in the way.
+    let refusal = (!available && !request.unconfined).then(|| {
+        CoreError::NothingCanEnforce {
+            module_id: resolved.manifest.id.clone(),
+            permissions: resolved.permissions.len(),
+        }
+        .to_string()
+    });
+
+    Ok(RunForeseen {
+        module_id: resolved.manifest.id,
+        version: resolved.manifest.version.to_string(),
+        program: resolved.program,
+        isolation: profile.describe(),
+        isolates: profile.isolates(),
+        own_user: profile.own_user,
+        permissions: resolved.permissions,
+        enforcement,
+        degraded,
+        unconfined: request.unconfined,
+        would_run: refusal.is_none(),
+        refusal,
+    })
+}
+
+fn run_inner(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &RunRequest<'_>,
+) -> Result<RunOutcome> {
+    let Resolved {
+        manifest,
+        module_dir,
+        program,
+        permissions,
+    } = resolve(store, request)?;
 
     // `--unconfined` means what it says, always.
     //

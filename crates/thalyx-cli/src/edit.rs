@@ -64,6 +64,21 @@ const ACTIONS: &[&str] = &[
 const PAGE: usize = 200;
 
 pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
+    act(here, rest, face, false)
+}
+
+/// `ensayo editar <archivo> poner|cambiar|borrar …` — D1 for the last verb
+/// that changes the machine and could not be rehearsed.
+///
+/// Cheap for one reason: [`change`] already applies to a `Text` in memory and
+/// then saves it, so a rehearsal is that same path with the save left out. It
+/// is the run's own arithmetic and not a second copy of it, which is the same
+/// property `foresee_run` has and for the same reason.
+pub fn foresee(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
+    act(here, rest, face, true)
+}
+
+fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Result<()> {
     // Only the name is split as words. Everything after it is taken from the
     // line byte for byte, because the third part is text going into a file and a
     // configuration line that starts with four spaces means something with them
@@ -74,7 +89,7 @@ pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
         Err(why) => {
             if face.is_machine() {
                 face.say(thalyx_files::machine::refused(
-                    "edit",
+                    if rehearsing { "rehearse" } else { "edit" },
                     why.word(),
                     why.remedy(),
                     &why.to_string(),
@@ -97,34 +112,38 @@ pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
 
     let mut text = match Text::open(&path) {
         Ok(text) => text,
-        Err(error) => return refuse("edit", &error, face),
+        Err(error) => return refuse(op_of(rehearsing), &error, face),
     };
 
     match action {
         // No subverb is the person's case, and it is the one that needs a
         // terminal. Refused with its own word rather than left to hang, because
         // a program down a pipe waiting for a screen waits forever.
+        // Both of these change nothing, so a rehearsal of them has nothing to
+        // answer — and answering anyway would be a second, worse `ver`.
+        "" if rehearsing => nothing_to_rehearse("opening the screen", face),
+        "ver" | "show" if rehearsing => nothing_to_rehearse("`ver`", face),
         "" => screen(&mut text, face),
         "ver" | "show" => show(&text, argument, face),
         "poner" | "insert" => {
             let (at, body) = split_argument(argument);
             let body = unescape(body);
             match thalyx_edit::span(at) {
-                Ok(span) => change(&mut text, |t| t.insert(span.from, &body), face),
-                Err(error) => refuse("edit", &error, face),
+                Ok(span) => change(&mut text, |t| t.insert(span.from, &body), face, rehearsing),
+                Err(error) => refuse(op_of(rehearsing), &error, face),
             }
         }
         "cambiar" | "replace" => {
             let (at, body) = split_argument(argument);
             let body = unescape(body);
             match thalyx_edit::span(at) {
-                Ok(span) => change(&mut text, |t| t.replace(span, &body), face),
-                Err(error) => refuse("edit", &error, face),
+                Ok(span) => change(&mut text, |t| t.replace(span, &body), face, rehearsing),
+                Err(error) => refuse(op_of(rehearsing), &error, face),
             }
         }
         "borrar" | "delete" => match thalyx_edit::span(argument) {
-            Ok(span) => change(&mut text, |t| t.delete(span), face),
-            Err(error) => refuse("edit", &error, face),
+            Ok(span) => change(&mut text, |t| t.delete(span), face, rehearsing),
+            Err(error) => refuse(op_of(rehearsing), &error, face),
         },
         other => {
             if face.is_machine() {
@@ -228,11 +247,20 @@ fn change(
     text: &mut Text,
     apply: impl FnOnce(&mut Text) -> Result<Edited, EditError>,
     face: Face,
+    rehearsing: bool,
 ) -> std::io::Result<()> {
     let edited = match apply(text) {
         Ok(edited) => edited,
-        Err(error) => return refuse("edit", &error, face),
+        Err(error) => return refuse(op_of(rehearsing), &error, face),
     };
+
+    // The save is the whole difference, and it is one line. `text` is a value
+    // this call owns; dropping it unsaved leaves the file on disk exactly as it
+    // was, which is the property a rehearsal is.
+    if rehearsing {
+        return foreseen(&edited, text, face);
+    }
+
     if let Err(error) = text.save() {
         return refuse("edit", &error, face);
     }
@@ -268,6 +296,59 @@ fn change(
         }
         println!("  To take this back, it had to have been inside an `intento`.\n");
     }
+    Ok(())
+}
+
+/// The `op` a refusal carries, which has to follow the verb it stood in for.
+///
+/// `describe` promises `rehearse` for `ensayo`, and a refusal that came back
+/// under `edit` would be read as the file having been touched and failed.
+fn op_of(rehearsing: bool) -> &'static str {
+    if rehearsing { "rehearse" } else { "edit" }
+}
+
+fn nothing_to_rehearse(what: &str, face: Face) -> std::io::Result<()> {
+    let why = format!("{what} changes nothing, so there is nothing to rehearse");
+    if face.is_machine() {
+        face.say(thalyx_files::machine::declined(
+            "rehearse", "harmless", &why,
+        ));
+    } else {
+        println!("\n  {why}.\n");
+    }
+    Ok(())
+}
+
+fn foreseen(edited: &Edited, text: &Text, face: Face) -> std::io::Result<()> {
+    if face.is_machine() {
+        face.say(machine::would(edited, text));
+        return Ok(());
+    }
+
+    let what = match edited.what {
+        thalyx_edit::Change::Inserted => "would put in",
+        thalyx_edit::Change::Replaced => "would change",
+        thalyx_edit::Change::Deleted => "would take out",
+        _ => "would write",
+    };
+    let where_ = match edited.span {
+        Some(span) => format!(" at {span}"),
+        None => String::new(),
+    };
+    let moved = edited.lines_after as i64 - edited.lines_before as i64;
+    println!(
+        "\n  {what}{where_} in {} — {} lines after ({moved:+}), {} bytes.",
+        text.path().display(),
+        edited.lines_after,
+        edited.bytes,
+    );
+    if text.through_link() {
+        println!(
+            "  (that is a link; the file that would be written is {})",
+            text.target().display()
+        );
+    }
+    println!("  Nothing was written.\n");
     Ok(())
 }
 

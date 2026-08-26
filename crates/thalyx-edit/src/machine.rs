@@ -110,6 +110,37 @@ pub fn did(edited: &Edited, text: &Text) -> String {
     object("edit", true, carried)
 }
 
+/// What an edit **would** do, with nothing written.
+///
+/// The same fields as [`did`], because a rehearsal that answered a different
+/// shape from the verb would have to be read by a caller twice. The two that
+/// change are the ones that would be lies: the `op` is `rehearse`, so nothing
+/// reads it as an edit that happened, and `wrote` says plainly that the file on
+/// disk is still the one that was there.
+pub fn would(edited: &Edited, text: &Text) -> String {
+    let mut carried = fields([
+        ("verb", json!("edit")),
+        ("path", json!(edited.path.to_string_lossy())),
+        ("would", json!(edited.what.word())),
+        ("lines_before", json!(edited.lines_before)),
+        ("lines_after", json!(edited.lines_after)),
+        ("bytes", json!(edited.bytes)),
+        ("wrote", json!(false)),
+    ]);
+    if let Some(span) = edited.span {
+        carried.insert("at".into(), json!(span.to_string()));
+        carried.insert("first_line".into(), json!(span.from));
+        carried.insert("last_line".into(), json!(span.to));
+    }
+    if text.through_link() {
+        // The one fact a rehearsal of this verb exists for. Somebody editing a
+        // link is about to change a file they did not name, and the moment to
+        // find that out is before it happens.
+        carried.insert("writes_to".into(), json!(text.target().to_string_lossy()));
+    }
+    object("rehearse", true, carried)
+}
+
 /// Why an edit did not happen.
 pub fn problem(op: &str, error: &EditError) -> String {
     let mut carried = fields([
