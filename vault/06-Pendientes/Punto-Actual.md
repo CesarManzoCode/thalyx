@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-26
+fecha-actualizacion: 2026-08-27
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,53 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El sprint de lo que no necesita el fierro — 2026-08-26
+> ## La suite armaba su kernel — 2026-08-27
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `verify.sh` en su máquina y trajo **180 `PROVEN`, 2 `NOT PROVEN`,
+> 2 `FAILED`**. Las dos fallas eran una: la suite de la §5 **armó su kernel**.
+>
+> `the_guard_can_be_switched.rs` está escrito contra una máquina sin nada
+> cargado —sin BPF, `negar` no puede cambiar nada, y lo que se comprueba es el
+> cableado— y daba por hecho que la máquina era ésa. Cada prueba abre su
+> `THALYX_ROOT` temporal, y eso aísla **la tienda y nada más**: el guardián son
+> cuatro bytes en bpffs, de la máquina, y ninguna variable de entorno los mueve.
+> Como root y con el LSM enganchado, tres de esas pruebas hicieron lo que `negar`
+> hace. La siguiente leyó «already enforcing» y falló, y la §6 reportó que la
+> máquina llegaba armada.
+>
+> **Lo que quedó:** esas tres preguntan primero —al kernel, como lo pregunta
+> `guard::set`— y se saltan con `NOT PROVEN` si el guardián de esta máquina es
+> real; la línea base se salta con ellas, porque una línea base que sobrevive a
+> lo que sostiene dejó de serlo. Dos de las seis siguen corriendo en todas
+> partes y son las que hacen que el archivo pruebe algo en su máquina: el rechazo
+> de `observar` en cara estructurada ocurre **antes** de leer el kernel, así que
+> ahí se teclea el verbo que desarma, en una máquina que sí se puede desarmar, y
+> no se mueve nada.
+>
+> **Y dos arreglos del arnés,** porque el veredicto apuntaba a la etapa
+> equivocada: `guard_check` ahora nombra el intervalo —*«between [5. the test
+> suite…] and [6. a real module…]»*— en vez de culpar sólo a la que se dio
+> cuenta; y la §5 mide con `bpftool`, contra una línea base tomada antes, que la
+> suite dejó el guardián donde lo encontró. Era otra precondición que el guion
+> daba por hecha.
+>
+> La regla nueva es la 11 de `CLAUDE.md`, y está entera en
+> [[Estrategia-de-Pruebas]]: **una prueba que escribe algo global de la máquina
+> ya cambió la máquina que estaba midiendo.** No es «toca la máquina» —un cgroup
+> se crea, se borra y tiene dueño— sino **un interruptor global sin dueño**,
+> cuyo valor es la precondición de otra cosa.
+>
+> **Lo que sigue esperando fierro:** volver a correr `verify.sh` entero. Nada de
+> esto se puede comprobar aquí, porque el contenedor no tiene el guardián que
+> hace que el salto ocurra; lo que sí se comprueba aquí es la decisión del salto,
+> con `would_switch_this_machine` sobre las tres respuestas que puede dar el
+> kernel.
+
+> ## El sprint de lo que no necesita el fierro — 2026-08-26
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Cesar estaba fuera de casa y pidió acumular corridas: todo lo que se pueda sin
 > comprobar en hierro. Esto es lo que salió, y casi todo son instrumentos —
