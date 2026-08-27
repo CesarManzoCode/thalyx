@@ -17,20 +17,17 @@
 //!
 //! ## Why four of these ask the kernel a question before they run
 //!
-//! Because on 2026-08-27 this file armed Cesar's machine. `THALYX_ROOT` points
-//! the *store* at a temporary directory and isolates a test from nothing else:
-//! the guard is four bytes in bpffs, beside `KernelStore::DEFAULT_MAP`, and
-//! that belongs to the machine running the suite. So under
-//! `verify.sh` — as root, with `thalyx-lsm` attached — `negar` here did what
-//! `negar` is for. The suite armed his kernel, the next test in this file read
-//! «already enforcing» and failed, and §6 of `verify.sh` then measured a
-//! kernel this script never asked for and said so.
-//!
-//! That is the second half of rule 5 and it had not been written down: the
-//! harness is not only what asks the question, it is what the question is
-//! asked *of*. A test that writes something machine-global has changed the
-//! machine it is measuring, and left it changed for everything that runs
-//! after.
+//! Because on 2026-08-27 this file armed Cesar's machine, and the whole reason
+//! is in `machine_guard/mod.rs`: `THALYX_ROOT` isolates the store and nothing
+//! else, so `negar` typed here does what `negar` is for. Two of the six ask
+//! nothing, and they are the ones that make this file still prove something on
+//! a machine that can enforce.
+
+// The precondition these four tests share with `catalogue_is_true.rs`, which
+// types the same verb without meaning to. Its module documentation is where
+// the rule is written.
+mod machine_guard;
+use machine_guard::{not_proven, the_guard_of_this_machine_is_real};
 
 use std::io::Write;
 use std::path::Path;
@@ -76,65 +73,6 @@ fn answering(output: &Output, op: &str) -> serde_json::Value {
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find(|value| value["op"] == op)
         .unwrap_or_else(|| panic!("nothing answered `{op}`:\n{said}"))
-}
-
-/// Whether a `negar` typed here would move the guard of this machine.
-///
-/// Asked exactly as `crate::guard::set` asks it, and asked of the kernel:
-/// that verb writes when the mode flag reads as something and refuses without
-/// writing when it does not, so this is the same boundary and not a guess at
-/// it. Deliberately not an existence check on the pin — bpffs is mode 700, and
-/// a path test answers «missing» for a map that is there, which is the mistake
-/// that once made this project's tooling read as disarmed while it was armed.
-fn the_guard_of_this_machine_is_real() -> bool {
-    use thalyx_permd::PolicyStore;
-    would_switch_this_machine(&thalyx_permd::KernelStore::default_map().enforcement())
-}
-
-/// The decision, apart from the reading, so that something can check it.
-///
-/// The reading needs BPF and this container has none, so the half that can be
-/// wrong with no kernel at all is the half that gets a test: an `Unreadable`
-/// counted as a real guard would skip every test in this file on every machine
-/// there is, and the file would go on printing NOT PROVEN for as long as
-/// anybody let it — a skip nobody asked for looks exactly like a machine that
-/// cannot do the check.
-fn would_switch_this_machine(reading: &thalyx_permd::Enforcement) -> bool {
-    !matches!(reading, thalyx_permd::Enforcement::Unreadable(_))
-}
-
-#[test]
-fn a_flag_that_cannot_be_read_is_not_a_guard_these_tests_would_move() {
-    use thalyx_permd::Enforcement;
-
-    assert!(!would_switch_this_machine(&Enforcement::Unreadable(
-        "there is no bpffs here".into()
-    )));
-    // Both of the other two, because the danger is the write and not the mode
-    // it would write over: a machine already enforcing is still a machine
-    // `negar` reaches.
-    assert!(would_switch_this_machine(&Enforcement::Observing));
-    assert!(would_switch_this_machine(&Enforcement::Enforcing));
-}
-
-/// Rule 3: a skip says it skipped, and says what went unproven.
-///
-/// With no `THALYX_REQUIRE_*` beside it, and that is not an oversight. Every
-/// other skip in this project is a machine that can do *less* than the check
-/// needs, and the variable exists so a machine that can do it is never quietly
-/// let off. This one is the mirror: the machine can do *more*, and what is
-/// missing is not a capability but the empty kernel those four tests are
-/// about. A variable that turned this skip into a failure would demand that
-/// the only machine that matters stop being able to enforce.
-///
-/// Where they are measured instead: §37 of `dev/verify.sh`, which arms the
-/// machine on purpose, measures it with `bpftool` rather than with Thalyx, and
-/// puts it back however the stage ended.
-fn not_proven(claim: &str) {
-    eprintln!("NOT PROVEN: this machine's kernel guard is real, so {claim}.");
-    eprintln!("  Running it would arm this machine for real, and the next thing");
-    eprintln!("  to run would be measuring a kernel nobody asked for. §37 of");
-    eprintln!("  dev/verify.sh is where these verbs are checked on such a machine.");
 }
 
 fn store() -> tempfile::TempDir {

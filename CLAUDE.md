@@ -199,6 +199,10 @@ These were all learned by something going wrong. They are recorded in
     is not "it touches the machine" — a cgroup is made and removed and has an
     owner — but **a global switch with no owner**, whose value is some other
     check's precondition. Such a test asks first and skips with `NOT PROVEN`.
+    And the danger is not "a test about the switch": the next culprit was
+    `catalogue_is_true.rs`, which types every verb the machine advertises and
+    had no idea one of them was that one. The precondition lives in
+    `tests/machine_guard/mod.rs` so that a file which does not know can use it.
 
 ## How to write code here
 

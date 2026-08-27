@@ -14,9 +14,35 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La suite armaba su kernel — 2026-08-27
+> ## La suite armaba su kernel, dos veces — 2026-08-27
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **La segunda vuelta.** Con el arreglo puesto, la corrida trajo **181 `PROVEN`,
+> 2 `NOT PROVEN`, 1 `FAILED`**, y la falla era la medición nueva de la §5
+> haciendo su trabajo: *«the suite moved the kernel guard from [0] to [1]»*.
+> Quedaba otro, y es el que enseña algo — `catalogue_is_true.rs`, que **no es
+> una prueba sobre el guardián**: le pregunta al binario qué verbos tiene y
+> teclea cada nombre que le contesta. En esa lista viene `negar`. Su lista de
+> exclusiones tenía cinco nombres y una sola razón detrás —*terminan la
+> corrida*—; la otra razón para no teclear algo no estaba escrita en ninguna
+> parte.
+>
+> O sea que el arreglo de la primera vuelta era **la mitad**: el peligro no es
+> una prueba que trata del interruptor, es cualquier cosa que llegue al prompt,
+> porque el prompt tiene el interruptor. La precondición se mudó a
+> `tests/machine_guard/mod.rs`, compartida, y ahora la usa también el archivo
+> que no sabía. Donde el guardián es real, los cuatro nombres se dejan fuera del
+> tecleo y se dice cuáles; donde no, se teclean como todos.
+>
+> **Y un disparador para el quinto.** Excluir por una lista de palabras es un
+> conjunto leído del lugar equivocado. Lo peligroso es que un verbo **actúe en
+> cuanto se teclea** —sin argumento no hay «cuál» que lo detenga— y eso sí se
+> lee del catálogo: `changes` verdadero y `takes` vacío. Hoy son cuatro:
+> `revertir` y `apagar`, contenidos, y los dos del guardián. Cuál de las dos
+> clases es cada uno no se puede leer de ahí, así que el conjunto quedó clavado
+> en una prueba que lo lee del binario en vivo: un quinto verbo que actúe desnudo
+> la pone en rojo y obliga a decidir.
 >
 > Cesar corrió `verify.sh` en su máquina y trajo **180 `PROVEN`, 2 `NOT PROVEN`,
 > 2 `FAILED`**. Las dos fallas eran una: la suite de la §5 **armó su kernel**.
