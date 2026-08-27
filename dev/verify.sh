@@ -35,10 +35,21 @@ green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 
+# The stage this script is in, so that `guard_check` can name the one that did
+# it rather than only the one that noticed.
+#
+# On 2026-08-27 the report read «left enforcing before [6. a real module…]»,
+# and §6 had done nothing: the suite in §5 had armed the machine, because three
+# tests in `the_guard_can_be_switched.rs` typed `negar` at a real prompt on a
+# machine whose guard was real. A verdict that names only the stage that
+# noticed sends the reader to the wrong file.
+LAST_STEP="the start of the run"
+
 step() {
     printf '\n'
     bold "── $* "
     guard_check "$*"
+    LAST_STEP="$*"
 }
 
 proven()   { PROVEN=$((PROVEN + 1));     green   "   PROVEN      $*"; }
@@ -140,7 +151,7 @@ guard_check() {
 
     [ "$(mode_now)" = 1 ] || return 0
 
-    failed "the machine was left enforcing before [$1]: whatever ran since the previous stage was measured against a kernel this script never asked for"
+    failed "the machine was left enforcing between [$LAST_STEP] and [$1]: whatever ran there armed it, and everything measured since was measured against a kernel this script never asked for"
     make -C lsm observe > "$WORK/guard-restore.log" 2>&1 \
         || red "   and it could not be put back; run: sudo make -C lsm observe"
 }
@@ -595,12 +606,49 @@ if [ -d /sys/class/net ]; then
 fi
 
 echo "   ${SUITE_ENV[*]}"
+
+# The baseline for the claim after the suite, read before it runs. Rule 4: a
+# machine already enforcing and a suite that armed it are the same picture from
+# the second reading alone.
+SUITE_GUARD_BEFORE=$(mode_now)
+
 if env "${SUITE_ENV[@]}" cargo test --workspace --quiet > "$WORK/tests.log" 2>&1; then
     COUNT="$(grep -Eo '^test result: ok\. [0-9]+' "$WORK/tests.log" | awk '{s+=$4} END {print s}')"
     proven "${COUNT:-?} tests pass, and none of them skipped a check this machine can make"
 else
     failed "the suite did not pass; see $WORK/tests.log"
     tail -30 "$WORK/tests.log"
+fi
+
+# Whether running the suite changed this machine, asked out loud instead of
+# assumed.
+#
+# `THALYX_ROOT` gives a test its own store and isolates it from nothing else.
+# The kernel guard is four bytes in bpffs and belongs to the machine, so a test
+# that types `negar` at a real prompt arms the machine running the suite — and
+# on 2026-08-27, three of them did. `guard_check` caught it at the top of §6,
+# which is one stage too late to say who: this is the same measurement made
+# where the answer names the suite.
+if [ -n "$SUITE_GUARD_BEFORE" ]; then
+    SUITE_GUARD_AFTER=$(mode_now)
+    if [ "$SUITE_GUARD_AFTER" = "$SUITE_GUARD_BEFORE" ]; then
+        proven "the suite left the kernel guard where it found it [$SUITE_GUARD_BEFORE]; nothing in it wrote to this machine's flag"
+    else
+        failed "the suite moved the kernel guard from [$SUITE_GUARD_BEFORE] to [$SUITE_GUARD_AFTER]: a test wrote to the machine it was measuring; see $WORK/tests.log"
+        # Put back here rather than leaving it for `guard_check` at the top of
+        # §6. One fact deserves one verdict: two `FAILED` lines for the same
+        # write is the harness saying the same thing twice, in two places, and
+        # the second one names the wrong stage by construction.
+        if [ "$SUITE_GUARD_BEFORE" = 1 ]; then
+            make -C lsm enforce > "$WORK/guard-suite-restore.log" 2>&1 \
+                || red "   and it could not be put back; run: sudo make -C lsm enforce"
+        else
+            make -C lsm observe > "$WORK/guard-suite-restore.log" 2>&1 \
+                || red "   and it could not be put back; run: sudo make -C lsm observe"
+        fi
+    fi
+else
+    unproven "whether the suite left the kernel guard alone — the mode flag could not be read here"
 fi
 
 # The flags that were *not* set are exactly the things this machine cannot say

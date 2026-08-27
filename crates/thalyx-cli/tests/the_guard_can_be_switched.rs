@@ -14,6 +14,23 @@
 //! loaded is told so instead of being told it switched. What it cannot decide
 //! is whether the four bytes reach the flag the hooks consult — there is no
 //! BPF here — and that is stage 37 of `verify.sh`, on Cesar's machine.
+//!
+//! ## Why four of these ask the kernel a question before they run
+//!
+//! Because on 2026-08-27 this file armed Cesar's machine. `THALYX_ROOT` points
+//! the *store* at a temporary directory and isolates a test from nothing else:
+//! the guard is four bytes in bpffs, beside `KernelStore::DEFAULT_MAP`, and
+//! that belongs to the machine running the suite. So under
+//! `verify.sh` — as root, with `thalyx-lsm` attached — `negar` here did what
+//! `negar` is for. The suite armed his kernel, the next test in this file read
+//! «already enforcing» and failed, and §6 of `verify.sh` then measured a
+//! kernel this script never asked for and said so.
+//!
+//! That is the second half of rule 5 and it had not been written down: the
+//! harness is not only what asks the question, it is what the question is
+//! asked *of*. A test that writes something machine-global has changed the
+//! machine it is measuring, and left it changed for everything that runs
+//! after.
 
 use std::io::Write;
 use std::path::Path;
@@ -61,6 +78,65 @@ fn answering(output: &Output, op: &str) -> serde_json::Value {
         .unwrap_or_else(|| panic!("nothing answered `{op}`:\n{said}"))
 }
 
+/// Whether a `negar` typed here would move the guard of this machine.
+///
+/// Asked exactly as `crate::guard::set` asks it, and asked of the kernel:
+/// that verb writes when the mode flag reads as something and refuses without
+/// writing when it does not, so this is the same boundary and not a guess at
+/// it. Deliberately not an existence check on the pin — bpffs is mode 700, and
+/// a path test answers «missing» for a map that is there, which is the mistake
+/// that once made this project's tooling read as disarmed while it was armed.
+fn the_guard_of_this_machine_is_real() -> bool {
+    use thalyx_permd::PolicyStore;
+    would_switch_this_machine(&thalyx_permd::KernelStore::default_map().enforcement())
+}
+
+/// The decision, apart from the reading, so that something can check it.
+///
+/// The reading needs BPF and this container has none, so the half that can be
+/// wrong with no kernel at all is the half that gets a test: an `Unreadable`
+/// counted as a real guard would skip every test in this file on every machine
+/// there is, and the file would go on printing NOT PROVEN for as long as
+/// anybody let it — a skip nobody asked for looks exactly like a machine that
+/// cannot do the check.
+fn would_switch_this_machine(reading: &thalyx_permd::Enforcement) -> bool {
+    !matches!(reading, thalyx_permd::Enforcement::Unreadable(_))
+}
+
+#[test]
+fn a_flag_that_cannot_be_read_is_not_a_guard_these_tests_would_move() {
+    use thalyx_permd::Enforcement;
+
+    assert!(!would_switch_this_machine(&Enforcement::Unreadable(
+        "there is no bpffs here".into()
+    )));
+    // Both of the other two, because the danger is the write and not the mode
+    // it would write over: a machine already enforcing is still a machine
+    // `negar` reaches.
+    assert!(would_switch_this_machine(&Enforcement::Observing));
+    assert!(would_switch_this_machine(&Enforcement::Enforcing));
+}
+
+/// Rule 3: a skip says it skipped, and says what went unproven.
+///
+/// With no `THALYX_REQUIRE_*` beside it, and that is not an oversight. Every
+/// other skip in this project is a machine that can do *less* than the check
+/// needs, and the variable exists so a machine that can do it is never quietly
+/// let off. This one is the mirror: the machine can do *more*, and what is
+/// missing is not a capability but the empty kernel those four tests are
+/// about. A variable that turned this skip into a failure would demand that
+/// the only machine that matters stop being able to enforce.
+///
+/// Where they are measured instead: §37 of `dev/verify.sh`, which arms the
+/// machine on purpose, measures it with `bpftool` rather than with Thalyx, and
+/// puts it back however the stage ended.
+fn not_proven(claim: &str) {
+    eprintln!("NOT PROVEN: this machine's kernel guard is real, so {claim}.");
+    eprintln!("  Running it would arm this machine for real, and the next thing");
+    eprintln!("  to run would be measuring a kernel nobody asked for. §37 of");
+    eprintln!("  dev/verify.sh is where these verbs are checked on such a machine.");
+}
+
 fn store() -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("a root");
     let output = Command::new(thalyx())
@@ -74,6 +150,14 @@ fn store() -> tempfile::TempDir {
 
 #[test]
 fn a_program_may_ask_the_machine_to_start_denying() {
+    // Before the session is spawned, and that ordering is the whole fix: on a
+    // machine whose guard is real this verb does not answer a refusal, it arms
+    // the kernel.
+    if the_guard_of_this_machine_is_real() {
+        not_proven("`negar` would switch it instead of answering the refusal this reads");
+        return;
+    }
+
     let root = store();
     let output = typed(root.path(), &["structured on", "negar", "salir"]);
 
@@ -92,6 +176,14 @@ fn a_program_may_ask_the_machine_to_start_denying() {
     );
 }
 
+/// No precondition, and that is the point: this one runs on every machine.
+///
+/// `guard::set` turns the structured face away from `observar` **before** it
+/// reads the kernel, deliberately — "a program may not ask to disarm this
+/// machine" is a fact about the request and not about what happens to be
+/// pinned. So this types the disarming verb on a machine that can be disarmed
+/// and nothing moves, which is a stronger claim than the container can make
+/// and the reason the skips above cost less than they look like they cost.
 #[test]
 fn a_program_may_not_ask_the_machine_to_stop_denying() {
     let root = store();
@@ -116,6 +208,14 @@ fn a_program_may_not_ask_the_machine_to_stop_denying() {
 /// against `unreadable` — and that word is the whole decision.
 #[test]
 fn the_two_directions_are_refused_for_different_reasons() {
+    // This one types `negar`, so it carries the same precondition as the test
+    // it is the control for — and it has to: a control that ran on a different
+    // machine than the thing it controls is not a control.
+    if the_guard_of_this_machine_is_real() {
+        not_proven("`negar` would come back as a switch, with no `error` to compare");
+        return;
+    }
+
     let root = store();
     let output = typed(
         root.path(),
@@ -133,6 +233,8 @@ fn the_two_directions_are_refused_for_different_reasons() {
     assert_ne!(arming["error"], serde_json::json!("needs_a_human"));
 }
 
+/// Also unconditional, and for the reason a rehearsal exists: it reads the
+/// flag and writes nothing, on any machine.
 #[test]
 fn a_rehearsal_answers_as_a_rehearsal_and_names_the_verb_it_stood_in_for() {
     let root = store();
@@ -152,6 +254,15 @@ fn a_rehearsal_answers_as_a_rehearsal_and_names_the_verb_it_stood_in_for() {
 /// with a different `op` entirely, so finding this one is the assertion.
 #[test]
 fn the_english_spellings_reach_the_same_two_verbs() {
+    // `deny` dispatches to the same place `negar` does, which is the claim —
+    // and on a machine with a guard, proving it costs that machine's guard.
+    // The Spanish half is proven there anyway: §37 types `negar` at the real
+    // prompt and reads the flag back with `bpftool`.
+    if the_guard_of_this_machine_is_real() {
+        not_proven("typing `deny` to find out where it lands would arm the kernel");
+        return;
+    }
+
     let root = store();
     let output = typed(root.path(), &["structured on", "deny", "observe", "salir"]);
 
@@ -166,6 +277,15 @@ fn the_english_spellings_reach_the_same_two_verbs() {
 /// enforcing — otherwise the refusals above are about something else.
 #[test]
 fn the_machine_these_refusals_come_from_is_one_with_nothing_loaded() {
+    // The baseline skips with the tests it is the baseline for. Left running
+    // alone it would be a machine-wide claim nothing above depends on, and on
+    // a machine merely observing it would pass while proving nothing about the
+    // refusals — which is a baseline that has stopped being one.
+    if the_guard_of_this_machine_is_real() {
+        not_proven("the refusals it is the baseline for did not run either");
+        return;
+    }
+
     let root = store();
     let output = typed(root.path(), &["structured on", "estado", "salir"]);
 

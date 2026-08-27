@@ -191,6 +191,14 @@ These were all learned by something going wrong. They are recorded in
    version that does not exist yet — all of them must produce the cautious
    answer, never the fast one.
 10. **A failure to read is not a failure to exist.** Say which one happened.
+11. **A test that writes something machine-global has changed the machine it
+    was measuring.** `THALYX_ROOT` isolates the store and nothing else. On
+    2026-08-27 three tests in `the_guard_can_be_switched.rs` typed `negar` at a
+    real prompt, armed Cesar's kernel, and every stage of `verify.sh` after
+    them measured a machine nobody had asked for. What distinguishes the case
+    is not "it touches the machine" — a cgroup is made and removed and has an
+    owner — but **a global switch with no owner**, whose value is some other
+    check's precondition. Such a test asks first and skips with `NOT PROVEN`.
 
 ## How to write code here
 

@@ -4242,6 +4242,94 @@ comprobaciones leen la misma respuesta. Con eso `verify.sh` sale **80 `PROVEN`,
 primera vez: hasta hoy «el guion sale limpio aquí» no era una señal que se
 pudiera usar para nada.
 
+## Regla derivada: `THALYX_ROOT` aísla la tienda y nada más — 2026-08-27
+
+Encontrado por Cesar corriendo `verify.sh` en su máquina. Dos `FAILED`, y el
+segundo era consecuencia del primero:
+
+```
+a_program_may_ask_the_machine_to_start_denying --- FAILED
+  {"changed":false,"message":"the kernel guard is already enforcing",
+   "mode":"enforcing","ok":true,"op":"deny"}
+  left: Bool(true)   right: Bool(false)
+
+── 6. a real module, installed and run confined
+   FAILED  the machine was left enforcing before [6. a real module…]
+```
+
+`the_guard_can_be_switched.rs` está escrito, y lo dice en su propia
+documentación, **contra una máquina que no tiene nada cargado**: sin BPF, `negar`
+no puede cambiar nada, así que lo que se comprueba es el cableado — que el verbo
+existe, que llega a `guard`, y que contesta como sí mismo. Lo que nunca se
+comprobó es que la máquina *fuera* esa. Cada prueba abre su `THALYX_ROOT` en un
+directorio temporal y da por hecho que eso la deja sola.
+
+**No la deja sola.** `THALYX_ROOT` aísla la tienda. El guardián del kernel son
+cuatro bytes en bpffs, al lado de `KernelStore::DEFAULT_MAP`, y ese mapa es de
+la máquina que corre la suite — ninguna variable de entorno lo mueve. Así que en
+la máquina de Cesar, como root y con `thalyx-lsm` enganchado, tres de esas
+pruebas hicieron lo que `negar` hace: **armaron su kernel**. La que corrió
+después leyó «already enforcing» y falló, y a partir de ahí todo lo que midió el
+guion midió una máquina que nadie le había pedido.
+
+> La regla 5 dice que el instrumento incluye al arnés. Le faltaba la otra
+> mitad: **el arnés no es sólo lo que hace la pregunta, es también aquello a lo
+> que se le hace.** Una prueba que escribe algo global de la máquina ya cambió
+> la máquina que estaba midiendo, y la dejó cambiada para todo lo que corra
+> después — que es peor, porque ese daño no aparece en la prueba que lo hizo.
+>
+> Lo que distingue el caso no es «toca la máquina»: un cgroup se crea y se
+> borra y tiene dueño. Es **un interruptor global sin dueño**: uno solo, que
+> nadie devuelve, y cuyo valor es la precondición de otra cosa.
+
+Lo que quedó:
+
+- Las tres pruebas que tecleaban `negar` o `deny` **preguntan primero**, antes de
+  lanzar la sesión, y se saltan con `NOT PROVEN` si el guardián de esta máquina
+  es real. La cuarta —la línea base, `…is_one_with_nothing_loaded`— se salta con
+  ellas: una línea base que sobrevive a las pruebas que sostiene dejó de ser una
+  línea base.
+- Sin `THALYX_REQUIRE_*` al lado, y a propósito. Todos los demás saltos de este
+  proyecto son una máquina que puede *menos* de lo que la prueba necesita, y la
+  variable existe para que la que sí puede no se libre calladita. Éste es el
+  espejo: la máquina puede *más*, y lo que falta no es una capacidad sino el
+  kernel vacío del que hablan las tres. Una variable que convirtiera este salto
+  en falla exigiría que la única máquina que importa dejara de poder enforcear.
+- La pregunta se hace **como la hace `guard::set`** y al kernel: ese verbo
+  escribe cuando el flag se lee y se niega sin escribir cuando no. Un
+  `Path::exists` habría sido otra pregunta — bpffs es modo 700 y contesta
+  «no está» de un mapa que sí está, que es el error que una vez hizo que las
+  herramientas de este proyecto se leyeran desarmadas estando armadas.
+- La decisión se separó de la lectura (`would_switch_this_machine`) para que algo
+  la compruebe: la lectura necesita BPF y aquí no hay, pero un `Unreadable`
+  contado como guardián real saltaría **todas** las pruebas del archivo en
+  **todas** las máquinas, calladamente, y un salto que nadie pidió se ve igual
+  que una máquina que no puede.
+- Dos de las seis siguen corriendo en todas partes, y son las que hacen que el
+  archivo siga probando algo en la máquina de Cesar: `observar` en cara
+  estructurada se rechaza **antes** de leer el kernel —es un hecho sobre la
+  petición, no sobre lo que esté clavado— así que ahí se teclea el verbo que
+  desarma, en una máquina que sí se puede desarmar, y no se mueve nada. Y el
+  ensayo lee y no escribe, en cualquier máquina.
+
+El salto se comprobó **con una mutación**, porque este contenedor no tiene el
+guardián que lo dispara: forzando `would_switch_this_machine` a `true`, las
+cuatro pruebas se saltan e imprimen su renglón de `NOT PROVEN` —una cada una,
+nombrando lo que no se probó— y ninguna lanza la sesión. La misma mutación mata
+la prueba de la decisión, que es lo que impide que ese estado se quede puesto
+sin que nadie lo note.
+
+Y dos arreglos en el arnés, porque el veredicto apuntaba al lugar equivocado:
+
+- `guard_check` corre al anunciar cada etapa, así que leyó lo que dejó la
+  anterior y culpó a la **§6**, que no había hecho nada. Ahora recuerda la etapa
+  previa y nombra el intervalo: *«left enforcing between [5. the test suite…]
+  and [6. a real module…]»*.
+- La §5 mide ahora, con `bpftool` y con una línea base tomada antes, que
+  **la suite dejó el guardián donde lo encontró**. Era una precondición que el
+  guion daba por hecha —la misma clase de hueco de 2026-08-26— y ahora es una
+  afirmación con su renglón.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
