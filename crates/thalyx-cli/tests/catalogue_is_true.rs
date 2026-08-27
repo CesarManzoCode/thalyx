@@ -9,6 +9,11 @@
 //! So none of these tests compares the catalogue to another list. Every one of
 //! them **runs the session** and asks it.
 
+// This file types every name the catalogue advertises, which on 2026-08-27
+// turned out to include one that arms the kernel of the machine running the
+// suite. See `machine_guard/mod.rs`.
+mod machine_guard;
+
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -202,13 +207,32 @@ fn every_verb_the_catalogue_advertises_is_understood_at_the_prompt() {
     let root = a_machine();
     let verbs = catalogue(root.path());
 
+    // The second kind of name this test does not type, and it cost a run to
+    // find. `THALYX_ROOT` gives the session a temporary store and isolates it
+    // from nothing else, so `negar` — advertised by the catalogue like every
+    // other verb, and typed from that list by the loop below — armed Cesar's
+    // kernel on 2026-08-27, from a test that is not about the guard at all and
+    // had no reason to know it was touching it.
+    //
+    // Only where there is a guard to move. In every container this suite runs
+    // in, `guard::set` refuses without writing and the two names are typed
+    // like all the others, which is where this check does its work anyway.
+    let guard_is_real = machine_guard::the_guard_of_this_machine_is_real();
+
     // Typed bare, one per line, in one session. Anything the session does not
     // recognise falls through to the "I have no model loaded" paragraph, which
     // is how five verbs were found to not exist on 2026-08-09 — they had been
     // built, and every arm required a trailing space.
     let mut typed: Vec<String> = Vec::new();
     let mut expected: Vec<String> = Vec::new();
+    let mut left_out: Vec<String> = Vec::new();
     for verb in &verbs {
+        // By `id`, which is the stable machine name, and not by any of the
+        // spellings: a translation of `negar` would be a third name reaching
+        // the same four bytes, and a list of words would not have it.
+        let reaches_past_the_store =
+            matches!(verb["id"].as_str().expect("an id"), "deny" | "observe");
+
         for name in verb["names"].as_array().expect("names") {
             let name = name.as_str().expect("a name").to_string();
             // Not these two: one ends the session and the other turns the
@@ -216,11 +240,22 @@ fn every_verb_the_catalogue_advertises_is_understood_at_the_prompt() {
             if ["salir", "exit", "quit", "apagar", "poweroff"].contains(&name.as_str()) {
                 continue;
             }
+            if reaches_past_the_store && guard_is_real {
+                left_out.push(name);
+                continue;
+            }
             expected.push(name.clone());
             typed.push(name);
         }
     }
     typed.push("salir".to_string());
+
+    if !left_out.is_empty() {
+        machine_guard::not_proven(&format!(
+            "`{}` were not typed, and are not covered by the count below",
+            left_out.join("`, `")
+        ));
+    }
 
     let lines: Vec<&str> = typed.iter().map(String::as_str).collect();
     let text = match piped_within(root.path(), &lines, PATIENCE) {
@@ -241,6 +276,51 @@ fn every_verb_the_catalogue_advertises_is_understood_at_the_prompt() {
         0,
         "{fell_through} of {} advertised verbs are not verbs:\n{text}",
         expected.len()
+    );
+}
+
+/// A verb that acts the moment it is typed gets looked at once, by somebody.
+///
+/// The test above types every advertised name bare, and a verb that takes no
+/// argument has no "which one" to stop it: it simply happens. Of the four that
+/// are like that today, two are contained — `revertir` changes this test's own
+/// temporary store, and `apagar` ends the run, which is why it is skipped —
+/// and two are the guard, which reaches the kernel of the machine running the
+/// suite.
+///
+/// That difference cannot be read off the catalogue: `changes` says a verb is
+/// consequential, not *whose* machine it changes. So it is pinned here. A
+/// fifth verb that acts bare turns this red, and whoever added it decides
+/// which of the two kinds it is — instead of finding out from Cesar's kernel,
+/// which is how both of the current two were found.
+#[test]
+fn the_verbs_that_act_the_moment_they_are_typed_are_the_ones_that_were_looked_at() {
+    let root = a_machine();
+
+    // Read from the running binary's own answer, like everything else in this
+    // file: a list linked into the test would drift with the table instead of
+    // catching it.
+    let mut acting: Vec<String> = catalogue(root.path())
+        .iter()
+        .filter(|verb| {
+            verb["changes"] == serde_json::json!(true)
+                && verb["takes"]
+                    .as_array()
+                    .is_some_and(|takes| takes.is_empty())
+        })
+        .map(|verb| verb["id"].as_str().expect("an id").to_string())
+        .collect();
+    acting.sort();
+
+    assert_eq!(
+        acting,
+        ["deny", "observe", "power_off", "rollback"],
+        "a verb that changes something and takes no argument acts as soon as it \
+         is typed, and `every_verb_the_catalogue_advertises_is_understood_at_the_prompt` \
+         types every advertised name. Decide whether this one stays inside \
+         THALYX_ROOT — `rollback` does — or reaches the machine underneath, as \
+         the guard does, and if it reaches, leave it out of that loop the way \
+         `deny` and `observe` are left out"
     );
 }
 

@@ -4330,6 +4330,58 @@ Y dos arreglos en el arnés, porque el veredicto apuntaba al lugar equivocado:
   guion daba por hecha —la misma clase de hueco de 2026-08-26— y ahora es una
   afirmación con su renglón.
 
+## Regla derivada: y la segunda vez el culpable no sabía que tocaba el guardián — 2026-08-27
+
+La corrida siguiente, con el arreglo de arriba puesto, trajo **181 `PROVEN`, 2
+`NOT PROVEN`, 1 `FAILED`** — y la falla era la medición nueva de la §5 haciendo
+exactamente su trabajo:
+
+```
+FAILED  the suite moved the kernel guard from [0] to [1]:
+        a test wrote to the machine it was measuring
+```
+
+Quedaba **otro** que armaba el kernel, y éste es el que enseña algo:
+`catalogue_is_true.rs`, que **no es una prueba sobre el guardián**. Le pregunta
+al binario qué verbos tiene y teclea cada nombre que le contesta, para que un
+verbo anunciado que la sesión no entiende no pueda esconderse. En esa lista
+viene `negar`. La prueba no lo sabía y no tenía por qué saberlo: recibió una
+palabra y la tecleó.
+
+Su lista de exclusiones tenía cinco nombres —`salir`, `exit`, `quit`, `apagar`,
+`poweroff`— y una sola razón detrás: *«terminan la corrida»*. La otra razón para
+no teclear algo no estaba escrita en ninguna parte.
+
+> El arreglo de arriba trataba el problema como «la prueba del guardián arma el
+> guardián», y era **la mitad**. El peligro no es una prueba que trata del
+> interruptor: es **cualquier cosa que llegue al prompt**, porque el prompt
+> tiene el interruptor. Una precondición que vive dentro del archivo que sabe
+> del tema no protege al archivo que no sabe.
+
+Por eso la precondición se mudó a `tests/machine_guard/mod.rs`, compartida, con
+la regla escrita ahí; los dos archivos la usan y el tercero que la necesite la
+tiene. Donde el guardián es real, los cuatro nombres del catálogo —`negar`,
+`deny`, `observar`, `observe`— se dejan fuera del tecleo y se dice cuáles, con
+su renglón de `NOT PROVEN`; donde no lo es, se teclean como todos los demás, que
+es donde esa comprobación hace su trabajo de todos modos. Se comprobó con la
+misma mutación.
+
+### Y el disparador para el quinto
+
+Excluir por una lista de palabras es un conjunto leído del lugar equivocado otra
+vez. Lo que hace peligroso a un verbo aquí es que **actúa en cuanto se teclea**:
+no lleva argumento, así que no hay «cuál» que lo detenga. Eso sí se puede leer
+del catálogo —`changes` verdadero y `takes` vacío— y hoy son cuatro: `revertir`
+y `apagar`, que se quedan dentro de `THALYX_ROOT` o terminan la corrida, y los
+dos del guardián, que llegan a la máquina de abajo.
+
+Cuál de las dos clases es cada uno **no** se puede leer del catálogo: `changes`
+dice que un verbo es consecuente, no *de quién* es la máquina que cambia. Así
+que ese conjunto de cuatro quedó clavado en una prueba que lo lee del binario en
+vivo. Un quinto verbo que actúe desnudo la pone en rojo, y quien lo agregó decide
+de qué clase es —con el mensaje de la falla diciéndoselo— en vez de enterarse
+por el kernel de Cesar, que es como se encontraron los dos que hay.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
