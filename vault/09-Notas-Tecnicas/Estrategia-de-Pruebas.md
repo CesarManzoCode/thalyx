@@ -4439,6 +4439,46 @@ la máquina— dibujaba nada. Cuarenta y tres pruebas de la pantalla estaban en
 verde y ninguna lo veía, porque todas usaban conversaciones que caben. Lo
 encontró correr el sistema; la prueba se escribió después.
 
+## Regla derivada: lo que se compila para verificar no es lo que arranca — 2026-08-28
+
+**Qué pasó.** La corrida en hierro de la pantalla cerró en `185 · 4 · 0` — cero
+fallas, todo lo que la máquina de Cesar podía comprobar comprobado. Lo siguiente
+que él tecleó fue `make -C image image`, y no compiló: cinco peticiones de
+`ioctl` de la pantalla estaban escritas `as libc::c_ulong`, que es el tipo que
+toma `ioctl` contra glibc, y contra musl toma `c_int`.
+
+**Por qué las 189 comprobaciones no vieron nada.** `verify.sh` compila contra
+glibc, de principio a fin. La etapa 11 —la que se llama «la imagen»— arma un
+initramfs **con ese binario de glibc** para contar cuántos programas lleva
+adentro, que es la pregunta del decreto; nunca compiló para el objetivo de la
+imagen. O sea que el único lugar del proyecto donde se compila lo que de verdad
+arranca era un comando que sólo corre Cesar, a mano, después de que todo dijo
+que estaba bien.
+
+**La forma general.** *Un artefacto compilado con otra configuración no es el
+artefacto.* Es la regla 8 —un sustituto tiene que modelar la propiedad que se
+mide— aplicada al compilador en vez de a un doble de prueba: el binario de
+glibc modela el comportamiento de Thalyx perfectamente y no modela lo único que
+esta clase de defecto toca, que es el tipo de una llamada. Mientras el arnés no
+construya **el binario que se embarca**, hay una clase entera de fallas que sólo
+puede encontrar la persona que menos debería encontrarlas.
+
+**Lo que quedó.** La etapa 2 corre ahora la línea exacta del `Makefile` de la
+imagen —`cargo build --release --target x86_64-unknown-linux-musl -p
+thalyx-cli`— con sus cuatro brazos ejercidos uno por uno: probada si compila;
+`FAILED` con el error del compilador junto al veredicto si no; y `NOT PROVEN`,
+nombrando el remedio, si a esta máquina le falta el objetivo de rustup o un
+compilador de C para musl —regla del 2026-08-26, un límite de la máquina no es
+una falla de Thalyx—. `THALYX_REQUIRE_IMAGE_BUILD=1` vuelve falla cualquiera de
+esos dos saltos.
+
+**Y una advertencia sobre el crate donde pasó.** `thalyx-syscall` ya tenía la
+regla escrita, en el comentario de `BTRFS_IOC_SUBVOL_CREATE`: el número se
+declara `u64` y se convierte en el sitio de la llamada con `as libc::Ioctl`,
+que es el alias que ya vale en los dos objetivos. Estaba escrita, era correcta,
+y la entrega de la pantalla no la siguió — una convención que vive sólo en un
+comentario la obedece quien lo lee. Ahora hay una comprobación que la exige.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

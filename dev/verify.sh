@@ -431,6 +431,37 @@ if ! cargo build --quiet > "$WORK/build.log" 2>&1; then
     exit 1
 fi
 proven "the workspace builds"
+
+# And the other target, which is the one a Thalyx machine actually runs.
+#
+# Everything above compiles against glibc, and stage 11 packs *that* binary into
+# an image to count what is inside it. The image Cesar boots is a static musl
+# build, and until 2026-08-28 nothing here ever compiled for that target: five
+# ioctl requests cast to `libc::c_ulong` — which is what glibc's `ioctl` takes,
+# where musl's takes `c_int` — went through this whole script clean, and then
+# stopped `make -C image` dead on his machine. A whole delivery arrived
+# unbootable through a hole in this script, so this closes it with the exact
+# line the image Makefile runs. It builds into this script's own target
+# directory rather than the workspace's, like everything else here, so it costs
+# a build the first time and touches nothing `make -C image` will later use.
+MUSL_TARGET=x86_64-unknown-linux-musl
+if ! rustup target list --installed 2>/dev/null | grep -qx "$MUSL_TARGET"; then
+    GAP="the image's target is not installed here, so nothing checked that the one program the image carries still compiles: rustup target add $MUSL_TARGET"
+    if [ "${THALYX_REQUIRE_IMAGE_BUILD:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+elif cargo build --release --target "$MUSL_TARGET" -p thalyx-cli \
+        > "$WORK/musl-build.log" 2>&1; then
+    proven "the one program the image carries builds for the image's own target ($MUSL_TARGET)"
+elif grep -q "failed to find tool" "$WORK/musl-build.log"; then
+    # Rule from 2026-08-26: a limit of this machine is not a defect of Thalyx.
+    # A missing C compiler for musl stops the build without saying anything
+    # about the code, and calling that a failure would teach the reader to
+    # ignore this line.
+    GAP="there is no C compiler for $MUSL_TARGET here ($(grep -o 'failed to find tool \"[^\"]*\"' "$WORK/musl-build.log" | head -1)), so the image's build could not be exercised: install musl-gcc"
+    if [ "${THALYX_REQUIRE_IMAGE_BUILD:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    failed "the image's program does not build for $MUSL_TARGET, so \`make -C image\` cannot work whatever the rest of this run says"
+    excerpt "$WORK/musl-build.log" 25
+fi
 THALYX="$CARGO_TARGET_DIR/debug/thalyx"
 
 # Exported so `make -C lsm` uses the binary this run just built rather than

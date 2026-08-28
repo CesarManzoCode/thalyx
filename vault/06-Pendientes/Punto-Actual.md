@@ -14,9 +14,97 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La pantalla es la máquina — 2026-08-28
+> ## La corrida en hierro salió limpia, y la imagen no compilaba — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **La corrida de Cesar: `proven 185 · not proven 4 · failed 0`.** Cero fallas, y
+> el conteo cuadra: 189 comprobaciones contra las 184 de la corrida anterior
+> (`181 · 2 · 1`), y las cinco de diferencia son exactamente las cinco que agregó
+> la entrega de la pantalla. Nada dejó de correr en silencio, que es la única
+> forma de leer un marcador.
+>
+> Lo que eso deja probado en hierro:
+>
+> - **la suite ya no arma el kernel de la máquina que está midiendo** — la falla
+>   de la §5 desapareció, y con ella queda comprobada en fierro la regla 11, que
+>   aquí no se puede comprobar porque este contenedor no tiene guardián;
+> - **el color del camino confiable está en una confirmación y en nada más**,
+>   leído por un decodificador de PNG que no es Thalyx, con su control y el
+>   control del control;
+> - **`pantalla` por tubería rechaza con `not_a_terminal` y la sesión sigue
+>   contestando** — una máquina sin monitor no se detiene;
+> - **la línea de comandos de la imagen deja `thalyx.pantalla` sin contestar**,
+>   así que `thalyx.pantalla=no` sigue siendo la salida de una máquina negra.
+>
+> **Los cuatro `NOT PROVEN`: dos son nuevos y son el mismo hueco.** De las cinco
+> comprobaciones nuevas sólo dos tienen rama de `NOT PROVEN`, y las dos son la
+> mitad de la etapa 40 que necesita `/dev/fb0`: la comparación del `ioctl` contra
+> sysfs, y el tracer que vigila que `pantalla` por tubería no llegue a tocar el
+> framebuffer. Cesar lo confirmó a mano: **su Fedora no tiene `/dev/fb0`** ni
+> `strace` instalado. Los otros dos son los de siempre, los que ya venían del 27.
+>
+> Eso **no es un hueco de la pantalla de Thalyx**, es de la máquina que verifica:
+> la imagen lleva `CONFIG_FB`, `CONFIG_FB_EFI` y `CONFIG_FRAMEBUFFER_CONSOLE`, y
+> la consola de texto con la que arrancó en agosto ya era prueba de que ahí sí
+> hay framebuffer. La pantalla sólo se puede *ver* arrancando la imagen, no desde
+> Fedora.
+>
+> ### Y lo siguiente que tecleó no compiló
+>
+> `make -C image image` murió con cinco errores de tipo, todos de la pantalla:
+> las peticiones de `ioctl` escritas `as libc::c_ulong`. Ése es el tipo que toma
+> `libc::ioctl` **contra glibc**; contra musl toma `c_int`, y la imagen es un
+> binario estático de musl.
+>
+> **Por qué 189 comprobaciones no vieron nada.** `verify.sh` compila contra glibc
+> de principio a fin, y la etapa 11 —la que se llama «la imagen»— arma el
+> initramfs **con ese binario de glibc** para contar cuántos programas lleva
+> adentro. El único lugar del proyecto donde se compilaba lo que de verdad
+> arranca era un comando que corre Cesar, a mano, después de que todo dijo que
+> estaba bien.
+>
+> **El arreglo son cinco palabras** —`as libc::Ioctl`, el alias que ya vale en
+> los dos objetivos— y la regla ya estaba escrita en el propio crate, en el
+> comentario de `BTRFS_IOC_SUBVOL_CREATE`, desde que se construyó Btrfs. Una
+> convención que vive sólo en un comentario la obedece quien lo lee.
+>
+> **Así que lo que se entrega no es el arreglo, es la comprobación.** La etapa 2
+> corre ahora la línea exacta del `Makefile` de la imagen:
+>
+> ```
+> cargo build --release --target x86_64-unknown-linux-musl -p thalyx-cli
+> ```
+>
+> Sus cuatro brazos se ejercieron uno por uno antes de entregarla, incluido el
+> que importa: con el defecto puesto de vuelta, la etapa dice `FAILED` y imprime
+> el error del compilador junto al veredicto. Si a la máquina le falta el
+> objetivo de rustup o un compilador de C para musl, dice `NOT PROVEN` nombrando
+> el remedio —un límite de la máquina no es una falla de Thalyx— y
+> `THALYX_REQUIRE_IMAGE_BUILD=1` vuelve falla esos saltos.
+>
+> La regla nueva es la 12 de `CLAUDE.md` y está entera en
+> [[Estrategia-de-Pruebas]]: **lo que se compila para verificar tiene que ser lo
+> que arranca.** Es la regla 8 apuntada al compilador: una compilación con otra
+> configuración es otro sistema.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && make -C image image
+> ```
+>
+> Y arrancar la imagen, que es lo único que puede contestar cómo se ve la
+> pantalla: su Fedora no tiene framebuffer que enseñarla. Adentro no hay que
+> teclear nada — la pantalla es lo que sale. Si sale en negro: Ctrl-C a ciegas,
+> o `thalyx.pantalla=no` en la entrada de arranque.
+>
+> `sudo ./dev/verify.sh` completo no hace falta para esto; cuando se corra, va a
+> traer una comprobación más que las 189 de hoy.
+
+> ## La pantalla es la máquina — 2026-08-28
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > **El decreto, en sus palabras:** *«te dije que ya deberíamos tener ui, porque
 > no lo hiciste? o sea no quiero un comando para activar ui, quiero ya la ui, la
