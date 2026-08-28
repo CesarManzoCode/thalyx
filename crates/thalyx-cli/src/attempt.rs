@@ -25,22 +25,32 @@
 //! `si` to go ahead. It has seen the cost in the object it is answering, which
 //! is what makes it a confirmation rather than a rubber stamp.
 //!
+//! ## Why the native backend and not the `btrfs` command
+//!
+//! Because this verb runs inside Thalyx, where there is no `btrfs` to run. On
+//! 2026-08-28 `make -C image agent` created the workspace as a real subvolume
+//! and `thalyx_attempt` still answered `not_a_subvolume`: the spawn failed, and
+//! `thalyx_snapshot::Btrfs` has no way to say *I could not ask* — so a missing
+//! binary was reported as a fact about the filesystem, on the one verb the
+//! design leans on. `thalyx_snapshot::Native` asks the kernel instead, and every
+//! `Snapshots` built here uses it.
+//!
 //! ## What this container cannot check
 //!
 //! Btrfs. The policy — which attempt is open, what a second one does, what an
 //! abandon aims at, what happens when the snapshot is gone — is covered by
 //! `thalyx_core::attempt` against the directory fake. What only Cesar's machine
 //! can exercise is that the snapshot is atomic, that it costs nothing, and that
-//! the swap is a real `RENAME_EXCHANGE`. Here, `btrfs` is not installed at all,
-//! so what runs is the refusal — and that the refusal is a refusal, and not a
-//! copy pretending to be a snapshot, is itself worth a test.
+//! the swap is a real `RENAME_EXCHANGE`. Here there is no Btrfs at all, so what
+//! runs is the refusal — and that the refusal is a refusal, and not a copy
+//! pretending to be a snapshot, is itself worth a test.
 
 use crate::files::{Face, Where};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use thalyx_core::Store;
 use thalyx_core::attempt::{self, Open};
-use thalyx_snapshot::{Btrfs, Snapshots, Volumes};
+use thalyx_snapshot::{Native, Snapshots, Volumes};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -194,7 +204,7 @@ fn status(store: &Store, face: Face) -> Fallible {
         return Ok(());
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     let cost = attempt::what_abandoning_costs(store, &snapshots);
 
     if face == Face::Machine {
@@ -242,7 +252,7 @@ fn status(store: &Store, face: Face) -> Fallible {
 fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str) -> Fallible {
     let label = if label.is_empty() { "attempt" } else { label };
 
-    let volumes = Btrfs::new();
+    let volumes = Native;
     let subvolume = match subvolume_to_attempt(&volumes, here.at()) {
         Ok(subvolume) => subvolume,
         // Named rather than approximated, and never widened. A copy of a
@@ -323,7 +333,7 @@ fn keep(store: &Store, face: Face, request_id: &str) -> Fallible {
         }
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     match attempt::keep(store, &snapshots, request_id) {
         Ok(open) => {
             if face == Face::Machine {
@@ -360,7 +370,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
         }
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     let (open, plan) = match attempt::what_abandoning_costs(store, &snapshots) {
         Ok(both) => both,
         Err(error) => {

@@ -145,6 +145,101 @@ pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -
     const NAME_AT: usize = 8;
     const ARGS_LEN: usize = 4096;
 
+    check_subvolume_name(name)?;
+
+    let mut args = [0u8; ARGS_LEN];
+    // `fd` is left zero: this ioctl ignores it. `BTRFS_IOC_SNAP_CREATE` shares
+    // the struct and does read it, which is why the field is here at all.
+    args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
+
+    // The request narrows to `c_int` on a musl target, and 0x5000940e is positive
+    // in 32 bits, so nothing is lost. Asserted rather than assumed, because the
+    // day it stops being true the symptom is a different ioctl being called.
+    let request = BTRFS_IOC_SUBVOL_CREATE as libc::Ioctl;
+    debug_assert_eq!(request as u64, BTRFS_IOC_SUBVOL_CREATE);
+
+    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole
+    // call, which is exactly `sizeof(struct btrfs_ioctl_vol_args)` and the size
+    // the ioctl number itself declares. The name is NUL-terminated because the
+    // buffer starts zeroed and the name is shorter than the field. `parent` is
+    // borrowed, so it cannot be closed underneath the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
+    check(result)
+}
+
+// ───────────────────────────────── snapshotting a subvolume, from inside Thalyx
+//
+// The same sentence again, and this time it was found by running the machine:
+// `make -C image agent` creates the workspace as a real subvolume, and inside the
+// image `thalyx_attempt` answered `not_a_subvolume` anyway — because
+// `thalyx-snapshot` asks the question by running `btrfs subvolume show`, and there
+// is no `btrfs` binary on an image that carries the kernel and one program. The
+// answer was not wrong about the machine it was on; it was an answer about a
+// missing binary, reported as a fact about the filesystem. Rule 10 of
+// `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`, from the wrong side: a
+// failure to *ask* had become a failure to exist.
+//
+// So the three operations `intento` needs — is this a subvolume, snapshot it,
+// throw the snapshot away — are here, as the ioctls the kernel exports for them.
+
+/// `BTRFS_IOC_SUBVOL_GETFLAGS`, from `include/uapi/linux/btrfs.h`:
+/// `_IOR(BTRFS_IOCTL_MAGIC, 25, __u64)`.
+///
+/// This is how Thalyx asks *is this a subvolume*, and it is worth writing down why
+/// this ioctl and not something that sounds more like the question. The kernel
+/// answers it with `EINVAL` unless the inode it is called on is the root of a
+/// subvolume, and with `ENOTTY` when the filesystem is not Btrfs at all — so one
+/// call, needing no privilege, separates the three answers a caller has. The
+/// alternative everyone reaches for is the inode-number trick (a subvolume root is
+/// inode 256), which `thalyx-btrfs` already declines for a stated reason: it is
+/// true of Btrfs today and it is not an interface anybody promised.
+pub const BTRFS_IOC_SUBVOL_GETFLAGS: u64 = 0x8008_9419;
+
+/// `BTRFS_IOC_SNAP_CREATE_V2`:
+/// `_IOW(BTRFS_IOCTL_MAGIC, 23, struct btrfs_ioctl_vol_args_v2)`.
+///
+/// V2 and not `BTRFS_IOC_SNAP_CREATE`, because only V2 carries flags — and a
+/// snapshot that is made writable and then turned read-only by a second ioctl has
+/// a window in which it is a working copy. `btrfs subvolume snapshot -r` uses this
+/// one for the same reason.
+pub const BTRFS_IOC_SNAP_CREATE_V2: u64 = 0x5000_9417;
+
+/// `BTRFS_IOC_SNAP_DESTROY`:
+/// `_IOW(BTRFS_IOCTL_MAGIC, 15, struct btrfs_ioctl_vol_args)`.
+///
+/// A subvolume is not a directory and `rmdir` will not have it, so this is the
+/// only way to let one go without the `btrfs` binary.
+pub const BTRFS_IOC_SNAP_DESTROY: u64 = 0x5000_940f;
+
+/// `BTRFS_SUBVOL_RDONLY`, the one flag of `btrfs_ioctl_vol_args_v2` used here.
+pub const BTRFS_SUBVOL_RDONLY: u64 = 1 << 1;
+
+/// Where the fields of `struct btrfs_ioctl_vol_args_v2` are: `__s64 fd`,
+/// `__u64 transid`, `__u64 flags`, four unused `__u64`, then `char name[4040]`.
+///
+/// Public because they are what [`btrfs_snapshot_create`] writes at, and
+/// `thalyx-btrfs`'s `tests/ioctl.rs` recomputes them from the kernel header it
+/// carries verbatim. Kept private they could only have been graded against the
+/// comment beside them, which is not a grade.
+pub const BTRFS_VOL_ARGS_V2_LEN: usize = 4096;
+/// Byte offset of `flags` in `struct btrfs_ioctl_vol_args_v2`.
+pub const BTRFS_VOL_ARGS_V2_FLAGS_AT: usize = 16;
+/// Byte offset of `name` in `struct btrfs_ioctl_vol_args_v2`.
+pub const BTRFS_VOL_ARGS_V2_NAME_AT: usize = 56;
+
+/// A name that can be one directory entry of a Btrfs filesystem.
+///
+/// Refused here rather than by the kernel, which is conversion and not policy: a
+/// name holding a NUL is not a shorter name, it is a different one. And the
+/// kernel's own refusal is unreadable — `EINVAL` from these ioctls is also what a
+/// filesystem with no space left says, so a caller could not tell a typo from a
+/// full disk.
+///
+/// The limit is `BTRFS_VOL_NAME_MAX` for all three ioctls even though the V2
+/// struct's field is 4040 bytes: a directory entry name on Btrfs is at most 255
+/// bytes, so the larger field is room the kernel will not fill.
+fn check_subvolume_name(name: &str) -> io::Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -166,23 +261,127 @@ pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -
             format!("`{name}` is not a single name: a subvolume name holds no `/` and no NUL"),
         ));
     }
+    Ok(())
+}
+
+/// The subvolume flags of whatever `directory` refers to.
+///
+/// `Ok` means it is the root of a Btrfs subvolume, and the value carries
+/// [`BTRFS_SUBVOL_RDONLY`] when it is a read-only one. `EINVAL` means Btrfs and
+/// not a subvolume root; `ENOTTY` means not Btrfs. [`btrfs_is_subvolume`] is that
+/// mapping for callers who only want the question answered.
+pub fn btrfs_subvolume_flags(directory: std::os::fd::BorrowedFd<'_>) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+
+    let mut flags: u64 = 0;
+
+    // The read direction sets bit 31, so this number is larger than `i32::MAX` and
+    // the cast on a musl target is a wrap rather than a widening. That is correct
+    // and not a hazard — `ioctl(2)` takes an `unsigned int`, so the kernel sees the
+    // same 32 bits either way — but it is exactly the shape of rule 12, so the
+    // assertion below compares the 32 bits and not the sign.
+    let request = BTRFS_IOC_SUBVOL_GETFLAGS as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SUBVOL_GETFLAGS);
+
+    // SAFETY: the ioctl writes exactly one `__u64` through the pointer, which is a
+    // live local of that type for the whole call. `directory` is borrowed, so it
+    // cannot be closed underneath it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(directory.as_raw_fd(), request, &raw mut flags) };
+    check(result)?;
+    Ok(flags)
+}
+
+/// Whether `directory` is the root of a Btrfs subvolume.
+///
+/// The two answers that mean *no* are told apart from the ones that mean *this
+/// could not be asked*, because the bug this exists to fix was precisely those two
+/// being confused. `EINVAL` — Btrfs, not a subvolume root — and `ENOTTY` — not
+/// Btrfs — are both a plain `false`. Anything else is an error, and a caller that
+/// treats it as `false` is claiming to know something it does not.
+pub fn btrfs_is_subvolume(directory: std::os::fd::BorrowedFd<'_>) -> io::Result<bool> {
+    match btrfs_subvolume_flags(directory) {
+        Ok(_) => Ok(true),
+        Err(error) => match error.raw_os_error() {
+            Some(libc::EINVAL) | Some(libc::ENOTTY) => Ok(false),
+            _ => Err(error),
+        },
+    }
+}
+
+/// Snapshot the subvolume `source` refers to, as `name` inside `parent`.
+///
+/// `read_only` is the whole reason this takes the V2 ioctl: a snapshot Thalyx
+/// keeps as a record of a moment must not be writable, and making it writable
+/// first and sealing it afterwards leaves a window in which it is a second working
+/// copy. Restoring wants the other answer — the copy becomes the live tree — so
+/// the flag is a parameter rather than a decision made here.
+pub fn btrfs_snapshot_create(
+    parent: std::os::fd::BorrowedFd<'_>,
+    source: std::os::fd::BorrowedFd<'_>,
+    name: &str,
+    read_only: bool,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `struct btrfs_ioctl_vol_args_v2`: `__s64 fd`, `__u64 transid`, `__u64 flags`,
+    // an unused union of four `__u64`, then `char name[4040]`. Built as bytes for
+    // the reason `thalyx-btrfs` builds every kernel shape that way — the layout is
+    // the kernel's, and a Rust type that happens to agree today agrees by
+    // coincidence. `tests/ioctl.rs` in `thalyx-btrfs` checks these offsets against
+    // the header captured verbatim.
+    const FLAGS_AT: usize = BTRFS_VOL_ARGS_V2_FLAGS_AT;
+    const NAME_AT: usize = BTRFS_VOL_ARGS_V2_NAME_AT;
+    const ARGS_LEN: usize = BTRFS_VOL_ARGS_V2_LEN;
+
+    check_subvolume_name(name)?;
 
     let mut args = [0u8; ARGS_LEN];
-    // `fd` is left zero: this ioctl ignores it. `BTRFS_IOC_SNAP_CREATE` shares
-    // the struct and does read it, which is why the field is here at all.
+    // Unlike `BTRFS_IOC_SUBVOL_CREATE`, this ioctl reads `fd`: it is the subvolume
+    // being snapshotted, and the descriptor the call is made on is where the new
+    // name appears.
+    args[0..8].copy_from_slice(&(source.as_raw_fd() as i64).to_le_bytes());
+    if read_only {
+        args[FLAGS_AT..FLAGS_AT + 8].copy_from_slice(&BTRFS_SUBVOL_RDONLY.to_le_bytes());
+    }
     args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
 
-    // The request narrows to `c_int` on a musl target, and 0x5000940e is positive
-    // in 32 bits, so nothing is lost. Asserted rather than assumed, because the
-    // day it stops being true the symptom is a different ioctl being called.
-    let request = BTRFS_IOC_SUBVOL_CREATE as libc::Ioctl;
-    debug_assert_eq!(request as u64, BTRFS_IOC_SUBVOL_CREATE);
+    let request = BTRFS_IOC_SNAP_CREATE_V2 as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SNAP_CREATE_V2);
 
-    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole
-    // call, which is exactly `sizeof(struct btrfs_ioctl_vol_args)` and the size
-    // the ioctl number itself declares. The name is NUL-terminated because the
-    // buffer starts zeroed and the name is shorter than the field. `parent` is
-    // borrowed, so it cannot be closed underneath the call.
+    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole call,
+    // which is `sizeof(struct btrfs_ioctl_vol_args_v2)` and the size the ioctl
+    // number itself declares. The name is NUL-terminated because the buffer starts
+    // zeroed and the name is far shorter than the field. Both descriptors are
+    // borrowed, so neither can be closed underneath the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
+    check(result)
+}
+
+/// Delete the subvolume called `name` inside the directory `parent` refers to.
+///
+/// By name inside a directory, and never by a path of its own, because that is the
+/// shape of the ioctl — which is also the shape that cannot be talked into
+/// deleting something one level up.
+pub fn btrfs_subvolume_destroy(parent: std::os::fd::BorrowedFd<'_>, name: &str) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `struct btrfs_ioctl_vol_args`, the same 4096 bytes as `SUBVOL_CREATE`.
+    const NAME_AT: usize = 8;
+    const ARGS_LEN: usize = 4096;
+
+    check_subvolume_name(name)?;
+
+    let mut args = [0u8; ARGS_LEN];
+    args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
+
+    let request = BTRFS_IOC_SNAP_DESTROY as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SNAP_DESTROY);
+
+    // SAFETY: as `btrfs_subvolume_create`, with which this ioctl shares its
+    // argument struct — a 4096-byte buffer owned for the whole call, NUL-terminated
+    // by construction, and a borrowed descriptor.
     #[allow(unsafe_code)]
     let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
     check(result)

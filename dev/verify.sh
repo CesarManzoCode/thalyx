@@ -4187,13 +4187,14 @@ step "26. intenta esto y si sale mal deshazlo"
 # abandoning really returns the tree, and that a file made during the attempt is
 # gone afterwards rather than merely reverted.
 #
-# ## The three columns
+# ## The columns
 #
 # A file that existed before, changed during the attempt: must be back to its
-# old contents. A file made during the attempt: must be gone. And the control —
-# the same sequence settled with `confirmar` instead — where both must survive.
-# Without the control, an implementation that reverted on every path would pass
-# the first two and be useless.
+# old contents. A file made during the attempt: must be gone. The control — the
+# same sequence settled with `confirmar` instead — where both must survive;
+# without it, an implementation that reverted on every path would pass the first
+# two and be useless. Then the same sequence with an empty PATH, which is the
+# machine the image is. And standing at `/`, which must be refused.
 
 # The scratch path probed at the top of this script, which was proven by making
 # a subvolume rather than by reading a filesystem type — `stat -f` says btrfs for
@@ -4266,6 +4267,29 @@ else:
     set -- $SAID
     A_ATOMIC=$1; A_WOULD_DELETE=$2
 
+    # The column added 2026-08-28, and the one that is about the machine Thalyx
+    # actually is. Everything above ran on a host with btrfs-progs installed,
+    # which is not where `intento` lives: inside the image there is the kernel and
+    # one program, and `thalyx-snapshot` used to answer *is this a subvolume* by
+    # spawning `btrfs`. In QEMU that spawn failed and `thalyx_attempt` reported
+    # `not_a_subvolume` about a workspace that was one — a missing binary told as
+    # a fact about the filesystem. So the whole sequence runs once more with an
+    # empty PATH, which is this host doing what the image does.
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+    rm -f "$ATTEMPT_TREE/made.txt"
+    bare_run() {
+        printf '%s\n' "structured on" "cd $ATTEMPT_TREE" "$@" salir | \
+            PATH=/nonexistent THALYX_ROOT="$ATTEMPT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    bare_run "intento empezar sin-btrfs" > "$WORK/attempt-nopath-begin.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    bare_run "intento abandonar si" > "$WORK/attempt-nopath-abandon.log"
+
+    N_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    N_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && N_MADE=yes
+
     # The control that matters most, and the one this stage did not have on the
     # day it was written: standing at `/` — which is a subvolume on every
     # ordinary Fedora install — must be **refused**. Without this column, a
@@ -4294,8 +4318,13 @@ else:
     if [ "$A_KEPT" = "before" ] && [ "$A_MADE" = "no" ] \
        && [ "$K_KEPT" = "changed during the attempt" ] && [ "$K_MADE" = "yes" ] \
        && [ "$A_WOULD_DELETE" = "1" ] \
+       && [ "$N_KEPT" = "before" ] && [ "$N_MADE" = "no" ] \
        && [ "$ROOT_REFUSED" = "False:the_whole_system" ]; then
-        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, and / was refused (atomic swap: $A_ATOMIC)"
+        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, / was refused, and all of it again with no \`btrfs\` on PATH (atomic swap: $A_ATOMIC)"
+    elif [ "$N_KEPT" != "before" ] || [ "$N_MADE" != "no" ]; then
+        failed "with no \`btrfs\` on PATH the attempt did not come back (kept.txt='$N_KEPT', made.txt present=$N_MADE), so \`intento\` still needs a binary the image cannot carry; see $WORK/attempt-nopath-abandon.log"
+        excerpt "$WORK/attempt-nopath-begin.log"
+        excerpt "$WORK/attempt-nopath-abandon.log"
     elif [ "$ROOT_REFUSED" != "False:the_whole_system" ]; then
         failed "standing at / and asking for an attempt answered '$ROOT_REFUSED' instead of refusing; see $WORK/attempt-root.log"
         excerpt "$WORK/attempt-root.log"

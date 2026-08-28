@@ -14,9 +14,35 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El puente no habría llevado un byte por virtio-serial — 2026-08-28
+> ## `intento` ya no le pregunta a un binario que no existe — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Encontrado corriendo la máquina, que es de donde salen todos: `make -C image
+> agent` **sí** crea el workspace como subvolumen Btrfs, y adentro de Thalyx
+> `thalyx_attempt` contestaba `not_a_subvolume` de todos modos.
+>
+> La causa es la quinta vez que aparece la misma: `thalyx-snapshot::Btrfs`
+> preguntaba corriendo `btrfs subvolume show`, y la imagen lleva el kernel y un
+> programa. El spawn fallaba, y `is_subvolume` no tiene forma de decir *no pude
+> preguntar* — así que la falta de un binario se reportaba como un hecho sobre el
+> sistema de archivos. **Regla 10 al revés**, en el único verbo del que depende
+> la ventaja que ningún otro sistema operativo tiene.
+>
+> Ahora existe `thalyx-snapshot::Native`, que son las cuatro operaciones contra
+> los ioctls del kernel: `BTRFS_IOC_SUBVOL_GETFLAGS` para preguntar —el kernel
+> contesta `EINVAL` si no es la raíz de un subvolumen y `ENOTTY` si ni siquiera
+> es Btrfs, así que una sola llamada separa las tres respuestas, sin privilegios
+> y sin el truco del inodo 256—, `SNAP_CREATE_V2` con `BTRFS_SUBVOL_RDONLY` para
+> la instantánea, la misma sin la bandera para la copia escribible del restore, y
+> `SNAP_DESTROY` para soltarla. `intento` usa ese backend; el backend por comando
+> se queda para el anfitrión y como segunda opinión en las pruebas.
+>
+> Lo que falta correr en hierro: la etapa 26 de `dev/verify.sh` tiene ahora una
+> columna más, la misma secuencia con `PATH` vacío, que es este anfitrión
+> haciendo lo que hace la imagen.
+>
+> ## El puente no habría llevado un byte por virtio-serial — 2026-08-28
 >
 > El bloque siguiente termina diciendo que virtio-serial no ha llevado un byte y
 > que lo que corrió fue el mismo `serve` sobre un socket UNIX. Al preparar ese
