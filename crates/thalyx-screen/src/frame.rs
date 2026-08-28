@@ -325,7 +325,26 @@ fn draw_panel(
             }
             Row::Pair { label, value } => {
                 let value_style = TextStyle::new(Face::Mono, metrics.fact, color::FACT);
-                let value_width = typography.measure(Face::Mono, metrics.fact, value);
+                // The value is trimmed to the column **before** it is measured,
+                // and this is the whole fix. It used to be measured whole and
+                // then placed at `inner.right() - value_width`; a reading wider
+                // than the panel put that pen to the left of `inner.left`, and
+                // `draw` clips nothing — so `2 of 2 hook(s) live: …` was drawn
+                // across the conversation beside it, in the panel's colour, on
+                // the machine panel where every reading is a fact about the
+                // machine. The label was already clipped, which is why only one
+                // half of every row ever escaped.
+                //
+                // The value gets the room first because it is the fact and the
+                // label is only what the fact is about; the label keeps at least
+                // half the column so a row never becomes a bare number with
+                // nothing saying what it counts.
+                let label_room = typography
+                    .measure(Face::Prose, metrics.small, label)
+                    .min(inner.width as f32 * 0.5);
+                let value_room = (inner.width as f32 - label_room - metrics.padding * 0.5).max(1.0);
+                let value = typography.fit(Face::Mono, metrics.fact, value_room, value);
+                let value_width = typography.measure(Face::Mono, metrics.fact, &value);
                 typography.draw_within(
                     canvas,
                     inner.left as f32,
@@ -338,7 +357,7 @@ fn draw_panel(
                     canvas,
                     inner.right() as f32 - value_width,
                     baseline,
-                    value,
+                    &value,
                     value_style,
                 );
                 baseline += row_height;
@@ -773,6 +792,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A panel with one reading in it, and the column that reading belongs in.
+    fn machine_panel_with(value: &str) -> (Canvas, Rect) {
+        let mut screen = Screen::new(a_bar());
+        screen.right = vec![Panel::new("máquina", vec![Row::pair("lsm", value)])];
+        let mut typography = Typography::embedded();
+        let layout = Layout::for_size(1280, 800);
+        let column = layout.right.expect("a right column at 1280x800");
+        let canvas = compose(&screen, &mut typography, 1280, 800);
+        (canvas, column)
+    }
+
+    #[test]
+    fn a_reading_wider_than_its_panel_does_not_leave_it() {
+        // Found on the glass and not here: Cesar photographed a booted machine
+        // with `a module can be pivoted into a root of its own` written across
+        // the middle of the conversation, in the panel's colour, starting well
+        // to the left of the panel it belonged to. Every reading in the machine
+        // panel is a `Row::Pair`, its value was measured at full width and then
+        // right-aligned against the panel's right edge, and `draw` clips
+        // nothing — so any value wider than the column was placed at a negative
+        // offset from where it should have started.
+        //
+        // Asserted at the pixels because that is where it happened: nothing
+        // about the row's *text* was ever wrong. And asserted as "the ground is
+        // untouched" rather than "this colour is absent", because text is drawn
+        // with coverage — a thin stem blends toward the ground and may never
+        // land on the exact colour it was asked for, so looking for `FACT`
+        // outside the panel would miss the very stroke that gave it away.
+        let (canvas, _) =
+            machine_panel_with("2 of 2 hook(s) live: thalyx_socket_connect, thalyx_file_open");
+
+        // The conversation, which is where the reading was photographed and
+        // where nothing was said. An empty conversation is empty ground; a
+        // single glyph in it came from somewhere it should not have.
+        let centre = Layout::for_size(1280, 800).centre;
+        for y in centre.top..centre.bottom() {
+            for x in centre.left..centre.right() {
+                assert_eq!(
+                    canvas.pixel(x as u32, y as u32).unwrap(),
+                    color::INK,
+                    "something was drawn at {x},{y}, in a conversation with nothing in it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reading_that_fits_is_still_drawn() {
+        // The control, and it is not optional: a fix that clipped every value to
+        // nothing would pass the test above perfectly. What is claimed there is
+        // that the value stays inside the panel, not that the panel went quiet.
+        //
+        // Counted against the same panel with no value at all, so what is being
+        // compared is the value and not the heading or the label beside it.
+        let ink = |value: &str| {
+            let (canvas, column) = machine_panel_with(value);
+            (column.top..column.bottom())
+                .flat_map(|y| (column.left..column.right()).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    let pixel = canvas.pixel(*x as u32, *y as u32).unwrap();
+                    pixel != color::SURFACE && pixel != color::INK && pixel != color::LINE
+                })
+                .count()
+        };
+        assert!(
+            ink("bpf") > ink(""),
+            "the value of a row that fits was not drawn at all"
+        );
     }
 
     #[test]

@@ -149,7 +149,7 @@ impl Where {
 /// library, for the same reason as the cpio and the Btrfs writer — the image
 /// holds the kernel and one program.
 pub fn clear(face: Face) {
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
 
     // A program gets an answer and not an escape sequence, and it gets one for
     // the reason `machine.rs` gives for `cd`: **silence is never an answer.** A
@@ -165,6 +165,16 @@ pub fn clear(face: Face) {
         return;
     }
 
+    // Only onto a real terminal, and this is the same reason the machine face
+    // gets an answer instead: `ESC[2J` means something to a console and is
+    // nothing but bytes anywhere else. Under the screen, stdout is the pipe
+    // `thalyx-capture` put there, so without this check the escape came back as
+    // *what the verb said* and was drawn on the screen as the literal text
+    // `[2J[H` — which is what Cesar photographed on a booted machine. The screen
+    // empties itself on `Flow::Emptied`; there is nothing to print for it.
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     print!("\x1b[2J\x1b[H");
     // Flushed here because what follows is a prompt printed with `print!` and no
     // newline of its own; leaving this in the buffer would put the prompt on

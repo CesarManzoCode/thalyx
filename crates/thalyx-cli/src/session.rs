@@ -1527,7 +1527,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
 
         match session.act_on(line)? {
-            Flow::Stay => {}
+            // Nothing to do here: `files::clear` has already written the escape
+            // to the console it is standing on. The variant exists for the
+            // screen, which has no console to write it to.
+            Flow::Stay | Flow::Emptied => {}
             Flow::Leave => break,
             Flow::ToTheScreen => {
                 // Raw mode goes back before the screen takes the keyboard: two
@@ -1654,6 +1657,14 @@ pub(crate) enum Flow {
     /// Go to the display. From the text session that means entering the screen;
     /// from the screen it means the person is already there and is told so.
     ToTheScreen,
+    /// The display was asked to empty itself.
+    ///
+    /// `clear` is the one verb whose whole meaning is a property of the surface
+    /// it is typed on, so it is the one verb that cannot be finished by printing
+    /// something. In the text session emptying the display is an escape
+    /// sequence; on the screen it is dropping the conversation, and the screen
+    /// drew that escape as the literal text `[2J[H` until this existed.
+    Emptied,
 }
 
 /// Everything a typed line reads and may change.
@@ -1856,6 +1867,7 @@ fn dispatch(
         // cannot copy, move or delete it either.
         "clear" | "limpiar" | "cls" => {
             crate::files::clear(face);
+            flow = Flow::Emptied;
         }
         // The verb the objective decree was waiting on: everything below
         // already returns facts, and this is what lets something ask for

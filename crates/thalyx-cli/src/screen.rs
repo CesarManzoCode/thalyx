@@ -98,16 +98,81 @@ fn guard_now() -> Guard {
     }
 }
 
-fn store_words() -> String {
-    // The label the store was found by, which is what a person checks when they
-    // want to know they are on the machine they think they are on.
+/// What the bar says the store is: the disk it is on, or that there is not one.
+///
+/// ## What this said before, and why it was worse than nothing
+///
+/// Cesar photographed a booted machine whose bar read
+/// `rw,size=980392k,nr_inodes=245098`. Those are a **tmpfs's** super options,
+/// and the machine panel two inches to the right of them said `btrfs` — so the
+/// bar was not merely unreadable, it disagreed with the truth beside it.
+///
+/// Two mistakes, both worth naming because each survives the other being fixed.
+///
+/// The first is that the fallback beat the thing it was a fallback for. One
+/// predicate asked for `/var/thalyx` **or** `/`, inside a `find`, so what came
+/// back was whichever appeared first *in the file* — and `/` is always mounted
+/// before anything under it. The store was never consulted on a machine that
+/// had one.
+///
+/// The second is that the last field of a `mountinfo` line is not a label and
+/// never was. `mountinfo` is `… - <fstype> <source> <super options>`, with a
+/// variable number of optional fields before the `-`, so counting from either
+/// end without finding that separator answers a different question each time.
+///
+/// So this reads the source device, past the `-`, from the mount the store is
+/// actually on — and when that is not a device it says so, because "this
+/// machine forgets everything at the next boot" is the one fact about a store
+/// that a person must not have to infer.
+fn store_words(root: &Path) -> String {
     match std::fs::read_to_string("/proc/self/mountinfo") {
-        Ok(text) => text
-            .lines()
-            .find(|line| line.contains(" /var/thalyx ") || line.contains(" / "))
-            .and_then(|line| line.split(' ').next_back().map(str::to_string))
-            .unwrap_or_else(|| "store".to_string()),
-        Err(_) => "store".to_string(),
+        Ok(text) => store_from(&text, root),
+        // Rule 10: a failure to read is not a failure to exist. A bar that said
+        // `sin disco` here would be telling somebody their work is not being
+        // kept, on no evidence at all.
+        Err(_) => "store ?".to_string(),
+    }
+}
+
+/// The store's disk according to `mountinfo`, or why there is not one.
+///
+/// Pure so it can be tested against a captured `/proc/self/mountinfo` rather
+/// than against a hand-written one — rule 6. The mount chosen is the longest
+/// mount point that is a prefix of `root`, which is the same rule
+/// [`crate::session::gather`] uses for the filesystem reading; two rules would
+/// be two answers to one question, which is exactly the disagreement this
+/// function was found by.
+fn store_from(mountinfo: &str, root: &Path) -> String {
+    let mut best: Option<(usize, String)> = None;
+    for line in mountinfo.lines() {
+        // Everything before the `-` has a variable length: optional fields like
+        // `shared:1` are there or not. Splitting on it is the only way to know
+        // which field is which on either side.
+        let (before, after) = match line.split_once(" - ") {
+            Some(halves) => halves,
+            None => continue,
+        };
+        let point = match before.split(' ').nth(4) {
+            Some(point) => point,
+            None => continue,
+        };
+        let source = match after.split(' ').nth(1) {
+            Some(source) => source,
+            None => continue,
+        };
+        if root.starts_with(point) && point.len() >= best.as_ref().map_or(0, |(n, _)| *n) {
+            best = Some((point.len(), source.to_string()));
+        }
+    }
+
+    match best {
+        Some((_, source)) if source.starts_with("/dev/") => source,
+        // A store that is not on a device is the initramfs, and the initramfs is
+        // memory. Said in the bar rather than left to be worked out from a
+        // reading elsewhere, because it changes what everything typed below it
+        // is worth.
+        Some(_) => "sin disco — no recuerda".to_string(),
+        None => "store ?".to_string(),
     }
 }
 
@@ -276,7 +341,7 @@ fn refresh(screen: &mut Screen, session: &crate::session::Session<'_>) {
     let here = session.here.at().to_path_buf();
     screen.bar = Bar {
         machine: "thalyx".to_string(),
-        store: store_words(),
+        store: store_words(session.store.root()),
         guard: guard_now(),
         clock: clock(),
     };
@@ -338,7 +403,7 @@ fn first_clause(text: &str) -> String {
 fn live(session: &crate::session::Session<'_>) -> Screen {
     let mut screen = Screen::new(Bar {
         machine: "thalyx".to_string(),
-        store: store_words(),
+        store: store_words(session.store.root()),
         guard: guard_now(),
         clock: clock(),
     });
@@ -346,7 +411,7 @@ fn live(session: &crate::session::Session<'_>) -> Screen {
     screen.conversation = vec![
         Turn::machine(format!(
             "Thalyx. El store es {}, y esto es la máquina — no hay nada debajo.",
-            store_words()
+            store_words(session.store.root())
         )),
         Turn::agent(
             "Escribe abajo. Los verbos son los mismos que en la sesión de texto: \
@@ -720,6 +785,16 @@ fn run_one(
     match outcome {
         Ok(crate::session::Flow::Stay) => None,
         Ok(crate::session::Flow::Leave) => Some(Left::Finished),
+        // What `clear` means here. The verb printed nothing — there is no
+        // console under the screen to print an escape to — so the conversation
+        // is dropped, which is the same thing the escape does to a console.
+        // The scrollback goes with it: `limpiar` that left the previous
+        // hundred lines one PageUp away would not have cleared anything.
+        Ok(crate::session::Flow::Emptied) => {
+            screen.conversation.clear();
+            screen.scrollback = 0;
+            None
+        }
         Ok(crate::session::Flow::ToTheScreen) => {
             push(
                 screen,
@@ -882,4 +957,90 @@ pub fn to_png(out: &Path, width: u32, height: u32, which: &str, face: Face) -> F
         ),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::store_from;
+    use std::path::Path;
+
+    /// `/proc/self/mountinfo`, captured verbatim from the container this was
+    /// written in.
+    ///
+    /// Rule 6: a parser for another kernel interface's output needs one real
+    /// sample. The thing a hand-written one would have got wrong here is the
+    /// exact thing that broke — the optional fields before the `-`, which are
+    /// present on some lines and absent on others, so no invented fixture would
+    /// have both shapes in it unless its author already knew.
+    const CAPTURED: &str = "\
+22 27 0:21 / /proc rw,relatime - proc proc rw
+23 27 0:22 / /sys rw,relatime - sysfs sysfs rw
+24 27 0:6 / /dev rw,relatime - devtmpfs devtmpfs rw,size=8225260k,nr_inodes=2056315,mode=755
+25 24 0:23 / /dev/shm rw,relatime - tmpfs tmpfs rw,size=16461068k
+26 24 0:24 / /dev/pts rw,relatime - devpts devpts rw,mode=600,ptmxmode=000
+27 1 254:0 / / rw,relatime - ext4 /dev/vda rw,resv_strict,resuid=65534,resgid=65534
+";
+
+    /// The same file as a booted Thalyx has it: an initramfs root with the store
+    /// disk mounted underneath, and `/` written down first.
+    ///
+    /// The shared-mount optional field is on the store's line and not on the
+    /// root's, on purpose. That asymmetry is the format, and counting fields
+    /// from the end is what it defeats.
+    const A_BOOTED_MACHINE: &str = "\
+1 1 0:2 / / rw,relatime - rootfs rootfs rw,size=980392k,nr_inodes=245098
+2 1 0:5 / /proc rw,relatime - proc proc rw
+9 1 254:0 /system /var/thalyx rw,relatime shared:1 - btrfs /dev/vda rw,ssd,subvol=/system
+";
+
+    #[test]
+    fn the_bar_names_the_disk_the_store_is_on_and_not_the_root_above_it() {
+        // The defect, exactly as it was photographed. The old predicate asked
+        // for `/var/thalyx` *or* `/` inside a `find`, so it answered with
+        // whichever came first in the file — and `/` is always first. Two
+        // inches away the machine panel read `btrfs`, off the store's own
+        // mount, so the screen disagreed with itself.
+        assert_eq!(
+            store_from(A_BOOTED_MACHINE, Path::new("/var/thalyx/modules")),
+            "/dev/vda"
+        );
+    }
+
+    #[test]
+    fn a_store_that_is_not_on_a_disk_says_it_forgets() {
+        // A machine booted with no store attached keeps everything in the
+        // initramfs, which is memory. This is the one reading whose absence
+        // costs somebody work they have already done, so it is not left to be
+        // inferred from a panel further down.
+        assert_eq!(
+            store_from(A_BOOTED_MACHINE, Path::new("/tmp/whatever")),
+            "sin disco — no recuerda"
+        );
+    }
+
+    #[test]
+    fn the_captured_sample_parses_to_the_disk_this_container_is_on() {
+        // The control for both tests above, against the real file rather than
+        // either machine written down here. A parser that returned the last
+        // field, or the first matching line, gets a different answer for this
+        // input — the old one returned `rw,resv_strict,resuid=65534,resgid=65534`.
+        assert_eq!(store_from(CAPTURED, Path::new("/var/thalyx")), "/dev/vda");
+        assert_eq!(
+            store_from(CAPTURED, Path::new("/dev/shm/x")),
+            "sin disco — no recuerda"
+        );
+    }
+
+    #[test]
+    fn a_mountinfo_that_says_nothing_does_not_become_a_claim_that_it_forgets() {
+        // Rule 10, which is the reason there are three answers and not two: a
+        // file with no line covering the store is a failure to read, and
+        // printing `sin disco` for it would tell somebody their work is being
+        // thrown away on no evidence.
+        assert_eq!(store_from("", Path::new("/var/thalyx")), "store ?");
+        assert_eq!(
+            store_from("nonsense\n", Path::new("/var/thalyx")),
+            "store ?"
+        );
+    }
 }
