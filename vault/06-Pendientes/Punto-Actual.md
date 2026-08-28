@@ -14,9 +14,111 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La suite armaba su kernel, dos veces — 2026-08-27
+> ## La pantalla existe — 2026-08-27
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **Lo primero, porque cambia el encuadre.** Cesar abrió pidiendo *«empezar a
+> hacerlo realmente un SO»*, y medido contra el código **eso ya había pasado**:
+> el 2026-08-07 una PC física arrancó Thalyx de una USB, se instaló sola en otro
+> disco con `instalar-en`, y con el medio quitado arrancó de ese disco. PID 1 es
+> `thalyx`, no hay distribución debajo, y `make -C image count` dice `1`. Contra
+> el criterio que él mismo decretó, Thalyx **es** un sistema operativo desde
+> entonces. Lo que falta no es el título: es que se pueda **vivir** adentro, y
+> esa lista es corta y está abajo.
+>
+> **El decreto.** [[La-Pantalla]], tomado por él el 2026-08-27: *una sola
+> pantalla que es Thalyx*. Sin ventanas, sin escritorio, sin lanzador — no hay
+> dónde *abrir* el agente porque el agente es la pantalla. Corrige el
+> aplazamiento de la GUI del 2026-08-01, cuya razón escrita era cierta y estaba
+> **condicionada a que la Fase 1 no estuviera terminada**; cerró el 2026-08-07 y
+> el aplazamiento siguió vivo veinte días por inercia.
+>
+> **Lo construido.** `crates/thalyx-screen`, puro: estado adentro, pixeles
+> afuera. No abre un dispositivo, no hace un `ioctl`, no muestra nada — el mismo
+> patrón de `thalyx-term` y `thalyx-edit`, y por la misma razón: el contenedor
+> que construye Thalyx no tiene pantalla. **43 pruebas**, todas corriendo aquí.
+> Lo que necesita hierro vive en `thalyx-syscall`: el `ioctl` que pregunta cómo
+> empaqueta un pixel este framebuffer, el `mmap`, y quitar la consola de texto
+> de en medio.
+>
+> **Y se puede *ver* sin tener pantalla.** `thalyx dev screen <archivo.png>`
+> escribe un cuadro a una imagen por el mismo camino de composición que usa el
+> display, así que lo que sale es lo que se dibuja.
+>
+> **Dos cosas que construirlo enseñó**, las dos escritas como revisión en
+> [[La-Pantalla]]:
+>
+> 1. **Los pixeles no piden nada del kernel.** `FB`, `FB_EFI` y `VT` ya estaban
+>    desde el 2026-08-07, y `KD_GRAPHICS` sólo impide que el kernel dibuje la
+>    consola —no que la tty entregue las teclas—, así que el modo crudo que ya
+>    existe sigue sirviendo. **Esta entrega no toca `thalyx.config`**, o sea que
+>    no arriesga el arranque de la única máquina que verifica el proyecto. El
+>    ratón sí lo pediría, y por eso queda fuera: una pantalla sin ventanas no
+>    tiene qué apretar.
+> 2. **Ctrl-C, que en la sesión es la salida, aquí es la trampa.** `RawMode`
+>    deja `ISIG` prendido a propósito. Con la consola en modo gráfico, ese mismo
+>    `SIGINT` mata el proceso **antes** de que `Drop` devuelva la consola, y lo
+>    que queda es una pantalla en negro sobre una máquina que está corriendo
+>    bien. La pantalla usa `RawMode::enter_without_signals` y sale por su propio
+>    pie. Una tecla que en un modo es el escape, en otro es lo que cierra la
+>    puerta.
+>
+> **La etapa 40 de `verify.sh`**, en dos mitades con costos distintos. La
+> composición corre en cualquier lado y comprueba la única propiedad de la
+> pantalla que es de seguridad: que **el color del camino confiable esté en una
+> confirmación y en nada más**, con su control (la pantalla ordinaria lo usa
+> cero veces) y el control del control (el color del agente sí aparece, así que
+> el lector no está encontrando nada). Los pixeles los lee un decodificador de
+> PNG escrito en el propio guion sobre `zlib` — regla 5: un cuadro comprobado
+> por el código que lo dibujó sólo prueba que es consistente consigo mismo. La
+> otra mitad necesita `/dev/fb0` y compara lo que el `ioctl` contesta contra
+> **sysfs**, que es otro camino al mismo kernel; sin framebuffer dice
+> `NOT PROVEN` y `THALYX_REQUIRE_DISPLAY=1` lo vuelve falla.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y después, lo que ninguna prueba puede contestar:
+>
+> ```
+> thalyx screen --describe     dice qué es este display, SIN tocar la consola
+> thalyx screen                toma la pantalla; Ctrl-C la devuelve
+> ```
+>
+> **`--describe` primero.** Recorre todo el camino salvo escribir en el
+> dispositivo y tomar la consola, así que si la respuesta es que no se puede
+> dibujar aquí, lo dice con la consola intacta.
+>
+> ### Lo que esta entrega NO hace, y por qué
+>
+> **Los verbos todavía no pasan por la pantalla.** `session::run` es un solo
+> ciclo de seiscientas líneas que imprime conforme avanza; volverlo algo que
+> devuelve una respuesta es una edición grande al código más ejercido del
+> proyecto. Hacerlo en la misma entrega que los primeros pixeles significaría
+> que, si su máquina arranca en negro, **no hay manera de saber cuál de los dos
+> cambios fue**. Es la regla de `CLAUDE.md` sobre no apilar un segundo cambio
+> sin verificar encima del primero.
+>
+> ### Lo que falta para poder vivir adentro, medido contra el código
+>
+> | Hueco | Estado |
+> |---|---|
+> | El store de una máquina recién instalada queda vacío | Escrito en [[Tareas-Pendientes]]. La imagen lleva el kernel y un programa, así que una PC recién instalada arranca sana y sin nada que instalar. Es la pregunta de Fase 2: **desde dónde** llega el software |
+> | La red ve y no usa | Decreto de Cesar del 2026-08-23, [[Red]]. Sin DHCP, sin resolutor, sin TLS |
+> | El agente no vive adentro de la máquina | Las cuatro gamas se midieron en Fedora con `llama-completion` en el `PATH`. Adentro de la imagen no hay llama.cpp; tendría que ser un programa ajeno en el store corrido con `ejecutar`, y **nunca se ha intentado** |
+> | Los verbos por la pantalla | La entrega siguiente. Ver arriba |
+>
+> **Lo siguiente que eligió Cesar** el 2026-08-27, junto con la pantalla: **el
+> agente adentro de la máquina**. Es la razón por la que este SO existe, y
+> `ejecutar` ya se construyó exactamente para correr un binario ajeno confinado.
+
+> ## La suite armaba su kernel, dos veces — 2026-08-27
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > **La segunda vuelta.** Con el arreglo puesto, la corrida trajo **181 `PROVEN`,
 > 2 `NOT PROVEN`, 1 `FAILED`**, y la falla era la medición nueva de la §5

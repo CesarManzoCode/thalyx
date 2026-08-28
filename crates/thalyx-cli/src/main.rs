@@ -28,6 +28,7 @@ mod proc;
 mod render;
 mod restore;
 mod run;
+mod screen;
 mod search;
 mod session;
 mod snapshot;
@@ -153,6 +154,21 @@ enum Command {
     /// starts with no bootloader in front of it, and makes the rest into a
     /// store. Everything on the disk is lost.
     Install(install::InstallArgs),
+
+    /// Draw the one screen on this machine's display
+    ///
+    /// Takes over `/dev/fb0` and the text console until Ctrl-C. The decree is
+    /// `vault/02-Arquitectura/La-Pantalla.md`. To look at the screen on a
+    /// machine that has no display, use `thalyx dev screen`.
+    Screen {
+        /// Say what this display is and whether the screen would come up on it,
+        /// without touching the console
+        #[arg(long)]
+        describe: bool,
+        /// Answer with one JSON object instead of sentences
+        #[arg(long)]
+        structured: bool,
+    },
 
     /// Packaging tools for module publishers
     #[command(subcommand)]
@@ -320,6 +336,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Memory(command) => {
             Store::open(&root)?;
             memory::run(&root, command)
+        }
+        Command::Screen {
+            describe,
+            structured,
+        } => {
+            let face = if structured {
+                files::Face::Machine
+            } else {
+                files::Face::Human
+            };
+            if describe {
+                screen::describe(face)
+            } else {
+                let store = Store::open(&root)?;
+                screen::show(&store)
+            }
         }
         Command::Enforce(command) => enforce::run(&root, command),
         Command::Disk(command) => store_disk::run(command),

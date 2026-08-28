@@ -4382,6 +4382,31 @@ vivo. Un quinto verbo que actúe desnudo la pone en rojo, y quien lo agregó dec
 de qué clase es —con el mensaje de la falla diciéndoselo— en vez de enterarse
 por el kernel de Cesar, que es como se encontraron los dos que hay.
 
+## Cómo se miden pixeles, que no es una regla nueva sino dos viejas
+
+Escrito el 2026-08-27, al construir [[La-Pantalla]]. No hay regla nueva aquí —
+hay dos que ya existen cayendo en un sitio donde no era obvio que aplicaran, y
+eso vale escribirlo porque la tentación en una pantalla es mirarla y decir que
+se ve bien.
+
+**Regla 5, el arnés también es un instrumento.** Un cuadro comprobado por el
+código que lo dibujó prueba que es consistente consigo mismo y nada más. Por eso
+la etapa 40 lee los pixeles con un decodificador de PNG escrito en el propio
+`verify.sh` sobre `zlib` y `struct` — treinta renglones, ningún crate, y
+ninguna línea que Thalyx haya escrito.
+
+**Regla 4, línea base y control, sobre una propiedad que es global.** La
+afirmación de la pantalla que es de seguridad no es *«la confirmación sale
+roja»*: es **«ese rojo no lo usa nada más»**, y eso no se puede comprobar
+mirando la confirmación. Hace falta el control —la pantalla ordinaria, contando
+cero— y además el control del control, que es buscar el color del agente y
+encontrarlo: sin ese tercero, un lector que no encuentra nada en ningún lado
+hace pasar la línea del medio por la razón equivocada.
+
+La forma general: **una propiedad que dice «y nada más» se prueba en lo demás,
+no en la cosa.** Una prueba escrita sobre el sujeto no puede fallar por lo que
+haya alrededor de él, que es exactamente de donde vendría el defecto.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

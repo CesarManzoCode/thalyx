@@ -52,6 +52,25 @@ pub enum DevCommand {
         list: Option<PathBuf>,
     },
 
+    /// Write a frame of the screen to a PNG, without needing a display
+    ///
+    /// The screen composes into memory, so it can be looked at anywhere. This
+    /// is the same path the display uses: what comes out is what gets drawn.
+    Screen {
+        /// Where to write the image
+        out: PathBuf,
+        /// `trabajando` or `confirmando`
+        #[arg(long, default_value = "trabajando")]
+        sample: String,
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+        /// Answer with one JSON object instead of a sentence
+        #[arg(long)]
+        structured: bool,
+    },
+
     /// Drive the agent with a model that misbehaves on purpose.
     ///
     /// This exists because of rule 4. Until `llama.cpp` is wired in there is no
@@ -116,6 +135,23 @@ pub fn run(command: DevCommand) -> Fallible {
             foreign,
             behaviour,
         } => agent_probe(&utterance, &foreign, &behaviour),
+        DevCommand::Screen {
+            out,
+            sample,
+            width,
+            height,
+            structured,
+        } => crate::screen::to_png(
+            &out,
+            width,
+            height,
+            &sample,
+            if structured {
+                crate::files::Face::Machine
+            } else {
+                crate::files::Face::Human
+            },
+        ),
         DevCommand::Pty { argv } => pty(&argv),
     }
 }
