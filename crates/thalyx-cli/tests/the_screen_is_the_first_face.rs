@@ -82,6 +82,86 @@ fn objects(output: &Output) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The same session, but on a terminal Thalyx made for it.
+///
+/// `thalyx dev pty` rather than `script(1)`, for the reason §37 of `verify.sh`
+/// gives: the one machine that can verify Thalyx did not have `script`, and the
+/// stage that depended on it skipped itself in silence.
+fn on_a_terminal(root: &Path, lines: &[&str]) -> Output {
+    let mut typed = String::new();
+    for line in lines {
+        typed.push_str(line);
+        typed.push('\n');
+    }
+    let mut child = Command::new(thalyx())
+        .args(["dev", "pty", "--", thalyx(), "session"])
+        .env("THALYX_ROOT", root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the session on a pty");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(typed.as_bytes())
+        .expect("typing");
+    child.wait_with_output().expect("the session ending")
+}
+
+#[test]
+fn clear_does_not_send_an_escape_to_something_that_is_not_a_terminal() {
+    // Photographed on a booted machine: the conversation had a turn in it that
+    // read `[2J[H`. Under the screen every verb's output is caught at the
+    // descriptor by `thalyx-capture`, so stdout is a pipe — and `clear`'s whole
+    // implementation was two escapes written to it unconditionally. The screen
+    // then drew them, because to a screen they are just text.
+    //
+    // A pipe is exactly what the screen puts there, which is why this can be
+    // checked in a container with no framebuffer at all.
+    let root = a_machine();
+    let output = piped(root.path(), &["clear", "salir"]);
+    let said = said(&output);
+    assert!(
+        !said.contains("\u{1b}[2J"),
+        "an escape went down a pipe: {said:?}"
+    );
+    assert!(
+        !said.contains("[2J"),
+        "the escape's bytes went down a pipe, which is what the screen drew: {said:?}"
+    );
+}
+
+#[test]
+fn clear_does_send_one_to_a_terminal() {
+    // The control, and without it the test above passes on a `clear` that was
+    // deleted. The verb still has to clear a console — that is what it is for,
+    // and the text session under the screen is a real console.
+    //
+    // If Thalyx cannot make a terminal here the check is not made: a stage that
+    // counted an unanswerable question as a pass is the failure `verify.sh`
+    // exists to avoid.
+    let root = a_machine();
+    let probe = Command::new(thalyx())
+        .args(["dev", "pty", "--", "sh", "-c", "test -t 1 && echo yes"])
+        .output();
+    let terminal = probe
+        .map(|out| String::from_utf8_lossy(&out.stdout).contains("yes"))
+        .unwrap_or(false);
+    if !terminal {
+        eprintln!("NOT PROVEN: `thalyx dev pty` gave no terminal, so the control was not run");
+        return;
+    }
+
+    let output = on_a_terminal(root.path(), &["clear", "salir"]);
+    let said = said(&output);
+    assert!(
+        said.contains("\u{1b}[2J"),
+        "`clear` cleared nothing on a real terminal: {said:?}"
+    );
+}
+
 #[test]
 fn a_session_with_no_keyboard_refuses_the_screen_in_the_words_it_advertised() {
     let root = a_machine();

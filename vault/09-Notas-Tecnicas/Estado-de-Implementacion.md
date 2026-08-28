@@ -183,7 +183,16 @@ cosas ningún verbo puede usar.
 | Los casos sin medición del banco | Ninguna fracción de acierto es todavía la puntuación de su gama: 6 casos en ligera y 1 en media y en alta no produjeron respuesta |
 | Salir a internet | Que el store pueda traer un módulo de algún lado. DHCP, DNS y TLS tendrían que vivir dentro de `thalyx`, y **de dónde** es una pregunta de Fase 2 sin contestar. Ver [[Red]] |
 | WiFi | Necesita firmware binario en la imagen y un suplicante WPA, que en todos lados es un demonio aparte. Obliga a revisar qué quiere decir «el kernel y un programa» |
+| **El agente, en la máquina** | Que Thalyx arrancado tenga agente. `llama.rs` arranca `llama.cpp` con `Command::new`, un binario del `PATH`, y la imagen lleva `/init` y nada más — así que **una máquina arrancada no tiene motor y no puede tenerlo** mientras la imagen sea el kernel y un programa. Decretado el 2026-08-28: el motor es el primer módulo real. Ver [[Motor-de-Inferencia-como-Modulo]] |
+| El tope de memoria de un módulo | Que quepa un modelo. `profile.rs` topa en 1 GiB y ningún manifiesto puede pedir más. Es de Cesar: es política y cuesta su hierro |
 
+> **Actualizado el 2026-08-28.** Se agregan dos renglones, y el primero es una
+> ausencia que llevaba desde el principio sin estar escrita: **el agente no está
+> en la máquina.** Nada mintió — cada nota del agente decía la verdad sobre lo
+> que el agente hace — pero nadie había preguntado *dónde corre*, y la respuesta
+> es que nunca ha corrido sobre Thalyx. Se encontró preguntando qué le falta al
+> sistema para ser usable, no auditando el agente.
+>
 > **Actualizado el 2026-08-08.** Esta tabla decía *«el `Model` real»*, *«la
 > gramática GBNF»* y *«el banco de las cuatro gamas»* como no construidos, y las
 > tres estaban construidas y corridas contra hierro desde ese mismo día — es la

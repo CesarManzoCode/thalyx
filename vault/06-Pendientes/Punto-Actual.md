@@ -14,9 +14,94 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La corrida en hierro salió limpia, y la imagen no compilaba — 2026-08-28
+> ## El agente no está en la máquina, y por dónde entra — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar arrancó la imagen, vio la pantalla, y preguntó qué le falta al sistema
+> para ser *«algo real que pueda usar durante un buen tiempo de verdad»*. La
+> respuesta, medida contra el código, es más grande de lo que esta bóveda decía.
+>
+> ### Una máquina Thalyx arrancada no tiene agente
+>
+> Y no por un pendiente: por cómo está construido. `llama.rs` arranca
+> `llama.cpp` con `Command::new`, un binario aparte buscado en el `PATH`, y la
+> imagen lleva `/init` y `/dev/console` y nada más. Así que el motor **no existe
+> en la máquina que arranca y no puede existir ahí** mientras la imagen sea el
+> kernel y un programa. El router, la gramática y las tres gamas medidas han
+> corrido siempre en el Fedora de Cesar, nunca sobre Thalyx.
+>
+> Un sistema operativo donde la IA es ciudadana de primera arrancó sin ella, y
+> eso no estaba escrito en ningún lado como hueco.
+>
+> ### El decreto: el motor es el primer módulo real
+>
+> Decidido por Cesar el 2026-08-28. Un binario estático, firmado, en el store,
+> confinado bajo `module_standard` como cualquier módulo; el `.gguf` llega al
+> disco de store por donde `greeter` ya llega. **No contradice el decreto de la
+> imagen**: un módulo vive en el store, no en la imagen, y `make -C image count`
+> sigue diciendo uno. Lo que sí lo contradice es lo de hoy, un `PATH` del que se
+> saca un programa sin manifiesto, sin firma, sin permisos y sin confinamiento.
+> Entero en [[Motor-de-Inferencia-como-Modulo]].
+>
+> ### Y se midió antes de construir nada, porque una pregunta podía matarlo
+>
+> Si un motor real necesitara algo que `module_standard` niega, el decreto sería
+> inconstruible. `dev/engine-needs.sh` lo preguntó —es
+> `dev/foreign-agent-needs.sh` apuntado a un motor, la misma comparación contra
+> la misma lista, una sola y no dos— con llama.cpp de verdad y un modelo escrito
+> por el propio `gguf-py` de llama.cpp, no por nosotros (regla 6).
+>
+> **31 llamadas al sistema distintas para cargar, tokenizar, correr el grafo y
+> generar. Las 31 ya están permitidas.** El confinamiento que ya existe alcanza
+> para un motor de inferencia, y eso no se sabía. De 13 rutas abiertas, 9 caen
+> dentro de lo que un módulo ve; de las otras cuatro, una es el `.gguf` —los
+> datos del módulo, como el `notes.txt` de `greeter`— y las tres restantes son
+> `/dev/tty` y dos de conteo de núcleos bajo `/sys`.
+>
+> **Lo que no contesta es el tamaño, y ahí está el hueco.** El modelo medido
+> pesa menos de un megabyte. `module_standard` topa un módulo en **1 GiB**
+> (`profile.rs`), ningún manifiesto puede pedir más, y aunque los pesos por
+> `mmap` sean caché reclamable, el KV cache y los búferes de cómputo no lo son.
+> Ese número es de Cesar: es política y cuesta su hierro. Tampoco contesta el
+> libc — se midió glibc y embarcaría musl estático, que es la regla 12.
+>
+> ### Tres defectos que su foto agarró, arreglados
+>
+> Los tres salieron de mirar la pantalla arrancada, no el código, y ninguno era
+> un error de lo que la pantalla *dice*.
+>
+> - **Un renglón se salía de su panel.** `Row::Pair` medía el valor entero y
+>   luego lo alineaba a la derecha; uno más ancho que la columna quedaba con el
+>   lápiz a la izquierda del panel, y `draw` no recorta. El recorte salió a
+>   `Typography::fit`, porque un texto alineado a la derecha hay que medirlo **ya
+>   recortado**.
+> - **`clear` mandaba un escape a una tubería.** Bajo la pantalla la salida se
+>   atrapa en el descriptor, así que la pantalla dibujó `[2J[H` como texto. Ahora
+>   el escape sólo sale a una terminal de verdad y hay `Flow::Emptied`. Probado
+>   por tubería **y con control en una terminal hecha con `thalyx dev pty`**.
+> - **La barra decía las opciones de un tmpfs donde va el store.** Dos errores
+>   independientes: el respaldo le ganaba a lo que respaldaba —un `find` pedía
+>   `/var/thalyx` **o** `/`, y `/` se monta primero, así que en una máquina con
+>   store el store no se consultaba nunca— y el último campo de un renglón de
+>   `mountinfo` no es una etiqueta. Por eso la barra decía tmpfs mientras el panel
+>   dos pulgadas a la derecha decía `btrfs`: **la pantalla se contradecía a sí
+>   misma**, y ésa fue la pista. Ahora dice el disco, o «sin disco — no
+>   recuerda», o `store ?` cuando no se pudo leer (regla 10).
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && make -C image image
+> ```
+>
+> Y arrancar la imagen para ver la pantalla otra vez: los tres defectos son de
+> vidrio y su Fedora no tiene framebuffer que los enseñe. `sudo ./dev/verify.sh`
+> no trae etapas nuevas todavía — la del motor llega cuando el motor exista.
+
+> ## La corrida en hierro salió limpia, y la imagen no compilaba — 2026-08-28
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > **La corrida de Cesar: `proven 185 · not proven 4 · failed 0`.** Cero fallas, y
 > el conteo cuadra: 189 comprobaciones contra las 184 de la corrida anterior
