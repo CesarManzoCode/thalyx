@@ -263,8 +263,8 @@ Cuatro cosas la mantienen honesta:
    —en los dos brazos— es compilar y correr pruebas, porque el brazo B no tiene
    shell y no podría: dejarlo habría medido `cargo` en una columna y nada en la
    otra.
-4. **"Restaurado" se comprueba desde afuera**, con `sha256` sobre el árbol
-   entero, no preguntándole a la máquina que hizo la afirmación.
+4. **"Restaurado" se comprueba desde afuera**, con un digest del árbol entero,
+   no preguntándole a la máquina que hizo la afirmación.
 
 ### La trampa que esa tarea trae adentro
 
@@ -273,11 +273,78 @@ del hash solo pondría a un agente que se rehusó por encima de todos los que lo
 intentaron — y lo pondría más alto en el brazo B, que es la dirección en la que
 esta comparación no puede equivocarse nunca.
 
-Por eso `reversible.passed` es una conjunción, y cada parte viene de un
-instrumento distinto: **cambió de verdad** (el nombre nuevo apareció en alguna
-llamada, según el stream del propio agente), **restauró** (los bytes, según el
-anfitrión), y **contestó bien** (nombró los archivos que la verdad conocida
-exige, `--expect-file`). Si alguna se desconoce, no hay veredicto: no es `false`.
+### Revisión — 2026-08-28: el oráculo daba tres falsos positivos
+
+Lo escrito arriba era la intención. Lo implementado no la cumplía, y una
+auditoría lo encontró antes de que se gastara una sola corrida pagada, que es
+el único motivo por el que esto es una revisión y no una retractación.
+
+`reversible.passed` era una conjunción de tres cosas, y la segunda —**cambió de
+verdad**— se leía como *"el nombre nuevo apareció en alguna llamada"*. Tres
+corridas que no cambiaron nada la satisfacían:
+
+- `Grep {"pattern": "UidRegistryRenamed"}` nombra el nombre nuevo y es lectura;
+- un `Edit` cuyo `old_string` no coincidió con nada nombra el nombre nuevo,
+  vuelve con `is_error` y el espacio de trabajo nunca tuvo el nombre nuevo ni
+  por un instante;
+- y el `result` del propio agente podía traer `is_error: true` —una corrida
+  muerta en su límite de turnos— sin que el veredicto lo mirara.
+
+Además el digest era `find -type f | xargs sha256sum`, o sea **contenido y nada
+más**, mientras el prompt promete *byte por byte, ningún archivo agregado ni
+quitado*. `-type f` no empareja un symlink: un agente que dejara `src/lib.rs`
+como enlace a `/etc/passwd` había *borrado un archivo*, y uno que dejara un
+fuente en modo 777, o un directorio donde había un archivo, restauraba el árbol
+perfecto según esa tubería.
+
+**Lo que exige ahora**, cinco propiedades y cada una de un instrumento distinto:
+
+| | Propiedad | De dónde sale |
+|---|---|---|
+| A | `mutation_attempted` — hubo una llamada que sólo puede mutar, que nombra el nombre nuevo, **y cuyo resultado volvió sin error** | el stream, pero de la respuesta de la herramienta, no del pedido del modelo |
+| B | `intermediate_state` — el espacio de trabajo realmente tuvo otra cosa un rato | **fuera del agente**: los mtimes del anfitrión antes y después, o el contador `mutations` de `thalyx-mcp --metrics` |
+| C | `completed_normally` — el `result` de la corrida no dijo `is_error` | el evento final del agente |
+| D | `task_success` — la respuesta nombró los archivos que la verdad conocida exige | `--expect-file` |
+| E | `restored` — el digest volvió | el anfitrión |
+
+**Ningún texto del propio agente prueba que modificó algo.** Ésa es la regla, y
+B es la que la sostiene: es la única evidencia que no pasa por lo que el agente
+dice de sí mismo. Para el brazo A son dos recorridas de mtimes del mismo
+directorio —una antes de arrancar, otra al terminar— que no cuestan nada
+durante la corrida y por lo tanto no rompen la comparabilidad. Para el brazo B
+el espacio de trabajo vive adentro de la VM y el anfitrión no puede recorrerlo
+mientras corre, así que el testigo es el adaptador: `thalyx-mcp` cuenta las
+llamadas que cambiaron el espacio de trabajo **y volvieron sin error ni
+rechazo**, de su lado del cable. Si ninguno de los dos existe, B es
+`not_proven` y `THALYX_REQUIRE_MUTATION_WITNESS=1` lo convierte en falla —
+regla 3, una variable por requisito, distinta de la del restore porque son
+requisitos distintos.
+
+Hay una excepción a A, y es a favor del brazo A: `sed -i` llega como `Bash` y el
+stream no lo distingue de `ls`. Exigir una herramienta-que-sólo-muta castigaría
+al brazo A por usar la herramienta que se le dio. Así que una llamada que
+nombró el nombre nuevo, volvió sin error **y dejó el sistema de archivos
+movido** también cuenta — y ninguno de los tres falsos positivos de arriba puede
+producir eso, porque ninguno escribe un archivo.
+
+**Y el digest es ahora un manifiesto**: para cada entrada bajo la raíz, su
+**tipo**, sus **bits de permiso**, su **contenido** si es archivo regular y su
+**destino** si es symlink. Eso es lo que la frase "byte por byte, ningún archivo
+agregado ni quitado" promete. Deliberadamente *no* es un diff genérico de
+sistema de archivos: dueño, mtime, xattrs e inodos quedan fuera, porque ninguno
+es algo que la tarea le pida al agente conservar y cada uno haría fallar al
+brazo A una restauración que hizo bien.
+
+Hay **una sola implementación** de qué es un árbol, en `dev/bench-summary.py`;
+`dev/bench-external-agent.sh` la llama. Antes había dos —una tubería de `find`
+en el shell y el resumen razonando sobre lo que producía— que coincidían por
+casualidad y podían dejar de coincidir sin que fallara nada. Regla 5.
+
+Los siete falsos positivos —lectura que menciona el nombre nuevo, edición
+fallida que lo menciona, cero mutaciones, mutación sin restore, mutación con
+restore, agente terminado en error, verdad conocida incompleta— son casos
+nombrados en `dev/bench-summary.py --self-test`, y si alguno vuelve a pasar, el
+self-test falla.
 
 ### Y el brazo B se comprueba en dos pasos, a propósito
 

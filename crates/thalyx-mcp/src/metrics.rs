@@ -45,6 +45,20 @@ pub struct Metrics {
     attempts_begun: u64,
     attempts_committed: u64,
     attempts_abandoned: u64,
+    /// Calls that changed the workspace and came back without an error.
+    ///
+    /// This is the only instrument on the whole comparison that can say arm B
+    /// really wrote something. Its workspace lives inside the machine, so the
+    /// host cannot walk it during a run the way it walks arm A's copy — and
+    /// `dev/bench-summary.py` used to settle the question by looking for the
+    /// new name in a tool call, which a `thalyx_find` for that name satisfies
+    /// without touching a byte.
+    ///
+    /// Counted on this side of the wire and only for calls the machine
+    /// answered: a refused call and a failed call changed nothing, and an
+    /// `edit show` returns numbered lines. Rule 9 — the flattering direction
+    /// is the one this must never be wrong in.
+    mutations: u64,
 }
 
 impl Metrics {
@@ -64,6 +78,7 @@ impl Metrics {
             attempts_begun: 0,
             attempts_committed: 0,
             attempts_abandoned: 0,
+            mutations: 0,
         }
     }
 
@@ -89,6 +104,9 @@ impl Metrics {
         }
         if refused {
             self.refusals += 1;
+        }
+        if !failed && !refused && changes_the_workspace(tool, arguments) {
+            self.mutations += 1;
         }
         match tool {
             "thalyx_read" => self.files_read += 1,
@@ -129,6 +147,7 @@ impl Metrics {
                 "committed": self.attempts_committed,
                 "abandoned": self.attempts_abandoned,
             },
+            "mutations": self.mutations,
             // Said out loud rather than left absent, so that a run whose summary
             // has no token count is a run where nobody could count them and not
             // one where somebody forgot to look.
@@ -148,6 +167,32 @@ impl Metrics {
     }
 }
 
+/// Whether one answered call changed the workspace.
+///
+/// Named rather than inferred, and narrow on purpose: a tool that is not in
+/// this list counts as no change, so a tool added later is uncounted until
+/// somebody adds it here. That is the safe direction — the number exists to be
+/// evidence that arm B wrote something, and a count that guessed high would be
+/// evidence for the arm this project has every reason to want to win.
+fn changes_the_workspace(tool: &str, arguments: &Value) -> bool {
+    match tool {
+        // `show` returns numbered lines and writes nothing.
+        "thalyx_edit" => arguments.get("action").and_then(Value::as_str) != Some("show"),
+        "thalyx_file" => matches!(
+            arguments.get("action").and_then(Value::as_str),
+            Some("create" | "create_directory" | "delete" | "move" | "copy")
+        ),
+        // An abandon puts the workspace back, which is a change to it — and it
+        // is the change the `reversible` task is about. The unconfirmed first
+        // call is a question and is counted nowhere.
+        "thalyx_attempt" => {
+            arguments.get("action").and_then(Value::as_str) == Some("abandon")
+                && arguments.get("confirm").and_then(Value::as_bool) == Some(true)
+        }
+        _ => false,
+    }
+}
+
 fn write_atomically(file: &Path, object: &Value) -> std::io::Result<()> {
     let scratch = file.with_extension("partial");
     std::fs::write(&scratch, serde_json::to_vec_pretty(object)?)?;
@@ -160,6 +205,57 @@ fn write_atomically(file: &Path, object: &Value) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_call_that_changed_something_and_worked_counts_as_a_mutation() {
+        // The whole reason this counter exists. `dev/bench-summary.py` used to
+        // decide that arm B "really changed" the workspace because the new name
+        // appeared in some tool call — which a search for that name satisfies,
+        // and so does an edit that failed. Arm B's workspace is inside the
+        // machine and cannot be walked from the host during a run, so if this
+        // number is wrong there is nothing else to catch it.
+        let mut metrics = Metrics::new(None);
+        metrics.call("thalyx_find", &json!({"query": "WidgetRenamed"}), 10, false, false);
+        metrics.call("thalyx_edit", &json!({"path": "a.rs", "action": "show"}), 10, false, false);
+        metrics.call(
+            "thalyx_edit",
+            &json!({"path": "a.rs", "action": "replace", "at": "3", "text": "WidgetRenamed"}),
+            10,
+            true,
+            false,
+        );
+        metrics.call(
+            "thalyx_file",
+            &json!({"action": "delete", "path": "../outside"}),
+            10,
+            true,
+            true,
+        );
+        assert_eq!(metrics.object()["mutations"], json!(0));
+
+        metrics.call(
+            "thalyx_edit",
+            &json!({"path": "a.rs", "action": "replace", "at": "3", "text": "WidgetRenamed"}),
+            10,
+            false,
+            false,
+        );
+        metrics.call(
+            "thalyx_file",
+            &json!({"action": "move", "path": "a.rs", "to": "b.rs"}),
+            10,
+            false,
+            false,
+        );
+        metrics.call(
+            "thalyx_attempt",
+            &json!({"action": "abandon", "confirm": true}),
+            10,
+            false,
+            false,
+        );
+        assert_eq!(metrics.object()["mutations"], json!(3));
+    }
 
     #[test]
     fn a_reading_run_and_an_indexing_run_do_not_look_the_same() {
