@@ -1,0 +1,20 @@
+{
+  "about": "A private function in one file, and a third file that happens to write the same word.",
+  "category": "precision guard",
+  "why_it_matters": "`unlock_quietly` is declared once, so the uniqueness rule alone would draw the edge. It is not `pub`, so no other file can reach it: the edge is not unlikely, it is impossible. Found on this repository, where `thalyx-snapshot` declares `fn place` and `fn relative` and every file holding those ordinary words became a dependent.",
+  "dependents": {
+    "src/vault.rs": [
+      { "from": "src/lib.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "unlock_quietly": {
+      "definitions": ["src/vault.rs:3 function"],
+      "uses": ["src/caller.rs:2", "src/vault.rs:8"]
+    },
+    "open_vault": {
+      "definitions": ["src/vault.rs:7 function"],
+      "uses": []
+    }
+  }
+}

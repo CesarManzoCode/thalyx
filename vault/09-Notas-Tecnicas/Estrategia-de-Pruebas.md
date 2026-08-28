@@ -4641,3 +4641,121 @@ recursivamente, con las reglas del verbo que envuelve.
 —una superficie, un canal, una API— la primera corrida contra ella vale más que
 la suite entera de lo que envuelve. Correrla antes de escribir una sola prueba
 nueva, y anotar lo que salga.
+
+## Regla derivada: una respuesta correcta y estrecha se lee como una respuesta completa — 2026-08-28
+
+`usan src/store.rs` contestaba con los dos archivos que escriben
+`use crate::store::…`, y era **cierto**: eso es exactamente lo que el índice
+sabía. Se le escapaba un tercero que llega al mismo código como
+`server.store.persist()`, que `grep` sí encontró.
+
+Ninguna prueba podía atrapar eso, y no por descuido: todas preguntaban *¿están
+las filas que tiene que haber?* y todas pasaban. La pregunta que faltaba era
+**¿qué palabra cree quien lee esto que acaba de recibir?** Un agente que pide
+"dependencias" no está pidiendo la lista de imports; está pidiendo lo que se
+rompería. La respuesta era angosta, la palabra era ancha, y la distancia entre
+las dos es el error que el que pregunta comete después, lejos, sin manera de
+saber que empezó aquí.
+
+**Lo que hay que hacer con esto.** Cada vez que una primitiva se le ofrece a un
+agente, la pregunta que hay que hacerle no es si contesta bien, sino **qué
+concluiría de la respuesta alguien que no vio el código**. Si lo que concluiría
+es más de lo que la respuesta sostiene, o el nombre está mal, o la respuesta
+está incompleta, y hay que decidir cuál de las dos — nunca dejarlo así porque
+técnicamente no miente.
+
+## Regla derivada: un corpus con respuestas conocidas mide lo que un modelo no puede — 2026-08-28
+
+Lo único que había para saber qué sabe el índice era darle una tarea a Claude y
+leer qué pasó. Eso cuesta dinero, tarda minutos, varía entre corridas, y contesta
+*cómo fue esa sesión* en vez de *qué sabe el índice*.
+
+`crates/thalyx-graph/corpus/` son diez árboles chiquitos con la respuesta
+correcta escrita al lado, sacada de leer el código y no de correrlo. Corre en
+milisegundos y contesta con una tabla. Encontró tres defectos de precisión en
+este mismo repositorio antes de que ningún modelo lo mirara.
+
+Dos cosas lo hacen medir y no adornar:
+
+1. **Las expectativas son igualdades, no "tiene que contener".** Un índice a
+   nivel de símbolo falla devolviendo de más, no de menos, y un corpus que sólo
+   buscara las filas que quiere pasaría igual de contento sobre uno que devuelve
+   el árbol entero. Dos de los diez casos existen únicamente para ser contestados
+   **angostamente**: un nombre declarado en dos archivos, donde lo correcto es
+   negarse, y un nombre escrito en un comentario y en una cadena, donde lo
+   correcto es ignorarlo.
+2. **Los límites se declaran, no se esconden.** Un caso puede traer
+   `known_limits`, y la prueba afirma que el límite **sigue siéndolo** — así que
+   arreglarlo aparece tan fuerte como romper otra cosa —, imprime `NOT PROVEN`, y
+   `THALYX_REQUIRE_FULL_CORPUS=1` lo convierte en falla. Regla 3, en un lugar
+   donde era muy fácil dejar una advertencia vieja envejeciendo sola.
+
+**Lo que hay que hacer con esto.** Antes de gastar un modelo midiendo algo,
+preguntarse si lo que se quiere saber tiene una respuesta conocida y barata. Casi
+siempre la tiene, y entonces el modelo se gasta en lo que sólo un modelo puede
+contestar.
+
+## Regla derivada: un escaneo de a un renglón no puede saber qué es código — 2026-08-28
+
+Tres defectos, uno por cada forma en que el texto se pasa de renglón, y los tres
+salieron de indexar **este** repositorio y leer las filas:
+
+- `uapi_btrfs.h` figuraba como dependiente de `thalyx-parser` porque la palabra
+  `definitions` aparece en un comentario `/* … */`.
+- `thalyx-permd` figuraba igual porque un mensaje de `panic!` sigue en el renglón
+  siguiente con una barra invertida, y ese renglón se escaneaba como código.
+- `thalyx-graph/src/schema.rs` igual, porque el SQL vive en una cadena cruda
+  `r#"…"#` de veinte renglones y adentro dice `from_path`.
+
+Los tres existían desde que existe el índice, y ninguno se veía: una mención de
+más en `buscar` es una fila que nadie mira. Se hicieron visibles el día que una
+mención se convirtió en **una arista de dependencia**, que es un archivo al que
+alguien va a ir.
+
+El arreglo no fue tapar los tres, fue **un solo escaneo con estado** para las
+tres entradas del parser, que antes hacían tres manejos de comentarios distintos.
+Y ese escaneo tiene una asimetría que hay que respetar: una comilla doble sin
+cerrar continúa al renglón siguiente, y una comilla simple **nunca**, porque en
+Rust `&'a str` es un lifetime. Llevarla habría borrado el resto del archivo — una
+pérdida de recall que nadie notaría y que a todos les dolería. Tiene su prueba,
+`a_lifetime_does_not_swallow_the_rest_of_the_file`, y la del espejo:
+`a_slash_star_inside_a_string_does_not_open_a_comment`.
+
+**Lo que hay que hacer con esto.** Cuando una señal que era decorativa pasa a
+tener consecuencias, sus falsos positivos viejos son defectos nuevos. Hay que ir
+a buscarlos **corriendo la cosa sobre este repositorio y leyendo las filas**, no
+sobre fixtures — los tres estaban en código real y ninguno en un fixture.
+
+## Regla derivada: un guardia se calibra sobre el repositorio, no sobre el ejemplo que lo motivó — 2026-08-28
+
+La regla de las aristas de símbolo —*un nombre que exactamente un archivo del
+árbol declara*— pasaba los diez casos del corpus a la primera. Corrida sobre este
+repositorio, `thalyx-snapshot/src/lib.rs` tenía **41 dependientes**.
+
+Los tres defectos que faltaban salieron uno tras otro de leer esas filas, y
+ninguno se parecía al anterior:
+
+1. `fn place`, `fn relative` — **privadas**. Ningún otro archivo puede
+   nombrarlas, así que la arista no es improbable: es imposible. Faltaba
+   preguntarle a cada lenguaje su propia regla de visibilidad.
+2. `pub fn directory(&self)`, `pub fn subvolume(&self)` — públicas, únicas,
+   alcanzables, y **palabras del idioma**. Todo archivo con un `for directory in
+   …` figuraba como dependiente. Faltaba que un archivo que **ata** un nombre
+   esté hablando de su propia atadura.
+3. Un archivo con su propio `fn validate_name` privado, llamándolo, figuraba como
+   dependiente del único crate con uno público — porque al exigir visibilidad, la
+   declaración privada de al lado dejó de estar ahí para volver ambiguo el
+   nombre. **Arreglar un guardia destapó al siguiente.**
+
+Quedaron 19, de los cuales 17 son referencias reales entre crates que ningún
+import podía resolver, y las dos que sobran están contadas.
+
+Y el corpus hizo su trabajo del otro lado: las doce piezas pasaron enteras
+mientras el mecanismo debajo cambiaba tres veces en una tarde. Eso es lo que una
+red de regresión tiene que hacer y lo único que prueba que sirve.
+
+**Lo que hay que hacer con esto.** Un guardia probado sólo contra los casos que
+lo motivaron está probado contra su propio autor. El repositorio es el corpus
+adversario que nadie escribió, es gratis, y hay que correrlo **y leer las filas**
+— no contarlas. Los tres defectos estaban en la lista desde la primera corrida;
+lo que faltaba era mirarla.

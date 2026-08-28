@@ -34,15 +34,28 @@
 #
 # ## Where the numbers come from
 #
-#   - Claude Code's own `--output-format json`: turns, wall time, and token usage
-#     **where it reports one**. Nothing is estimated. A field the JSON does not
-#     carry is written as absent, never as zero.
-#   - `thalyx-mcp --metrics`, for arm B: which tools were called and how often,
-#     bytes returned, refusals. Arm A has no equivalent and does not get a made-up
-#     one; what is comparable across the two is turns, wall time and tokens.
+#   - Claude Code's own `--output-format stream-json`, kept whole on disk. The
+#     final `result` event carries turns, wall time, cost and token usage; the
+#     `tool_use` and `tool_result` blocks carry every call the model made, by
+#     name, and how many bytes each handed back. That last part is the reason
+#     for the stream: it makes **both** arms measurable in the same units, where
+#     before only arm B could be counted at all.
+#     Nothing is estimated. A field the agent did not print is absent from the
+#     summary, never zero. `dev/bench-summary.py` is the parser, and it is a
+#     separate file so it can be checked against a captured real session
+#     (`dev/samples/`) without spending a run — rule 6.
+#   - `thalyx-mcp --metrics`, for arm B, kept *beside* the stream numbers rather
+#     than merged with them. Arm B is therefore measured twice by two
+#     independent instruments, and rule 5 says that is the point: if they
+#     disagree, one is wrong, and an average would hide it.
 #   - The workspace itself, hashed before and after, which is how the `change`
 #     task's claim — that abandoning puts everything back exactly — is checked by
 #     something other than the machine that made the claim.
+#   - Whether the task was *done*, when the caller says what done means:
+#     `--expect-file` is a list of strings the final answer has to contain,
+#     written by hand from the project's ground truth. Without it the summary
+#     reports no verdict rather than a guessed one — an agent that answered
+#     confidently and wrongly must not score as a success.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,6 +67,7 @@ TURNS="${THALYX_BENCH_TURNS:-30}"
 OUT="${THALYX_BENCH_OUT:-$ROOT/target/bench-external-agent}"
 SYMBOL="${THALYX_BENCH_SYMBOL:-}"
 ARMS="AB"
+EXPECT="${THALYX_BENCH_EXPECT:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +79,7 @@ while [ $# -gt 0 ]; do
         --out)     OUT="$2";     shift 2 ;;
         --symbol)  SYMBOL="$2";  shift 2 ;;
         --arms)    ARMS="$2";    shift 2 ;;
+        --expect-file) EXPECT="$2"; shift 2 ;;
         *) echo "  unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -115,13 +130,26 @@ run_arm() {
     local arm="$1" cwd="$2"; shift 2
     local began ended
     say "arm $arm: running (model $MODEL, at most $TURNS turns)"
+    # Anything left from a previous run goes first. The summary falls back to
+    # the older single-object shape when a stream is empty, and a stale file
+    # from last week is exactly the input that would make a failed run look
+    # like a successful one.
+    rm -f "$OUT/arm$arm.ndjson" "$OUT/arm$arm.json"
     began=$(date +%s)
+    # `stream-json` and not `json`, so that every tool the model called is on
+    # disk. `--verbose` is what the CLI requires to emit the stream in `-p`
+    # mode, and the whole stream is kept: a summary can be recomputed from it
+    # later, and a run whose numbers are argued about is a run nobody can
+    # re-read if only the summary survived.
     ( cd "$cwd" && timeout 1800 claude -p "$PROMPT" \
         --permission-mode acceptEdits \
-        --max-turns "$TURNS" --output-format json --model "$MODEL" \
-        "$@" < /dev/null ) > "$OUT/arm$arm.json" 2> "$OUT/arm$arm.err" || true
+        --max-turns "$TURNS" --output-format stream-json --verbose --model "$MODEL" \
+        "$@" < /dev/null ) > "$OUT/arm$arm.ndjson" 2> "$OUT/arm$arm.err" || true
     ended=$(date +%s)
-    say "arm $arm: $((ended - began))s"
+    # The wall time the summary reports is the agent's own. This one is the
+    # whole invocation including process start, and it is printed rather than
+    # recorded so that the two are never confused for each other.
+    say "arm $arm: $((ended - began))s wall, $(wc -l < "$OUT/arm$arm.ndjson") stream events"
 }
 
 # ── arm A: an ordinary Linux copy, ordinary tools ────────────────────────────
@@ -158,56 +186,17 @@ JSON
 fi
 
 # ── the summary ──────────────────────────────────────────────────────────────
-python3 - "$OUT" "$TASK" "$SYMBOL" "$MODEL" "$TURNS" <<'PY'
-import json, pathlib, sys
-
-out, task, symbol, model, turns = pathlib.Path(sys.argv[1]), *sys.argv[2:]
-
-def arm(name):
-    path = out / f"arm{name}.json"
-    if not path.exists():
-        return None
-    try:
-        answer = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return {"arm": name, "unreadable": str(path)}
-    usage = answer.get("usage") or {}
-    row = {
-        "arm": name,
-        "is_error": answer.get("is_error"),
-        "turns": answer.get("num_turns"),
-        "wall_ms": answer.get("duration_ms"),
-    }
-    # Only what the agent actually reported. A missing field stays missing:
-    # rule 10, a failure to read is not a failure to exist.
-    for field in ("input_tokens", "output_tokens", "cache_read_input_tokens",
-                  "cache_creation_input_tokens"):
-        if field in usage:
-            row[field] = usage[field]
-    if answer.get("total_cost_usd") is not None:
-        row["cost_usd"] = answer["total_cost_usd"]
-    metrics = out / f"arm{name}.metrics.json"
-    if metrics.exists():
-        row["thalyx"] = json.loads(metrics.read_text())
-    before, after = out / f"arm{name}.before", out / f"arm{name}.after"
-    if before.exists() and after.exists():
-        row["tree_unchanged"] = before.read_text() == after.read_text()
-    return row
-
-summary = {
-    "task": task,
-    "symbol": symbol,
-    "model": model,
-    "max_turns": int(turns),
-    "arms": [row for row in (arm("A"), arm("B")) if row],
-    "note": "One run of one task. This is a harness, not a result.",
-}
-(out / "summary.json").write_text(json.dumps(summary, indent=2))
-print(json.dumps(summary, indent=2))
-PY
+#
+# A separate program, because a parser for somebody else's output that lives
+# inside a shell script is a parser nobody can test without running the thing it
+# parses. `dev/bench-summary.py --self-test` checks it against a captured real
+# session, in a second, for free.
+SUMMARY_ARGS=(--out "$OUT" --task "$TASK" --symbol "$SYMBOL" --model "$MODEL" --turns "$TURNS")
+[ -n "$EXPECT" ] && SUMMARY_ARGS+=(--expect-file "$EXPECT")
+python3 "$ROOT/dev/bench-summary.py" "${SUMMARY_ARGS[@]}"
 
 say
-say "answers:  $OUT/armA.json  $OUT/armB.json"
+say "streams:  $OUT/armA.ndjson  $OUT/armB.ndjson"
 say "summary:  $OUT/summary.json"
 say
 say "One run is an anecdote. What this proves is that the comparison can be run."

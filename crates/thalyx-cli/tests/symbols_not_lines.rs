@@ -171,7 +171,7 @@ fn the_answer_carries_the_freshness_like_every_other_index_answer() {
 }
 
 #[test]
-fn a_tree_that_changed_after_indexing_says_stale_and_still_answers() {
+fn a_tree_that_changed_after_indexing_is_reindexed_and_then_answered() {
     let (root, tree) = a_project_with_a_word_used_four_ways();
     let output = piped(
         root.path(),
@@ -186,10 +186,40 @@ fn a_tree_that_changed_after_indexing_says_stale_and_still_answers() {
     );
     let answer = answer_to(&objects(&output), "symbol");
 
-    // Both halves. Refusing would leave a caller with nothing on a tree
-    // somebody is working in, which is every real tree; answering silently
-    // would let it believe an index that has moved on.
-    assert_eq!(answer["fresh"], serde_json::json!("stale"));
+    // Both halves, and the second is the one that changed on 2026-08-28.
+    // Refusing would leave a caller with nothing on a tree somebody is working
+    // in, which is every real tree; answering from the old index and labelling
+    // it `stale` left the caller to spend turns fixing the index before it
+    // could ask again. Now the question repairs what it needs and says it did.
+    assert_eq!(
+        answer["refreshed"],
+        serde_json::json!("rebuilt"),
+        "{answer}"
+    );
+    assert_eq!(answer["fresh"], serde_json::json!("current"), "{answer}");
+    assert_eq!(answer["definitions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_search_that_asked_not_to_refresh_is_told_the_index_is_behind() {
+    // The honesty rule survives the convenience: nothing ever reports
+    // `current` without having earned it, and a caller that wants to know what
+    // the index held can still ask.
+    let (root, tree) = a_project_with_a_word_used_four_ways();
+    let output = piped(
+        root.path(),
+        &[
+            "structured on",
+            &format!("cd {}", tree.display()),
+            "indexar",
+            &format!("touch {}", tree.join("src/nuevo.rs").display()),
+            "buscar login refrescar=no",
+            "salir",
+        ],
+    );
+    let answer = answer_to(&objects(&output), "symbol");
+
+    assert_eq!(answer["fresh"], serde_json::json!("stale"), "{answer}");
     assert_eq!(answer["definitions"].as_array().unwrap().len(), 1);
 }
 

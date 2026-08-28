@@ -1,0 +1,17 @@
+{
+  "about": "A free function called by its full path, with no `use` line anywhere.",
+  "category": "direct call",
+  "why_it_matters": "Nothing in `total.rs` names `math.rs`, so an import list cannot see the dependency. The call is right there in the text.",
+  "dependents": {
+    "src/math.rs": [
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/total.rs", "via": "symbol", "through": "add" }
+    ]
+  },
+  "symbols": {
+    "add": {
+      "definitions": ["src/math.rs:1 function"],
+      "uses": ["src/total.rs:4"]
+    }
+  }
+}

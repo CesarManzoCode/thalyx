@@ -147,8 +147,9 @@ opening any of them.",
 Where a name is defined and every place it is used, from Thalyx's parsed \
 semantic index — exact, and never a match inside a comment or a string. \
 Prefer this over text search whenever the question is about a code symbol. \
-The answer says whether the index is current; if it is stale, call \
-thalyx_index first.",
+If the workspace changed since the index was built, this rebuilds it and then \
+answers about the tree as it is now; the answer says which happened. Matching \
+is exact and case-sensitive, so `login` does not find `login_user`.",
         schema: || {
             json!({
                 "type": "object",
@@ -169,10 +170,20 @@ thalyx_index first.",
         name: "thalyx_dependencies",
         verbs: &["depends_on", "depended_on_by"],
         description: "\
-Structural dependencies of one file, from the index and without reading \
-anything: what it refers to, or what refers to it. Use it before reading files \
-to discover the impact of a change — `dependents` is the direction no directory \
-walk and no grep can answer.",
+Which files depend on one file, or which it depends on, from the index and \
+without reading anything. Use it before reading files to work out the impact \
+of a change: `dependents` is the direction no directory walk and no grep can \
+answer. Every row says how the dependency is known — `via: import` when the \
+file declares it (use, mod, import, #include), `via: symbol` when the file \
+uses a name that exactly one file in the workspace declares, is visible outside \
+that file, and is not something this file binds or declares itself. That is how \
+a field access, a method call, a trait bound or a re-export gets caught. It is \
+built to be precise rather than complete: a name declared in two files is never \
+turned into a dependency, because which one it meant is a guess, and an alias \
+(`use X as Y`) is followed to the file and not to the name. A method called on \
+a type from outside the workspace can still slip through. So treat the list as \
+solid but not exhaustive — for a name you suspect is reached some other way, \
+thalyx_symbol is the finer question.",
         schema: || {
             json!({
                 "type": "object",
@@ -208,9 +219,12 @@ walk and no grep can answer.",
         name: "thalyx_index",
         verbs: &["index_build"],
         description: "\
-Read the workspace and record what refers to what. Needed once before \
-thalyx_symbol and thalyx_dependencies can answer, and again after a change \
-those answers should reflect. Hidden directories and build outputs are skipped.",
+Read the workspace and record what refers to what. thalyx_symbol and \
+thalyx_dependencies keep the index current by themselves, so you rarely need \
+this: call it for the first index of a workspace, or when one of them answered \
+`refreshed: declined_too_large` because the tree is big enough that rebuilding \
+inside a question would keep you waiting. Hidden directories and build outputs \
+are skipped.",
         schema: || {
             json!({
                 "type": "object",

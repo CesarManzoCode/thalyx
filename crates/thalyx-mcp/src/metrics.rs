@@ -31,6 +31,10 @@ pub struct Metrics {
     /// agent whose tool crashed was not.
     refusals: u64,
     bytes_returned: u64,
+    /// What the agent spent saying what it wanted. Counted separately from what
+    /// came back because they answer different halves of the same question: a
+    /// surface that costs little to ask and answers a lot is the whole claim.
+    bytes_sent: u64,
     per_tool: BTreeMap<String, u64>,
     /// The three that answer the question this exists for. A run where the
     /// agent read forty files and never asked the index is a run where the
@@ -52,6 +56,7 @@ impl Metrics {
             errors: 0,
             refusals: 0,
             bytes_returned: 0,
+            bytes_sent: 0,
             per_tool: BTreeMap::new(),
             files_read: 0,
             text_searches: 0,
@@ -73,6 +78,11 @@ impl Metrics {
     ) {
         self.calls += 1;
         self.bytes_returned += bytes as u64;
+        // The arguments as they went over the wire, which is what the agent
+        // actually spent. Serialised here rather than measured at the socket
+        // because the socket also carries framing this crate did not choose,
+        // and a number that mixed the two would not be the agent's cost.
+        self.bytes_sent += arguments.to_string().len() as u64;
         *self.per_tool.entry(tool.to_string()).or_default() += 1;
         if failed {
             self.errors += 1;
@@ -108,6 +118,7 @@ impl Metrics {
             "mcp_calls": self.calls,
             "tools_used": self.per_tool,
             "bytes_returned": self.bytes_returned,
+            "bytes_sent": self.bytes_sent,
             "errors": self.errors,
             "refusals": self.refusals,
             "files_read": self.files_read,

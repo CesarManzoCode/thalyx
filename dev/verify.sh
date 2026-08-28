@@ -6978,6 +6978,66 @@ fi
 
 unproven "that virtio-serial actually carries the protocol — that needs a boot: make -C image agent PROJECT=<a project>, then dev/agent-connect.sh"
 
+step "49. the index finds a dependent that reaches the code through a field, and does not invent one"
+
+# The defect this stage is about was found by running the system, which is where
+# they all come from. Asked what depends on `src/store.rs`, the index named the
+# two files that write `use crate::store::…` and missed a third that reaches the
+# same code as `server.store.persist()`. Claude, on Linux, found it with `grep`.
+#
+# So `dependencies` meant *imports*, and the word an agent reads it as is
+# *everything that would break*. The evidence was already in the index — the
+# mention had been recorded — and nothing turned it into an edge.
+#
+# `crates/thalyx-graph/corpus/` is ten small trees whose right answers are
+# written down beside them, worked out by reading the source rather than by
+# running the code. Two of the ten exist to be answered *narrowly*: the case
+# where a name is declared in two files, where the right answer is to refuse,
+# and the case where a name appears in a comment and in a string, where the
+# right answer is to ignore it. A symbol-level index fails by returning too
+# much, so a corpus that only checked for the rows it wanted would pass on an
+# index that returned the whole tree.
+# `--nocapture` because the scoreboard and the stated limits are printed by the
+# test, and a passing test's output is swallowed without it — which would leave
+# this stage reporting a number it never read.
+if cargo test -p thalyx-graph --test the_corpus_says_what_the_index_knows \
+       -- --nocapture > "$WORK/corpus.log" 2>&1; then
+    CORPUS_CHECKS=$(grep -oE '[0-9]+ exact answers checked' "$WORK/corpus.log" | head -1)
+    proven "the ten fixtures of the index corpus answer exactly what they say they should${CORPUS_CHECKS:+ ($CORPUS_CHECKS)}"
+    # The known limits are printed rather than hidden, and there is a variable
+    # that demands them. Rule 3.
+    while IFS= read -r limit; do
+        unproven "the index corpus: ${limit#*NOT PROVEN  }"
+    done < <(grep 'NOT PROVEN' "$WORK/corpus.log" || true)
+else
+    failed "the index corpus does not answer what it says it should; see $WORK/corpus.log"
+    excerpt "$WORK/corpus.log" 20
+fi
+
+if cargo test -p thalyx-graph --test the_index_repairs_itself > "$WORK/refresh.log" 2>&1; then
+    proven "a semantic question about a tree that moved on repairs the index and answers about the tree, and declines rather than stalling when the tree is too big"
+else
+    failed "the index does not repair itself as claimed; see $WORK/refresh.log"
+    excerpt "$WORK/refresh.log" 20
+fi
+
+step "50. the benchmark harness reads what the agent printed, and nothing else"
+
+# Rule 6, and the reason it is a stage rather than a comment: the numbers that
+# will decide whether Thalyx is worth anything come out of a parser for somebody
+# else's output format, and this project has twice tested such a parser only
+# against fixtures its author invented. `dev/samples/claude-stream-json.ndjson`
+# is a real Claude Code session, captured verbatim, and the self-test checks the
+# things that session is known to be — two turns, one `Read`, a cost — plus the
+# half that matters more: that a field the agent never printed is **absent**
+# from the summary rather than zero.
+if python3 "$ROOT/dev/bench-summary.py" --self-test > "$WORK/bench-summary.log" 2>&1; then
+    proven "the benchmark summary parses a real captured session and invents nothing"
+else
+    failed "the benchmark summary does not read a real session correctly; see $WORK/bench-summary.log"
+    excerpt "$WORK/bench-summary.log" 20
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

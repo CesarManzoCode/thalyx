@@ -14,9 +14,91 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## `intento` ya no le pregunta a un binario que no existe — 2026-08-28
+> ## El índice encuentra al dependiente que se llega por un campo, y las consultas se reparan solas — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Endurecimiento de la superficie **antes** del primer benchmark, para que lo que
+> se mida sea Thalyx y no defectos que ya conocíamos. Todo salió de evidencia que
+> ya teníamos: la primera comparación y la primera corrida real de Claude.
+>
+> **1. `dependencias` significaba `imports`, y la palabra es más ancha.**
+> Preguntado qué depende de `src/store.rs`, el índice nombraba los dos archivos
+> que escriben `use crate::store::…` y se le escapaba un tercero que llega al
+> mismo código como `server.store.persist()`. La evidencia ya estaba adentro — la
+> mención estaba registrada — y nada la convertía en arista. Ahora hay dos clases
+> de arista y **cada fila dice cuál es**: `via: import` (el archivo la declaró) y
+> `via: symbol` (usa un nombre que **exactamente un** archivo del árbol declara).
+> La regla de "exactamente uno" es toda la precisión: un nombre que declaran dos
+> archivos no se convierte en arista nunca, porque cuál de los dos se quiso decir
+> es una adivinanza. El decreto está en [[FS-en-Grafo]].
+>
+> Con el mismo mecanismo quedan resueltos la llamada directa por ruta, el acceso
+> por campo, el método, el trait en una cota, el módulo de directorio y el
+> **re-export** — que es el caso donde el import no resolvía a nada, porque
+> `crate::Engine` no es un archivo. Sigue sin saberse **el alias**: `use X as Y`
+> da la dependencia entre archivos, y que `Y` sea `X` es un compilador.
+>
+> Y la primera versión, con sólo esa regla, daba **41 dependientes** para
+> `thalyx-snapshot/src/lib.rs`. Correrla sobre este repositorio y leer las filas
+> —que es de donde salen todos los defectos— agregó tres condiciones más, cada
+> una de un defecto distinto: el nombre tiene que ser **visible desde afuera**
+> (`fn place` y `fn relative` son privadas, y ninguna arista hacia ellas puede
+> existir); el archivo que lo usa **no debe atarlo** (`for directory in …` habla
+> de su propia atadura, no de `pub fn directory`); y **no debe declararlo él
+> mismo** a ninguna visibilidad. Quedaron 19, de los cuales 17 son referencias
+> reales entre crates que **ningún import podía resolver**. Las dos que sobran
+> están contadas en [[FS-en-Grafo]]: necesitan saber de qué tipo es el receptor,
+> que es un compilador.
+>
+> **2. Tres falsos positivos que llevaban ahí desde siempre.** Al medir lo
+> anterior sobre este repositorio aparecieron: un comentario `/* … */`, una cadena
+> que sigue en el renglón siguiente, y un `r#"…"#` de veinte renglones — los tres
+> metían palabras al índice como si fueran código. Existían desde el principio y
+> no se veían, porque una mención de más es una fila que nadie mira; se hicieron
+> visibles el día que una mención pasó a ser una arista. El arreglo es **un solo
+> escaneo con estado** para las tres entradas del parser. Sobre `crates/`: 61 047
+> menciones antes, 58 390 después — 2 657 eran falsas.
+>
+> **3. Cuatro turnos que ya no se pagan.** En la corrida real, Claude preguntó por
+> un árbol que acababa de cambiar, dedujo del campo `fresh` que el índice estaba
+> atrasado, llamó a `state`, llamó a `indexar`, y volvió a preguntar. Ahora
+> `buscar`, `depende` y `usan` reconstruyen el índice antes de contestar cuando es
+> barato — techo de 2 000 archivos, sacado de la medición — y cuando no, contestan
+> `refreshed: declined_too_large` con el tamaño del árbol y el verbo que hay que
+> llamar. **La regla de honestidad no se movió**: nada reporta `current` por
+> haberlo intentado, y `refrescar=no` devuelve lo que el índice tenía.
+>
+> **4. Un corpus determinista, sin modelo.** `crates/thalyx-graph/corpus/` son
+> doce árboles chiquitos con la respuesta correcta escrita al lado, sacada de leer
+> el código. 44 respuestas exactas, en milisegundos, gratis. Cuatro de los doce
+> existen para ser contestados **angostamente**, porque un índice de símbolos
+> falla devolviendo de más. Encontró los tres defectos del punto 2 antes de que
+> ningún modelo mirara nada, y pasó entero mientras el mecanismo debajo cambiaba
+> tres veces en una tarde — que es para lo que existe una red de regresión.
+>
+> **5. El arnés recoge las dos mitades.** `dev/bench-external-agent.sh` usa
+> `--output-format stream-json`, así que ahora las **dos** ramas se miden en las
+> mismas unidades: llamadas a herramientas por nombre, bytes que cada una le
+> devolvió al modelo, archivos leídos, búsquedas de texto, además de turnos,
+> tiempo, tokens y costo. Antes sólo la rama B era contable. El parser es
+> `dev/bench-summary.py`, aparte a propósito, con `--self-test` contra una sesión
+> real capturada en `dev/samples/` — regla 6. Y `--expect-file` da un veredicto de
+> éxito de la tarea; sin él no hay veredicto, nunca uno adivinado.
+>
+> **Costo medido**, mismo árbol, mejor de siete, release: indexar `crates/` pasa
+> de 368,7 ms a 480,4 ms (+30 %) y devuelve 2 803 aristas que antes no existían,
+> con 2 657 menciones falsas menos. Las consultas no cambiaron: frescura 2,1 ms,
+> dependientes 1,8 ms. Dos optimizaciones baratas ya pagaron la mayor parte de
+> ese costo: sentencias preparadas en los dos `INSERT` que corren decenas de
+> miles de veces (588,2 → 480,4 ms) y un solo escaneo por archivo en vez de dos
+> (533,7 → 480,4 ms).
+>
+> Etapas 49 y 50 nuevas en `dev/verify.sh`. Nada de esto necesita hierro: corre
+> entero en el contenedor.
+>
+> ## `intento` ya no le pregunta a un binario que no existe — 2026-08-28
+>
 >
 > Encontrado corriendo la máquina, que es de donde salen todos: `make -C image
 > agent` **sí** crea el workspace como subvolumen Btrfs, y adentro de Thalyx

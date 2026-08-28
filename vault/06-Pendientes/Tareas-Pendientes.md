@@ -417,13 +417,33 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       por brazo, y un criterio decidido de antemano sobre qué contaría como que
       las primitivas sirven. **Es de Cesar**: qué se mide y qué cuenta como
       mejor es una decisión de producto, no de código.
+      El instrumento ya no es la parte que falta: desde el 2026-08-28 el arnés
+      recoge **las dos ramas en las mismas unidades** —herramientas por nombre,
+      bytes devueltos al modelo, archivos leídos, búsquedas, turnos, tiempo,
+      tokens y costo— y `--expect-file` da veredicto de la tarea. Sin ese archivo
+      no hay veredicto, nunca uno adivinado.
 
-- [ ] **Que el índice conteste por afectación y no sólo por nombre.** Encontrado
-      el 2026-08-28 en la primera corrida real: el brazo de Linux encontró un
-      dependiente que el índice no, porque usa el símbolo a través de un campo de
-      otra estructura y nunca lo nombra. `buscar` contesta *quién nombra esto*;
-      un agente pregunta *a quién le afecta*. Ver [[Agentes-Externos]] y
+- [x] **Que el índice conteste por afectación y no sólo por nombre** — **hecho el
+      2026-08-28.** Encontrado en la primera corrida real: el brazo de Linux
+      encontró un dependiente que el índice no, porque usa el símbolo a través de
+      un campo de otra estructura y nunca lo nombra. El índice **ya tenía** la
+      evidencia — la mención estaba registrada — y nada la convertía en arista.
+      Ahora un nombre que **exactamente un** archivo del árbol declara hace
+      arista donde se use, cada fila dice `via: import` o `via: symbol`, y un
+      nombre que declaran dos archivos no hace arista nunca. Con el mismo
+      mecanismo quedan cubiertos el acceso por campo, el método, el trait en una
+      cota, la llamada por ruta, el módulo de directorio y el re-export.
+      `crates/thalyx-graph/corpus/` lo mide sin gastar un modelo, etapa 49. Ver
       [[FS-en-Grafo]].
+
+- [ ] **Seguir un alias hasta el nombre que renombra.** El límite declarado que
+      quedó: `use X as Y` da la dependencia entre archivos por el import, y que
+      `Y` sea `X` para `buscar` requiere seguir una ligadura, que es un
+      compilador y no un escaneo. Está anotado como `known_limits` en
+      `05-alias` del corpus, con `THALYX_REQUIRE_FULL_CORPUS=1` para exigirlo, y
+      la prueba afirma que **sigue siendo** un límite — así que arreglarlo avisa.
+      **Es de Cesar**: cuánto análisis semántico vale la pena es una decisión de
+      producto, y la regla hasta hoy ha sido no construir un compilador.
 
 - [ ] **La etapa siguiente: runtime y toolchains adentro del guest.** Node, git,
       un enlazador, una libc. Deliberadamente **no** en esta etapa: primero se

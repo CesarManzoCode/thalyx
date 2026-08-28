@@ -1,0 +1,21 @@
+{
+  "about": "A trait named inline in a bound, never imported, and one of its methods called.",
+  "category": "trait",
+  "why_it_matters": "A trait is the shape of a contract: changing it breaks every implementor and every bound. `loud.rs` writes the path inline and has no `use`.",
+  "dependents": {
+    "src/speaks.rs": [
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/loud.rs", "via": "symbol", "through": "Speaks" }
+    ]
+  },
+  "symbols": {
+    "Speaks": {
+      "definitions": ["src/speaks.rs:1 type"],
+      "uses": ["src/loud.rs:1"]
+    },
+    "say": {
+      "definitions": ["src/speaks.rs:2 function"],
+      "uses": ["src/loud.rs:2"]
+    }
+  }
+}

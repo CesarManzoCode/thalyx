@@ -131,6 +131,12 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
                 "  {} dependenc(ies), {} resolved inside the tree",
                 report.edges, report.edges_resolved
             );
+            if report.edges_via_symbol > 0 {
+                println!(
+                    "  {} of them are names used without an import",
+                    report.edges_via_symbol
+                );
+            }
             if report.skipped > 0 {
                 println!("  {} skipped (unreadable or not text)", report.skipped);
             }
@@ -438,7 +444,15 @@ pub fn run(store_root: &Path, command: GraphCommand) -> Fallible {
             }
             println!("depends on {path}:");
             for edge in &answer.rows {
-                println!("  {}  (line {})", edge.from, edge.line);
+                match edge.via {
+                    thalyx_graph::Via::Import => {
+                        println!("  {}  (line {}, imports it)", edge.from, edge.line)
+                    }
+                    thalyx_graph::Via::Symbol => println!(
+                        "  {}  (line {}, uses `{}` without importing it)",
+                        edge.from, edge.line, edge.raw_target
+                    ),
+                }
             }
             Ok(())
         }

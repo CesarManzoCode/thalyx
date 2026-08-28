@@ -77,6 +77,21 @@ pub struct Verb {
 /// cost once per verb instead of once.
 const WINDOW_FLAGS: &[&str] = &["limite=N", "limit=N", "cursor=…", "desde=…"];
 
+/// The window flags plus the one only the three index verbs take.
+///
+/// A separate constant rather than a fourth entry in the one above, because the
+/// catalogue is checked by running every verb it describes: a flag advertised on
+/// `ls` that `ls` does not read is the catalogue lying, and the whole point of
+/// `describe` is that it cannot.
+const INDEX_FLAGS: &[&str] = &[
+    "limite=N",
+    "limit=N",
+    "cursor=…",
+    "desde=…",
+    "refrescar=no",
+    "refresh=no",
+];
+
 /// The errors every verb that touches a path can produce.
 const PATH_ERRORS: &[&str] = &["absent", "unreadable", "incomplete"];
 /// The same, plus the refusal to write over something.
@@ -265,31 +280,34 @@ pub const VERBS: &[Verb] = &[
         id: "depends_on",
         names: &["depende", "depends"],
         takes: &["path"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("depends_on"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "What this file refers to, from the index rather than by reading it.",
+        summary: "What this file refers to, from the index rather than by reading it. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     Verb {
         id: "depended_on_by",
         names: &["usan", "dependents"],
         takes: &["path"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("depended_on_by"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "What refers to this file. No directory walk can answer this one.",
+        summary: "What refers to this file. No directory walk can answer this one. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     Verb {
         id: "symbol",
         names: &["buscar", "symbol"],
         takes: &["name"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("symbol"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
+        summary: "Where a name is defined and every place it is used. Exact, and never a comment. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     // Point 6 of the usable terminal, and they sit here rather than with the
     // file verbs because the question above them is the one a caller has to get
