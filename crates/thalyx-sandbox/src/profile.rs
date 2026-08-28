@@ -291,6 +291,44 @@ impl Profile {
     }
 }
 
+/// Whether the sandbox itself enforces this grant, rather than the LSM.
+///
+/// The two mechanisms are not interchangeable and the split has to be made
+/// somewhere. `thalyx-permd` writes one 32-bit word of allowed *operations* —
+/// an open, a connect — and a ceiling on how much memory a module may hold is
+/// not an operation the kernel can be asked about at a hook. It is a number in
+/// `memory.max`, written by [`Limits::apply`](crate::limits::Limits::apply)
+/// before anything joins the cgroup.
+///
+/// So the boundary is here and not in `bit_for`. Teaching `bit_for` to answer
+/// `0` for `memory` would make an unenforceable permission look enforced —
+/// exactly the promise its `Inexpressible` error exists to refuse — and would
+/// do it for every future non-LSM resource at the same time. Here, a grant is
+/// withheld from the policy only when this crate has already enforced it by
+/// another mechanism, and everything else still reaches `bit_for` and is still
+/// refused if nothing enforces it.
+///
+/// Note the last clause. A `memory` grant whose action does not parse as a
+/// size is *not* enforced by [`grants_memory`] either, so it is not withheld:
+/// it goes to the policy, and the policy refuses it. Fail-closed on a typo.
+fn enforced_by_limits(permission: &Permission) -> bool {
+    permission.resource == "memory"
+        && thalyx_manifest::memory_asked_for(&permission.action).is_some()
+}
+
+/// The grants that `thalyx-permd` is expected to express, in order.
+///
+/// Path and `net/outbound` grants pass through untouched; the sandbox's own
+/// mechanisms take theirs out. `RootFs` and [`Profile::for_permissions`] are
+/// deliberately *not* given this list — they need the whole one.
+pub fn for_kernel_policy(permissions: &[Permission]) -> Vec<Permission> {
+    permissions
+        .iter()
+        .filter(|permission| !enforced_by_limits(permission))
+        .cloned()
+        .collect()
+}
+
 /// How much memory the module was granted, if it asked and was given it.
 ///
 /// The **largest** grant and not the first, because a registry holding two is a

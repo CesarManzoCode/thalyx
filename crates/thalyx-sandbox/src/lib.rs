@@ -307,6 +307,17 @@ impl<'a> Confinement<'a> {
     ) -> Result<Self> {
         let profile = profile.for_permissions(permissions);
 
+        // Everything the LSM is expected to express, which is not everything
+        // the human granted. `memory` is enforced a few lines down, by writing
+        // `memory.max`, and handing it to `thalyx_permd::apply` as well made
+        // the engine unstartable: permd is exhaustive and fail-closed, so a
+        // grant it has no bit for is refused — correctly, because nothing in
+        // the kernel's policy word enforces it. The permission is not dropped,
+        // it is enforced by the other mechanism. See
+        // `profile::for_kernel_policy` for why the split is here and not in
+        // `bit_for`.
+        let for_policy = profile::for_kernel_policy(permissions);
+
         // Before the cgroup exists, so a parent that cannot hand down what the
         // profile needs fails without leaving anything behind.
         limits::delegate(parent, &profile.limits.controllers())?;
@@ -328,7 +339,7 @@ impl<'a> Confinement<'a> {
         let applied = match thalyx_permd::apply(
             policy_store,
             cgroup_id,
-            permissions,
+            &for_policy,
             now_ns,
             jit_lifetime_ns,
             // Read of what this program can see, always. Not a grant — see
@@ -516,6 +527,75 @@ mod tests {
             Some(confinement.policy())
         );
         assert!(confinement.policy().allows(thalyx_permd::NET_OUTBOUND));
+    }
+
+    #[test]
+    fn a_memory_grant_is_enforced_by_the_cgroup_and_does_not_fail_the_policy() {
+        // The bug this exists for stopped the engine dead in QEMU:
+        //
+        //   could not start module dev.thalyx.engine:
+        //   permission `8GiB memory` cannot be expressed as kernel policy
+        //
+        // Every permission was handed to `thalyx_permd::apply`, including the
+        // one that no bit in the policy word describes — so the module the
+        // machine boots to talk to could not start at all. The memory ceiling
+        // is real and is enforced; it is just enforced by `memory.max`, and it
+        // must not travel to a mechanism that cannot express it.
+        let dir = tempfile::tempdir().unwrap();
+        let parent = fake_hierarchy(dir.path(), "dev.thalyx.engine");
+        // `delegate` reads these; the fake hierarchy has no controllers of its
+        // own because until now nothing reaching it needed one.
+        std::fs::write(parent.join("cgroup.controllers"), "memory pids cpu\n").unwrap();
+        std::fs::write(parent.join("cgroup.subtree_control"), "memory pids cpu\n").unwrap();
+        let store = MemoryStore::new();
+
+        let confinement = Confinement::establish(
+            &store,
+            &parent,
+            "dev.thalyx.engine",
+            crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
+            &[
+                permission("memory", "8GiB"),
+                permission("/srv/modules/engine/models", "read"),
+            ],
+            0,
+            0,
+        )
+        .expect("a memory grant must not fail the policy");
+
+        // Enforced, not dropped: the number is on the cgroup.
+        assert_eq!(confinement.profile().limits.memory_max, Some(8 << 30));
+        assert_eq!(
+            std::fs::read_to_string(confinement.cgroup().path().join("memory.max")).unwrap(),
+            (8u64 << 30).to_string()
+        );
+
+        // And the LSM still got the grant that is its to enforce.
+        assert!(confinement.policy().allows(thalyx_permd::FS_READ));
+    }
+
+    #[test]
+    fn a_memory_grant_nobody_can_read_is_still_refused() {
+        // The other half of the same boundary, and the reason it is drawn
+        // around what the sandbox *enforced* rather than around the word
+        // `memory`. `8Gib` is a typo; no ceiling is written for it, so it is
+        // not withheld from the policy — it reaches `bit_for` and is refused,
+        // and the module does not run holding a permission nothing enforces.
+        let dir = tempfile::tempdir().unwrap();
+        let parent = fake_hierarchy(dir.path(), "dev.thalyx.engine");
+        let store = MemoryStore::new();
+
+        let result = Confinement::establish(
+            &store,
+            &parent,
+            "dev.thalyx.engine",
+            crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
+            &[permission("memory", "8Gib")],
+            0,
+            0,
+        );
+
+        assert!(matches!(result, Err(SandboxError::Permd(_))));
     }
 
     #[test]

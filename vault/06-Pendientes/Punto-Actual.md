@@ -14,6 +14,50 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El primer arranque real en QEMU: el motor no encendía — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El primer defecto real del motor no lo encontró ninguna prueba. Lo encontró
+> arrancar la imagen en QEMU y hablarle:
+>
+> ```
+> the model failed: could not start module dev.thalyx.engine:
+> permission `8GiB memory` cannot be expressed as kernel policy
+> ```
+>
+> La causa es una frontera que faltaba. `Confinement::establish` le entregaba a
+> `thalyx_permd::apply` **todos** los permisos otorgados, y `thalyx-permd` sólo
+> sabe expresar operaciones que el LSM revisa en un hook: `net/outbound` y
+> lecturas y escrituras de rutas. Un techo de memoria no es una operación —es un
+> número en `memory.max`— así que permd lo rechazaba, correctamente y de forma
+> fail-closed, y el módulo con el que la máquina se deja hablar no arrancaba.
+>
+> **La corrección no fue ablandar a permd.** Enseñarle a `bit_for` a devolver
+> `0` para `memory` habría convertido un permiso inejecutable en uno que *parece*
+> ejecutado —exactamente la promesa que su error `Inexpressible` existe para
+> negarse a hacer— y lo habría hecho para todo recurso no-LSM futuro al mismo
+> tiempo. La frontera va donde se conoce el mecanismo: en el sandbox.
+> `profile::for_kernel_policy` retira de la lista que va al kernel sólo lo que
+> **este crate ya hizo cumplir por otro medio**, y todo lo demás sigue llegando a
+> `bit_for` y sigue siendo rechazado si nada lo hace cumplir. La lista completa
+> se conserva donde `RootFs` y `Profile::for_permissions` la necesitan.
+>
+> El detalle que hace que la frontera sea la correcta y no una lista de nombres:
+> un permiso `memory` cuya acción no se lee como tamaño (`8Gib`) tampoco lo hace
+> cumplir el cgroup, así que **no** se retira: llega a la política y se rechaza.
+> Hay una prueba para cada mitad.
+>
+> Y `dev/stage-engine.sh` pedía 4 GiB fijos, así que `ENGINE_TIER=media` producía
+> un store cuyo motor moría cargando sus propios pesos y la única salida era
+> editar el archivo a mano antes de cada build. Ahora el techo se deriva de la
+> gama: `ligera→4GiB`, `media→8GiB`, `alta→16GiB`, `máxima→32GiB`.
+>
+> Lo que enseña, y ya está en `Estrategia-de-Pruebas.md` como regla 1: **el
+> defecto salió de correr el sistema.** 189 verificaciones pasaban con el motor
+> incapaz de arrancar, porque ninguna preguntaba si un módulo con el permiso que
+> el propio `stage-engine.sh` le escribe llega a existir.
+
 > ## La máquina tiene agente: una frase suya llega a un modelo y algo pasa — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

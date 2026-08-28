@@ -60,6 +60,24 @@ set -e
 echo "  engine: $ENGINE"
 echo "  model:  $MODEL"
 
+# The ceiling follows the tier, because the weights are what fills it. A tier is
+# chosen precisely to say how big a model this machine runs, so a fixed 4 GiB
+# meant `ENGINE_TIER=media` produced a store whose engine was killed partway
+# through loading its own weights — and the only fix was editing this file by
+# hand before every build. Roughly three times the weights, which is the mmapped
+# file plus its context, and page cache is charged to the module's cgroup.
+case "$TIER" in
+    ligera)          MEMORY="4GiB"  ;;
+    media)           MEMORY="8GiB"  ;;
+    alta)            MEMORY="16GiB" ;;
+    maxima|máxima)   MEMORY="32GiB" ;;
+    *)
+        echo "  '$TIER' is not a tier. They are: ligera, media, alta, maxima" >&2
+        exit 1
+        ;;
+esac
+echo "  memory: $MEMORY ceiling for tier $TIER"
+
 rm -rf "$BUILD/engine-pack"
 mkdir -p "$BUILD/engine-pack/bin" "$STAGE/modules/engine/models" "$STAGE/modules/engine/run"
 cp "$ENGINE" "$BUILD/engine-pack/bin/llama-completion"
@@ -98,13 +116,15 @@ resource = "$RUN_DIR"
 action   = "read"
 type     = "persistent"
 
-# 4 GiB and not the 1 GiB floor. \`module_standard\` charges page cache to the
-# module's cgroup, and the weights are mmapped: the smallest tier is about
-# 1.1 GB before any context at all, so the floor would kill the engine partway
-# through loading. This is the ceiling a human approves once, at install.
+# The tier's ceiling and not the 1 GiB floor. \`module_standard\` charges page
+# cache to the module's cgroup, and the weights are mmapped: the smallest tier
+# is about 1.1 GB before any context at all, so the floor would kill the engine
+# partway through loading. This is the ceiling a human approves once, at
+# install, and it is enforced by \`memory.max\` rather than by the LSM — see
+# \`Confinement::establish\`.
 [[permissions]]
 resource = "memory"
-action   = "4GiB"
+action   = "$MEMORY"
 type     = "persistent"
 
 [entrypoints]
