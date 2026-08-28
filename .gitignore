@@ -28,3 +28,13 @@ dev/.verify-target/
 # initramfs, the store disk, and the doctor's scratch files. All of it is
 # reproducible from this repository and none of it belongs in it.
 image/build/
+
+# What `dev/agent-connect.sh` writes so VS Code can load the same MCP server as
+# Claude Code. It holds absolute paths to this checkout and to a socket QEMU is
+# holding open, so it is a fact about one machine and never about the project.
+# The example that belongs in the repository is in `docs/AGENT.md`.
+.vscode/mcp.json
+
+# Where `dev/bench-external-agent.sh` puts two arms' worth of copies, answers
+# and metrics.
+/target/bench-external-agent/

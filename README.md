@@ -141,7 +141,30 @@ without any risk of being left with a black display — and if it does come up
 black, Ctrl-C on an empty line gives the text console back blind, while
 `thalyx.pantalla=no` on the kernel command line boots straight into it.
 
-**Built and covered by over 1,300 tests**, including fault injection that kills
+**New, 2026-08-28: a real programming agent, on the host, working through
+Thalyx's own primitives.** Claude Code runs on Fedora and reaches a Thalyx VM
+over one local virtio-serial channel — no network, no TCP, no address. On the
+host, `thalyx-mcp` translates MCP into Thalyx's protocol and does nothing else:
+it holds no filesystem, no graph and no rollback, because **MCP is an adapter
+and Thalyx's own surface is the authority**. Inside the machine the endpoint is
+a thread of the session, not a second program on the disk, so
+`make -C image count` still says `1`. An external agent gets one workspace and
+cannot name anything outside it — every path is resolved twice, the way the verb
+resolves it and the way the kernel does, and both have to land inside; `apagar`,
+`instalar-en`, `correr`, `ejecutar` and `matar` are not reachable at all. What
+it changes, and every attempt to leave, land in the journal marked
+`untrusted_content`. On its first real run, asked to find where a symbol is
+defined and what depends on it, it answered in **four calls** — one index, two
+symbol lookups, one dependents query — without opening a single file. The same
+model with `Read` and `grep` took eight turns and twice the wall time. That is
+**one run of one task, which is an anecdote and not a result**; the harness is
+`dev/bench-external-agent.sh`. The decree is
+`vault/07-Adopcion-y-Fases/Agentes-Externos.md`; how to run it is
+**[docs/AGENT.md](docs/AGENT.md)**. **virtio-serial itself has not
+carried a byte yet** — everything above the transport ran over a UNIX socket,
+which is the same code on a different pair of descriptors.
+
+**Built and covered by over 1,500 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
 
@@ -319,6 +342,8 @@ crates/
   thalyx-edit/      changing text in a file, for a screen and for a program
   thalyx-proc/      what runs, what memory is left, and stopping one
   thalyx-syscall/   the only crate where `unsafe` is permitted
+  thalyx-bridge/    the wire an agent outside the machine reaches it through
+  thalyx-mcp/       the host-side MCP adapter — it adapts, and holds no state
 
 lsm/      BPF LSM programs: enforcement, and the filesystem watcher
 image/    the machine: kernel configuration, initramfs, store disk
@@ -341,6 +366,12 @@ commit messages, CLI output — is in English.
   Closed on 2026-08-07, when a PC booted it from USB and installed it to a disk.
 - **Phase 2** — empirical validation. Benchmarks decide whether primitives move
   into the kernel. The predictive scheduler lives here; it is design, not code.
+  The first measurement of the founding bet — does the same model do better work
+  here than with POSIX tools? — began on 2026-08-28, with a real programming
+  agent on the host and Thalyx as the machine it works in.
+- **Developer runtime** — Node, git, a linker and a libc inside the guest, so
+  the agent can move in rather than reach in. Deliberately after Phase 2's first
+  numbers: there is no point building it until the primitives are known to help.
 - **Phase 3** — kernel migration, if the numbers justify it.
 - **Phase 4** — ecosystem.
 

@@ -270,26 +270,24 @@ pub(crate) fn recall_object(store: &Store, task: &str) -> Fallible {
         // Rule 10, and the memory's own version of it: an unreadable memory and
         // an empty one are different facts about the machine.
         Err(error) => {
-            println!(
-                "{}",
-                thalyx_files::machine::declined("memory", "unreadable", &error.to_string())
-            );
+            crate::files::Face::Machine.say(thalyx_files::machine::declined(
+                "memory",
+                "unreadable",
+                &error.to_string(),
+            ));
             return Ok(());
         }
     };
 
-    println!(
-        "{}",
-        thalyx_files::machine::answer(
-            "memory",
-            vec![
-                ("task", serde_json::json!(task)),
-                ("said", serde_json::json!(context.said)),
-                ("holds", serde_json::json!(context.holds)),
-                ("unconfirmable", serde_json::json!(context.unconfirmable)),
-            ],
-        )
-    );
+    crate::files::Face::Machine.say(thalyx_files::machine::answer(
+        "memory",
+        vec![
+            ("task", serde_json::json!(task)),
+            ("said", serde_json::json!(context.said)),
+            ("holds", serde_json::json!(context.holds)),
+            ("unconfirmable", serde_json::json!(context.unconfirmable)),
+        ],
+    ));
     Ok(())
 }
 

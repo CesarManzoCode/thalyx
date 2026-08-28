@@ -17,6 +17,7 @@
 //! disk, because a path is not language.
 
 use serde_json::json;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -46,14 +47,61 @@ impl Face {
         self.machine()
     }
 
-    /// Print a line of the structured face.
+    /// Say one line of the structured face.
     ///
     /// Kept as a method so no caller has to remember that these go out without
     /// the blank lines and two-space indent the human face uses. Whitespace a
     /// person reads as breathing room is noise a parser has to strip.
+    ///
+    /// **Where it goes is a property of the thread, not of the process.** By
+    /// default it is descriptor 1, which is what a person piping `estructurado`
+    /// into a program gets. When [`caught`] is running on this thread the line
+    /// is collected instead — which is how the external agent bridge reads an
+    /// answer without touching a descriptor.
+    ///
+    /// The distinction is rule 11 of `CLAUDE.md`, met in the one place it would
+    /// have bitten hardest. `thalyx-capture` moves descriptors 0, 1 and 2, and
+    /// those belong to the **process**: the screen redirects them while it runs
+    /// a verb, so a bridge thread printing at the same moment would have its
+    /// answer swallowed into the screen's buffer and the screen would draw the
+    /// agent's JSON. A thread-local sink has an owner; a descriptor does not.
     pub fn say(self, line: String) {
-        println!("{line}");
+        let caught = SINK.with(|sink| match sink.borrow_mut().as_mut() {
+            Some(lines) => {
+                lines.push(line);
+                None
+            }
+            None => Some(line),
+        });
+        if let Some(line) = caught {
+            println!("{line}");
+        }
     }
+}
+
+thread_local! {
+    /// Where [`Face::say`] puts a line on this thread, when it is not stdout.
+    ///
+    /// `RefCell<Option<…>>` and not a channel, because the only reader is the
+    /// same thread once the body has returned, and a nested [`caught`] must not
+    /// be able to steal the outer one's lines — see the `set`/restore below.
+    static SINK: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Run something and collect what the structured face said on this thread.
+///
+/// The one seam that lets the external agent bridge reuse the verbs rather than
+/// grow a second set of them. It catches only [`Face::say`] — the human face
+/// still prints, which is deliberate: a caller of this is asking a *program's*
+/// question, and prose arriving on a socket would be a second version of events.
+///
+/// Restores whatever was there rather than clearing, so that a verb which
+/// somehow re-entered this could not silently swallow the outer answer.
+pub fn caught<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
+    let outer = SINK.with(|sink| sink.replace(Some(Vec::new())));
+    let outcome = body();
+    let mine = SINK.with(|sink| sink.replace(outer));
+    (outcome, mine.unwrap_or_default())
 }
 
 /// Where the person is, carried by the session across one line and the next.
@@ -254,10 +302,17 @@ pub fn where_am_i(here: &Where, face: Face) {
 
 /// `cd [ruta]` — with nothing after it, back to `/home`.
 pub fn go(here: &mut Where, rest: &str, face: Face) {
-    let named = if rest.is_empty() {
+    // Quoted the same way `leer` now is, and for the same reason: a folder whose
+    // name has a space in it was unreachable from a session that could copy into
+    // it.
+    let Some(given) = crate::words::asked(face, "go", rest) else {
+        return;
+    };
+    let joined = crate::words::phrase(&given);
+    let named = if joined.is_empty() {
         thalyx_files::HOME
     } else {
-        rest
+        &joined
     };
 
     match here.go(named) {
@@ -599,7 +654,17 @@ pub fn read(here: &Where, rest: &str, face: Face) {
         return;
     }
 
-    let target = thalyx_files::resolve(here.at(), rest);
+    // Split into words rather than taken as the rest of the line, which is what
+    // it used to be. `Palabras.md` decreed quoting on 2026-08-23 and `cp`, `mv`
+    // and `rm` were given it; `leer` was not, so a file whose name held a space
+    // could be listed, copied and deleted and never read. The external agent
+    // bridge is what made it visible — it quotes every argument it composes, and
+    // this verb was the one that answered `'src/main.rs' is not there`.
+    let Some(given) = crate::words::asked(face, "read", rest) else {
+        return;
+    };
+    let named = crate::words::phrase(&given);
+    let target = thalyx_files::resolve(here.at(), &named);
     let found = thalyx_files::read(&target);
 
     if face.machine() {

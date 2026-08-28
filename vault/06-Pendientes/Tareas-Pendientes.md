@@ -373,11 +373,15 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       durante toda la ejecución del módulo. Sólo vale la pena el día que un
       runtime que haga falta dependa de esa puerta; ninguno de los medidos lo
       hace.
-- [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
-      está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
-      no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback
-      ([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]])
-      y los permisos por tarea ([[Permisos-JIT]]).
+- [x] **Exponer las cuatro ventajas que ningún otro sistema tiene** — **hecho
+      el 2026-08-28, por el camino que nadie había considerado: sin meter al
+      agente adentro.** Tres de las cuatro están al alcance de Claude Code hoy —
+      el índice semántico ([[FS-en-Grafo]]) por `thalyx_symbol` y
+      `thalyx_dependencies`, el rollback ([[Journal-y-Snapshots]]) por
+      `thalyx_attempt`, y la procedencia ([[Marcado-de-Origen]]) porque todo lo
+      que hace queda marcado `untrusted_content` en el journal. La cuarta,
+      [[Permisos-JIT]], no: un agente externo no corre programas, así que no hay
+      todavía nada que conceder por tarea. Ver [[Agentes-Externos]].
 - [x] **Por dónde entra el agente propio** — **decretado por Cesar el
       2026-08-28: el motor de inferencia es el primer módulo real.** La pregunta
       llegó al revés de como estaba escrita aquí: no era por dónde entra un
@@ -399,9 +403,31 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       la regla 12 dice que una compilación con otra configuración es otro
       sistema. No se puede hacer en el contenedor: no hay objetivo de rustup ni
       compilador de C para musl.
-- [ ] **Decidir por dónde entra un agente ajeno.** ¿Es un módulo con permisos
-      amplios, un proceso aparte, o algo nuevo? No decidido, y no urge hasta que
-      haya qué ejecutar.
+- [x] **Decidir por dónde entra un agente ajeno** — **decretado por Cesar el
+      2026-08-28: por ninguna de las tres.** No es un módulo, no es un proceso
+      adentro y no es algo nuevo en la imagen. **Se queda en el anfitrión** y
+      alcanza la máquina por un canal virtio-serial; adentro, el extremo es un
+      hilo de la sesión, no un programa más en el disco. Lo que eso desbloquea es
+      la primera medición del proyecto sin esperar a G2. Ver [[Agentes-Externos]].
+
+- [ ] **Correr la comparación de verdad.** `dev/bench-external-agent.sh` existe y
+      corrió una vez: 8 turnos con `Read`/`grep` contra 7 con las herramientas de
+      Thalyx, sobre la misma tarea y el mismo modelo. **Una corrida de una tarea
+      es una anécdota.** Lo que falta es un conjunto de tareas, varias corridas
+      por brazo, y un criterio decidido de antemano sobre qué contaría como que
+      las primitivas sirven. **Es de Cesar**: qué se mide y qué cuenta como
+      mejor es una decisión de producto, no de código.
+
+- [ ] **Que el índice conteste por afectación y no sólo por nombre.** Encontrado
+      el 2026-08-28 en la primera corrida real: el brazo de Linux encontró un
+      dependiente que el índice no, porque usa el símbolo a través de un campo de
+      otra estructura y nunca lo nombra. `buscar` contesta *quién nombra esto*;
+      un agente pregunta *a quién le afecta*. Ver [[Agentes-Externos]] y
+      [[FS-en-Grafo]].
+
+- [ ] **La etapa siguiente: runtime y toolchains adentro del guest.** Node, git,
+      un enlazador, una libc. Deliberadamente **no** en esta etapa: primero se
+      quiere saber si las primitivas aportan valor. Ver [[Agentes-Externos]].
 
 ## Pendientes de decreto formal
 

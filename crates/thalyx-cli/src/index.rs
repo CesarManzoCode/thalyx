@@ -70,7 +70,7 @@ fn freshness_fields(freshness: &Freshness) -> Vec<(&'static str, serde_json::Val
 
 fn declined(face: Face, op: &str, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(op, word, why));
+        face.say(thalyx_files::machine::declined(op, word, why));
     } else {
         println!("\n  {why}\n");
     }
@@ -78,7 +78,10 @@ fn declined(face: Face, op: &str, word: &str, why: &str) {
 
 /// `indexar [ruta]` — read the tree and record what refers to what.
 pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallible {
-    let tree = tree_of(here, rest);
+    let Some(given) = crate::words::asked(face, "index_build", rest) else {
+        return Ok(());
+    };
+    let tree = tree_of(here, &crate::words::phrase(&given));
 
     let mut index = match open(store_root, &tree) {
         Ok(index) => index,
@@ -91,30 +94,27 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
     match index.build() {
         Ok(report) => {
             if face == Face::Machine {
-                println!(
-                    "{}",
-                    thalyx_files::machine::answer(
-                        "index_build",
-                        vec![
-                            ("tree", json!(tree.display().to_string())),
-                            ("files_indexed", json!(report.files_indexed)),
-                            ("files_parsed", json!(report.files_parsed)),
-                            ("edges", json!(report.edges)),
-                            ("edges_resolved", json!(report.edges_resolved)),
-                            // Named rather than dropped: a file the parser did
-                            // not understand is not a file with no dependencies,
-                            // and a caller that read the second would conclude
-                            // things about a tree it has not actually seen.
-                            ("skipped", json!(report.skipped)),
-                            // What C2 rests on. A tree with zero symbols is one
-                            // the parser has no language for, and a caller that
-                            // only learned that by searching and finding nothing
-                            // would blame its own spelling.
-                            ("symbols", json!(report.symbols)),
-                            ("mentions", json!(report.mentions)),
-                        ],
-                    )
-                );
+                face.say(thalyx_files::machine::answer(
+                    "index_build",
+                    vec![
+                        ("tree", json!(tree.display().to_string())),
+                        ("files_indexed", json!(report.files_indexed)),
+                        ("files_parsed", json!(report.files_parsed)),
+                        ("edges", json!(report.edges)),
+                        ("edges_resolved", json!(report.edges_resolved)),
+                        // Named rather than dropped: a file the parser did
+                        // not understand is not a file with no dependencies,
+                        // and a caller that read the second would conclude
+                        // things about a tree it has not actually seen.
+                        ("skipped", json!(report.skipped)),
+                        // What C2 rests on. A tree with zero symbols is one
+                        // the parser has no language for, and a caller that
+                        // only learned that by searching and finding nothing
+                        // would blame its own spelling.
+                        ("symbols", json!(report.symbols)),
+                        ("mentions", json!(report.mentions)),
+                    ],
+                ));
             } else {
                 println!();
                 println!(
@@ -240,7 +240,7 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
         carried.extend(freshness_fields(&answer.freshness));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
@@ -367,7 +367,7 @@ pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
         carried.extend(freshness_fields(&answer.freshness));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 

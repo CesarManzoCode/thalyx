@@ -336,6 +336,25 @@ pub(crate) fn gather(store: &Store) -> Vec<Reading> {
     ]
 }
 
+/// The directory an external agent is confined to, if this machine was booted
+/// for one.
+///
+/// `thalyx.workspace=` on the kernel command line, the same shape as
+/// `thalyx.store=` and for the same reason: the person who started the machine
+/// is the one who decides what it is for, and a machine that *searched* for a
+/// project to hand an agent would find the wrong one exactly once.
+///
+/// Absent is the ordinary answer. It means this is a machine somebody is using,
+/// not one an agent was pointed at.
+fn agent_workspace() -> Option<std::path::PathBuf> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
+    cmdline
+        .split_ascii_whitespace()
+        .find_map(|word| word.strip_prefix("thalyx.workspace="))
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Turn the machine off.
 ///
 /// It exists because the `salir` branch has been telling people to type
@@ -1332,6 +1351,38 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         return Ok(());
     }
 
+    // The one channel a programming agent on the host reaches this machine
+    // through, and it only exists on a machine QEMU gave a virtio-serial port
+    // to. `Agentes-Externos.md` decrees the arrangement; `crate::bridge` has
+    // why it is a thread of this process and not a second program on the disk.
+    //
+    // Silent on an ordinary machine, and that is a requirement rather than a
+    // nicety: no port means no thread, no wait and no line here, so a Thalyx
+    // with no agent attached cannot tell that this code was compiled in.
+    if let Some(workspace) = agent_workspace() {
+        match crate::bridge::start(store.root().to_path_buf(), workspace.clone()) {
+            Some(node) => {
+                println!();
+                println!(
+                    "  agent bridge  {} — workspace {}",
+                    node.display(),
+                    workspace.display()
+                );
+            }
+            // Said, because a machine that was booted *for* an agent and came
+            // up without the channel is a machine somebody is about to wait on
+            // forever. Rule 10: the port being absent and the thread failing to
+            // start are different facts, and only the first is ordinary.
+            None => {
+                println!();
+                println!(
+                    "  agent bridge  no {} port on this machine",
+                    crate::bridge::PORT_NAME
+                );
+            }
+        }
+    }
+
     println!();
     match &standing {
         Standing::TheMachine => {
@@ -1791,6 +1842,44 @@ impl<'a> Session<'a> {
     }
 }
 
+/// Run one line for a caller that is not on this machine.
+///
+/// The external agent bridge's only way in, and deliberately the *same* function
+/// a person's keystroke reaches — `Agentes-Externos.md` decrees that MCP is an
+/// adapter and that Thalyx's own surface stays the authority, and a second
+/// dispatch would be exactly the parallel API that decree forbids.
+///
+/// Two things it fixes rather than takes:
+///
+/// - [`Ask::Never`], so a line the dispatch does not recognise is refused
+///   instead of being handed to the local model. An external agent proposing a
+///   sentence and getting Qwen's idea of what it meant back would be two models
+///   guessing at each other, and the second one has the machine.
+/// - the [`Flow`] is dropped. `pantalla`, `salir` and `limpiar` are properties
+///   of a surface, and a caller on a socket has none — none of the three is on
+///   the exposed list, and this is what makes that structural rather than a
+///   convention.
+///
+/// What is *not* fixed is where the answer goes: see [`crate::files::caught`].
+pub(crate) fn dispatch_external(
+    store: &Store,
+    here: &mut crate::files::Where,
+    face: &mut crate::files::Face,
+    line: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_asking(
+        store,
+        &Standing::AProgram {
+            under: "an external agent".to_string(),
+        },
+        here,
+        face,
+        line,
+        Ask::Never,
+    )
+    .map(|_| ())
+}
+
 /// Who asks the model about a line that is not a verb, and whether anyone does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ask {
@@ -1876,7 +1965,7 @@ fn dispatch_asking(
         "estado" | "status" => {
             let readings = gather(store);
             if face == crate::files::Face::Machine {
-                println!("{}", state_object(&readings));
+                face.say(state_object(&readings));
             } else {
                 for reading in &readings {
                     println!(

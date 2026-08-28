@@ -21,6 +21,7 @@ thalyx-bpf.workspace = true
 thalyx-btrfs.workspace = true
 thalyx-install.workspace = true
 thalyx-journal.workspace = true
+thalyx-bridge.workspace = true
 uuid.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true

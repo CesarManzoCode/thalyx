@@ -141,6 +141,26 @@ STAMP     := $(BUILD)/store-stage.done
 MNT       := $(BUILD)/store-mnt
 STOREDEV  := /dev/vda
 
+# ─────────────────────────────────────────── the machine an agent works in
+#
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. A project on this host, copied
+# onto the store as its own subvolume, and the socket a programming agent's MCP
+# adapter connects to.
+#
+# PROJECT is empty by default and everything below it is inert then: an ordinary
+# `make store-stage` builds an ordinary machine with no workspace and no channel,
+# and `make run` boots it exactly as it did before any of this existed.
+#
+# The copy is deliberate and it is the whole safety of the arrangement: an agent
+# inside the VM cannot touch the host's checkout, because the host's checkout is
+# not in the VM. Getting work back out is `make -C image agent-export`, which is
+# a thing somebody types.
+PROJECT     ?=
+PROJECTNAME := $(if $(PROJECT),$(notdir $(patsubst %/,%,$(PROJECT))))
+WORKSPACE   := $(if $(PROJECTNAME),/home/$(PROJECTNAME))
+AGENTSOCK   ?= $(BUILD)/agent.sock
+AGENTMARK   := $(BUILD)/agent-workspace
+
 # The first module. It is not in the image and must not be: the image carries
 # the kernel and one program. A module lives on the store, which is the whole
 # distinction between what Thalyx *is* and what has been installed on it.
@@ -186,7 +206,8 @@ ENGINE_RUN    := $(ENGINE_DATA)/run
 .PHONY: all kernel binary image run count clean toolchain config-check \
         store store-stage greeter engine engine-stage lsm doctor hook-check boot pin-kernel \
         boot-graphical run-serial \
-        esp run-uefi initramfs-check installed run-installed run-hardware
+        esp run-uefi initramfs-check installed run-installed run-hardware \
+        run-agent boot-agent agent agent-export
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -855,6 +876,7 @@ store-stage: binary greeter
 	    exit 1; \
 	fi
 	@$(MAKE) --no-print-directory engine-stage
+	@$(MAKE) --no-print-directory project-stage
 	@# Written last, and only on success. `store` looks for this and not for
 	@# the directory: an interrupted stage leaves the directory sitting there
 	@# looking finished, and a disk built from it would be missing whatever
@@ -892,6 +914,29 @@ engine:
 # spoken to**, and an engine the human has to install first is five commands
 # standing between the power button and the first sentence. The .thmod stays in
 # the repository as well, so it can be reinstalled by hand.
+# A copy of a host project onto the stage, as the agent's workspace.
+#
+# Called by `store-stage` and doing nothing when PROJECT is empty, which is the
+# ordinary machine. The copy is what goes in — never the original — so nothing
+# an agent does inside the VM can reach the checkout it came from.
+#
+# `.git` comes along. It is not for running git inside the machine (there is no
+# git in there and there is not meant to be yet); it is so that when the work
+# comes back out, `git diff` on the host has something to diff against.
+project-stage:
+	@rm -f $(AGENTMARK)
+	@test -n "$(PROJECT)" || exit 0; \
+	 test -d "$(PROJECT)" || { \
+	    echo "  PROJECT=$(PROJECT) is not a directory"; \
+	    exit 1; \
+	 }; \
+	 rm -rf "$(STAGE)/user/$(PROJECTNAME)"; \
+	 mkdir -p "$(STAGE)/user/$(PROJECTNAME)"; \
+	 tar -C "$(PROJECT)" --exclude=./target --exclude=./node_modules -cf - . \
+	   | tar -C "$(STAGE)/user/$(PROJECTNAME)" -xf -; \
+	 echo "$(PROJECTNAME)" > $(AGENTMARK); \
+	 echo "  workspace: $(WORKSPACE) — a copy of $(PROJECT), $$(du -sh "$(STAGE)/user/$(PROJECTNAME)" | cut -f1)"
+
 engine-stage:
 	@$(ROOT)/dev/stage-engine.sh "$(STAGE)" "$(BUILD)" "$(THALYX)" "$(ENGINE)" "$(MODEL)" "$(ENGINE_ID)" "$(ENGINE_TIER)" "$(ENGINE_MODELS)" "$(ENGINE_RUN)"
 
@@ -930,6 +975,16 @@ store:
 	btrfs subvolume create $(MNT)/system
 	btrfs subvolume create $(MNT)/modules
 	btrfs subvolume create $(MNT)/user
+	@# The agent's workspace is a subvolume of its own, and that is not tidiness.
+	@# `intento` snapshots **exactly** the subvolume the session stands in and
+	@# never an ancestor — see `attempt::subvolume_to_attempt`, and the day in
+	@# August it walked upwards and offered to delete somebody's /boot. A
+	@# workspace that were a plain directory under `user` would make every
+	@# `thalyx_attempt` answer `not_a_subvolume`, which is the one tool this
+	@# whole delivery is for.
+	@if [ -f $(AGENTMARK) ]; then \
+	    btrfs subvolume create $(MNT)/user/"$$(cat $(AGENTMARK))"; \
+	fi
 	cp -a $(STAGE)/system/. $(MNT)/system/
 	cp -a $(STAGE)/modules/. $(MNT)/modules/
 	cp -a $(STAGE)/user/. $(MNT)/user/
@@ -1100,6 +1155,133 @@ boot-graphical:
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -serial mon:stdio \
 	    -append "console=tty0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+
+# ────────────────────────────────────── the machine with an agent channel
+#
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. The same machine `make run`
+# boots — the same kernel, the same image, the same screen on the same glass —
+# with **one** device added and one word on the command line.
+#
+#   -device virtio-serial-pci   the bus
+#   -chardev socket,…,server=on,wait=off   a UNIX socket on this host that QEMU
+#                               holds open and does not wait for anybody on
+#   -device virtserialport,name=org.thalyx.agent   the named port inside
+#
+# `wait=off` matters: with `wait=on` QEMU does not start until something
+# connects, so `make run-agent` would look like a machine that will not boot.
+#
+# No network, no port forward and no `-netdev`. The decree is that the machine
+# is reachable without ever having an address, and this is the whole of how.
+#
+# `thalyx.workspace=` is read by `session::agent_workspace`. Without it the
+# machine comes up with a port nobody serves, which is a machine somebody would
+# wait on forever — so it is an error here rather than a surprise there.
+run-agent: $(BZIMAGE) $(INITRAMFS)
+	@$(MAKE) --no-print-directory boot-agent
+
+boot-agent:
+	@test -f $(AGENTMARK) || { \
+	    echo "  no workspace on the store, so an agent would have nothing to work in."; \
+	    echo; \
+	    echo "      make -C image store-stage PROJECT=/path/to/your/project"; \
+	    echo "      sudo make -C image store"; \
+	    echo "      make -C image run-agent"; \
+	    echo; \
+	    echo "  Or in one line, which does all three:"; \
+	    echo; \
+	    echo "      make -C image agent PROJECT=/path/to/your/project"; \
+	    exit 1; \
+	}
+	@test -f $(BZIMAGE) && test -f $(INITRAMFS) || { \
+	    echo "  nothing to boot: the kernel or the image is not built."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    exit 1; \
+	}
+	@test -w $(STORE) || { \
+	    echo "  $(STORE) is not writable by this user, and QEMU opens it read-write."; \
+	    echo "      sudo chown $$(id -un):$$(id -gn) $(STORE)"; \
+	    exit 1; \
+	}
+	@rm -f $(AGENTSOCK)
+	@echo
+	@echo "  agent channel: $(AGENTSOCK)"
+	@echo "  workspace:     /home/$$(cat $(AGENTMARK))"
+	@echo
+	@echo "  In another terminal, once the machine is up:"
+	@echo
+	@echo "      $(ROOT)/dev/agent-connect.sh $(AGENTSOCK)"
+	@echo
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp $(CPUS) \
+	    -kernel $(BZIMAGE) \
+	    -initrd $(INITRAMFS) \
+	    -drive file=$(STORE),if=virtio,format=raw \
+	    -device virtio-serial-pci \
+	    -chardev socket,path=$(AGENTSOCK),server=on,wait=off,id=thalyxagent \
+	    -device virtserialport,chardev=thalyxagent,name=org.thalyx.agent \
+	    -serial mon:stdio \
+	    -append "console=tty0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV) thalyx.workspace=/home/$$(cat $(AGENTMARK))"
+
+# Import a project, build the disk and boot it, in one command.
+#
+#   make -C image agent PROJECT=~/code/mi-proyecto
+#
+# The one that needs root is `store`, and it is the only one — same rule as
+# everywhere else here: the privilege boundary is the target boundary, and a
+# `make` that quietly asked for a password is a `make` nobody can put in a
+# script. So this asks for it once, out loud, with the reason.
+agent:
+	@test -n "$(PROJECT)" || { \
+	    echo "  which project. This copies it into the machine and boots:"; \
+	    echo; \
+	    echo "      make -C image agent PROJECT=/path/to/your/project"; \
+	    echo; \
+	    echo "  The copy is what the agent works in. Your checkout is not"; \
+	    echo "  touched, and never reachable from inside the machine."; \
+	    exit 1; \
+	}
+	$(MAKE) --no-print-directory store-stage PROJECT=$(PROJECT)
+	@echo
+	@echo "  the disk needs root: it formats a loop device and mounts it."
+	sudo $(MAKE) --no-print-directory store
+	$(MAKE) --no-print-directory run-agent
+
+# Bring the agent's work back out of the machine.
+#
+# A copy again, and into a directory this names rather than over the original.
+# `Rollback-vs-Restore.md` is the same rule in a different place: something that
+# destroys work asks first, and the cheapest way to never have to ask is to
+# never write over anything.
+#
+# It needs root for the same reason `store` does — the store is a filesystem in
+# a file, and reading it means mounting it.
+agent-export:
+	@test -f $(AGENTMARK) || { echo "  no workspace on this store"; exit 1; }
+	@test "$$(id -u)" = 0 || { \
+	    echo "  reading the store means mounting it, which needs root:"; \
+	    echo "      sudo make -C image agent-export INTO=/somewhere"; \
+	    exit 1; \
+	}
+	@test -n "$(INTO)" || { \
+	    echo "  where to. sudo make -C image agent-export INTO=/somewhere-new"; \
+	    exit 1; \
+	}
+	@test ! -e "$(INTO)" || { \
+	    echo "  $(INTO) already exists, and this will not write over it."; \
+	    exit 1; \
+	}
+	mkdir -p $(MNT)
+	mount -o loop,subvol=user $(STORE) $(MNT)
+	mkdir -p "$(INTO)"
+	cp -a $(MNT)/"$$(cat $(AGENTMARK))"/. "$(INTO)"/
+	umount $(MNT)
+	@if [ -n "$(SUDO_UID)" ]; then chown -R $(SUDO_UID):$(SUDO_GID) "$(INTO)"; fi
+	@echo
+	@echo "  out: $(INTO)"
+	@echo "  Nothing on the store was changed, and your original is untouched."
+	@echo '  diff -ru or git diff --no-index is how to see what the agent did.' 
 
 # ──────────────────────────────────────────────── booting with no bootloader
 

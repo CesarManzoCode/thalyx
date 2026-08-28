@@ -691,7 +691,11 @@ use serde_json::json;
 
 /// `describe [verbo]` — the machine reading itself out loud.
 pub fn describe(face: Face, rest: &str) {
-    let asked = rest.trim();
+    let Some(given) = crate::words::asked(face, "describe", rest) else {
+        return;
+    };
+    let asked = crate::words::phrase(&given);
+    let asked = asked.trim();
 
     let chosen: Vec<&Verb> = if asked.is_empty() {
         VERBS.iter().collect()
@@ -701,10 +705,11 @@ pub fn describe(face: Face, rest: &str) {
             None => {
                 let why = format!("`{asked}` is not a verb of this machine");
                 if face == Face::Machine {
-                    println!(
-                        "{}",
-                        thalyx_files::machine::declined("describe", "unknown_verb", &why)
-                    );
+                    face.say(thalyx_files::machine::declined(
+                        "describe",
+                        "unknown_verb",
+                        &why,
+                    ));
                 } else {
                     println!("\n  {why}. `describe` alone lists them all.\n");
                 }
@@ -715,13 +720,10 @@ pub fn describe(face: Face, rest: &str) {
 
     if face == Face::Machine {
         let verbs: Vec<serde_json::Value> = chosen.iter().map(|verb| as_object(verb)).collect();
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                "describe",
-                vec![("count", json!(verbs.len())), ("verbs", json!(verbs))],
-            )
-        );
+        face.say(thalyx_files::machine::answer(
+            "describe",
+            vec![("count", json!(verbs.len())), ("verbs", json!(verbs))],
+        ));
         return;
     }
 

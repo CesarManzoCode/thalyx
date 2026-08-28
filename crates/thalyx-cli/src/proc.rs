@@ -84,7 +84,7 @@ pub fn running(rest: &str, face: Face) -> Fallible {
             ),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
@@ -139,10 +139,7 @@ pub fn memory(face: Face) -> Fallible {
     };
 
     if face.is_machine() {
-        println!(
-            "{}",
-            thalyx_files::machine::answer(op, memory_fields(&memory))
-        );
+        face.say(thalyx_files::machine::answer(op, memory_fields(&memory)));
         return Ok(());
     }
 
@@ -216,10 +213,7 @@ pub fn stop(rest: &str, face: Face) -> Fallible {
     match thalyx_proc::stop(pid, force) {
         Ok(stopped) => {
             if face.is_machine() {
-                println!(
-                    "{}",
-                    thalyx_files::machine::answer(op, stopped_fields(&stopped))
-                );
+                face.say(thalyx_files::machine::answer(op, stopped_fields(&stopped)));
             } else {
                 say_stopped(&stopped);
             }
@@ -280,7 +274,7 @@ pub fn rehearse_stop(rest: &str, face: Face) -> Fallible {
             ("undo", json!("none")),
         ];
         carried.push(("changed", json!(false)));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
@@ -412,16 +406,13 @@ fn refused(face: Face, op: &str, error: &ProcError) -> Fallible {
             ProcError::AlreadyEnded { parent, .. } => vec![("parent", json!(parent))],
             _ => Vec::new(),
         };
-        println!(
-            "{}",
-            thalyx_files::machine::refused_with(
-                op,
-                error.word(),
-                error.remedy(),
-                &error.to_string(),
-                extra,
-            )
-        );
+        face.say(thalyx_files::machine::refused_with(
+            op,
+            error.word(),
+            error.remedy(),
+            &error.to_string(),
+            extra,
+        ));
     } else {
         println!("\n  {error}\n");
     }
@@ -430,7 +421,7 @@ fn refused(face: Face, op: &str, error: &ProcError) -> Fallible {
 
 fn declined(face: Face, op: &str, word: &str, why: &str) {
     if face.is_machine() {
-        println!("{}", thalyx_files::machine::declined(op, word, why));
+        face.say(thalyx_files::machine::declined(op, word, why));
     } else {
         println!("\n  {why}\n");
     }
