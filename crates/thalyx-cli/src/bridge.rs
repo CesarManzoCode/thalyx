@@ -59,7 +59,17 @@ pub fn port() -> Option<PathBuf> {
 /// The same search, rooted where a test can build one.
 fn port_under(ports: &Path, dev: &Path) -> Option<PathBuf> {
     for entry in std::fs::read_dir(ports).ok()?.flatten() {
-        let name = std::fs::read_to_string(entry.path().join("name")).ok()?;
+        // `continue`, never `?`. A port with no name has no `name` file at all
+        // — the driver creates that attribute only for a port QEMU named, under
+        // the comment *"Since we only have one sysfs attribute, 'name', create
+        // it only if we have a name for the port"* — so abandoning the search at
+        // the first unreadable one meant a single unnamed port could hide this
+        // machine's channel, depending on nothing but the order `read_dir`
+        // happened to return them in. Rule 10: a name that cannot be read is
+        // not a port that is not there.
+        let Ok(name) = std::fs::read_to_string(entry.path().join("name")) else {
+            continue;
+        };
         if name.trim() != PORT_NAME {
             continue;
         }
@@ -106,10 +116,28 @@ pub fn start(store_root: PathBuf, workspace: PathBuf) -> Option<PathBuf> {
 }
 
 /// One pass over a virtio-serial port: open it, serve it until it closes.
+///
+/// **Opened once, for both directions, and the second handle is a `dup` of the
+/// first.** This used to open the node twice — once read-only and once
+/// write-only — which is the shape the socket has and is not the shape a
+/// virtio-serial port has: `port_fops_open` in `drivers/char/virtio_console.c`
+/// refuses the second open with `EBUSY`, under the comment *"Allow only one
+/// process to open a particular port at a time"*. So on the one transport this
+/// code exists for, every pass failed at its second line, the error went into
+/// the `let _ = error` above, and the machine came up advertising a channel that
+/// answered nothing — a host would connect, wait for a hello that could never
+/// arrive, and read it as a VM that was still booting.
+///
+/// Nothing here was ever wrong on a socket, which is exactly why no test caught
+/// it: rule 8, and rule 12. The fake was a different system at the one point
+/// that mattered.
 fn serve_port(node: &Path, store_root: &Path, workspace: &Path) -> Result<(), WireError> {
-    let read = std::fs::OpenOptions::new().read(true).open(node)?;
-    let write = std::fs::OpenOptions::new().write(true).open(node)?;
-    serve(read, write, store_root, workspace)
+    let port = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(node)?;
+    let write = port.try_clone()?;
+    serve(port, write, store_root, workspace)
 }
 
 /// Serve one connection, whatever it arrived on.
@@ -361,6 +389,30 @@ mod tests {
             port_under(&ports, &dev),
             Some(dev.join("vport0p2")),
             "the port was chosen by position rather than by name"
+        );
+    }
+
+    #[test]
+    fn a_port_with_no_name_at_all_does_not_hide_the_one_that_has_one() {
+        // The unnamed port is `vport0p1` and ours is `vport0p2`, so it is read
+        // first: this is the layout of a machine given any other virtio-serial
+        // port beside Thalyx's, and the search used to stop dead at it.
+        let root = tempfile::tempdir().expect("tempdir");
+        let ports = root.path().join("class/virtio-ports");
+        let dev = root.path().join("dev");
+        std::fs::create_dir_all(ports.join("vport0p1")).expect("mk");
+        std::fs::create_dir_all(ports.join("vport0p2")).expect("mk");
+        std::fs::create_dir_all(&dev).expect("mk");
+        // No `name` file for the first one, which is what the driver does for a
+        // port nobody named — not an empty file, no file.
+        std::fs::write(ports.join("vport0p2/name"), format!("{PORT_NAME}\n")).expect("write");
+        std::fs::write(dev.join("vport0p1"), "").expect("node");
+        std::fs::write(dev.join("vport0p2"), "").expect("node");
+
+        assert_eq!(
+            port_under(&ports, &dev),
+            Some(dev.join("vport0p2")),
+            "an unnamed port beside it hid the agent channel"
         );
     }
 

@@ -89,6 +89,21 @@ impl Machine {
             .try_clone()
             .map_err(|error| Trouble::Channel(error.to_string()))?;
 
+        // The wait budget has to cover the hello as well, and it did not.
+        //
+        // `wait=off` means QEMU is holding the socket open from the instant the
+        // VM starts, so the connect above succeeds on the first try, every time,
+        // and the loop's whole budget is spent on the one thing that is never
+        // slow. What is slow is the guest: the socket accepts and then says
+        // nothing until Thalyx reaches its session and starts the bridge
+        // thread. With no deadline on the read, a client that started before the
+        // machine did — the ordinary order, and the one the README puts the
+        // commands in — waited on it forever with nothing on the screen.
+        let remaining = until.saturating_duration_since(std::time::Instant::now());
+        stream
+            .set_read_timeout(Some(remaining.max(std::time::Duration::from_secs(1))))
+            .map_err(|error| Trouble::Channel(error.to_string()))?;
+
         let mut machine = Self {
             input: BufReader::new(stream),
             output: BufWriter::new(output),
@@ -100,7 +115,41 @@ impl Machine {
             next: 0,
         };
 
-        match machine.read()? {
+        // Matched on the error's **kind** and never on its text. A read that
+        // hits `SO_RCVTIMEO` on Linux comes back as `WouldBlock` — "Resource
+        // temporarily unavailable (os error 11)" — with the words "timed out"
+        // nowhere in it, so a check written against the sentence would have
+        // reported the one state this deadline exists to name as an unexplained
+        // channel failure. Rule 5.
+        let first = match machine.read_wire() {
+            Ok(message) => message,
+            Err(WireError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(Trouble::Channel(format!(
+                    "the socket at {} is there and the machine never said hello, after {}s. \
+                     It is still booting, or it came up without a workspace — its own boot \
+                     report says which, on the QEMU console",
+                    socket.display(),
+                    wait.as_secs()
+                )));
+            }
+            Err(other) => return Err(channel(other)),
+        };
+
+        // Off again for everything after the hello. A deadline that made sense
+        // for a machine that had not booted yet would, left on, turn a model
+        // thinking between two tool calls into a channel that failed.
+        machine
+            .input
+            .get_ref()
+            .set_read_timeout(None)
+            .map_err(|error| Trouble::Channel(error.to_string()))?;
+
+        match first {
             FromThalyx::Hello {
                 protocol,
                 thalyx,
@@ -182,8 +231,14 @@ impl Machine {
     }
 
     fn read(&mut self) -> Result<FromThalyx, Trouble> {
-        let body = read_frame(&mut self.input).map_err(channel)?;
-        FromThalyx::decode(&body).map_err(channel)
+        self.read_wire().map_err(channel)
+    }
+
+    /// The same read with the wire's own error, for the one caller that has to
+    /// tell one kind of I/O failure from another.
+    fn read_wire(&mut self) -> Result<FromThalyx, WireError> {
+        let body = read_frame(&mut self.input)?;
+        FromThalyx::decode(&body)
     }
 }
 

@@ -14,9 +14,51 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El primer agente de programación real usa las primitivas — 2026-08-28
+> ## El puente no habría llevado un byte por virtio-serial — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El bloque siguiente termina diciendo que virtio-serial no ha llevado un byte y
+> que lo que corrió fue el mismo `serve` sobre un socket UNIX. Al preparar ese
+> arranque aparecieron **dos defectos que sólo existen del lado del carácter**, y
+> los dos habrían hecho que la máquina arrancara anunciando un canal que no
+> contesta:
+>
+> 1. **`serve_port` abría el nodo dos veces**, una de lectura y otra de
+>    escritura, que es la forma que tiene un socket y no la que tiene un puerto
+>    virtio-serial. `port_fops_open`, en `drivers/char/virtio_console.c`, rechaza
+>    la segunda apertura con `EBUSY` —*"Allow only one process to open a
+>    particular port at a time"*—, así que cada vuelta del hilo moría en su
+>    segunda línea, el error se iba al `let _ = error` de siempre, y desde el
+>    anfitrión se veía como una VM que sigue arrancando. Ahora se abre **una vez**
+>    en lectura y escritura y el segundo extremo es un `try_clone`.
+> 2. **La búsqueda en sysfs se abandonaba entera** ante un puerto sin nombre. El
+>    driver crea el atributo `name` sólo para los puertos que QEMU nombró, así
+>    que cualquier otro puerto virtio-serial al lado del nuestro podía esconder
+>    el canal, dependiendo nada más del orden en que `read_dir` los devolviera.
+>    Regla 10, y ahora tiene su prueba: `a_port_with_no_name_at_all_does_not_hide_the_one_that_has_one`.
+>
+> Los dos son la regla 12 otra vez: **el transporte que se verificó no era el
+> transporte que se embarca.** Un socket UNIX nunca pudo mostrar ninguno de los
+> dos, y ninguna prueba de este contenedor puede — se prueban arrancando.
+>
+> Del lado del anfitrión, `Machine::connect` esperaba el saludo **sin plazo**.
+> Con `wait=off` el socket existe desde que QEMU arranca, así que el `connect`
+> nunca es lo lento; lo lento es el huésped, y el presupuesto de espera se
+> gastaba en lo único que jamás tarda. Un cliente arrancado antes que la máquina
+> —el orden que dice el README— se quedaba ahí para siempre. Ahora el plazo cubre
+> el saludo y dice qué encontró; y `dev/agent-connect.sh` ya no mata la sonda a
+> los 10 s cuando el adaptador espera 30.
+>
+> Y `a_question_has_one_answer.rs` medía la máquina en vez de la respuesta:
+> buscaba la frase *"the kernel policy map is not loaded"* como marca de que un
+> `sí` fue leído, y esa frase sólo se imprime donde no hay nada cargado. En la
+> máquina de Cesar, con el LSM cargado en observe mode, el `sí` se leía bien, el
+> verbo pasaba la pregunta como debe, y la prueba lo llamaba rechazo. La marca
+> ahora es lo que el otro lado tiene en común en cualquier estado del kernel:
+> `refusing to run \`…\`` o `ran:`.
+>
+> ## El primer agente de programación real usa las primitivas — 2026-08-28
 >
 > Hasta hoy la apuesta de [[Filosofia-Fundacional]] —que un sistema construido
 > alrededor de respuestas estructuradas, un índice semántico y una frontera

@@ -51,7 +51,13 @@ say "building thalyx-mcp for this host"
 # model's mistake — and this is the one place that confusion can still be
 # avoided cheaply.
 say "asking the machine what it is"
-if ! HELLO="$(printf '' | timeout 10 "$MCP" --connect "$SOCKET" 2>&1 >/dev/null)"; then
+# The outer `timeout` is deliberately **longer** than the wait `thalyx-mcp` does
+# of its own, and it used to be shorter: 10 seconds against the adapter's 30, so
+# the deadline that fired was always this one, and a machine that was merely
+# still booting was killed and reported by the generic branch below rather than
+# by the adapter's own sentence about what it found. The backstop is for an
+# adapter that hangs, not for a VM that is slow.
+if ! HELLO="$(printf '' | timeout 45 "$MCP" --connect "$SOCKET" 2>&1 >/dev/null)"; then
     printf '%s\n' "$HELLO"
     say
     say "The socket is there and the machine did not say hello. Either it is"

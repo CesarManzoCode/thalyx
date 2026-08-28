@@ -97,15 +97,42 @@ fn a_machine() -> tempfile::TempDir {
     tempfile::tempdir().expect("a store of this test's own")
 }
 
-/// What `ejecutar` prints once it is past the confirmation, on a machine with
-/// no kernel policy map — which is every machine but the image and his.
+/// Whether `ejecutar` got **past** the confirmation, however this machine's
+/// kernel then answered.
 ///
-/// Captured from a real run rather than invented, which is rule 6: a fixture
-/// written by hand proves the assertion matches somebody's model of the output.
-/// This sentence is the marker that the answer was taken as a **yes**, because
-/// it is printed by the code on the far side of the question and by nothing
-/// else.
-const PAST_THE_QUESTION: &str = "the kernel policy map is not loaded";
+/// This used to be one sentence — `the kernel policy map is not loaded` — and
+/// it was the wrong oracle for a reason worth writing down, because it is rule
+/// 5 wearing a different coat: **the sentence measured the machine, not the
+/// answer.** It is printed only when nothing is attached, which is true of this
+/// container and false of the machine `dev/verify.sh` runs on, where
+/// `make -C lsm load` has left the kernel side attached in observe mode. There
+/// a `sí` was read correctly, the verb went past the question exactly as it
+/// should, and the test called it a refusal — because the far side had said
+/// `the kernel side is attached but only observing` instead. The behaviour was
+/// right and the instrument was stale.
+///
+/// So the marker is what the far side has in common across every state the
+/// kernel can be in, and there are exactly two shapes of it:
+///
+/// - a refusal from the enforcement gate, which is `refusing to run \`…\``:
+///   `NothingCanEnforceForeign` (no map), `ObservingNotEnforcing` (attached and
+///   denying nothing) and `EnforcementModeUnreadable` (rule 10) in
+///   `thalyx-core/src/lib.rs`; or
+/// - `ran:`, from `report()` in `crates/thalyx-cli/src/foreign.rs`, on a
+///   machine that does enforce and therefore actually launched the program.
+///
+/// All four are printed by code reached only after the answer was taken as a
+/// yes, and by nothing on the near side of the question — which is the property
+/// this file needs and the only one it needs. What the kernel then decided is
+/// stage 42's business and `verify.sh`'s, not this test's: a container has no
+/// enforcement to measure, and demanding one here would be demanding of a
+/// machine what it does not have.
+fn past_the_question(seen: &str) -> bool {
+    seen.contains("refusing to run `") || seen.contains("  ran: ")
+}
+
+/// The sentences above, for an assertion that has to say what it looked for.
+const PAST_THE_QUESTION: &str = "`refusing to run …` or `ran:`";
 /// And what it prints when the answer was taken as a no.
 const REFUSED: &str = "  Not run.";
 
@@ -121,8 +148,9 @@ fn the_answer_a_person_gives_in_the_language_of_the_question_is_a_yes() {
         let session = on_a_terminal(machine.path(), &["ejecutar /bin/echo x", answer, "salir"]);
         let seen = said(&session);
         assert!(
-            seen.contains(PAST_THE_QUESTION),
-            "{answer:?} was not taken as a yes:\n{seen}"
+            past_the_question(&seen),
+            "{answer:?} was not taken as a yes ({PAST_THE_QUESTION} never \
+             appeared):\n{seen}"
         );
         assert!(
             !seen.contains(REFUSED),
@@ -144,7 +172,7 @@ fn anything_that_is_not_an_answer_is_a_no_and_the_program_never_starts() {
             "{answer:?} was not refused:\n{seen}"
         );
         assert!(
-            !seen.contains(PAST_THE_QUESTION),
+            !past_the_question(&seen),
             "{answer:?} got past the question:\n{seen}"
         );
     }
@@ -165,7 +193,7 @@ fn a_session_nobody_is_watching_cannot_authorise_anything() {
         "a pipe was allowed to confirm, or refused for the wrong reason:\n{seen}"
     );
     assert!(
-        !seen.contains(PAST_THE_QUESTION),
+        !past_the_question(&seen),
         "a pipe that typed `sí` ran the program:\n{seen}"
     );
     // And the `sí` on the next line was not quietly read as something else —
