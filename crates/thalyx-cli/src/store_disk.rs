@@ -1475,11 +1475,22 @@ mod tests {
         // Not a check that the file parses as make: only that every name PID 1
         // will mount is a subvolume somebody created, and that nothing else was
         // created that nothing mounts.
+        //
+        // **Only the top level.** Since the external agent bridge, the Makefile
+        // also creates a subvolume *inside* `user` for the workspace a
+        // programming agent works in — because `intento` snapshots exactly the
+        // subvolume the session stands in, and a workspace that were a plain
+        // directory would make every attempt answer `not_a_subvolume`. That one
+        // is not on this list and must not be: PID 1 never mounts it, it arrives
+        // with whatever `user` is mounted at, and its name is whatever project
+        // somebody imported. Counting it here is what this test did on the day
+        // it was written, and the failure read as the decree being broken.
         let text = image_makefile();
 
         let mut created: Vec<&str> = text
             .lines()
             .filter_map(|line| line.trim().strip_prefix("btrfs subvolume create $(MNT)/"))
+            .filter(|name| !name.contains('/'))
             .collect();
         created.sort_unstable();
         assert!(

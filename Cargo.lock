@@ -926,6 +926,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-btrfs"
 version = "0.1.0"
 dependencies = [
@@ -957,6 +966,7 @@ dependencies = [
  "thalyx-abi",
  "thalyx-agent",
  "thalyx-bpf",
+ "thalyx-bridge",
  "thalyx-btrfs",
  "thalyx-capture",
  "thalyx-contract",
@@ -1088,6 +1098,17 @@ dependencies = [
  "sha2",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "thalyx-mcp"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thalyx-bridge",
 ]
 
 [[package]]

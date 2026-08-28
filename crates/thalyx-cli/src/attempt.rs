@@ -98,7 +98,7 @@ fn subvolume_to_attempt<V: Volumes>(volumes: &V, here: &Path) -> Result<PathBuf,
 
 fn declined(face: Face, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(OP, word, why));
+        face.say(thalyx_files::machine::declined(OP, word, why));
     } else {
         println!("\n  {why}\n");
     }
@@ -128,16 +128,27 @@ fn cost_fields(difference: &thalyx_snapshot::Difference) -> Vec<(&'static str, s
         ("uncomparable", json!(difference.unreadable.len())),
         ("would_delete_named", json!(difference.added)),
         ("would_revert_named", json!(difference.modified)),
+        // The third list, added on 2026-08-28 when the external agent bridge
+        // made this the answer to "what have I changed since I began". Two of
+        // the three kinds were named and the third was only counted, so an agent
+        // asking what it had done was told about the files it made and the files
+        // it edited and only *how many* it had deleted — which is the one of the
+        // three a reviewer most needs to see by name.
+        ("would_bring_back_named", json!(difference.removed)),
     ]
 }
 
 /// `intento [empezar <etiqueta> | confirmar | abandonar [si]]`.
 pub fn run(store: &Store, here: &Where, rest: &str, face: Face, request_id: &str) -> Fallible {
-    let rest = rest.trim();
-    let (word, tail) = match rest.split_once(char::is_whitespace) {
-        Some((word, tail)) => (word, tail.trim()),
-        None => (rest, ""),
+    // Words and not a split on the first space, so that `intento empezar 'dos
+    // palabras'` is one label. It also means the bridge can quote its arguments
+    // uniformly instead of knowing which verbs read a raw line.
+    let Some(given) = crate::words::asked(face, OP, rest) else {
+        return Ok(());
     };
+    let word = given.first().map(|w| w.as_str()).unwrap_or("");
+    let tail = crate::words::phrase(given.get(1..).unwrap_or(&[]));
+    let tail = tail.as_str();
 
     match word {
         "" => status(store, face),
@@ -170,10 +181,10 @@ fn status(store: &Store, face: Face) -> Fallible {
 
     let Some(open) = open else {
         if face == Face::Machine {
-            println!(
-                "{}",
-                thalyx_files::machine::answer(OP, vec![("open", json!(false))])
-            );
+            face.say(thalyx_files::machine::answer(
+                OP,
+                vec![("open", json!(false))],
+            ));
         } else {
             println!();
             println!("  No attempt is open. `intento empezar <etiqueta>` starts one,");
@@ -202,7 +213,7 @@ fn status(store: &Store, face: Face) -> Fallible {
                 carried.push(("why_not", json!(error.to_string())));
             }
         }
-        println!("{}", thalyx_files::machine::answer(OP, carried));
+        face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
     }
 
@@ -272,7 +283,7 @@ fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str)
                 // will leave attempts open.
                 carried.push(("keep", json!("intento confirmar")));
                 carried.push(("abandon", json!("intento abandonar")));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!(
@@ -320,7 +331,7 @@ fn keep(store: &Store, face: Face, request_id: &str) -> Fallible {
                 carried.extend(open_fields(&open));
                 // Said plainly, because it is what the caller just gave up.
                 carried.push(("reversible", json!(false)));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!("  `{}` is closed and the work is kept.", open.label);
@@ -374,7 +385,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
             ];
             carried.extend(open_fields(&open));
             carried.extend(cost_fields(&plan.difference));
-            println!("{}", thalyx_files::machine::answer(OP, carried));
+            face.say(thalyx_files::machine::answer(OP, carried));
             return Ok(());
         }
 
@@ -432,7 +443,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
                 ];
                 carried.extend(open_fields(&open));
                 carried.extend(cost_fields(&plan.difference));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!("  {} is back as it was.", open.subvolume.display());

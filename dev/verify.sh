@@ -6682,6 +6682,273 @@ fi
 # is looking at here.
 unproven "that the screen keeps drawing while an inference runs — boot it: make -C image run, and watch the spinner and the clock while it answers"
 
+step "47. a programming agent outside the machine gets a workspace and cannot leave it"
+
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. The claim is a boundary, and a
+# boundary is checked by trying to cross it — with a control beside every denial,
+# because without one a refusal and an operation that never worked look
+# identical (rule 4).
+#
+# The transport here is a UNIX socket and not virtio-serial. That is the same
+# `bridge::serve` over a different pair of descriptors, and what a socket cannot
+# prove is that QEMU carries the bytes — which is §48, and needs a boot.
+
+AGENT_WORK="$WORK/agent"
+rm -rf "$AGENT_WORK"
+mkdir -p "$AGENT_WORK/project/src" "$AGENT_WORK/store"
+printf 'mod greeting;\nfn main() { greeting::greet("x"); }\n' > "$AGENT_WORK/project/src/main.rs"
+printf 'pub fn greet(who: &str) { println!("{who}"); }\n' > "$AGENT_WORK/project/src/greeting.rs"
+printf 'not the agent\n' > "$AGENT_WORK/secret.txt"
+ln -sf /etc "$AGENT_WORK/project/out"
+
+AGENT_SOCK="$AGENT_WORK/agent.sock"
+"$THALYX" --root "$AGENT_WORK/store" bridge \
+    --workspace "$AGENT_WORK/project" --listen "$AGENT_SOCK" \
+    > "$WORK/agent-bridge.log" 2>&1 &
+AGENT_BRIDGE=$!
+
+# Waited for rather than slept on. A fixed sleep is either slower than it needs
+# to be or shorter than a loaded machine needs, and this suite has paid for that
+# before.
+for _ in $(seq 1 100); do
+    [ -S "$AGENT_SOCK" ] && break
+    sleep 0.05
+done
+
+if [ ! -S "$AGENT_SOCK" ]; then
+    failed "the agent bridge never opened a socket"
+    excerpt "$WORK/agent-bridge.log"
+else
+    python3 - "$AGENT_SOCK" "$AGENT_WORK/project" > "$WORK/agent-probe.json" 2>&1 <<'PROBE' || true
+import json, socket, struct, sys
+
+socket_path, workspace = sys.argv[1], sys.argv[2]
+sock = socket.socket(socket.AF_UNIX)
+sock.settimeout(20)
+sock.connect(socket_path)
+wire = sock.makefile("rwb")
+
+def read():
+    header = wire.read(4)
+    return json.loads(wire.read(struct.unpack("<I", header)[0]))
+
+def ask(verb, arguments):
+    body = json.dumps({"type": "request", "id": verb, "verb": verb,
+                       "arguments": arguments}).encode()
+    wire.write(struct.pack("<I", len(body)) + body)
+    wire.flush()
+    return read()
+
+out = {"hello": read(), "tried": {}}
+# Every one of these is a pair: the thing that must work, and the thing beside
+# it that must not. A run where the whole column is refused is a broken bridge
+# and must not read as a working boundary.
+for name, verb, arguments in [
+    ("inside",        "read", ["src/main.rs"]),
+    ("absolute_out",  "read", ["/etc/passwd"]),
+    ("dot_dot_out",   "read", ["../secret.txt"]),
+    ("symlink_out",   "read", ["out/passwd"]),
+    ("index",         "index_build", ["."]),
+    ("symbol",        "symbol", ["greet"]),
+    ("dependents",    "depended_on_by", ["src/greeting.rs"]),
+    ("power_off",     "power_off", []),
+    ("install_onto",  "install_onto", ["/dev/sda"]),
+    ("run",           "run", ["dev.thalyx.greeter"]),
+    ("rehearse_out",  "rehearse", ["rm", "/etc/passwd"]),
+]:
+    answer = ask(verb, arguments)
+    out["tried"][name] = {
+        "type": answer.get("type"),
+        "word": answer.get("word"),
+        "ok": (answer.get("answer") or {}).get("ok"),
+    }
+print(json.dumps(out))
+PROBE
+
+    AGENT_OUT=$(tail -1 "$WORK/agent-probe.json")
+    verdict() {
+        printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+try:
+    tried = json.load(sys.stdin)['tried']
+except Exception:
+    print('unreadable'); raise SystemExit
+print(json.dumps(tried.get('$1', {})))
+" 2>/dev/null
+    }
+
+    if ! printf '%s' "$AGENT_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        failed "the agent bridge did not answer the probe"
+        excerpt "$WORK/agent-probe.json"
+    else
+        # The controls first, so that a bridge which refuses everything cannot
+        # be reported as a boundary that works.
+        ALLOWED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+print(sum(1 for name in ('inside', 'index', 'symbol', 'dependents')
+          if tried[name]['type'] == 'response' and tried[name]['ok'] is True))")
+        if [ "$ALLOWED" != 4 ]; then
+            failed "only $ALLOWED of the 4 things an agent must be able to do worked; the denials below mean nothing"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "an external agent reads, indexes, resolves a symbol and asks for dependents inside its workspace"
+        fi
+
+        REFUSED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+bad = [name for name in ('absolute_out', 'dot_dot_out', 'symlink_out', 'rehearse_out')
+       if tried[name].get('word') != 'outside_workspace']
+print(','.join(bad))")
+        if [ -n "$REFUSED" ]; then
+            failed "an external agent reached outside its workspace: $REFUSED"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "an absolute path, a \`..\`, a symlink out and a rehearsal of one are all refused as outside_workspace"
+        fi
+
+        UNEXPOSED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+bad = [name for name in ('power_off', 'install_onto', 'run')
+       if tried[name].get('word') != 'not_exposed']
+print(','.join(bad))")
+        if [ -n "$UNEXPOSED" ]; then
+            failed "a verb that changes the machine is reachable from outside it: $UNEXPOSED"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "apagar, instalar-en and correr are not reachable from outside the machine"
+        fi
+
+        # The journal, which is what a person has afterwards. Checked with
+        # something that is not the bridge.
+        if [ -f "$AGENT_WORK/store/journal.jsonl" ] \
+            && grep -q '"operation":"external_agent"' "$AGENT_WORK/store/journal.jsonl" \
+            && grep -q '"origin":"untrusted_content"' "$AGENT_WORK/store/journal.jsonl"; then
+            proven "what came from outside the machine is in the journal, marked as untrusted in origin"
+        else
+            failed "an external agent's refused escape left no trace in the journal"
+        fi
+    fi
+    kill "$AGENT_BRIDGE" 2>/dev/null || true
+    wait "$AGENT_BRIDGE" 2>/dev/null || true
+fi
+
+# The half a socket cannot answer, and it is the one the whole delivery rests on.
+if [ "$HAVE_BTRFS" = 1 ]; then
+    # A real subvolume, so `intento` has something to snapshot. This is the only
+    # place the reversible boundary an agent is sold on can actually be checked.
+    AGENT_SUB="$BTRFS_SCRATCH/agent-workspace"
+    rm -rf "$AGENT_SUB"
+    if btrfs subvolume create "$AGENT_SUB" > "$WORK/agent-subvol.log" 2>&1; then
+        mkdir -p "$AGENT_SUB/src"
+        printf 'fn a() {}\n' > "$AGENT_SUB/src/lib.rs"
+        BEFORE=$(find "$AGENT_SUB" -type f -not -path '*/.snapshots/*' -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum)
+
+        AGENT_SOCK2="$AGENT_WORK/agent2.sock"
+        rm -rf "$AGENT_WORK/store2"; mkdir -p "$AGENT_WORK/store2"
+        "$THALYX" --root "$AGENT_WORK/store2" bridge \
+            --workspace "$AGENT_SUB" --listen "$AGENT_SOCK2" \
+            > "$WORK/agent-bridge2.log" 2>&1 &
+        AGENT_BRIDGE2=$!
+        for _ in $(seq 1 100); do [ -S "$AGENT_SOCK2" ] && break; sleep 0.05; done
+
+        python3 - "$AGENT_SOCK2" > "$WORK/agent-attempt.json" 2>&1 <<'ATTEMPT' || true
+import json, socket, struct, sys
+sock = socket.socket(socket.AF_UNIX); sock.settimeout(60); sock.connect(sys.argv[1])
+wire = sock.makefile("rwb")
+def read():
+    return json.loads(wire.read(struct.unpack("<I", wire.read(4))[0]))
+def ask(verb, arguments):
+    body = json.dumps({"type": "request", "id": verb, "verb": verb,
+                       "arguments": arguments}).encode()
+    wire.write(struct.pack("<I", len(body)) + body); wire.flush(); return read()
+read()
+steps = {
+    "begin":    ask("attempt", ["empezar", "a change"]),
+    "made":     ask("make_file", ["src/new.rs"]),
+    "edited":   ask("edit", ["src/lib.rs", "poner", "1", "/// changed"]),
+    "removed":  ask("remove", ["src/lib.rs"]),
+    "changed":  ask("attempt", []),
+    "asked":    ask("attempt", ["abandonar"]),
+    "abandoned": ask("attempt", ["abandonar", "si"]),
+    "after":    ask("attempt", []),
+}
+print(json.dumps(steps))
+ATTEMPT
+        kill "$AGENT_BRIDGE2" 2>/dev/null || true
+        wait "$AGENT_BRIDGE2" 2>/dev/null || true
+
+        AFTER=$(find "$AGENT_SUB" -type f -not -path '*/.snapshots/*' -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum)
+        ATTEMPT_OUT=$(tail -1 "$WORK/agent-attempt.json")
+
+        BEGAN=$(printf '%s' "$ATTEMPT_OUT" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['begin'].get('answer',{}).get('began'))
+except Exception: print('unreadable')" 2>/dev/null)
+
+        if [ "$BEGAN" != "True" ]; then
+            failed "an external agent could not open an attempt on a real subvolume"
+            excerpt "$WORK/agent-attempt.json" 5
+        elif [ "$BEFORE" != "$AFTER" ]; then
+            failed "abandoning an attempt did not put the workspace back byte for byte"
+            excerpt "$WORK/agent-attempt.json" 5
+        else
+            # Both halves. The tree coming back is the claim; the first
+            # `abandonar` answering with the cost and doing nothing is the
+            # trusted path, and an abandon that went ahead on the first word
+            # would also have passed the hash check.
+            ASKED=$(printf '%s' "$ATTEMPT_OUT" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['asked'].get('answer',{}).get('done'))
+except Exception: print('unreadable')" 2>/dev/null)
+            if [ "$ASKED" = "True" ]; then
+                failed "the first \`abandonar\` went ahead without being confirmed"
+            else
+                proven "an agent began an attempt, made, edited and deleted files, and abandoning put every byte back"
+            fi
+        fi
+        rm -rf "$AGENT_SUB"
+    else
+        unproven "an attempt through the bridge — a subvolume could not be made at $BTRFS_SCRATCH"
+        excerpt "$WORK/agent-subvol.log" 5
+    fi
+else
+    unproven "that an agent can begin an attempt and abandon it back to the byte — this machine has no Btrfs, so there is nothing to snapshot"
+fi
+
+step "48. the agent channel is a device the machine finds, and QEMU is the only thing that can put one there"
+
+# What no host stage can answer. `bridge::port` looks in
+# `/sys/class/virtio-ports` for a port named `org.thalyx.agent`; the search is
+# tested against a directory laid out like sysfs, which proves the search and
+# not the driver.
+#
+# What is checked *here* is the one thing that would silently break it: the two
+# places the port's name is written must agree. The Makefile puts it on the QEMU
+# command line and the binary reads it out of sysfs, and a machine where those
+# disagree comes up with a channel nobody is listening on and no error anywhere.
+PORT_NAME=$(grep -o 'PORT_NAME: &str = "[^"]*"' "$ROOT/crates/thalyx-cli/src/bridge.rs" \
+    | sed 's/.*"\(.*\)"/\1/')
+if [ -z "$PORT_NAME" ]; then
+    failed "the agent port has no name in crates/thalyx-cli/src/bridge.rs"
+elif grep -q "name=$PORT_NAME" "$ROOT/image/Makefile"; then
+    proven "the port the machine looks for and the port QEMU creates are both \`$PORT_NAME\`"
+else
+    failed "image/Makefile does not create a virtserialport named \`$PORT_NAME\`, so a machine booted with run-agent would find no channel"
+fi
+
+if grep -qx 'CONFIG_VIRTIO_CONSOLE=y' "$ROOT/image/thalyx.config"; then
+    proven "the kernel is configured with the virtio-serial driver the channel needs"
+else
+    failed "CONFIG_VIRTIO_CONSOLE is not in image/thalyx.config, so no kernel built from it can have an agent channel"
+fi
+
+unproven "that virtio-serial actually carries the protocol — that needs a boot: make -C image agent PROJECT=<a project>, then dev/agent-connect.sh"
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

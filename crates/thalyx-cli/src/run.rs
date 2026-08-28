@@ -242,78 +242,75 @@ fn say_it(outcome: &thalyx_core::run::RunOutcome) {
         })
         .collect();
 
-    println!(
-        "{}",
-        thalyx_files::machine::answer(
-            OP,
-            vec![
-                ("module_id", json!(outcome.module_id)),
-                ("version", json!(outcome.version)),
-                ("program", json!(outcome.program.display().to_string())),
-                // The one field that decides whether anything else here can be
-                // believed as enforcement. `confined: false` and a policy that
-                // denied nothing are the same run, and the journal calls it
-                // degraded — so a caller must not have to derive it from the
-                // absence of a cgroup id.
-                ("confined", json!(outcome.cgroup_id.is_some())),
-                // Beside `confined`, and for its reason. A confined run under
-                // an observing kernel and a confined run under an enforcing
-                // one are the same JSON without this, and they are not the
-                // same run.
-                (
-                    "enforcing",
-                    json!(matches!(
-                        outcome.enforcement,
-                        Some(thalyx_permd::Enforcement::Enforcing)
-                    ))
+    crate::files::Face::Machine.say(thalyx_files::machine::answer(
+        OP,
+        vec![
+            ("module_id", json!(outcome.module_id)),
+            ("version", json!(outcome.version)),
+            ("program", json!(outcome.program.display().to_string())),
+            // The one field that decides whether anything else here can be
+            // believed as enforcement. `confined: false` and a policy that
+            // denied nothing are the same run, and the journal calls it
+            // degraded — so a caller must not have to derive it from the
+            // absence of a cgroup id.
+            ("confined", json!(outcome.cgroup_id.is_some())),
+            // Beside `confined`, and for its reason. A confined run under
+            // an observing kernel and a confined run under an enforcing
+            // one are the same JSON without this, and they are not the
+            // same run.
+            (
+                "enforcing",
+                json!(matches!(
+                    outcome.enforcement,
+                    Some(thalyx_permd::Enforcement::Enforcing)
+                )),
+            ),
+            (
+                "enforcement",
+                json!(outcome.enforcement.as_ref().map(|mode| mode.describe())),
+            ),
+            ("cgroup_id", json!(outcome.cgroup_id)),
+            ("isolated", json!(outcome.isolated)),
+            ("isolation", json!(outcome.isolation)),
+            ("uid", json!(outcome.uid)),
+            (
+                "permissions",
+                json!(
+                    outcome
+                        .permissions
+                        .iter()
+                        .map(|permission| permission.describe())
+                        .collect::<Vec<_>>()
                 ),
-                (
-                    "enforcement",
-                    json!(outcome.enforcement.as_ref().map(|mode| mode.describe()))
-                ),
-                ("cgroup_id", json!(outcome.cgroup_id)),
-                ("isolated", json!(outcome.isolated)),
-                ("isolation", json!(outcome.isolation)),
-                ("uid", json!(outcome.uid)),
-                (
-                    "permissions",
-                    json!(
-                        outcome
-                            .permissions
-                            .iter()
-                            .map(|permission| permission.describe())
-                            .collect::<Vec<_>>()
-                    )
-                ),
-                ("said", json!(said)),
-                // `wrote` apart from `said`, and named for what it is. The
-                // channel is the surface Thalyx mediates; this is bytes at a
-                // descriptor, and a module writing `granted=reachable` there has
-                // told nobody anything Thalyx checked.
-                (
-                    "wrote",
-                    json!({
-                        // Kept apart because they arrived on separate pipes: any
-                        // interleaving would be one Thalyx invented.
-                        "stdout": outcome.wrote.stdout,
-                        "stderr": outcome.wrote.stderr,
-                        "truncated": outcome.wrote.truncated,
-                    })
-                ),
-                // Output that silently stopped growing and a module that stopped
-                // talking look identical, so the count is said out loud.
-                ("dropped_notices", json!(outcome.dropped_notices)),
-                (
-                    "channel_error",
-                    json!(outcome.channel_error.as_ref().map(|e| e.to_string()))
-                ),
-                // `null` is *terminated by a signal*, and it is a third answer
-                // rather than a missing one — which is why it is written out
-                // instead of left off when there is no code.
-                ("exit_code", json!(outcome.exit_code)),
-            ],
-        )
-    );
+            ),
+            ("said", json!(said)),
+            // `wrote` apart from `said`, and named for what it is. The
+            // channel is the surface Thalyx mediates; this is bytes at a
+            // descriptor, and a module writing `granted=reachable` there has
+            // told nobody anything Thalyx checked.
+            (
+                "wrote",
+                json!({
+                    // Kept apart because they arrived on separate pipes: any
+                    // interleaving would be one Thalyx invented.
+                    "stdout": outcome.wrote.stdout,
+                    "stderr": outcome.wrote.stderr,
+                    "truncated": outcome.wrote.truncated,
+                }),
+            ),
+            // Output that silently stopped growing and a module that stopped
+            // talking look identical, so the count is said out loud.
+            ("dropped_notices", json!(outcome.dropped_notices)),
+            (
+                "channel_error",
+                json!(outcome.channel_error.as_ref().map(|e| e.to_string())),
+            ),
+            // `null` is *terminated by a signal*, and it is a third answer
+            // rather than a missing one — which is why it is written out
+            // instead of left off when there is no code.
+            ("exit_code", json!(outcome.exit_code)),
+        ],
+    ));
 }
 
 /// `ensayo correr <id>` — D1's last hole, closed on 2026-08-26.

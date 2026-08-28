@@ -288,6 +288,13 @@ máquina con una**, y ninguna prueba de fixture lo vio.
 No hay dirección, no hay DHCP, no hay resolvedor y no sale un paquete — y la
 respuesta lo dice, en las dos caras, porque es la única lista del sistema cuyas
 cosas ningún verbo puede usar.
+| Protocolo del puente anfitrión↔máquina | `crates/thalyx-bridge` | Marcado por largo de 4 bytes y JSON UTF-8; `hello`/`request`/`response`/`error`. Lo enlazan los dos extremos, así que hay una definición de frame y no dos |
+| Sesión de agente externo | `crates/thalyx-cli/src/external.rs` | Lista de verbos y guardián de rutas. Cada ruta se resuelve como la resuelve el verbo **y** como la resuelve el kernel, y las dos tienen que caer dentro del workspace; un `..` se rechaza de plano. `apagar`, `instalar-en`, `correr`, `ejecutar`, `negar` y `matar` no son alcanzables |
+| El extremo dentro de la máquina | `crates/thalyx-cli/src/bridge.rs` | Un hilo de la sesión, no un programa nuevo en la imagen. Encuentra el puerto por su nombre en `/sys/class/virtio-ports`, nunca por su número. Sin puerto: ni error, ni espera, ni una línea en el arranque |
+| Adaptador MCP | `crates/thalyx-mcp` | Once herramientas sobre stdio. No abre un archivo del workspace: es adaptador, y la superficie de Thalyx sigue siendo la autoridad. Descarta una herramienta cuyo verbo la máquina no anuncie |
+| Métricas de una sesión de agente | `crates/thalyx-mcp/src/metrics.rs` | Tiempo, llamadas, herramientas, bytes, errores, archivos leídos, búsquedas, intentos. Sin tokens: este proceso no los ve, y una estimación sería un número que parece medición |
+| Arnés de comparación de dos brazos | `dev/bench-external-agent.sh` | Claude Code normal contra Claude Code con sólo herramientas Thalyx, mismo prompt y mismo modelo. Corrió una vez |
+| Importar un proyecto a la máquina | `image/Makefile` (`agent`, `run-agent`, `agent-export`) | Una copia descartable, como subvolumen propio para que `intento` tenga qué fotografiar. El checkout del anfitrión no se toca y no es alcanzable desde adentro |
 
 ## No construido todavía
 

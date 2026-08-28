@@ -14,9 +14,62 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El motor se queda vivo, y la pantalla deja de congelarse — 2026-08-28
+> ## El primer agente de programación real usa las primitivas — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Hasta hoy la apuesta de [[Filosofia-Fundacional]] —que un sistema construido
+> alrededor de respuestas estructuradas, un índice semántico y una frontera
+> reversible hace que una IA trabaje mejor— **nunca se había medido**, y no había
+> forma de medirla: el único agente que podía usar las primitivas era el Qwen de
+> 3B de adentro, y compararlo con Claude sobre Linux mide el tamaño del modelo,
+> no la superficie.
+>
+> Ahora hay puente. **Claude Code real, corriendo en el anfitrión, hizo una tarea
+> de lectura usando sólo verbos de Thalyx**: cuatro llamadas —un `indexar`, dos
+> `buscar`, un `usan`— sin abrir un archivo y sin una sola búsqueda de texto. El
+> decreto está en [[Agentes-Externos]] y lo importante de él es dónde vive cada
+> cosa: **MCP es un adaptador, en el anfitrión; la superficie de Thalyx sigue
+> siendo la autoridad.**
+>
+> La cadena es
+> `Claude Code → thalyx-mcp → socket de QEMU → virtio-serial → un hilo de la
+> sesión → el MISMO dispatch que un teclado → índice, intento y journal reales`.
+> Sin red, sin TCP, sin dirección: `CONFIG_VIRTIO_CONSOLE=y` es todo el costo en
+> el kernel.
+>
+> **Un agente externo no es root remoto.** `crates/thalyx-cli/src/external.rs`
+> es una lista de verbos y un guardián de rutas que resuelve cada una dos veces
+> —como la resuelve el verbo y como la resuelve el kernel— y exige que las dos
+> caigan adentro del workspace. `apagar`, `instalar-en`, `correr`, `ejecutar`,
+> `negar` y `matar` no son alcanzables. Lo que un agente externo cambió, y todo
+> intento suyo de salirse, quedan en el journal marcados `untrusted_content`.
+>
+> **Lo que la primera medición dio**, con Sonnet, la misma tarea, dos copias
+> idénticas de un proyecto de 35 archivos: 8 turnos y 32.8 s con `Read`/`grep`
+> contra 7 turnos y 17.3 s con las herramientas de Thalyx. **Es una anécdota, no
+> un resultado** — una corrida de una tarea. Lo que existe es el arnés,
+> `dev/bench-external-agent.sh`, y una corrida real que lo prueba.
+>
+> Y enseñó algo en contra, que está escrito en el decreto: el brazo de Linux
+> encontró un dependiente que el índice no, porque usa el símbolo a través de un
+> campo y nunca lo nombra. El índice contesta *quién nombra esto*, no *a quién le
+> afecta*.
+>
+> **Lo que falta arrancar para creerlo del todo.** virtio-serial no ha llevado un
+> byte: este contenedor no tiene QEMU, y lo que corrió fue el mismo `serve` sobre
+> un socket UNIX. Y el ciclo `intento` completo a través del puente necesita
+> Btrfs. Los dos son `dev/verify.sh` §47 y §48, y los dos corren en la máquina de
+> Cesar:
+>
+> ```
+> make -C image agent PROJECT=/ruta/a/un/proyecto
+> # en otra terminal, cuando la máquina esté arriba:
+> dev/agent-connect.sh
+> claude
+> ```
+>
+> ## El motor se queda vivo, y la pantalla deja de congelarse — 2026-08-28
 >
 > El arranque en QEMU del bloque siguiente probó que la cadena entera existe:
 > una frase en español llegó a un Qwen2.5-3B confinado y `ls` mostró la carpeta.

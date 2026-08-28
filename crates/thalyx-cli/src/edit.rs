@@ -81,7 +81,7 @@ pub enum Opens {
 }
 
 /// The subverbs, in both spellings, and the order they are offered in.
-const ACTIONS: &[&str] = &[
+pub const ACTIONS: &[&str] = &[
     "ver", "show", "poner", "insert", "cambiar", "replace", "borrar", "delete",
 ];
 

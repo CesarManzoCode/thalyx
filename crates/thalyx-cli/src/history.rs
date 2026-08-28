@@ -157,7 +157,7 @@ pub fn show(store: &Store, rest: &str, face: Face) -> Fallible {
             ("complete_record_of_the_machine", json!(false)),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
@@ -205,7 +205,7 @@ pub fn show(store: &Store, rest: &str, face: Face) -> Fallible {
 
 fn declined(face: Face, op: &str, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(op, word, why));
+        face.say(thalyx_files::machine::declined(op, word, why));
     } else {
         println!("\n  {why}\n");
     }

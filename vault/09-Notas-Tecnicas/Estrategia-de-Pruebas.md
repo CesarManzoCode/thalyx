@@ -4599,3 +4599,45 @@ Y desde el lado de la investigación: un experimento que mata el proceso en el p
 - [[Caso-Instalar-Modulo]]
 - [[Criterio-de-Salida-Fase-1]]
 - [[Notas-Tecnicas-Implementacion]]
+
+## Regla derivada: una ruta nueva a la misma función encuentra lo que ninguna prueba de esa función podía — 2026-08-28
+
+**Un verbo probado por su propia suite y probado a través de una segunda entrada
+son dos comprobaciones distintas, y la segunda encuentra lo que la primera no
+puede ver: los supuestos que la primera comparte con el verbo.**
+
+El puente de agentes externos ([[Agentes-Externos]]) no reimplementa ningún
+verbo. Compone una línea del vocabulario de la sesión y la manda por el **mismo**
+`dispatch_asking` que recibe una tecla. Como lo que le llega son argumentos
+estructurados y no una línea escrita por una persona, cada argumento va entre
+comillas simples — POSIX, literal de punta a punta, para que un argumento no
+pueda convertirse en un segundo verbo.
+
+La primera vez que se corrió, el puente contestó:
+
+```
+/home/proyecto/'src/main.rs' is not there
+```
+
+`leer` **no partía la línea en palabras**. Tomaba el resto de la línea tal cual y
+lo resolvía como una ruta. Lo mismo `ir`, `indexar`, `describe` e `intento`.
+[[Palabras]] había decretado el entrecomillado el 2026-08-23 y se lo había dado a
+`cp`, `mv` y `rm`; a `leer` no. Así que **un archivo con un espacio en el nombre
+se podía listar, copiar y borrar, y no se podía leer.**
+
+Ninguna prueba de `leer` podía encontrarlo, porque todas las escribió alguien que
+sabía que `leer` toma el resto de la línea, y por eso ninguna le pasó comillas.
+Es la regla del fixture inventado, movida un nivel: **una prueba escrita contra
+una función comparte los supuestos de la función.** Una segunda ruta que llega
+por otro lado no los comparte, y por eso los ve.
+
+Y encontró un segundo caso del mismo tipo en el mismo minuto: `ensayo` parte su
+primera palabra de la línea cruda, así que `ensayo 'rm' …` pide ensayar un verbo
+llamado `'rm'` —que ninguna máquina tiene— y la respuesta se lee como un error
+del agente cuando es de Thalyx. El puente compone ahora la línea de `ensayo`
+recursivamente, con las reglas del verbo que envuelve.
+
+**Lo que hay que hacer con esto.** Cuando se agregue una segunda entrada a algo
+—una superficie, un canal, una API— la primera corrida contra ella vale más que
+la suite entera de lo que envuelve. Correrla antes de escribir una sola prueba
+nueva, y anotar lo que salga.

@@ -111,7 +111,7 @@ pub fn available(store: &Store, rest: &str, face: Face) -> Fallible {
             ("refused", json!(refused_rows)),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        println!("{}", thalyx_files::machine::answer(OP, carried));
+        face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
     }
 
@@ -200,7 +200,7 @@ pub fn installed(store: &Store, rest: &str, face: Face) -> Fallible {
 
         let mut carried = vec![("modules", json!(carried_rows))];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        println!("{}", thalyx_files::machine::answer(OP, carried));
+        face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
     }
 
@@ -273,17 +273,14 @@ pub fn permissions(store: &Store, face: Face) -> Fallible {
             .map(|(module_id, count)| json!({ "module_id": module_id, "recorded": count }))
             .collect();
 
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                OP,
-                vec![
-                    ("granted", json!(granted)),
-                    ("count", json!(granted.len())),
-                    ("inert", json!(inert_rows)),
-                ],
-            )
-        );
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("granted", json!(granted)),
+                ("count", json!(granted.len())),
+                ("inert", json!(inert_rows)),
+            ],
+        ));
         return Ok(());
     }
 
@@ -337,10 +334,7 @@ fn read_failure(error: &thalyx_core::CoreError) -> (&'static str, &'static str) 
 /// cannot be forgotten by whichever branch is being written at the time.
 fn refused(face: Face, op: &str, word: &str, remedy: &str, message: &str) -> Fallible {
     if face.is_machine() {
-        println!(
-            "{}",
-            thalyx_files::machine::refused(op, word, remedy, message)
-        );
+        face.say(thalyx_files::machine::refused(op, word, remedy, message));
     } else {
         println!();
         println!("  {message}");
@@ -426,33 +420,30 @@ pub fn foresee_install(store: &Store, name: &str, face: Face) -> Fallible {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                OP,
-                vec![
-                    ("verb", json!("install")),
-                    ("module_id", json!(candidate.module_id)),
-                    ("version", json!(candidate.version.to_string())),
-                    ("from", json!(candidate.path.display().to_string())),
-                    ("replaces", json!(replaces)),
-                    ("asks_for", json!(asks)),
-                    (
-                        "needs_a_terminal",
-                        json!(
-                            manifest
-                                .permissions
-                                .iter()
-                                .any(|one| one.kind.requires_confirmation())
-                        )
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("verb", json!("install")),
+                ("module_id", json!(candidate.module_id)),
+                ("version", json!(candidate.version.to_string())),
+                ("from", json!(candidate.path.display().to_string())),
+                ("replaces", json!(replaces)),
+                ("asks_for", json!(asks)),
+                (
+                    "needs_a_terminal",
+                    json!(
+                        manifest
+                            .permissions
+                            .iter()
+                            .any(|one| one.kind.requires_confirmation())
                     ),
-                    // Said out loud because it is the whole difference between a
-                    // rehearsal and declining at the prompt: that one leaves a
-                    // `rejected` entry in the journal, and this leaves nothing.
-                    ("would_write", json!(false)),
-                ],
-            )
-        );
+                ),
+                // Said out loud because it is the whole difference between a
+                // rehearsal and declining at the prompt: that one leaves a
+                // `rejected` entry in the journal, and this leaves nothing.
+                ("would_write", json!(false)),
+            ],
+        ));
         return Ok(());
     }
 
@@ -502,23 +493,20 @@ pub fn foresee_rollback(store: &Store, face: Face) -> Fallible {
     };
 
     if face.is_machine() {
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                OP,
-                vec![
-                    ("verb", json!("rollback")),
-                    ("would_undo", json!(plan.describe())),
-                    ("request_id", json!(plan.request_id)),
-                    ("module_id", json!(plan.module_id)),
-                    ("version", json!(plan.version)),
-                    ("permissions_revoked", json!(plan.permissions_revoked)),
-                    ("uid_retired", json!(plan.uid_retired)),
-                    ("touches_user_data", json!(false)),
-                    ("would_write", json!(false)),
-                ],
-            )
-        );
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("verb", json!("rollback")),
+                ("would_undo", json!(plan.describe())),
+                ("request_id", json!(plan.request_id)),
+                ("module_id", json!(plan.module_id)),
+                ("version", json!(plan.version)),
+                ("permissions_revoked", json!(plan.permissions_revoked)),
+                ("uid_retired", json!(plan.uid_retired)),
+                ("touches_user_data", json!(false)),
+                ("would_write", json!(false)),
+            ],
+        ));
         return Ok(());
     }
 
