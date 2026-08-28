@@ -11,6 +11,7 @@ repository.workspace = true
 thalyx-abi.workspace = true
 thalyx-syscall.workspace = true
 thalyx-manifest.workspace = true
+thalyx-proc.workspace = true
 thalyx-sandbox.workspace = true
 thalyx-snapshot.workspace = true
 thalyx-permd.workspace = true

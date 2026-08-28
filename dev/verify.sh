@@ -6377,6 +6377,87 @@ esac
 GAP="a layout actually loaded onto a machine's own console — that is a machine-global switch with no owner (rule 11), so it is seen by booting the image and typing \`ñ\`, never by this script"
 unproven "$GAP"
 
+step "44. a module gets the memory it asked for and was granted, and nothing more"
+
+# Cesar, 2026-08-28. `module_standard` capped every module at a gigabyte and no
+# manifest could ask for more, so the first real module Thalyx is being built to
+# run — an inference engine, whose 31 system calls this confinement already
+# allows — could not run. Now the manifest asks and the human approves, which is
+# the shape every other thing a module wants already has.
+#
+# The unit tests prove the arithmetic and the refusals. What only a machine can
+# answer is whether the number reaches the kernel: `memory.max` is written by a
+# cgroup controller that has to be delegated, and this container's is not.
+
+MEMORY_ROOT="$WORK/memory-grant"
+mkdir -p "$MEMORY_ROOT"
+"$THALYX" --root "$MEMORY_ROOT" store status > /dev/null 2>&1
+
+# What an install compares a request against. Asked of Thalyx, because that is
+# what the install asks — a stage that read `/proc/meminfo` itself would be
+# checking its own arithmetic rather than the machine's.
+# `memoria` in the session and not `thalyx memory`, which is the agent's memory
+# between sessions — two different things with one word, found by running the
+# first version of this line.
+MEMORY_TOTAL=$(printf 'structured on\nmemoria\nsalir\n' \
+    | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "memory" and said.get("total"):
+        print(said["total"])
+        break
+' 2>/dev/null)
+if [ -n "${MEMORY_TOTAL:-}" ] && [ "$MEMORY_TOTAL" -gt 0 ] 2>/dev/null; then
+    proven "this machine reports how much memory it has ($((MEMORY_TOTAL / 1024 / 1024)) MiB), which is the number an install refuses a larger request against"
+else
+    failed "\`memoria\` did not report a total, so an install has nothing to compare a request against"
+fi
+
+# The limit a run would actually be confined to, read out of the rehearsal —
+# which is the run's own arithmetic stopped one line before the program exists,
+# not a second copy of it. Needs a module installed, and this stage does not
+# install one: `exit_criterion` and §20 already do that, and a stage that
+# installed a second module would be measuring its own fixture.
+MEMORY_MODULE=$("$THALYX" --root "$MEMORY_ROOT" module list 2>/dev/null \
+    | awk 'NR==1 && $1 !~ /^no/ {print $1}')
+if [ -z "$MEMORY_MODULE" ]; then
+    GAP="the memory limit a real run would be confined to — no module is installed under this stage's own store, so there was nothing to rehearse"
+    unproven "$GAP"
+elif [ "${HAVE_CONTROLLERS:-0}" != 1 ]; then
+    GAP="a granted memory limit written into a cgroup — this machine does not delegate the memory controller, so the number could be computed and not applied"
+    if [ "${THALYX_REQUIRE_CONTROLLER_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    MEMORY_SAYS=$(printf 'structured on\nensayo correr %s\nsalir\n' "$MEMORY_MODULE" \
+        | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+        | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "rehearse" and said.get("verb") == "run":
+        print(said.get("isolation") or "unsaid")
+        break
+' 2>/dev/null)
+    case "$MEMORY_SAYS" in
+        *memory*MiB*)
+            proven "a run's rehearsal names the memory limit it would be confined to: $MEMORY_SAYS"
+            ;;
+        *)
+            failed "the rehearsal does not say what memory limit a run would get, so a grant cannot be checked from outside the code that applies it: ${MEMORY_SAYS:-nothing}"
+            ;;
+    esac
+fi
+
+# The half no machine here answers, named rather than inferred.
+unproven "an inference engine actually running inside a granted limit — that is the module this decree was made for, and it does not exist yet"
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never
