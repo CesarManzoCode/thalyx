@@ -620,7 +620,7 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
 
     let geometry =
         thalyx_syscall::display_geometry(display.as_fd()).map_err(NoScreen::no_display)?;
-    let mut mapped = thalyx_syscall::map_shared(display.as_fd(), 0, geometry.buffer_len, true)
+    let mapped = thalyx_syscall::map_shared(display.as_fd(), 0, geometry.buffer_len, true)
         .map_err(NoScreen::no_display)?;
 
     // The console goes into graphics mode only once the mapping exists, so a
@@ -639,8 +639,28 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
     // one keystroke that can leave this machine with a black screen.
     let _raw = thalyx_syscall::RawMode::enter_without_signals(stdin.as_fd());
 
-    let mut typography = Typography::embedded();
-    let mut screen = live(session);
+    // The keyboard, duplicated **now** — before any verb runs and before
+    // `thalyx-capture` puts `/dev/null` on descriptor 0. This is the copy a
+    // confirmation drawn on the glass reads its answer from, and there is no
+    // second chance to take it: once the capture is in place the real console
+    // is no longer reachable through descriptor 0.
+    let keyboard = thalyx_syscall::duplicate(stdin.as_fd()).map_err(NoScreen::no_display)?;
+
+    // Everything needed to put a frame on the glass, in one value, because a
+    // verb that stops to ask has to be handed all of it and handed it back —
+    // see `crate::ask`. Before this they were five locals of `show`, which is
+    // exactly the arrangement that made the display unreachable from inside a
+    // verb.
+    let mut painter = crate::ask::Painter {
+        display: mapped,
+        geometry,
+        format: format_of(&geometry),
+        typography: Typography::embedded(),
+        screen: live(session),
+        keyboard,
+        pending: crate::term::take_pending(),
+    };
+
     let mut line = thalyx_term::Line::new();
     // What has been typed before, newest last. Its own list rather than the text
     // session's, which lives inside `term::Terminal` and belongs to a reader
@@ -649,45 +669,36 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
     let mut recalled: Option<usize> = None;
 
     let mut input = stdin.lock();
-    let mut pending: Vec<u8> = crate::term::take_pending();
     let mut chunk = [0u8; 256];
     let mut leaving: Option<Left> = None;
 
     loop {
-        screen.prompt = Prompt {
+        painter.screen.prompt = Prompt {
             line: line.as_string(),
             caret: line.cursor(),
             suggestion: None,
         };
-        let canvas =
-            thalyx_screen::compose(&screen, &mut typography, geometry.width, geometry.height);
-        canvas
-            .write_into(
-                mapped.bytes_mut(),
-                geometry.line_length,
-                format_of(&geometry),
-            )
-            .map_err(NoScreen::no_display)?;
+        crate::ask::draw(&mut painter).map_err(NoScreen::no_display)?;
 
         if let Some(left) = leaving {
-            crate::term::give_pending(&pending);
+            crate::term::give_pending(&painter.pending);
             return Ok(left);
         }
 
-        if pending.is_empty() {
+        if painter.pending.is_empty() {
             let read = input.read(&mut chunk).map_err(NoScreen::no_display)?;
             if read == 0 {
                 return Ok(Left::ForTheTextSession);
             }
-            pending.extend_from_slice(&chunk[..read]);
+            painter.pending.extend_from_slice(&chunk[..read]);
         }
 
         // `decode` answers `None` when what is buffered is the *prefix* of
         // something longer — half an arrow key across two reads. Stopping there
         // and waiting for more is the whole reason it reports a length; guessing
         // is how one arrow key becomes three characters in the line.
-        while let Some((key, used)) = thalyx_term::decode(&pending) {
-            pending.drain(..used);
+        while let Some((key, used)) = thalyx_term::decode(&painter.pending) {
+            painter.pending.drain(..used);
             match key {
                 // Ctrl-C on a line with something in it throws the line away,
                 // the same as in the text session. On an empty line it is the
@@ -712,15 +723,16 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
                 thalyx_term::Key::Right => line.right(),
                 thalyx_term::Key::Home => line.home(),
                 thalyx_term::Key::End => line.end(),
-                thalyx_term::Key::PageUp => screen.scrollback += SCROLL_STEP,
+                thalyx_term::Key::PageUp => painter.screen.scrollback += SCROLL_STEP,
                 thalyx_term::Key::PageDown => {
-                    screen.scrollback = screen.scrollback.saturating_sub(SCROLL_STEP)
+                    painter.screen.scrollback =
+                        painter.screen.scrollback.saturating_sub(SCROLL_STEP)
                 }
                 thalyx_term::Key::Up => recall(&history, &mut recalled, &mut line, true),
                 thalyx_term::Key::Down => recall(&history, &mut recalled, &mut line, false),
                 thalyx_term::Key::Tab => {
                     if let Some(said) = complete(session, &mut line) {
-                        push(&mut screen, Turn::machine(said));
+                        push(&mut painter.screen, Turn::machine(said));
                     }
                 }
                 thalyx_term::Key::Enter => {
@@ -730,16 +742,18 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
                     // An answer brings the view back to the bottom. Anything
                     // else means the machine replies somewhere the person is not
                     // looking.
-                    screen.scrollback = 0;
+                    painter.screen.scrollback = 0;
                     if typed.is_empty() {
                         continue;
                     }
                     if history.last().map(String::as_str) != Some(typed.as_str()) {
                         history.push(typed.clone());
                     }
-                    push(&mut screen, Turn::person(&typed));
-                    leaving = run_one(session, &mut screen, &typed);
-                    refresh(&mut screen, session);
+                    push(&mut painter.screen, Turn::person(&typed));
+                    let (given_back, left) = run_one(session, painter, &typed);
+                    painter = given_back;
+                    leaving = left;
+                    refresh(&mut painter.screen, session);
                 }
                 _ => {}
             }
@@ -757,10 +771,19 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
 /// a failure is something to read, not something to exit for.
 fn run_one(
     session: &mut crate::session::Session<'_>,
-    screen: &mut Screen,
+    painter: crate::ask::Painter,
     typed: &str,
-) -> Option<Left> {
-    let caught = thalyx_capture::what_it_says(|| session.act_on(typed));
+) -> (crate::ask::Painter, Option<Left>) {
+    // The display is lent to the verb for exactly as long as it runs, so that a
+    // verb which stops to ask draws its question here instead of refusing for
+    // want of a terminal. Lent **inside** the capture and not outside it,
+    // because the question's context is what the verb has printed, and that
+    // only exists once the capture is in place.
+    let (painter, caught) = crate::ask::while_the_display_can_ask(painter, || {
+        thalyx_capture::what_it_says(|| session.act_on(typed))
+    });
+    let mut painter = painter;
+    let screen = &mut painter.screen;
 
     let (outcome, said) = match caught {
         Ok(both) => both,
@@ -774,7 +797,7 @@ fn run_one(
                     "No pude ejecutar eso sin perder lo que dijera: {error}"
                 )),
             );
-            return None;
+            return (painter, None);
         }
     };
 
@@ -782,7 +805,7 @@ fn run_one(
         push(screen, turn);
     }
 
-    match outcome {
+    let left = match outcome {
         Ok(crate::session::Flow::Stay) => None,
         Ok(crate::session::Flow::Leave) => Some(Left::Finished),
         // What `clear` means here. The verb printed nothing — there is no
@@ -808,7 +831,8 @@ fn run_one(
             push(screen, Turn::machine(error.to_string()));
             None
         }
-    }
+    };
+    (painter, left)
 }
 
 /// What a verb printed, as turns of the conversation.

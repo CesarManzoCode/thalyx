@@ -108,10 +108,13 @@ necesite.
 
 ### Y lo que la medición NO contesta, que es la mitad cara
 
-**El tamaño, que es el hueco de verdad.** El modelo medido pesa menos de un
-megabyte. `module_standard` topa un módulo en **1 GiB** —`profile.rs`,
-`memory_max`, con un comentario que llama al número «una perilla de política, no
-una decisión arquitectónica»— y **ningún manifiesto puede pedir más**. Los pesos
+> **Resuelto el 2026-08-28.** Lo de abajo es cómo estaba cuando se midió; la
+> decisión de Cesar y lo construido están en «El tamaño, resuelto» más adelante.
+
+**El tamaño, que era el hueco de verdad.** El modelo medido pesa menos de un
+megabyte. `module_standard` topaba un módulo en **1 GiB** —`profile.rs`,
+`memory_max`, con un comentario que llamaba al número «una perilla de política,
+no una decisión arquitectónica»— y **ningún manifiesto podía pedir más**. Los pesos
 por `mmap` son caché de página reclamable y se degradarían a golpes de disco
 antes que morir, pero el KV cache y los búferes de cómputo son memoria anónima y
 sí topan. Ese número es la pregunta abierta, y es de Cesar: es política y cuesta
@@ -126,6 +129,42 @@ compilador de C para musl— y está pendiente.
 **Una gama de verdad.** [[Gamas-de-Modelo]] ya registra que la gama máxima muere
 por falta de memoria en la máquina de 16 GB de Cesar, sin confinamiento de por
 medio. Bajo un tope de 1 GiB la pregunta no es si cabe la máxima; es cuál cabe.
+
+## El tamaño, resuelto — 2026-08-28
+
+**Decidido por Cesar el mismo día en que se midió**, preguntado con las
+alternativas al lado —subirlo a 4 GiB, a 8 GiB, dejarlo en 1— y su respuesta fue
+ninguna de esas: **lo que pida el manifiesto, aprobado por él al instalar.**
+
+Lo que eso significa, y por qué no hizo falta maquinaria nueva: una petición de
+memoria **es un permiso `persistent`**. Sale por el camino confiable que ya
+existe, se guarda en el registro que ya existe, y `for_permissions` —que ya
+ajustaba el perfil según lo concedido, para la red— sube el techo. El gigabyte
+deja de ser el techo y pasa a ser el **piso**: un módulo que no pide nada sigue
+teniendo exactamente eso.
+
+Cuatro guardas, cada una por una forma distinta de salir mal:
+
+- **Con unidad, nunca un número pelón.** `4GiB` y no `4294967296`. Un número así
+  en una confirmación es un número que nadie puede verificar. Uno sin unidad se
+  niega en vez de adivinarse: leído como bytes confina en ocho bytes a un módulo
+  que pidió ocho gigabytes; leído como gigabytes le entrega la máquina.
+- **Nunca `jit`.** [[Tres-Tipos-de-Permiso]]: sólo `persistent` siempre exige un
+  humano. El manifiesto se niega, no se sube el permiso en silencio.
+- **Más de lo que la máquina tiene se niega antes de preguntar**, y negado en
+  vez de recortado: un módulo confinado a menos de lo que pidió se muere en un
+  límite que nunca aceptó.
+- **Dos concesiones dan la mayor, nunca su suma.**
+
+Con esto, **de la lista de abajo lo único que sigue abierto es construir el
+módulo**. El confinamiento le alcanza (31 de 31), el techo ya se puede pedir, y
+—esto es nuevo del mismo día— `ejecutar` ya se puede confirmar **desde la
+pantalla**, que era el hueco por el que el motor no se podía ni arrancar desde
+la cara con la que la máquina viene. Ver [[Punto-Actual]].
+
+Lo que sigue sin contestarse es el libc: la medición contra musl estático. Ese
+contenedor sí puede compilar contra musl desde el 2026-08-28 (`musl-tools`),
+así que dejó de ser imposible ahí — pero medir un motor no es compilarlo.
 
 ## Lo que falta para construirlo
 

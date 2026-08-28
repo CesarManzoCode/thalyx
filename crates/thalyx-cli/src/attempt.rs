@@ -37,7 +37,6 @@
 
 use crate::files::{Face, Where};
 use serde_json::json;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use thalyx_core::Store;
 use thalyx_core::attempt::{self, Open};
@@ -393,25 +392,28 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
         }
         println!();
 
-        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            // Silence is not consent, and this is the one verb in the session
-            // that can destroy a person's work.
-            println!("  There is no terminal to confirm on, so nothing was undone.");
-            println!("  `intento abandonar si` is the way to say yes without one.");
-            println!();
-            return Ok(());
-        }
-        print!("  Undo all of it? [y/N] ");
-        let _ = std::io::stdout().flush();
-        let answer = crate::term::read_answer()
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if !matches!(answer.trim(), "y" | "Y" | "s" | "S" | "si" | "sí") {
-            println!();
-            println!("  Nothing was undone. `{}` is still open.", open.label);
-            println!();
-            return Ok(());
+        // Silence is not consent, and this is the one verb in the session that
+        // can destroy a person's work.
+        match crate::ask::confirm("  Undo all of it? [y/N] ", &crate::ask::Accepts::Yes) {
+            crate::ask::Answered::Yes => {}
+            crate::ask::Answered::No => {
+                println!();
+                println!("  Nothing was undone. `{}` is still open.", open.label);
+                println!();
+                return Ok(());
+            }
+            crate::ask::Answered::NoOneToAsk => {
+                println!("  There is no terminal to confirm on, so nothing was undone.");
+                println!("  `intento abandonar si` is the way to say yes without one.");
+                println!();
+                return Ok(());
+            }
+            crate::ask::Answered::Unreadable => {
+                println!("  The answer could not be read, so nothing was undone.");
+                println!("  `intento abandonar si` is the way to say yes without a terminal.");
+                println!();
+                return Ok(());
+            }
         }
     }
 

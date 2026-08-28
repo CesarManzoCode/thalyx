@@ -1011,6 +1011,7 @@ dependencies = [
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-permd",
+ "thalyx-proc",
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",

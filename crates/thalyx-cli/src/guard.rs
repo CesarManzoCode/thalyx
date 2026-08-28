@@ -34,7 +34,6 @@
 
 use crate::files::Face;
 use serde_json::json;
-use std::io::IsTerminal;
 use thalyx_permd::{Enforcement, Mode, PolicyStore, StoreError};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -285,14 +284,9 @@ fn rehearsal(face: Face, mode: Mode, before: &Enforcement, already: bool) {
 /// further up: a session with no terminal is not a session that consented, and
 /// a read that failed is not a yes.
 fn consented() -> Result<bool, Box<dyn std::error::Error>> {
-    if !std::io::stdin().is_terminal() {
-        println!();
-        println!("  There is no terminal to confirm on, so the guard stays on.");
-        println!("  Silence is not consent.");
-        println!();
-        return Ok(false);
-    }
-
+    // Checked by `crate::ask`, after the context below rather than before it —
+    // see the note in `foreign.rs`. On the display this is the difference
+    // between a verb that can be finished and one that can only be read about.
     println!();
     println!("  This takes the kernel guard off the whole machine.");
     println!();
@@ -300,23 +294,28 @@ fn consented() -> Result<bool, Box<dyn std::error::Error>> {
     println!("    Anything confined right now stops being confined, including");
     println!("    a program nobody signed that is running this second.");
     println!();
-    print!("  Stop denying? [y/N] ");
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-
     // A read that failed is not a yes, and it is not an empty answer either.
-    let Ok(Some(answer)) = crate::term::read_answer() else {
-        println!();
-        println!("  Could not read the answer; the guard stays on.");
-        println!();
-        return Ok(false);
-    };
-
-    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        println!();
-        println!("  The guard stays on.");
-        println!();
-        return Ok(false);
+    match crate::ask::confirm("  Stop denying? [y/N] ", &crate::ask::Accepts::Yes) {
+        crate::ask::Answered::Yes => {}
+        crate::ask::Answered::No => {
+            println!();
+            println!("  The guard stays on.");
+            println!();
+            return Ok(false);
+        }
+        crate::ask::Answered::NoOneToAsk => {
+            println!();
+            println!("  There is no terminal to confirm on, so the guard stays on.");
+            println!("  Silence is not consent.");
+            println!();
+            return Ok(false);
+        }
+        crate::ask::Answered::Unreadable => {
+            println!();
+            println!("  Could not read the answer; the guard stays on.");
+            println!();
+            return Ok(false);
+        }
     }
 
     Ok(true)

@@ -672,8 +672,6 @@ fn format(
     no_subvolumes: bool,
     workspace: &Path,
 ) -> Fallible {
-    use std::io::{IsTerminal, Write};
-
     println!("About to write a Thalyx store onto {}.", device.display());
     println!();
     // What is there now, said before the question rather than after it. A
@@ -693,17 +691,23 @@ fn format(
 
     if yes {
         println!("  confirmed with --yes");
-    } else if !std::io::stdin().is_terminal() {
-        // Silence is not consent, the same rule the capability prompt keeps.
-        eprintln!("  no terminal available to confirm; refusing");
-        return Err("formatting was not confirmed".into());
     } else {
-        print!("  Type the device's path to confirm: ");
-        let _ = std::io::stdout().flush();
-        let answer = crate::term::read_answer()?.unwrap_or_default();
-        if answer.trim() != device.display().to_string() {
-            eprintln!("  that is not {}; refusing", device.display());
-            return Err("formatting was not confirmed".into());
+        // Silence is not consent, the same rule the capability prompt keeps.
+        let asked = crate::ask::Accepts::Exactly(device.display().to_string());
+        match crate::ask::confirm("  Type the device's path to confirm: ", &asked) {
+            crate::ask::Answered::Yes => {}
+            crate::ask::Answered::No => {
+                eprintln!("  that is not {}; refusing", device.display());
+                return Err("formatting was not confirmed".into());
+            }
+            crate::ask::Answered::NoOneToAsk => {
+                eprintln!("  no terminal available to confirm; refusing");
+                return Err("formatting was not confirmed".into());
+            }
+            crate::ask::Answered::Unreadable => {
+                eprintln!("  the answer could not be read; refusing");
+                return Err("formatting was not confirmed".into());
+            }
         }
     }
 

@@ -976,6 +976,18 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
             })?;
             return Ok(());
         }
+        // The keyboard. Worth rehearsing more than most: this is the one verb
+        // whose failure mode is a machine that looks perfectly healthy and
+        // types the wrong letters, and the rehearsal is the only way to see
+        // what a layout does to a key **before** the key stops doing it.
+        //
+        // It reads the tables, which are data and need no console, and it reads
+        // the console only to say what is there now — so on a machine with no
+        // console it still answers, saying which half it could not read.
+        "keyboard" => {
+            crate::keyboard::foresee(arguments, face);
+            return Ok(());
+        }
         // Unreachable as of 2026-08-26: every verb whose `changes` is true has
         // an arm above, and a test asserts that set. Kept because the match is
         // on a string and the compiler cannot say so — and because the way a

@@ -91,6 +91,23 @@ fn also_granted(count: usize, noun: &str) -> String {
     }
 }
 
+/// How much memory this machine has, in bytes.
+///
+/// `None` is *could not read it*, and it is not zero — rule 10. The two lead
+/// somewhere different: an install refused for asking more than the machine has
+/// is a decision, and one refused because `/proc/meminfo` could not be opened
+/// would be a machine that refuses to install anything at all.
+///
+/// Through `thalyx-proc` and not by reading `/proc/meminfo` here. A second
+/// parser of one format is how the two come to disagree, and this one would
+/// disagree about the thing that is easiest to get wrong: `MemTotal` is reported
+/// in **kibibytes** and labelled `kB`, so a reader that took the label at its
+/// word would understate the machine by 2.4% — invisible until it is the
+/// difference between an install and a refusal.
+pub fn machine_memory() -> Option<u64> {
+    thalyx_proc::memory().ok().map(|memory| memory.total)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error("I/O error at {path}: {source}")]
@@ -232,6 +249,20 @@ pub enum CoreError {
 
     #[error("the user did not confirm the requested capabilities")]
     ConfirmationDenied,
+
+    #[error(
+        "refusing to install `{module_id}`: it asks for {} of memory and this machine has {}. \
+         Nothing was written.\n  \
+         A module confined to less than it asked for would die at a limit it never agreed to, \
+         in a way nobody could trace back to installing it.",
+        thalyx_manifest::in_words(*asked),
+        thalyx_manifest::in_words(*have)
+    )]
+    MoreMemoryThanTheMachineHas {
+        module_id: String,
+        asked: u64,
+        have: u64,
+    },
 
     #[error(
         "refusing to run `{module_id}`: the kernel policy map is not loaded, so nothing in the \

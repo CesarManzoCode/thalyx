@@ -6,6 +6,7 @@
 
 mod agent;
 mod agent_model;
+mod ask;
 mod attempt;
 mod catalogue;
 mod changes;
@@ -21,6 +22,7 @@ mod image;
 mod index;
 mod init;
 mod install;
+mod keyboard;
 mod memory;
 mod modules;
 mod net;

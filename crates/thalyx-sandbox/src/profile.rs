@@ -147,10 +147,20 @@ pub fn module_standard() -> Profile {
             network: true,
         },
         limits: Limits {
-            // Chosen to be generous rather than tuned. A module that dies at a
-            // limit nobody picked deliberately is a worse failure than one
-            // that uses more memory than it should, and the number is a policy
-            // knob, not an architectural decision.
+            // **The floor, and no longer the ceiling.** It was both until
+            // 2026-08-28, when measuring an inference engine against this
+            // profile found that the confinement allows every one of the 31
+            // system calls it needs and then stops it on a number: a real model
+            // does not fit in a gigabyte, `mmap`ed weights count against
+            // `memory.max` because cgroup v2 charges page cache, and no
+            // manifest could ask for more.
+            //
+            // Cesar decided it on 2026-08-28, asked with the alternatives
+            // beside it: **what the manifest asks for, approved at install.**
+            // Not a bigger fixed number — a module that wants 8 GiB of his
+            // machine says so on the trusted path and he says yes, which is the
+            // same shape every other thing a module wants already has. A module
+            // that asks for nothing gets this.
             memory_max: Some(1 << 30), // 1 GiB
             pids_max: Some(512),
             // Uncapped on purpose. The mechanism is here and tested; picking a
@@ -210,6 +220,9 @@ impl Profile {
             self.seccomp = self
                 .seccomp
                 .map(|allowlist| allowlist.allow_all(crate::seccomp::outbound_network()));
+        }
+        if let Some(asked) = grants_memory(permissions) {
+            self.limits.memory_max = Some(asked);
         }
         self
     }
@@ -276,6 +289,20 @@ impl Profile {
 
         parts.join("; ")
     }
+}
+
+/// How much memory the module was granted, if it asked and was given it.
+///
+/// The **largest** grant and not the first, because a registry holding two is a
+/// registry somebody has to have an opinion about, and «the first one in the
+/// file» is not an opinion — it is whatever order the file happened to be
+/// written in. The largest is the one the human approved at least once.
+fn grants_memory(permissions: &[Permission]) -> Option<u64> {
+    permissions
+        .iter()
+        .filter(|p| p.resource == "memory" && p.action != "read" && p.action != "write")
+        .filter_map(|p| thalyx_manifest::memory_asked_for(&p.action))
+        .max()
 }
 
 fn grants_network(permissions: &[Permission]) -> bool {
@@ -439,5 +466,59 @@ mod tests {
         };
         assert_eq!(only_pid.flags(), thalyx_syscall::CLONE_NEWPID);
         assert!(only_pid.any());
+    }
+    /// Cesar's decision of 2026-08-28, as a property.
+    ///
+    /// The gigabyte was the floor and the ceiling at once, and measuring a real
+    /// inference engine against `module_standard` found that the confinement
+    /// allows all 31 of the system calls it needs and then stops it on that
+    /// number. Now the manifest asks and the human approves, which is the shape
+    /// every other thing a module wants already has.
+    #[test]
+    fn a_module_gets_the_memory_it_asked_for_and_was_granted() {
+        let asked = permission("memory", "8GiB");
+        let profile = module_standard().for_permissions(&[asked]);
+        assert_eq!(profile.limits.memory_max, Some(8 << 30));
+    }
+
+    /// The control, and it is the half that matters more: a module that asked
+    /// for nothing must not come out with more than the floor.
+    #[test]
+    fn a_module_that_asked_for_nothing_gets_the_floor_and_not_the_machine() {
+        let profile = module_standard().for_permissions(&[]);
+        assert_eq!(profile.limits.memory_max, Some(1 << 30));
+
+        // And neither does one whose grants are about something else entirely.
+        let elsewhere = module_standard().for_permissions(&[
+            permission("net", "outbound"),
+            permission("/home/notes", "read"),
+        ]);
+        assert_eq!(elsewhere.limits.memory_max, Some(1 << 30));
+    }
+
+    /// Rule 9. A grant whose amount cannot be read must not raise anything —
+    /// and in particular must not be read as a very small number, which would
+    /// confine a module asking for gigabytes to a handful of bytes.
+    #[test]
+    fn a_grant_nobody_can_read_leaves_the_floor_where_it_is() {
+        for unreadable in ["8", "lots", "", "8TiB"] {
+            let profile = module_standard().for_permissions(&[permission("memory", unreadable)]);
+            assert_eq!(
+                profile.limits.memory_max,
+                Some(1 << 30),
+                "`{unreadable}` changed the limit"
+            );
+        }
+    }
+
+    /// Two grants are two ways of saying what the module needs at once, and
+    /// `memory.max` is one number. The largest is the one a human approved at
+    /// least once; the sum is a number nobody was ever shown.
+    #[test]
+    fn two_grants_give_the_largest_and_never_their_sum() {
+        let profile = module_standard()
+            .for_permissions(&[permission("memory", "2GiB"), permission("memory", "6GiB")]);
+        assert_eq!(profile.limits.memory_max, Some(6 << 30));
+        assert_ne!(profile.limits.memory_max, Some(8 << 30));
     }
 }

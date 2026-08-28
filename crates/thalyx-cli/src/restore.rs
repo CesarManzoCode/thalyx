@@ -5,7 +5,6 @@
 //! Everything here exists to make sure the human who answers has seen what the
 //! answer costs.
 
-use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use thalyx_core::Store;
 use thalyx_core::trusted_path::RestorePrompt;
@@ -79,18 +78,21 @@ fn confirmed(assume_yes: bool, deleted: usize) -> std::io::Result<bool> {
     if assume_yes {
         return Ok(true);
     }
-    if !std::io::stdin().is_terminal() {
-        println!("refusing: there is no terminal to confirm on, and silence is not consent.");
-        println!("Pass --yes only from something a human is watching.");
-        return Ok(false);
-    }
-
     // Typing the word, not a keystroke. `y` is muscle memory; the number of
     // files about to be deleted is on the screen right above this line, and
     // having to write the word is the last chance to read it.
-    print!("Type `restore` to destroy {deleted} file(s) and go back: ");
-    std::io::stdout().flush()?;
-
-    let answer = crate::term::read_answer()?.unwrap_or_default();
-    Ok(answer.trim() == "restore")
+    let question = format!("Type `restore` to destroy {deleted} file(s) and go back: ");
+    match crate::ask::confirm(&question, &crate::ask::Accepts::Exactly("restore".into())) {
+        crate::ask::Answered::Yes => Ok(true),
+        crate::ask::Answered::No => Ok(false),
+        crate::ask::Answered::NoOneToAsk => {
+            println!("refusing: there is no terminal to confirm on, and silence is not consent.");
+            println!("Pass --yes only from something a human is watching.");
+            Ok(false)
+        }
+        crate::ask::Answered::Unreadable => {
+            println!("refusing: the answer could not be read.");
+            Ok(false)
+        }
+    }
 }

@@ -6159,6 +6159,305 @@ else
     proven "the built-in command line leaves thalyx.pantalla unanswered, so a machine comes up on the screen and \`thalyx.pantalla=no\` is the way back from one that cannot"
 fi
 
+step "42. a verb that stops to ask can be answered, and the same answer means the same thing on both faces"
+
+# `crates/thalyx-cli/src/ask.rs`. The eight places in Thalyx that stop and ask a
+# human used to write the asking out by hand, and it cost two things at once:
+# they drifted about what a yes is, and none of them worked on the display,
+# because under `thalyx-capture` descriptor 0 is `/dev/null` and every one of
+# them found no terminal and refused. On the face the machine boots into,
+# `instalar`, `ejecutar`, `observar` and `instalar-en` could be read about and
+# not finished.
+#
+# What the integration tests already prove, in a container: the yes-set is one
+# set on both faces, a pipe still cannot authorise anything, and the context is
+# printed before the refusal so the display has something to draw. What is here
+# is the part they must not do — see the long note at the foot of
+# `tests/a_question_has_one_answer.rs`. Proving that `instalar-en` asks for the
+# disk's path and takes no `sí` means reaching a question only a disk the verb
+# agrees to erase can raise, and a cargo test that names a real disk is a test
+# that erases the machine the day the thing it tests is broken. Here the disk is
+# a file this script made.
+
+ASK_IMAGE="$WORK/ask-disk.img"
+ASK_KERNEL="$WORK/ask-kernel.bin"
+ASK_DEVICE=""
+if command -v losetup > /dev/null 2>&1; then
+    # Big enough for the verb to get as far as asking: it refuses anything under
+    # 673185792 bytes before it says a word, which is how the first version of
+    # this check passed while measuring nothing.
+    dd if=/dev/zero of="$ASK_IMAGE" bs=1M count=768 status=none 2>/dev/null || true
+    dd if=/dev/zero of="$ASK_KERNEL" bs=1M count=2 status=none 2>/dev/null || true
+    ASK_DEVICE="$(losetup -f --show "$ASK_IMAGE" 2>/dev/null || true)"
+fi
+
+if [ -z "$ASK_DEVICE" ]; then
+    GAP="no loop device could be made, so nothing asked an install for a confirmation"
+    if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    ASK_ROOT="$WORK/ask-face"
+    mkdir -p "$ASK_ROOT"
+
+    # `thalyx install --kernel` and not the session's `instalar-en`, and the
+    # difference is what makes this stage measure anything at all. Inside the
+    # session the verb finds the kernel on the medium this machine booted from,
+    # and on a machine that did not boot from a Thalyx medium it refuses for
+    # *that* — before it ever asks. Naming a kernel is the one way to reach the
+    # question on a machine that is not itself a Thalyx machine.
+    #
+    # A terminal of Thalyx's own making, because the confirmer refuses a stdin
+    # that is not one — which is the other half of what this stage measures.
+    printf 'sí\n' \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-yes.log" 2>&1 || true
+    printf '%s\n' "$ASK_DEVICE" \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-path.log" 2>&1 || true
+
+    losetup -d "$ASK_DEVICE" 2>/dev/null || true
+    rm -f "$ASK_IMAGE" "$ASK_KERNEL"
+
+    # The precondition, checked rather than assumed. Without it a verb that
+    # refused before asking would pass both columns below for free — which is
+    # exactly what happened to the cargo test this stage replaced, twice: once
+    # on a device that did not exist, and once on a machine with no medium to
+    # take a kernel from.
+    #
+    # And the marker is the sentence the confirmer itself prints, not `that is
+    # not`, which was the first thing written here and which matches `That is
+    # not the same as not looking` in the output of `discos` three lines up.
+    if ! grep -q "Type the disk's path to confirm" "$WORK/ask-yes.log" 2>/dev/null; then
+        GAP="the install never got as far as asking on this machine, so neither column below measures anything"
+        if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        excerpt "$WORK/ask-yes.log"
+    elif ! grep -q 'the install was not confirmed' "$WORK/ask-yes.log" 2>/dev/null; then
+        failed "\`sí\` authorised a verb that writes a partition table over a whole disk; see $WORK/ask-yes.log"
+        excerpt "$WORK/ask-yes.log"
+    elif grep -q 'the install was not confirmed' "$WORK/ask-path.log" 2>/dev/null; then
+        # The control. Without it, a confirmer that refused everything would pass
+        # the column above while no verb on this machine could ever be finished —
+        # a policy that breaks everything looks like one that works.
+        failed "the disk's own path did not authorise it either, so the question cannot be answered at all; see $WORK/ask-path.log"
+        excerpt "$WORK/ask-path.log"
+    else
+        proven "the install asks for the disk's path, refuses a \`sí\`, and accepts the path — asked on a terminal Thalyx made and a disk this script made"
+    fi
+fi
+
+# The half that only his hardware answers. There is nothing to draw a question
+# on here, and no keyboard behind it, so this is named rather than inferred —
+# rule 10, and the reason the count of this run is not the count of a run on the
+# machine that has a display.
+if [ ! -e /dev/fb0 ]; then
+    GAP="a confirmation drawn on /dev/fb0 and answered on a real keyboard — this machine has no framebuffer, so the display's half of \`ask\` is untested here and can only be seen by booting the image"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    unproven "this machine has /dev/fb0, and nothing here yet drives a drawn confirmation to an answer without taking the console to do it"
+fi
+
+step "43. the machine can be typed on in the language it speaks"
+
+# `crates/thalyx-term/src/keymap.rs`. Found by asking what a whole day inside
+# Thalyx would need: the kernel carries one keymap compiled into it and it is US
+# QWERTY, the program that replaces it everywhere else is `loadkeys`, and the
+# image is the kernel and one program. So on a Thalyx machine the key a Latin
+# American keyboard prints `ñ` on sent `;`, and `á` could not be typed at all —
+# an operating system whose every sentence is in Spanish, in which Spanish could
+# not be written. A `grep` of the repository for `keymap` came back empty.
+#
+# **This stage is rule 11 and rule 5 at once.** The keymap is a machine-global
+# switch with no owner — `THALYX_ROOT` isolates a store and nothing else — so a
+# stage that loaded a layout onto the console of whatever machine is running
+# this would leave a keyboard nobody asked for, and it would be the keyboard the
+# person reading this verdict is typing on. It therefore **reads and never
+# writes**, and everything about writing is asked of the rehearsal, which is the
+# same tables and the same code with the ioctl left out.
+#
+# And what it reads, it reads with `KDGKBENT` through Thalyx's own `teclado` —
+# which is not Thalyx's record of what it sent, it is the kernel answering.
+
+KEYBOARD_ROOT="$WORK/keyboard"
+mkdir -p "$KEYBOARD_ROOT"
+
+# The rehearsal, which touches nothing. Its `would_be` column is the claim: the
+# layout this machine would load puts `ñ` on the key a US map puts `;` on.
+printf 'structured on\nensayo teclado latino\nensayo teclado ingles\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session > "$WORK/keyboard-rehearse.log" 2>&1
+
+KEYBOARD_SAYS=$(grep '^{' "$WORK/keyboard-rehearse.log" | python3 -c '
+import json, sys
+
+seen = {}
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") != "rehearse" or said.get("verb") != "keyboard":
+        continue
+    keys = {entry["keycode"]: entry["would_be"] for entry in said.get("keys", [])}
+    seen[said.get("layout")] = (keys, said.get("changed_anything"))
+
+latin, kernel = seen.get("la-latin1"), seen.get("defkeymap")
+if not latin or not kernel:
+    print("missing")
+elif latin[1] is not False or kernel[1] is not False:
+    print("rehearsal_changed_something")
+elif latin[0].get("39") != "ñ" and latin[0].get(39) != "ñ":
+    print("no_entyay")
+elif kernel[0].get("39") != ";" and kernel[0].get(39) != ";":
+    print("no_semicolon")
+else:
+    print("ok")
+' 2>/dev/null)
+
+case "${KEYBOARD_SAYS:-missing}" in
+    ok)
+        proven "the layout this machine would load puts \`ñ\` on the key the kernel's own map puts \`;\` on, and rehearsing it changes nothing"
+        ;;
+    rehearsal_changed_something)
+        failed "\`ensayo teclado\` reported that it changed the machine, which is not a rehearsal"
+        ;;
+    no_entyay)
+        failed "the Latin American layout this machine carries has no \`ñ\` on the key that carries one; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    no_semicolon)
+        # Rule 4: without this column, «the layout has an ñ» would pass against a
+        # table that was the same everywhere, and would prove nothing about the
+        # machine needing to be changed at all.
+        failed "the kernel's own map does not put \`;\` on that key here, so the defect this stage is about is not the defect described"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    *)
+        failed "\`ensayo teclado\` answered nothing a program can read; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+esac
+
+# And what the kernel says is on this console right now — which on the machine
+# running this is Fedora's, loaded by its own `loadkeys`, and is nobody's
+# business to change. What is checked is that Thalyx can *ask*, and that it
+# tells the two failures apart.
+KEYBOARD_READ=$(printf 'structured on\nteclado\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "keyboard":
+        read = said.get("read") or {}
+        print("read" if read.get("ok") else "unreadable")
+        break
+' 2>/dev/null)
+
+case "${KEYBOARD_READ:-nothing}" in
+    read)
+        proven "\`teclado\` asks the kernel what is on this console and gets an answer, without writing to it"
+        ;;
+    unreadable)
+        # Not a failure: `dev/verify.sh` is commonly run over ssh or from a
+        # terminal emulator, where `/dev/console` is not the keyboard and the
+        # ioctl is refused. Saying that is the honest answer — rule 10 — and the
+        # thing being measured is that Thalyx says it too.
+        GAP="this console does not answer keymap questions (a terminal emulator or ssh, not the machine's own console), so nothing here read a real keyboard"
+        if [ "${THALYX_REQUIRE_KEYBOARD_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        ;;
+    *)
+        failed "\`teclado\` answered nothing a program can read"
+        ;;
+esac
+
+# The half only the image answers. Loading a layout is the one change in this
+# program whose failure is a machine that looks healthy and types the wrong
+# letters, and nothing here may try it — see the note at the top of this stage.
+GAP="a layout actually loaded onto a machine's own console — that is a machine-global switch with no owner (rule 11), so it is seen by booting the image and typing \`ñ\`, never by this script"
+unproven "$GAP"
+
+step "44. a module gets the memory it asked for and was granted, and nothing more"
+
+# Cesar, 2026-08-28. `module_standard` capped every module at a gigabyte and no
+# manifest could ask for more, so the first real module Thalyx is being built to
+# run — an inference engine, whose 31 system calls this confinement already
+# allows — could not run. Now the manifest asks and the human approves, which is
+# the shape every other thing a module wants already has.
+#
+# The unit tests prove the arithmetic and the refusals. What only a machine can
+# answer is whether the number reaches the kernel: `memory.max` is written by a
+# cgroup controller that has to be delegated, and this container's is not.
+
+MEMORY_ROOT="$WORK/memory-grant"
+mkdir -p "$MEMORY_ROOT"
+"$THALYX" --root "$MEMORY_ROOT" store status > /dev/null 2>&1
+
+# What an install compares a request against. Asked of Thalyx, because that is
+# what the install asks — a stage that read `/proc/meminfo` itself would be
+# checking its own arithmetic rather than the machine's.
+# `memoria` in the session and not `thalyx memory`, which is the agent's memory
+# between sessions — two different things with one word, found by running the
+# first version of this line.
+MEMORY_TOTAL=$(printf 'structured on\nmemoria\nsalir\n' \
+    | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "memory" and said.get("total"):
+        print(said["total"])
+        break
+' 2>/dev/null)
+if [ -n "${MEMORY_TOTAL:-}" ] && [ "$MEMORY_TOTAL" -gt 0 ] 2>/dev/null; then
+    proven "this machine reports how much memory it has ($((MEMORY_TOTAL / 1024 / 1024)) MiB), which is the number an install refuses a larger request against"
+else
+    failed "\`memoria\` did not report a total, so an install has nothing to compare a request against"
+fi
+
+# The limit a run would actually be confined to, read out of the rehearsal —
+# which is the run's own arithmetic stopped one line before the program exists,
+# not a second copy of it. Needs a module installed, and this stage does not
+# install one: `exit_criterion` and §20 already do that, and a stage that
+# installed a second module would be measuring its own fixture.
+MEMORY_MODULE=$("$THALYX" --root "$MEMORY_ROOT" module list 2>/dev/null \
+    | awk 'NR==1 && $1 !~ /^no/ {print $1}')
+if [ -z "$MEMORY_MODULE" ]; then
+    GAP="the memory limit a real run would be confined to — no module is installed under this stage's own store, so there was nothing to rehearse"
+    unproven "$GAP"
+elif [ "${HAVE_CONTROLLERS:-0}" != 1 ]; then
+    GAP="a granted memory limit written into a cgroup — this machine does not delegate the memory controller, so the number could be computed and not applied"
+    if [ "${THALYX_REQUIRE_CONTROLLER_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    MEMORY_SAYS=$(printf 'structured on\nensayo correr %s\nsalir\n' "$MEMORY_MODULE" \
+        | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+        | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "rehearse" and said.get("verb") == "run":
+        print(said.get("isolation") or "unsaid")
+        break
+' 2>/dev/null)
+    case "$MEMORY_SAYS" in
+        *memory*MiB*)
+            proven "a run's rehearsal names the memory limit it would be confined to: $MEMORY_SAYS"
+            ;;
+        *)
+            failed "the rehearsal does not say what memory limit a run would get, so a grant cannot be checked from outside the code that applies it: ${MEMORY_SAYS:-nothing}"
+            ;;
+    esac
+fi
+
+# The half no machine here answers, named rather than inferred.
+unproven "an inference engine actually running inside a granted limit — that is the module this decree was made for, and it does not exist yet"
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

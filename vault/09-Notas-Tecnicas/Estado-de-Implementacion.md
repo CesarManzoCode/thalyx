@@ -143,6 +143,58 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - Un módulo no puede escribir en `.thalyx/` dentro de su propio árbol: ahí vive el registro de lo que tiene permitido hacer.
 - El modo de los archivos del artefacto se aplica enmascarado: setuid, setgid y sticky nunca sobreviven a una instalación.
 
+### El techo de memoria lo pide el manifiesto
+
+Decidido por Cesar el 2026-08-28 y construido el mismo día. `module_standard`
+topaba en 1 GiB y ningún manifiesto podía pedir más, así que el motor de
+inferencia no cabía. Ahora una petición de memoria es un permiso `persistent`
+—`resource = "memory"`, `action = "4GiB"`— que sale por el camino confiable y el
+registro que ya existían, y `for_permissions` sube el techo. El gigabyte pasa de
+techo a **piso**. Entero en [[Motor-de-Inferencia-como-Modulo]].
+
+### Una pregunta, dos caras — la pantalla deja de ser de sólo lectura
+
+`crates/thalyx-cli/src/ask.rs`, del 2026-08-28. Bajo `thalyx-capture` el
+descriptor 0 es `/dev/null`, así que los **ocho** lugares que se detienen a
+preguntar encontraban que no hay terminal y se negaban: en la cara con la que la
+máquina arranca, `instalar`, `ejecutar`, `observar`, `instalar-en` y `editar` se
+podían leer y no se podían acabar.
+
+Una sola comparación —`Accepts`— que las dos caras llaman, con cuatro respuestas
+(`Yes`, `No`, `NoOneToAsk`, `Unreadable`, y las dos últimas son distintas por la
+regla 10). La negativa se queda en cada verbo, porque esa frase es del verbo y no
+del preguntar. El cambio que lo hace posible es de orden: **decir de qué se trata
+va antes de revisar si hay terminal**, porque el contexto es la confirmación.
+`thalyx_capture::said_so_far` es de dónde sale ese contexto en la pantalla.
+
+**Lo dibujado sólo se ve arrancando la imagen.** Etapa 42 de `verify.sh` para lo
+que sí se puede medir aquí.
+
+### El teclado, que hasta el 2026-08-28 no podía escribir español
+
+`crates/thalyx-term/src/keymap.rs`. El kernel lleva un mapa compilado adentro y
+es US QWERTY; `loadkeys` no cabe en la imagen. La tecla que en un teclado
+latinoamericano dice `ñ` mandaba `;`, y `á` no se podía teclear en absoluto.
+`thalyx-screen` calentaba los glifos de `áéíóúüñ¿¡` desde antes: se podían
+dibujar y no escribir.
+
+- Las tablas se **generan** de `kbd` con `dev/keymap-table.py` y nunca se
+  escriben a mano. Una distribución es un dato sobre el mundo, y la regla 6
+  aplica: leer `la-latin1.kmap` directo era la trampa, son cuarenta renglones de
+  diff contra dos includes.
+- Dos distribuciones: `latino` y `ingles`, y la segunda es el mapa propio del
+  kernel —el mismo, no algo parecido— para que el regreso sea exacto.
+- `teclado` dice qué hay **preguntándole al kernel** con `KDGKBENT`, no
+  preguntándole a Thalyx qué mandó. Tres respuestas: una de las mías, otra cosa,
+  o no se pudo leer.
+- Se carga en el arranque, se reporta como un montaje, y `thalyx.teclado=no` en
+  la entrada de arranque no carga nada.
+- `ensayo teclado <distribución>` dice qué tecla pasaría de qué a qué sin tocar
+  la consola.
+
+**Que la carga de verdad funcione sólo lo contesta su hierro.** Etapa 43, que
+lee y nunca escribe: un keymap es un interruptor global sin dueño (regla 11).
+
 ### La red, que se ve y no se usa
 
 Punto 8 de la terminal usable, decreto en [[Red]]. La configuración del kernel

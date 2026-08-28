@@ -2673,6 +2673,197 @@ const FB_VAR_SCREENINFO: usize = 160;
 /// long` members are eight wide and force alignment.
 const FB_FIX_SCREENINFO: usize = 80;
 
+// ---------------------------------------------------------------------------
+// The keyboard's translation table.
+// ---------------------------------------------------------------------------
+//
+// `crates/thalyx-term/src/keymap.rs` has the whole reason. In short: the kernel
+// carries one keymap compiled into it and it is US QWERTY, the program that
+// replaces it everywhere else is `loadkeys`, and the image is the kernel and one
+// program. So these two ioctls are the only way a Thalyx machine can be typed
+// on in the language every sentence it says is written in.
+//
+// The numbers are from `linux/kd.h`, read rather than remembered. `as Ioctl` on
+// every one of them, which is rule 12: glibc's `ioctl` takes `c_ulong` and
+// musl's takes `c_int`, and the binary that ships is the musl one.
+
+/// `KDGKBENT` — read one entry of the translation table.
+const KDGKBENT: u32 = 0x4B46;
+/// `KDSKBENT` — write one.
+const KDSKBENT: u32 = 0x4B47;
+/// `KDSKBDIACRUC` — write the whole accent table, in UCS.
+///
+/// The UCS form and not `KDSKBDIACR`, whose entries are single bytes: this one
+/// takes `unsigned int`, so a layout whose composed characters leave Latin-1 is
+/// expressible. Nothing in Spanish needs that, and picking the narrow one
+/// because today's layout fits it is how the next layout silently loses letters.
+const KDSKBDIACRUC: u32 = 0x4BFB;
+/// `KDGKBMODE` — what the keyboard is doing with what it reads.
+const KDGKBMODE: u32 = 0x4B44;
+/// `K_UNICODE` — the mode in which a key that produces `ñ` sends UTF-8 rather
+/// than one unusable byte.
+pub const K_UNICODE: i32 = 0x03;
+
+/// One entry of the kernel's translation table: `struct kbentry`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct KeyEntry {
+    table: u8,
+    index: u8,
+    value: u16,
+}
+
+/// What the console currently turns `keycode` into, under modifier `table`.
+///
+/// **This is the instrument, and it is deliberately not Thalyx's own record of
+/// what it sent.** Rule 5: a check that asked Thalyx whether it had loaded a
+/// keymap would pass on a machine where every ioctl silently failed.
+pub fn keymap_entry(console: BorrowedFd<'_>, table: u8, keycode: u8) -> io::Result<u16> {
+    use std::os::fd::AsRawFd;
+
+    let mut entry = KeyEntry {
+        table,
+        index: keycode,
+        value: 0,
+    };
+    // SAFETY: one `struct kbentry` in and out, a live local, and the descriptor
+    // is borrowed for the call.
+    #[allow(unsafe_code)]
+    let read = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDGKBENT as libc::Ioctl,
+            &mut entry as *mut KeyEntry,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(entry.value)
+}
+
+/// Set what `keycode` produces under modifier `table`.
+pub fn set_keymap_entry(
+    console: BorrowedFd<'_>,
+    table: u8,
+    keycode: u8,
+    value: u16,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut entry = KeyEntry {
+        table,
+        index: keycode,
+        value,
+    };
+    // SAFETY: as above.
+    #[allow(unsafe_code)]
+    let written = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDSKBENT as libc::Ioctl,
+            &mut entry as *mut KeyEntry,
+        )
+    };
+    if written != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `struct kbdiacruc` — a dead key, the letter after it, and what they make.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct AccentEntry {
+    diacr: u32,
+    base: u32,
+    result: u32,
+}
+
+/// Replace the whole accent table, which is what makes a dead key mean anything.
+///
+/// The whole table and not an entry at a time, because the ioctl takes the whole
+/// table — and because a partial one would leave the previous layout's
+/// compositions live under the new layout's dead keys.
+pub fn set_accents(console: BorrowedFd<'_>, accents: &[(u32, u32, u32)]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    /// `MAX_DIACR` from `linux/keyboard.h`. Refused rather than truncated: a
+    /// table cut to fit is a keyboard missing exactly the letters at the end of
+    /// somebody's alphabet. Rule 9.
+    const MAX_DIACR: usize = 256;
+    if accents.len() > MAX_DIACR {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "an accent table of {} entries does not fit the kernel's {MAX_DIACR}",
+                accents.len()
+            ),
+        ));
+    }
+
+    // `struct kbdiacrsuc`: a `kb_cnt` followed by the entries.
+    #[repr(C)]
+    struct AccentTable {
+        count: u32,
+        entries: [AccentEntry; MAX_DIACR],
+    }
+
+    let mut table = AccentTable {
+        count: accents.len() as u32,
+        entries: [AccentEntry::default(); MAX_DIACR],
+    };
+    for (slot, (diacr, base, result)) in table.entries.iter_mut().zip(accents) {
+        *slot = AccentEntry {
+            diacr: *diacr,
+            base: *base,
+            result: *result,
+        };
+    }
+
+    // SAFETY: the struct is laid out exactly as `struct kbdiacrsuc`, it is a
+    // live local for the duration of the call, and the count never exceeds the
+    // array the kernel reads from.
+    #[allow(unsafe_code)]
+    let written = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDSKBDIACRUC as libc::Ioctl,
+            &mut table as *mut AccentTable,
+        )
+    };
+    if written != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// What the keyboard does with what it reads — `K_UNICODE` and the rest.
+///
+/// Asked rather than assumed, because a layout with `ñ` on it loaded onto a
+/// keyboard that is not in Unicode mode produces one byte that is not `ñ` in any
+/// encoding the screen reads, and the symptom is a letter that comes out wrong
+/// rather than a keymap that failed to load.
+pub fn keyboard_mode(console: BorrowedFd<'_>) -> io::Result<i32> {
+    use std::os::fd::AsRawFd;
+
+    let mut mode: libc::c_long = 0;
+    // SAFETY: the ioctl writes one `long` through the pointer, and it is a live
+    // local.
+    #[allow(unsafe_code)]
+    let read = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDGKBMODE as libc::Ioctl,
+            &mut mode as *mut libc::c_long,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(mode as i32)
+}
+
 /// Ask the display how it is shaped.
 pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeometry> {
     use std::os::fd::AsRawFd;

@@ -44,6 +44,19 @@ pub enum ManifestError {
     #[error("permission {index} declares unknown action `{found}`")]
     UnknownPermissionAction { index: usize, found: String },
 
+    #[error(
+        "permission {index} asks for memory as `{found}`, which is not an amount \
+         this can read. Write it with a unit — `512MiB`, `4GiB` — because a bare \
+         number on a confirmation is a number nobody can check"
+    )]
+    UnreadableMemoryRequest { index: usize, found: String },
+
+    #[error(
+        "permission {index} asks for memory as `{found}`, and memory is only ever \
+         `persistent`: taking that much of somebody's machine is never automatic"
+    )]
+    MemoryWithoutAHuman { index: usize, found: String },
+
     #[error("artifact hash must be `sha256:<64 hex chars>`, got `{0}`")]
     MalformedHash(String),
 
@@ -202,6 +215,16 @@ impl Permission {
     pub fn describe(&self) -> String {
         match (self.resource.as_str(), self.action.as_str()) {
             ("net", "outbound") => "outbound network access".to_string(),
+            // Rendered as the size and not as the number, because the number is
+            // what a person cannot check. `8589934592` and `858993459` differ
+            // by one character on the trusted path and by a factor of ten on
+            // the machine.
+            ("memory", action) => match memory_asked_for(action) {
+                Some(bytes) => format!("up to {} of memory", in_words(bytes)),
+                // Rule 9: a request that cannot be read is shown as unreadable
+                // rather than as a number somebody might approve.
+                None => format!("an amount of memory this build cannot read: `{action}`"),
+            },
             ("net", a) => format!("network access ({a})"),
             (r, "read") => format!("read access to {r}"),
             (r, "write") => format!("write access to {r}"),
@@ -209,6 +232,43 @@ impl Permission {
             (r, a) => format!("{a} access to {r}"),
         }
     }
+}
+
+/// How much memory a module asked for, from the `action` of a `memory`
+/// permission.
+///
+/// **Written out with a unit, never as a bare number.** `Camino-Confiable.md`
+/// says the human has to be able to check what they are approving, and a person
+/// reading `8589934592` on a confirmation cannot tell it from `858993459`. So
+/// the manifest says `4GiB` and this turns it into bytes; a bare number is
+/// refused rather than guessed at, because guessing whether somebody meant bytes
+/// or megabytes is a factor of a million.
+pub fn memory_asked_for(action: &str) -> Option<u64> {
+    let action = action.trim();
+    let (digits, unit) = action.split_at(action.find(|c: char| !c.is_ascii_digit())?);
+    let amount: u64 = digits.parse().ok()?;
+    let scale: u64 = match unit.trim() {
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        // No `TiB`, and that is not an oversight: the largest thing this can
+        // usefully say is bounded by the machine, and the check that refuses a
+        // request bigger than the machine is where that is decided. A unit
+        // nobody can satisfy would only move the refusal later.
+        _ => return None,
+    };
+    amount.checked_mul(scale)
+}
+
+/// A size as a person reads it. The inverse of [`memory_asked_for`], and it
+/// exists so the confirmation shows the same words the manifest wrote.
+pub fn in_words(bytes: u64) -> String {
+    for (size, name) in [(1u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")] {
+        if bytes >= size && bytes.is_multiple_of(size) {
+            return format!("{} {name}", bytes / size);
+        }
+    }
+    format!("{bytes} B")
 }
 
 impl Manifest {
@@ -257,6 +317,32 @@ impl Manifest {
                     index,
                     found: permission.action.clone(),
                 });
+            }
+            // `memory` is the one resource whose action is a quantity rather
+            // than a verb, because what a module wants from memory is an
+            // amount. It is checked here rather than at install so that a
+            // manifest nobody can read is refused before it reaches a
+            // confirmation — rule 9: the human must never be asked to approve a
+            // number the machine could not parse.
+            if permission.resource == "memory" {
+                if memory_asked_for(&permission.action).is_none() {
+                    return Err(ManifestError::UnreadableMemoryRequest {
+                        index,
+                        found: permission.action.clone(),
+                    });
+                }
+                // And it can never be automatic. `Tres-Tipos-de-Permiso.md`:
+                // only `persistent` always requires a human. A module that
+                // could take eight gigabytes of somebody's machine on a `jit`
+                // grant would be taking it without being asked for, which is
+                // the whole thing the trusted path exists to prevent.
+                if !permission.kind.requires_confirmation() {
+                    return Err(ManifestError::MemoryWithoutAHuman {
+                        index,
+                        found: permission.kind.to_string(),
+                    });
+                }
+                continue;
             }
             if !matches!(
                 permission.action.as_str(),
@@ -450,5 +536,79 @@ run = "bin/pyassist"
         assert!(PermissionKind::Persistent.requires_confirmation());
         assert!(!PermissionKind::Jit.requires_confirmation());
         assert!(!PermissionKind::Session.requires_confirmation());
+    }
+    /// The unit is the whole point: a bare number on a confirmation is a number
+    /// nobody can check, and guessing whether it meant bytes or megabytes is a
+    /// factor of a million.
+    #[test]
+    fn an_amount_of_memory_is_only_readable_with_a_unit_on_it() {
+        assert_eq!(memory_asked_for("1GiB"), Some(1 << 30));
+        assert_eq!(memory_asked_for("4GiB"), Some(4u64 << 30));
+        assert_eq!(memory_asked_for("512MiB"), Some(512 << 20));
+        assert_eq!(memory_asked_for(" 8GiB "), Some(8u64 << 30));
+
+        for unreadable in [
+            // The dangerous one. Refused rather than read as bytes, which would
+            // silently confine a module asking for eight gigabytes to eight
+            // bytes — and rather than read as gigabytes, which would hand it
+            // the machine.
+            "8",
+            "8589934592",
+            "",
+            "GiB",
+            "8 gigs",
+            "8gb",
+            "8TiB",
+            "-8GiB",
+            "8.5GiB",
+        ] {
+            assert_eq!(
+                memory_asked_for(unreadable),
+                None,
+                "`{unreadable}` was read as an amount"
+            );
+        }
+
+        // Rule 9 on the arithmetic: a number large enough to overflow the
+        // multiplication is refused rather than wrapped into something small.
+        assert_eq!(memory_asked_for("99999999999999999999GiB"), None);
+        assert_eq!(memory_asked_for(&format!("{}GiB", u64::MAX)), None);
+    }
+
+    /// What the human reads has to be the words the manifest wrote, or the
+    /// confirmation is about a different quantity from the request.
+    #[test]
+    fn the_confirmation_shows_the_size_and_not_the_number() {
+        let asked = Permission {
+            resource: "memory".to_string(),
+            action: "4GiB".to_string(),
+            kind: PermissionKind::Persistent,
+        };
+        assert_eq!(asked.describe(), "up to 4 GiB of memory");
+        assert!(!asked.describe().contains("4294967296"));
+
+        // And a request this build cannot read is shown as unreadable rather
+        // than as a number somebody might approve. Unreachable through
+        // `Manifest::parse`, which refuses it — kept because `describe` is
+        // called on grants read back from a registry a future version wrote.
+        let unreadable = Permission {
+            resource: "memory".to_string(),
+            action: "4ZiB".to_string(),
+            kind: PermissionKind::Persistent,
+        };
+        assert!(unreadable.describe().contains("cannot read"));
+    }
+
+    #[test]
+    fn a_size_reads_back_as_the_words_it_was_written_with() {
+        for (bytes, words) in [
+            (1u64 << 30, "1 GiB"),
+            (4u64 << 30, "4 GiB"),
+            (512 << 20, "512 MiB"),
+            (1536 << 20, "1536 MiB"),
+        ] {
+            assert_eq!(in_words(bytes), words);
+            assert_eq!(memory_asked_for(&words.replace(' ', "")), Some(bytes));
+        }
     }
 }

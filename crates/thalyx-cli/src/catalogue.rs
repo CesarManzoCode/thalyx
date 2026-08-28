@@ -597,6 +597,20 @@ pub const VERBS: &[Verb] = &[
         summary: "The disks this machine can see, and which one it booted from.",
     },
     Verb {
+        id: "keyboard",
+        names: &["teclado", "keyboard"],
+        takes: &["layout"],
+        flags: &[],
+        answers: Some("keyboard"),
+        // It changes the machine — and unlike every other verb that does, what
+        // it changes is how the machine can be told to change it back. That is
+        // why `teclado ingles` puts back the kernel's own table rather than
+        // something close to it.
+        changes: true,
+        errors: &["no_console", "no_such_layout", "not_loaded", "left_alone"],
+        summary: "Which keyboard layout the kernel holds, and which one to put on it.",
+    },
+    Verb {
         id: "network",
         names: &["red", "network"],
         takes: &[],
@@ -861,6 +875,11 @@ mod tests {
                 "execute",
                 "rollback",
                 "install_onto",
+                // The one whose change is to the instrument a person would use
+                // to change it back: a layout loaded wrong is a machine that
+                // looks healthy and types the wrong letters, with no second
+                // terminal on the image to fix it from.
+                "keyboard",
                 "power_off",
                 // It changes the machine even though its purpose is that what
                 // it wraps can be undone: opening one takes a snapshot, and

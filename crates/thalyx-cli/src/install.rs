@@ -74,8 +74,6 @@ pub struct InstallArgs {
 }
 
 pub fn run(args: InstallArgs) -> Fallible {
-    use std::io::{IsTerminal, Write};
-
     // Measured before anything is said, so that the plan printed below is the plan
     // that would be written and not an illustration of one.
     let sectors = device_sectors(&args.device)?;
@@ -140,17 +138,23 @@ pub fn run(args: InstallArgs) -> Fallible {
 
     if args.yes {
         println!("  confirmed with --yes");
-    } else if !std::io::stdin().is_terminal() {
-        // Silence is not consent, the same rule the capability prompt keeps.
-        eprintln!("  no terminal available to confirm; refusing");
-        return Err("the install was not confirmed".into());
     } else {
-        print!("  Type the disk's path to confirm: ");
-        let _ = std::io::stdout().flush();
-        let answer = crate::term::read_answer()?.unwrap_or_default();
-        if answer.trim() != args.device.display().to_string() {
-            eprintln!("  that is not {}; refusing", args.device.display());
-            return Err("the install was not confirmed".into());
+        // Silence is not consent, the same rule the capability prompt keeps.
+        let asked = crate::ask::Accepts::Exactly(args.device.display().to_string());
+        match crate::ask::confirm("  Type the disk's path to confirm: ", &asked) {
+            crate::ask::Answered::Yes => {}
+            crate::ask::Answered::No => {
+                eprintln!("  that is not {}; refusing", args.device.display());
+                return Err("the install was not confirmed".into());
+            }
+            crate::ask::Answered::NoOneToAsk => {
+                eprintln!("  no terminal available to confirm; refusing");
+                return Err("the install was not confirmed".into());
+            }
+            crate::ask::Answered::Unreadable => {
+                eprintln!("  the answer could not be read; refusing");
+                return Err("the install was not confirmed".into());
+            }
         }
     }
     println!();
