@@ -212,6 +212,17 @@ These were all learned by something going wrong. They are recorded in
     a separate process, which in Rust means a separate crate — hence
     `thalyx-capture`.
 
+12. **The binary that gets verified has to be the binary that ships.** `verify.sh`
+    compiles against glibc from end to end, and the image is a static musl
+    build; the stage called "the image" packs the *glibc* binary to count the
+    programs inside it. So five ioctl requests cast to `libc::c_ulong` — which
+    is what glibc's `ioctl` takes, where musl's takes `c_int` — went through 189
+    checks clean on 2026-08-28 and then stopped `make -C image` dead, with the
+    person who runs the hardware finding it. It is rule 8 pointed at the
+    compiler: a build with a different configuration is a different system.
+    Stage 2 now runs the image Makefile's own build line, and
+    `THALYX_REQUIRE_IMAGE_BUILD=1` turns its skips into failures.
+
 ## How to write code here
 
 - **Rust 2024, cargo workspace, `clippy` with warnings denied, `cargo fmt`.**

@@ -2625,11 +2625,19 @@ mod bpf_tests {
 ///
 /// Spelled out for the same reason as [`BLKRRPART`]: `_IOR` is a C macro and
 /// this workspace has no C.
+///
+/// `u64` here and `as libc::Ioctl` at the call site, which is the rule the whole
+/// crate follows and which the display's five call sites broke on 2026-08-28:
+/// `libc::ioctl` takes `c_ulong` against glibc and `c_int` against musl, so
+/// `as libc::c_ulong` compiles on the machine that verifies Thalyx and stops
+/// `make -C image` — the one build that produces a Thalyx machine, and the one
+/// nothing else here exercises.
 const FBIOGET_VSCREENINFO: u64 = 0x4600;
 /// `FBIOGET_FSCREENINFO`: `0x4602`.
 const FBIOGET_FSCREENINFO: u64 = 0x4602;
 
-/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`.
+/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`. Converted at the
+/// call site for the reason above.
 const KDGETMODE: u64 = 0x4B3B;
 const KDSETMODE: u64 = 0x4B3A;
 /// `KD_TEXT` is 0 and `KD_GRAPHICS` is 1.
@@ -2680,7 +2688,7 @@ pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeomet
     let read_var = unsafe {
         libc::ioctl(
             framebuffer.as_raw_fd(),
-            FBIOGET_VSCREENINFO as libc::c_ulong,
+            FBIOGET_VSCREENINFO as libc::Ioctl,
             var.as_mut_ptr(),
         )
     };
@@ -2694,7 +2702,7 @@ pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeomet
     let read_fix = unsafe {
         libc::ioctl(
             framebuffer.as_raw_fd(),
-            FBIOGET_FSCREENINFO as libc::c_ulong,
+            FBIOGET_FSCREENINFO as libc::Ioctl,
             fix.as_mut_ptr(),
         )
     };
@@ -2809,14 +2817,14 @@ impl GraphicsMode {
         // SAFETY: `KDGETMODE` writes one `long` through the pointer, which is to
         // a live local. The descriptor is borrowed for the call.
         #[allow(unsafe_code)]
-        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::c_ulong, &raw mut saved) };
+        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::Ioctl, &raw mut saved) };
         if read != 0 {
             return Err(io::Error::last_os_error());
         }
 
         // SAFETY: `KDSETMODE` takes its argument by value, not by pointer.
         #[allow(unsafe_code)]
-        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::c_ulong, KD_GRAPHICS) };
+        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::Ioctl, KD_GRAPHICS) };
         if set != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -2831,7 +2839,7 @@ impl Drop for GraphicsMode {
         // does not outlive.
         #[allow(unsafe_code)]
         unsafe {
-            libc::ioctl(self.fd, KDSETMODE as libc::c_ulong, self.saved);
+            libc::ioctl(self.fd, KDSETMODE as libc::Ioctl, self.saved);
         }
     }
 }
