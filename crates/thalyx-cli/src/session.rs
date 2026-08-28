@@ -2376,8 +2376,6 @@ pub fn foresee_install_onto(disk: &str, face: crate::files::Face) {
 /// the bytes are read the same way they were written, so this needs no vfat in the
 /// kernel.
 fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
-    use std::io::{IsTerminal, Write};
-
     // The op is the one the caller typed, not the one this function is called.
     // `describe` promises `rehearse` for `ensayo`, and a refusal that came back
     // under `install_onto` would be an answer to a verb nobody used — which, on
@@ -2591,7 +2589,9 @@ fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
         return;
     }
 
-    if !std::io::stdin().is_terminal() {
+    let asked = crate::ask::Accepts::Exactly(disk.display().to_string());
+    let said = crate::ask::confirm("  Type the disk's path to confirm: ", &asked);
+    if said == crate::ask::Answered::NoOneToAsk {
         refuse(
             "no_terminal",
             "confirm_at_a_terminal",
@@ -2600,13 +2600,16 @@ fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
         );
         return;
     }
-    print!("  Type the disk's path to confirm: ");
-    let _ = std::io::stdout().flush();
-    let answer = crate::term::read_answer()
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if answer.trim() != disk.display().to_string() {
+    if said == crate::ask::Answered::Unreadable {
+        refuse(
+            "unreadable",
+            "confirm_at_a_terminal",
+            "The answer could not be read, so nothing was written.",
+            false,
+        );
+        return;
+    }
+    if said != crate::ask::Answered::Yes {
         refuse(
             "not_confirmed",
             "type_the_disk_path",

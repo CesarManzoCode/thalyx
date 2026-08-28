@@ -6159,6 +6159,102 @@ else
     proven "the built-in command line leaves thalyx.pantalla unanswered, so a machine comes up on the screen and \`thalyx.pantalla=no\` is the way back from one that cannot"
 fi
 
+step "42. a verb that stops to ask can be answered, and the same answer means the same thing on both faces"
+
+# `crates/thalyx-cli/src/ask.rs`. The eight places in Thalyx that stop and ask a
+# human used to write the asking out by hand, and it cost two things at once:
+# they drifted about what a yes is, and none of them worked on the display,
+# because under `thalyx-capture` descriptor 0 is `/dev/null` and every one of
+# them found no terminal and refused. On the face the machine boots into,
+# `instalar`, `ejecutar`, `observar` and `instalar-en` could be read about and
+# not finished.
+#
+# What the integration tests already prove, in a container: the yes-set is one
+# set on both faces, a pipe still cannot authorise anything, and the context is
+# printed before the refusal so the display has something to draw. What is here
+# is the part they must not do — see the long note at the foot of
+# `tests/a_question_has_one_answer.rs`. Proving that `instalar-en` asks for the
+# disk's path and takes no `sí` means reaching a question only a disk the verb
+# agrees to erase can raise, and a cargo test that names a real disk is a test
+# that erases the machine the day the thing it tests is broken. Here the disk is
+# a file this script made.
+
+ASK_IMAGE="$WORK/ask-disk.img"
+ASK_KERNEL="$WORK/ask-kernel.bin"
+ASK_DEVICE=""
+if command -v losetup > /dev/null 2>&1; then
+    # Big enough for the verb to get as far as asking: it refuses anything under
+    # 673185792 bytes before it says a word, which is how the first version of
+    # this check passed while measuring nothing.
+    dd if=/dev/zero of="$ASK_IMAGE" bs=1M count=768 status=none 2>/dev/null || true
+    dd if=/dev/zero of="$ASK_KERNEL" bs=1M count=2 status=none 2>/dev/null || true
+    ASK_DEVICE="$(losetup -f --show "$ASK_IMAGE" 2>/dev/null || true)"
+fi
+
+if [ -z "$ASK_DEVICE" ]; then
+    GAP="no loop device could be made, so nothing asked an install for a confirmation"
+    if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    ASK_ROOT="$WORK/ask-face"
+    mkdir -p "$ASK_ROOT"
+
+    # `thalyx install --kernel` and not the session's `instalar-en`, and the
+    # difference is what makes this stage measure anything at all. Inside the
+    # session the verb finds the kernel on the medium this machine booted from,
+    # and on a machine that did not boot from a Thalyx medium it refuses for
+    # *that* — before it ever asks. Naming a kernel is the one way to reach the
+    # question on a machine that is not itself a Thalyx machine.
+    #
+    # A terminal of Thalyx's own making, because the confirmer refuses a stdin
+    # that is not one — which is the other half of what this stage measures.
+    printf 'sí\n' \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-yes.log" 2>&1 || true
+    printf '%s\n' "$ASK_DEVICE" \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-path.log" 2>&1 || true
+
+    losetup -d "$ASK_DEVICE" 2>/dev/null || true
+    rm -f "$ASK_IMAGE" "$ASK_KERNEL"
+
+    # The precondition, checked rather than assumed. Without it a verb that
+    # refused before asking would pass both columns below for free — which is
+    # exactly what happened to the cargo test this stage replaced, twice: once
+    # on a device that did not exist, and once on a machine with no medium to
+    # take a kernel from.
+    #
+    # And the marker is the sentence the confirmer itself prints, not `that is
+    # not`, which was the first thing written here and which matches `That is
+    # not the same as not looking` in the output of `discos` three lines up.
+    if ! grep -q "Type the disk's path to confirm" "$WORK/ask-yes.log" 2>/dev/null; then
+        GAP="the install never got as far as asking on this machine, so neither column below measures anything"
+        if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        excerpt "$WORK/ask-yes.log"
+    elif ! grep -q 'the install was not confirmed' "$WORK/ask-yes.log" 2>/dev/null; then
+        failed "\`sí\` authorised a verb that writes a partition table over a whole disk; see $WORK/ask-yes.log"
+        excerpt "$WORK/ask-yes.log"
+    elif grep -q 'the install was not confirmed' "$WORK/ask-path.log" 2>/dev/null; then
+        # The control. Without it, a confirmer that refused everything would pass
+        # the column above while no verb on this machine could ever be finished —
+        # a policy that breaks everything looks like one that works.
+        failed "the disk's own path did not authorise it either, so the question cannot be answered at all; see $WORK/ask-path.log"
+        excerpt "$WORK/ask-path.log"
+    else
+        proven "the install asks for the disk's path, refuses a \`sí\`, and accepts the path — asked on a terminal Thalyx made and a disk this script made"
+    fi
+fi
+
+# The half that only his hardware answers. There is nothing to draw a question
+# on here, and no keyboard behind it, so this is named rather than inferred —
+# rule 10, and the reason the count of this run is not the count of a run on the
+# machine that has a display.
+if [ ! -e /dev/fb0 ]; then
+    GAP="a confirmation drawn on /dev/fb0 and answered on a real keyboard — this machine has no framebuffer, so the display's half of \`ask\` is untested here and can only be seen by booting the image"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    unproven "this machine has /dev/fb0, and nothing here yet drives a drawn confirmation to an answer without taking the console to do it"
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

@@ -6,6 +6,7 @@
 
 mod agent;
 mod agent_model;
+mod ask;
 mod attempt;
 mod catalogue;
 mod changes;

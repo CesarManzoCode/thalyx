@@ -654,7 +654,13 @@ fn draw_confirmation(
         space_above: step * 0.9,
     });
     lines.push(Line {
-        text: "Escape cancela. Nada se ha hecho todavía.".into(),
+        // **Ctrl-C and not Escape**, which is what this line said until the
+        // confirmation was first wired to a real keyboard. A bare Escape is the
+        // prefix of every arrow key, so a decoder that is correct waits for the
+        // byte after it — the hint named a key that appears to do nothing until
+        // you press another one, on the one screen where a person needs to be
+        // sure how to get out. `thalyx-term` has the test that pins it.
+        text: "Ctrl-C cancela. Nada se ha hecho todavía.".into(),
         style: TextStyle::new(Face::Prose, metrics.small, color::MUTED),
         space_above: step * 1.6,
     });

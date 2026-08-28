@@ -49,8 +49,10 @@
 //! An error the screen can draw is the cautious answer; a machine that stopped
 //! responding is not.
 
+use std::cell::RefCell;
 use std::io::{Read, Seek, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 
 /// The three standard descriptors, put back however this leaves.
 ///
@@ -77,6 +79,111 @@ impl Drop for Restored {
     }
 }
 
+thread_local! {
+    /// The sink the running verb is printing into, on this thread.
+    ///
+    /// **Thread-local and not a global, and that is the whole reason this is
+    /// safe to have at all.** Rule 11 of `CLAUDE.md` names the failure: a switch
+    /// with no owner, whose value is some other check's precondition. `cargo
+    /// test` runs one binary's tests as threads inside one process, so a global
+    /// here would let one test read the answer another test was in the middle of
+    /// writing. The verb runs on the thread that redirected the descriptors —
+    /// `screen::run_one` calls `session::act_on` directly — so the thread is
+    /// exactly the right scope, and a thread that never captured anything sees
+    /// `None` rather than somebody else's buffer.
+    static SAID: RefCell<Option<std::fs::File>> = const { RefCell::new(None) };
+}
+
+/// The sink, lent to the thread for the duration of one verb and taken back.
+///
+/// A guard and not two statements, for the reason [`Restored`] is one: the body
+/// of a verb can panic, and a lend that outlived the capture would leave the
+/// next question on this thread reading a buffer nobody is writing to any more.
+struct Lent {
+    /// `None` only between [`Lent::take`] and the drop that follows it.
+    previous: Option<std::fs::File>,
+}
+
+impl Lent {
+    fn of(sink: std::fs::File) -> Self {
+        let previous = SAID.with(|said| said.borrow_mut().replace(sink));
+        Self { previous }
+    }
+
+    /// Take the sink back to read the whole answer out of it.
+    fn take(mut self) -> std::fs::File {
+        let sink = SAID
+            .with(|said| said.borrow_mut().take())
+            .expect("the sink this capture lent out");
+        // Whatever was lent before this capture began goes back, which is what
+        // makes one verb captured inside another give the outer one its buffer
+        // back rather than nothing.
+        SAID.with(|said| *said.borrow_mut() = self.previous.take());
+        sink
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        // Only reached when `take` was never called — that is, when the body
+        // unwound. The lend still has to come back.
+        SAID.with(|said| *said.borrow_mut() = self.previous.take());
+    }
+}
+
+/// What the verb running on this thread has printed **so far**, if one is.
+///
+/// This exists for the one thing the screen could not do without it: a verb that
+/// stops to ask has already printed the reason it is asking, and under the
+/// screen that reason is in a buffer nobody has read yet. Drawing the question
+/// without it would put *«Type the disk's path to confirm»* on the glass with no
+/// disk named anywhere near it — a confirmation with its context missing, which
+/// is the one thing `Camino-Confiable.md` says a confirmation may never be.
+///
+/// `None` means no capture is running on this thread, which is a different fact
+/// from an empty answer and is reported as one — rule 10.
+///
+/// Read with `pread` and not by seeking. Descriptors 1 and 2 point at *this
+/// same open file*, so its position is the position the verb's next `println!`
+/// writes at — reading it by rewinding means moving that, and the only thing
+/// putting it back is the read happening to run all the way to the end.
+///
+/// That was written here first as *«a seek would land the rest of the answer on
+/// top of what it had already said»*, and the test written to prove it **did
+/// not fail** when the seek was put back: `read_to_end` leaves the position at
+/// the end, which is where it started. Rule 5 — the instrument includes the
+/// harness, and a justification that survives being disproved is a story. The
+/// true reason is narrower and still decides it: `pread` cannot move that
+/// position at all, so it holds for a partial read, for a read that stops on an
+/// error halfway, and for anyone who later reads only the tail.
+pub fn said_so_far() -> Option<String> {
+    SAID.with(|said| {
+        let borrowed = said.borrow();
+        let sink = borrowed.as_ref()?;
+
+        // Anything sitting in Rust's own buffer has not reached the file yet,
+        // and the last line before a question is exactly the line most likely to
+        // be sitting there: `print!("  Type the disk's path: ")` has no newline
+        // to flush it.
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+
+        let len = sink.metadata().ok()?.len();
+        let mut bytes = vec![0u8; len as usize];
+        let mut filled = 0usize;
+        while filled < bytes.len() {
+            match sink.read_at(&mut bytes[filled..], filled as u64) {
+                Ok(0) => break,
+                Ok(read) => filled += read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+        bytes.truncate(filled);
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    })
+}
+
 /// Run something and hand back everything it printed, on either stream.
 ///
 /// Both streams into one buffer and in order, because that is what the person
@@ -84,7 +191,7 @@ impl Drop for Restored {
 /// what it did on stdout is one answer, and splitting it would put the reason
 /// somewhere else on the screen from the thing it is the reason for.
 pub fn what_it_says<T>(body: impl FnOnce() -> T) -> std::io::Result<(T, String)> {
-    let sink = thalyx_syscall::memory_file("thalyx-answer")?;
+    let sink = std::fs::File::from(thalyx_syscall::memory_file("thalyx-answer")?);
     // Read-only: nothing should be writing to stdin, and a descriptor opened
     // for writing would let a verb that got confused about which way its own
     // stream points scribble somewhere.
@@ -105,13 +212,18 @@ pub fn what_it_says<T>(body: impl FnOnce() -> T) -> std::io::Result<(T, String)>
     thalyx_syscall::place_on(sink.as_raw_fd(), 1)?;
     thalyx_syscall::place_on(sink.as_raw_fd(), 2)?;
 
+    // The sink is lent to the thread for as long as the verb runs, so that a
+    // confirmation raised from inside it can read back the context the verb has
+    // already printed. See `said_so_far`.
+    let lent = Lent::of(sink);
+
     let outcome = body();
 
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     drop(saved);
 
-    let mut file = std::fs::File::from(sink);
+    let mut file = lent.take();
     file.rewind()?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
@@ -201,6 +313,46 @@ mod tests {
             "{from_elsewhere:?}"
         );
 
+        // Nothing is being captured out here, and that is not the same fact as
+        // an empty answer — rule 10, in the one place a caller could act on the
+        // difference: a confirmation that got `Some("")` would draw a question
+        // with no context, and one that got `None` knows it is at a terminal.
+        assert!(said_so_far().is_none());
+
+        // What the screen needs and could not have without this: the context a
+        // verb printed *before* it stopped to ask.
+        let (_, whole) = what_it_says(|| {
+            let _ = writeln!(std::io::stdout(), "/dev/sdb  7 GiB  btrfs `fedora`");
+            // No newline, exactly like every confirmation in this program. If
+            // `said_so_far` did not flush, this line — the question itself —
+            // would be the one line missing from the question.
+            let _ = write!(std::io::stdout(), "  Type the disk's path to confirm: ");
+
+            let asked = said_so_far().expect("a capture is running");
+            assert!(asked.contains("/dev/sdb  7 GiB"), "{asked:?}");
+            assert!(asked.ends_with("to confirm: "), "{asked:?}");
+
+            // The half that a seek would have broken. Descriptors 1 and 2 point
+            // at this same open file, so reading it by seeking to the start
+            // would move the position this next line writes at, and it would
+            // land on top of the disk. Checked on the whole answer below rather
+            // than here, because that is where the damage would show.
+            let _ = writeln!(std::io::stdout(), "\n  not confirmed");
+        })
+        .expect("redirectable");
+        // Not proof that `pread` was needed — a rewind-and-read-to-end passes
+        // this too, which is how the comment on `said_so_far` got corrected.
+        // What it does hold is the property the screen depends on: asking what
+        // has been said leaves the answer being written intact and in order.
+        assert!(
+            whole.starts_with("/dev/sdb  7 GiB  btrfs `fedora`\n  Type the disk's path"),
+            "reading the answer disturbed what the verb was writing: {whole:?}"
+        );
+        assert!(whole.trim_end().ends_with("not confirmed"), "{whole:?}");
+
+        // And the lend came back when the capture ended.
+        assert!(said_so_far().is_none());
+
         // Rule 9 applied to this file's own failure mode: the restoration is a
         // `Drop` and not three statements at the end of the function, and the
         // difference is only ever visible when something unwinds through it.
@@ -216,5 +368,10 @@ mod tests {
             after_the_panic.contains("still here"),
             "{after_the_panic:?}"
         );
+        // The lend is a `Drop` for the same reason the restoration is: a verb
+        // that comes apart mid-question would otherwise leave this thread
+        // holding a sink nobody writes to, and the next confirmation would draw
+        // the previous verb's output as its context.
+        assert!(said_so_far().is_none());
     }
 }

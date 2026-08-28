@@ -1,6 +1,6 @@
 //! Terminal output, and the terminal end of the trusted path.
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use thalyx_core::install::Confirmer;
 use thalyx_core::permissions::Registry;
 use thalyx_core::trusted_path::CapabilityPrompt;
@@ -41,9 +41,6 @@ impl Confirmer for TerminalConfirmer {
             return false;
         }
 
-        print!("  Confirm? [y/N] ");
-        let _ = std::io::stdout().flush();
-
         // **A read that failed is not a yes, and it is not an empty answer
         // either.** Both refuse today, so this branch changes no behaviour — and
         // that is exactly why it has to be here rather than left implicit.
@@ -60,11 +57,18 @@ impl Confirmer for TerminalConfirmer {
         // The leftover `if false { return false }` from that move is what made
         // it visible — a guard nobody could delete because nobody could say what
         // it had been guarding.
-        let Ok(Some(answer)) = crate::term::read_answer() else {
-            eprintln!("  could not read the answer; refusing");
-            return false;
-        };
-        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        match crate::ask::confirm("  Confirm? [y/N] ", &crate::ask::Accepts::Yes) {
+            crate::ask::Answered::Yes => true,
+            crate::ask::Answered::No => false,
+            crate::ask::Answered::NoOneToAsk => {
+                eprintln!("  no terminal available to confirm; refusing");
+                false
+            }
+            crate::ask::Answered::Unreadable => {
+                eprintln!("  could not read the answer; refusing");
+                false
+            }
+        }
     }
 }
 
