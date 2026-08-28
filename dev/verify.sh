@@ -6255,6 +6255,128 @@ else
     unproven "this machine has /dev/fb0, and nothing here yet drives a drawn confirmation to an answer without taking the console to do it"
 fi
 
+step "43. the machine can be typed on in the language it speaks"
+
+# `crates/thalyx-term/src/keymap.rs`. Found by asking what a whole day inside
+# Thalyx would need: the kernel carries one keymap compiled into it and it is US
+# QWERTY, the program that replaces it everywhere else is `loadkeys`, and the
+# image is the kernel and one program. So on a Thalyx machine the key a Latin
+# American keyboard prints `ñ` on sent `;`, and `á` could not be typed at all —
+# an operating system whose every sentence is in Spanish, in which Spanish could
+# not be written. A `grep` of the repository for `keymap` came back empty.
+#
+# **This stage is rule 11 and rule 5 at once.** The keymap is a machine-global
+# switch with no owner — `THALYX_ROOT` isolates a store and nothing else — so a
+# stage that loaded a layout onto the console of whatever machine is running
+# this would leave a keyboard nobody asked for, and it would be the keyboard the
+# person reading this verdict is typing on. It therefore **reads and never
+# writes**, and everything about writing is asked of the rehearsal, which is the
+# same tables and the same code with the ioctl left out.
+#
+# And what it reads, it reads with `KDGKBENT` through Thalyx's own `teclado` —
+# which is not Thalyx's record of what it sent, it is the kernel answering.
+
+KEYBOARD_ROOT="$WORK/keyboard"
+mkdir -p "$KEYBOARD_ROOT"
+
+# The rehearsal, which touches nothing. Its `would_be` column is the claim: the
+# layout this machine would load puts `ñ` on the key a US map puts `;` on.
+printf 'structured on\nensayo teclado latino\nensayo teclado ingles\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session > "$WORK/keyboard-rehearse.log" 2>&1
+
+KEYBOARD_SAYS=$(grep '^{' "$WORK/keyboard-rehearse.log" | python3 -c '
+import json, sys
+
+seen = {}
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") != "rehearse" or said.get("verb") != "keyboard":
+        continue
+    keys = {entry["keycode"]: entry["would_be"] for entry in said.get("keys", [])}
+    seen[said.get("layout")] = (keys, said.get("changed_anything"))
+
+latin, kernel = seen.get("la-latin1"), seen.get("defkeymap")
+if not latin or not kernel:
+    print("missing")
+elif latin[1] is not False or kernel[1] is not False:
+    print("rehearsal_changed_something")
+elif latin[0].get("39") != "ñ" and latin[0].get(39) != "ñ":
+    print("no_entyay")
+elif kernel[0].get("39") != ";" and kernel[0].get(39) != ";":
+    print("no_semicolon")
+else:
+    print("ok")
+' 2>/dev/null)
+
+case "${KEYBOARD_SAYS:-missing}" in
+    ok)
+        proven "the layout this machine would load puts \`ñ\` on the key the kernel's own map puts \`;\` on, and rehearsing it changes nothing"
+        ;;
+    rehearsal_changed_something)
+        failed "\`ensayo teclado\` reported that it changed the machine, which is not a rehearsal"
+        ;;
+    no_entyay)
+        failed "the Latin American layout this machine carries has no \`ñ\` on the key that carries one; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    no_semicolon)
+        # Rule 4: without this column, «the layout has an ñ» would pass against a
+        # table that was the same everywhere, and would prove nothing about the
+        # machine needing to be changed at all.
+        failed "the kernel's own map does not put \`;\` on that key here, so the defect this stage is about is not the defect described"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    *)
+        failed "\`ensayo teclado\` answered nothing a program can read; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+esac
+
+# And what the kernel says is on this console right now — which on the machine
+# running this is Fedora's, loaded by its own `loadkeys`, and is nobody's
+# business to change. What is checked is that Thalyx can *ask*, and that it
+# tells the two failures apart.
+KEYBOARD_READ=$(printf 'structured on\nteclado\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "keyboard":
+        read = said.get("read") or {}
+        print("read" if read.get("ok") else "unreadable")
+        break
+' 2>/dev/null)
+
+case "${KEYBOARD_READ:-nothing}" in
+    read)
+        proven "\`teclado\` asks the kernel what is on this console and gets an answer, without writing to it"
+        ;;
+    unreadable)
+        # Not a failure: `dev/verify.sh` is commonly run over ssh or from a
+        # terminal emulator, where `/dev/console` is not the keyboard and the
+        # ioctl is refused. Saying that is the honest answer — rule 10 — and the
+        # thing being measured is that Thalyx says it too.
+        GAP="this console does not answer keymap questions (a terminal emulator or ssh, not the machine's own console), so nothing here read a real keyboard"
+        if [ "${THALYX_REQUIRE_KEYBOARD_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        ;;
+    *)
+        failed "\`teclado\` answered nothing a program can read"
+        ;;
+esac
+
+# The half only the image answers. Loading a layout is the one change in this
+# program whose failure is a machine that looks healthy and types the wrong
+# letters, and nothing here may try it — see the note at the top of this stage.
+GAP="a layout actually loaded onto a machine's own console — that is a machine-global switch with no owner (rule 11), so it is seen by booting the image and typing \`ñ\`, never by this script"
+unproven "$GAP"
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

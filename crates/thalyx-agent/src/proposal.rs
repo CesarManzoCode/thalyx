@@ -168,6 +168,12 @@ pub enum ProposedOperation {
 
     Network,
 
+    /// Which keyboard layout the kernel holds —
+    /// `crates/thalyx-term/src/keymap.rs`. A first-class operation and not a
+    /// setting, because on a machine whose every sentence is Spanish it is the
+    /// difference between writing and not.
+    Keyboard,
+
     InstallOnto,
 
     /// Run a program nobody signed, confined —
@@ -238,6 +244,7 @@ impl ProposedOperation {
             ProposedOperation::Kernel => "kernel",
             ProposedOperation::Disks => "disks",
             ProposedOperation::Network => "network",
+            ProposedOperation::Keyboard => "keyboard",
             ProposedOperation::InstallOnto => "install_onto",
             ProposedOperation::Execute => "execute",
             ProposedOperation::Leave => "leave",
@@ -284,7 +291,7 @@ impl ProposedOperation {
     }
 
     /// Every operation the agent can propose.
-    pub const ALL: [ProposedOperation; 44] = [
+    pub const ALL: [ProposedOperation; 45] = [
         ProposedOperation::Nothing,
         ProposedOperation::List,
         ProposedOperation::Read,
@@ -325,6 +332,7 @@ impl ProposedOperation {
         ProposedOperation::Kernel,
         ProposedOperation::Disks,
         ProposedOperation::Network,
+        ProposedOperation::Keyboard,
         ProposedOperation::InstallOnto,
         ProposedOperation::Execute,
         ProposedOperation::Leave,

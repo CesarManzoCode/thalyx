@@ -29,8 +29,11 @@
 //! invalid UTF-8 out of a valid word. Spanish is the language this machine is
 //! used in, so getting that wrong would be visible on the first day.
 
+pub mod keymap;
+
 /// One thing the person did, already decoded from whatever bytes carried it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
 pub enum Key {
     Char(char),
     Enter,

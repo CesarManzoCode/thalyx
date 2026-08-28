@@ -348,6 +348,25 @@ pub fn run() -> Fallible {
         println!("  no  {target}: {error}");
     }
 
+    // Right after the mounts, because `/dev` is what `/dev/console` needs and
+    // because everything after this line is something a person may want to type
+    // at. `crates/thalyx-term/src/keymap.rs` has the whole reason: the kernel
+    // carries one keymap and it is US QWERTY, so until this line a machine whose
+    // every sentence is in Spanish could not be typed in Spanish.
+    //
+    // Reported and never fatal, like a mount: a keyboard that came up in the
+    // wrong layout is a machine somebody can still work on, and one that refuses
+    // to boot over it is not.
+    let keyboard = crate::keyboard::at_boot();
+    let mark = match keyboard {
+        crate::keyboard::Loading::Loaded { .. } => "ok",
+        // Rule 10: nothing was attempted and it was attempted and failed are
+        // different facts, and the second is the one worth looking into.
+        crate::keyboard::Loading::LeftAlone(_) => "?",
+        crate::keyboard::Loading::Failed(_) => "no",
+    };
+    println!("  {mark}  keyboard     {}", keyboard.briefly());
+
     // Asked of the kernel, now that /proc is there. Two separate facts: the
     // switch above ran, and the root it produced is one a module can be
     // pivoted out of. Only the second one decides whether a module runs.

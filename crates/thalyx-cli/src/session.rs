@@ -1418,7 +1418,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
             println!("  `permisos`, `negar`, `observar`, `revertir`, `recuerdos`,");
             println!("  `estado`, `nucleo`,");
-            println!("  `discos`, `instalar-en <disco>`, `red`.");
+            println!("  `discos`, `instalar-en <disco>`, `red`, `teclado`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
             println!("  because this machine is not mine to turn off.");
         }
@@ -1856,6 +1856,15 @@ fn dispatch(
         }
         // Point 8, and the one listing verb whose things cannot be acted on.
         // See `crate::net`: the closing sentence is the verb.
+        // Point B of «a real system»: the machine speaks Spanish and, until
+        // this verb, could not be typed in it. `thalyx_term::keymap` has why.
+        _ if starts_any(line, &["teclado ", "keyboard "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::keyboard::run(rest, face)?;
+        }
+        "teclado" | "keyboard" => {
+            crate::keyboard::run("", face)?;
+        }
         "red" | "network" => {
             crate::net::interfaces(face)?;
         }
