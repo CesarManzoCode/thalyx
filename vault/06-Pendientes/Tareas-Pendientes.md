@@ -349,6 +349,23 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback
       ([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]])
       y los permisos por tarea ([[Permisos-JIT]]).
+- [x] **Por dónde entra el agente propio** — **decretado por Cesar el
+      2026-08-28: el motor de inferencia es el primer módulo real.** La pregunta
+      llegó al revés de como estaba escrita aquí: no era por dónde entra un
+      agente ajeno, era que **el propio nunca ha estado en la máquina**. Ver
+      [[Motor-de-Inferencia-como-Modulo]], y lo que falta para construirlo está
+      enumerado ahí. Lo que ya se midió: un motor real hace 31 llamadas al
+      sistema y `module_standard` permite las 31, así que el confinamiento
+      alcanza. Lo que falta y bloquea: el tope de memoria.
+- [ ] **Decidir el tope de memoria de un módulo, o que un manifiesto lo pida.**
+      `profile.rs` topa en 1 GiB, con un comentario que llama al número «una
+      perilla de política, no una decisión arquitectónica», y ningún manifiesto
+      puede pedir más. Bajo ese tope no cabe un modelo de ninguna gama útil.
+      **Es de Cesar**: es política y cuesta su hierro.
+- [ ] **Medir el motor compilado contra musl estático.** Lo medido es glibc, y
+      la regla 12 dice que una compilación con otra configuración es otro
+      sistema. No se puede hacer en el contenedor: no hay objetivo de rustup ni
+      compilador de C para musl.
 - [ ] **Decidir por dónde entra un agente ajeno.** ¿Es un módulo con permisos
       amplios, un proceso aparte, o algo nuevo? No decidido, y no urge hasta que
       haya qué ejecutar.
