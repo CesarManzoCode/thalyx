@@ -91,6 +91,18 @@ De ahí dos reglas:
 
 **Todo test de denegación necesita una línea base y un control.** La línea base es la misma operación antes de activar la restricción; el control es la misma operación fuera de su alcance. Sin la primera, una denegación y una operación que nunca funcionó se ven igual. Sin el segundo, una política que rompe todo se ve igual que una que funciona.
 
+**Y la misma forma aparece donde el éxito es "nada cambió".** El 2026-08-28, al
+escribir la tarea `reversible` del arnés de comparación —cambiar un símbolo en
+varios archivos y después dejar el árbol byte por byte como estaba— quedó claro
+que **un agente que no hace absolutamente nada pasa la comprobación perfecta**.
+El hash de antes y el de después son iguales tanto para el que cambió todo y lo
+devolvió como para el que se rehusó. Un veredicto leído de ahí premia la
+inacción, y la premia más en el brazo que se está tratando de probar. El arreglo
+es el de siempre: el veredicto es una conjunción, y la parte que distingue los
+dos casos viene de otro instrumento —el stream del propio agente dice si el
+nombre nuevo apareció alguna vez en una llamada. `dev/bench-summary.py
+--self-test` tiene ese caso escrito con nombre y apellido.
+
 ## Regla derivada: un test que se salta tiene que decir que se saltó
 
 Buena parte de lo que Thalyx hace solo se puede probar contra un kernel real: un cgroup, un mapa BPF, un `rename` sobre el filesystem verdadero. En una máquina donde eso no está, un test así no puede correr.
