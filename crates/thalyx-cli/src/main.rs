@@ -13,6 +13,7 @@ mod changes;
 mod dev;
 mod edit;
 mod enforce;
+mod engine_module;
 mod files;
 mod foreign;
 mod graph;

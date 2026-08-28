@@ -166,22 +166,169 @@ Lo que sigue sin contestarse es el libc: la medición contra musl estático. Ese
 contenedor sí puede compilar contra musl desde el 2026-08-28 (`musl-tools`),
 así que dejó de ser imposible ahí — pero medir un motor no es compilarlo.
 
-## Lo que falta para construirlo
+## Construido — 2026-08-28, el mismo día
 
-Nada de esto está hecho. Se escribe aquí para que la siguiente sesión no lo
-vuelva a derivar.
+Los seis puntos que esta nota dejaba abiertos están cerrados. Aquí queda **cómo**
+quedaron, porque el cómo es lo que la siguiente sesión necesita y lo que un
+`git log` no explica.
 
-1. **Decidir el tope de memoria de un módulo**, o que un manifiesto pueda
-   pedirlo. Es de Cesar y bloquea todo lo demás.
-2. **Compilar `llama-completion` estático contra musl** y volver a medir. Regla
-   12.
-3. **El manifiesto del motor**: qué permisos declara, y por qué ruta ve su
-   `.gguf`.
-4. **Que el agente encuentre el motor como módulo instalado** en vez de por
-   `PATH` — `config.rs` y `llama.rs`, donde `binary` es un `PathBuf` que hoy se
-   resuelve contra el entorno.
-5. **Que el `.gguf` llegue al disco de store**, por donde `greeter` ya llega.
-6. **Una etapa en `dev/verify.sh`.**
+### 1 · El tope de memoria
+
+Cerrado antes que el resto: lo pide el manifiesto y lo aprueba Cesar al
+instalar. El manifiesto del motor pide `4GiB` — no el piso de 1 GiB, porque
+`module_standard` carga la caché de página al cgroup del módulo y los pesos van
+mapeados: la gama ligera son ~1.1 GB antes de cualquier contexto, así que el
+piso lo mataría a media carga.
+
+### 2 · El binario, estático
+
+`dev/build-engine.sh`, contra el tag `b10665` de llama.cpp, fijado. Tres
+banderas que no son opcionales y que se encontraron con tres enlaces fallidos,
+en este orden:
+
+| Bandera | Qué falla sin ella |
+|---|---|
+| `-DLLAMA_OPENSSL=OFF` | `cpp-httplib` encuentra el OpenSSL del sistema, que en la mayoría de las distribuciones sólo existe como `.so`: *«attempted static link of dynamic object»* |
+| `-DGGML_OPENMP=OFF` | `libgomp` igual |
+| `-DGGML_NATIVE=OFF` | La máquina que construye el store no es necesariamente la que lo arranca. `-march=native` dentro de un módulo es una instrucción ilegal en el CPU de otro, y llega como un módulo que muere sin decir nada |
+
+Lo único que el script se niega a terminar sin comprobar es un ELF **sin INTERP
+y sin NEEDED**, y son dos preguntas y no una: un objeto compartido tampoco tiene
+INTERP, y `file` dice «statically linked» de los dos. Adentro de Thalyx no hay
+libc y no hay cargador dinámico, así que un motor dinámico funciona perfecto en
+el contenedor y muere en `execve` en la máquina — regla 12.
+
+**No es musl.** Es glibc enlazada estáticamente, y la diferencia importa menos
+de lo que parece: lo que la máquina necesita es que no haya nada que cargar, y
+eso se comprueba en vez de suponerse. Un `x86_64-linux-musl-g++` no existe en
+Fedora ni en el contenedor, y el script toma `CXX` del entorno, así que quien
+tenga uno lo usa sin tocar nada.
+
+### 3 · El manifiesto
+
+Dos directorios y un techo:
+
+```toml
+[[permissions]]              # los pesos
+resource = "/opt/thalyx/data/engine/models"
+[[permissions]]              # el prompt y la gramática de una inferencia
+resource = "/opt/thalyx/data/engine/run"
+[[permissions]]
+resource = "memory"
+action   = "4GiB"
+```
+
+Directorios y no archivos, por dos razones distintas. `run` lleva un directorio
+desechable por inferencia —el prompt y la gramática de *esa* respuesta,
+nombrados con su marcador— así que no hay un archivo fijo que nombrar. `models`
+es un directorio para que cambiar el modelo sea copiar un archivo al store, que
+es lo que Cesar pidió: cambiar de modelo no puede querer decir recompilar
+Thalyx.
+
+Las rutas son absolutas y de adentro de la máquina, porque una concesión es una
+ruta que el módulo verá: `RootFs` monta lo concedido **con el nombre que ya
+tiene**. Están escritas dos veces —en `dev/stage-engine.sh` y en
+`crates/thalyx-cli/src/engine_module.rs`— y ésa es la única duplicación que
+quedó.
+
+### 4 · Cómo lo encuentra el agente
+
+Una costura angosta en `llama.rs`:
+
+```rust
+pub trait Engine {
+    fn describe(&self) -> PathBuf;
+    fn preflight(&self) -> Result<(), LlamaError>;
+    fn scratch_root(&self) -> Option<PathBuf>;
+    fn complete(&self, call: EngineCall<'_>) -> Result<EngineRun, LlamaError>;
+}
+```
+
+Entra un vector de argumentos, salen bytes. **Arriba de esa línea no cambió
+nada**: el prompt, el marcador, la gramática, dónde termina una respuesta, qué
+es una respuesta rota, la atribución, el contrato, el router. Abajo hay dos
+implementaciones y difieren en una sola cosa — quién arranca el proceso:
+
+- `ProcessEngine` lo arranca aquí, con `Command`. Es lo que usa `thalyx agent
+  bench` en una máquina de desarrollo, donde hay un `llama.cpp` en el `PATH`.
+- `ModuleEngine` (`crates/thalyx-cli/src/engine_module.rs`) lo corre por
+  `thalyx_core::run`, el mismo lanzador de `correr`. Vive en el CLI y no en
+  `thalyx-agent` a propósito: el crate del agente es donde se parsea lo que dijo
+  un modelo, y no debe poder arrancar procesos confinados.
+
+Cuál de los dos lo dice el archivo de configuración, con un campo nuevo:
+`engine_module = "dev.thalyx.engine"`. Con `#[serde(default)]`, porque una
+máquina que hay que reconfigurar porque Thalyx aprendió un campo es una máquina
+que perdió una decisión de un humano en una actualización.
+
+**`scratch_root` es la parte con filo.** Un módulo sólo ve lo que le
+concedieron, así que el prompt tiene que escribirse *dentro* de uno de esos
+directorios. Antes iba a un `tempdir()` del sistema — que adentro del sandbox no
+existe — y lo que vuelve de eso es «llama.cpp no completó el prompt», culpando a
+llama.cpp de un error de Thalyx. Hay una prueba que sólo falla si eso se rompe,
+y su control al lado.
+
+### 5 · Cómo llega el `.gguf` al disco
+
+`dev/stage-engine.sh`, llamado por `make -C image store-stage`:
+
+```
+make -C image engine                                   # construye llama.cpp
+make -C image store-stage MODEL=/ruta/al/modelo.gguf   # motor + pesos + gama
+sudo make -C image store
+```
+
+Tres cosas van al stage, y la tercera es la que lo vuelve usable en vez de
+solamente equipado: los pesos, el motor **instalado**, y la elección de gama
+escrita. Instalado —donde `greeter` se deja sin instalar a propósito— porque son
+requisitos contrarios: `greeter` es el paso 2 de [[Criterio-de-Salida-Fase-1]],
+una persona instalando un módulo firmado, y una máquina que arrancara con él ya
+puesto haría ese paso irrealizable. El motor es lo opuesto: que la máquina
+arranque **pudiendo ser hablada**, sin comandos entre el botón y la primera
+frase. El `.thmod` se queda además en el repositorio del store, así que se puede
+reinstalar a mano.
+
+Sin `MODEL`, el stage no falla: dice qué pieza falta y qué la arregla, y la
+máquina arranca sin agente — que es un estado soportado
+([[Principio-Doble-Ruta]]) y no una avería. Lo que no puede pasar es que se
+quede callado: una máquina sin agente porque `MODEL` estaba mal escrito se ve
+idéntica a una construida así a propósito.
+
+### 6 · La etapa de `verify.sh`
+
+§45. Empaqueta un `llama-completion` real y un GGUF real, lo instala, y corre
+una inferencia **por el sistema de módulos**. Prueba confinado primero y sólo
+cae a `--unconfined` si el mapa de política no está cargado, diciéndolo —
+regla 3. Dos variables la alimentan (`THALYX_ENGINE`, `THALYX_ENGINE_MODEL`) y
+`THALYX_REQUIRE_ENGINE_TESTS=1` convierte su silencio en falla.
+
+`THALYX_ENGINE_DATA` mueve los directorios concedidos fuera de `/opt/thalyx`,
+porque en la máquina de Cesar ésa es una instalación de verdad y una etapa que
+creara directorios adentro sería la regla 11.
+
+### Y el último eslabón, que no estaba en la lista
+
+Una frase que no es un verbo, escrita en la sesión, **no llegaba a ninguna
+parte**: contestaba *«no tengo modelo cargado»*. Ahora va al agente, y lo que
+vuelve se convierte en **una línea del vocabulario de la sesión** que el mismo
+dispatch corre — no en una llamada directa a nada.
+
+Esa forma es la que hace que un modelo no pueda alcanzar una operación que una
+persona no pueda, ni saltarse una confirmación, ni inventar un verbo: un nombre
+que el dispatch no tiene simplemente no corre. Y un solo salto: lo que produjo
+el modelo no vuelve a consultar al modelo, o un modelo que repite una propuesta
+que nadie reconoce gira para siempre gastando una inferencia por vuelta.
+
+## Lo que sigue sin estar probado
+
+- **Confinado de verdad.** El contenedor no tiene BPF LSM, así que lo corrido
+  aquí fue `--unconfined` y el diario lo anotó degradado. §45 en la máquina de
+  Cesar es lo que contesta.
+- **Que un Qwen2.5 real acierte la intención.** El modelo de dos capas de
+  `dev/tiny-model.py` produce un objeto gramatical y vacío, lo cual prueba toda
+  la tubería y nada del modelo. `thalyx agent bench` es lo que mide eso.
+- **La latencia desde la pantalla.** Una inferencia es un módulo arrancando y
+  cargando pesos; nadie ha medido cuánto se siente eso desde el vidrio.
 
 ## Relacionado
 

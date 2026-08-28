@@ -6455,8 +6455,153 @@ for line in sys.stdin:
     esac
 fi
 
-# The half no machine here answers, named rather than inferred.
-unproven "an inference engine actually running inside a granted limit — that is the module this decree was made for, and it does not exist yet"
+# The half this stage does not answer. §45 is where the engine actually runs.
+unproven "an inference engine running inside the granted limit — §45 runs the engine, and reads no cgroup counter while it does"
+
+step "45. the engine is a module, and a real inference goes through it"
+
+# Cesar's decree of 2026-08-28, and the one stage that closes the chain the
+# whole agent was built for: a sentence reaches a model, llama.cpp infers inside
+# the module system, and a contract comes back to Thalyx.
+#
+# Everything below the seam is what the container could never check. The
+# workspace tests drive `thalyx_agent::llama::Engine` against stand-in programs
+# — which is rule 8 done properly and is still not this: what is asked here is
+# whether a *real* llama.cpp, packed as a signed module and confined under
+# `module_standard`, can read a prompt out of a granted directory, load real
+# weights, obey the grammar, and print an answer Thalyx recognises.
+#
+# Two inputs, both named rather than searched for:
+#
+#   THALYX_ENGINE        a `llama-completion`. `dev/build-engine.sh` builds one.
+#   THALYX_ENGINE_MODEL  a GGUF. Any real one; `dev/tiny-model.py` makes a
+#                        two-layer one that exercises the engine and answers
+#                        nothing, which is enough for everything below except
+#                        the last check, and that check says so.
+#
+# THALYX_ENGINE_DATA moves the granted directories out of `/opt/thalyx`. That is
+# rule 11: this machine has a real store at that path, and a stage that made
+# directories inside it would have changed the machine it was measuring.
+
+ENGINE_BIN="${THALYX_ENGINE:-$(command -v llama-completion || true)}"
+ENGINE_GGUF="${THALYX_ENGINE_MODEL:-}"
+ENGINE_GAP=""
+
+if [ -z "$ENGINE_BIN" ]; then
+    ENGINE_GAP="a real inference through the engine module — there is no llama-completion on this machine. Build one: dev/build-engine.sh, then THALYX_ENGINE=<path>"
+elif [ -z "$ENGINE_GGUF" ] || [ ! -f "$ENGINE_GGUF" ]; then
+    ENGINE_GAP="a real inference through the engine module — no weights. Set THALYX_ENGINE_MODEL to a GGUF; dev/tiny-model.py builds a small real one"
+fi
+
+if [ -n "$ENGINE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_ENGINE_TESTS:-0}" = 1 ]; then failed "$ENGINE_GAP"; else unproven "$ENGINE_GAP"; fi
+else
+    # The first claim, and it is checked before anything is run: there is no
+    # dynamic loader inside Thalyx, so an engine that wants one is an engine
+    # that dies at execve on the machine and works perfectly here. Rule 12 —
+    # the binary that gets verified has to be the binary that ships.
+    if readelf -lW "$ENGINE_BIN" 2>/dev/null | grep -q INTERP; then
+        failed "$ENGINE_BIN wants a dynamic loader, and there is no libc inside Thalyx — it would fail at execve on the machine and pass every check here"
+    elif readelf -dW "$ENGINE_BIN" 2>/dev/null | grep -q NEEDED; then
+        failed "$ENGINE_BIN needs shared libraries, which the machine does not have"
+    else
+        proven "the engine is a static program with no interpreter and no shared libraries, which is what the machine can execute"
+    fi
+
+    ENGINE_ROOT="$WORK/engine-store"
+    ENGINE_DATA="$WORK/engine-data"
+    mkdir -p "$ENGINE_ROOT" "$ENGINE_DATA/models" "$ENGINE_DATA/run" "$WORK/engine-pack/bin"
+    cp "$ENGINE_BIN" "$WORK/engine-pack/bin/llama-completion"
+    cp "$ENGINE_GGUF" "$ENGINE_DATA/models/model.gguf"
+
+    "$THALYX" dev keygen --out "$WORK/engine.key" > /dev/null 2>&1
+    cat > "$WORK/engine-manifest.toml" <<TOML
+format_version = 1
+id             = "dev.thalyx.engine"
+name           = "llama.cpp"
+version        = "1.0.0"
+description    = "The inference engine, packed the way image/Makefile packs it"
+license        = "MIT"
+publisher_key  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+distribution   = "prebuilt"
+
+[artifact]
+hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+size = 0
+
+[requires]
+thalyx = ">=0.1.0"
+
+[[permissions]]
+resource = "$ENGINE_DATA/models"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "$ENGINE_DATA/run"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "memory"
+action   = "4GiB"
+type     = "persistent"
+
+[entrypoints]
+run = "bin/llama-completion"
+TOML
+
+    if ! "$THALYX" dev pack "$WORK/engine-pack" --manifest "$WORK/engine-manifest.toml"             --key "$WORK/engine.key" --out "$WORK/engine.thmod" > "$WORK/engine-pack.log" 2>&1; then
+        failed "the engine could not be packed into a signed module"
+        excerpt "$WORK/engine-pack.log"
+    elif ! "$THALYX" --root "$ENGINE_ROOT" module install "$WORK/engine.thmod" --yes             > "$WORK/engine-install.log" 2>&1; then
+        failed "the engine module would not install"
+        excerpt "$WORK/engine-install.log"
+    else
+        proven "a real llama.cpp packs into a signed module and installs, with the 4 GiB its manifest asks for"
+
+        "$THALYX" --root "$ENGINE_ROOT" agent model use ligera \
+            --weights "$ENGINE_DATA/models/model.gguf" \
+            --module dev.thalyx.engine > /dev/null 2>&1
+
+        # Confined first, always. Falling back is a weaker claim and it says so
+        # rather than passing quietly — rule 3.
+        ENGINE_CONFINED=1
+        THALYX_ENGINE_DATA="$ENGINE_DATA" "$THALYX" --root "$ENGINE_ROOT" \
+            agent model check "crea una carpeta llamada pruebas" > "$WORK/engine-run.log" 2>&1 \
+            || true
+        if grep -q "the kernel policy map is not loaded" "$WORK/engine-run.log" 2>/dev/null; then
+            ENGINE_CONFINED=0
+            THALYX_ENGINE_DATA="$ENGINE_DATA" THALYX_ENGINE_UNCONFINED=1 \
+                "$THALYX" --root "$ENGINE_ROOT" agent model check "crea una carpeta llamada pruebas" \
+                > "$WORK/engine-run.log" 2>&1 || true
+        fi
+
+        # What counts as the engine having run. Not "the answer was right" —
+        # a two-layer model answers nothing and is still a complete test of
+        # everything between the session and llama.cpp. What is checked is that
+        # Thalyx got *the engine's own output* back: either a proposal it
+        # parsed, or one of the two diagnoses that can only be reached by
+        # reading a completion that came through the marker.
+        if grep -q "operation" "$WORK/engine-run.log" 2>/dev/null \
+           || grep -q "began the object the grammar describes" "$WORK/engine-run.log" 2>/dev/null; then
+            if [ "$ENGINE_CONFINED" = 1 ]; then
+                proven "llama.cpp ran as a confined module, read the prompt out of a granted directory, and its output came back through the grammar into Thalyx"
+            else
+                unproven "the engine ran and answered, and it ran UNCONFINED — this machine could not enforce a policy, so what §45 measured is the plumbing and not the confinement"
+            fi
+        else
+            failed "the engine module did not produce an answer Thalyx could read"
+            excerpt "$WORK/engine-run.log" 25
+        fi
+
+        # The last link, and the only one a two-layer model cannot stand in for.
+        # A tiny model produces a grammatical object with nothing in it; whether
+        # a real Qwen2.5 turns a Spanish sentence into the right verb is a
+        # question about the model, and `thalyx agent bench` is what asks it.
+        unproven "that the configured tier answers an ordinary sentence with the right verb — that is a measurement of the model, not of this machine: \`thalyx agent bench\`"
+    fi
+fi
 
 # ------------------------------------------------- the machine, as it is left
 #

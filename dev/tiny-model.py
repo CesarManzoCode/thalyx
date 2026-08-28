@@ -30,7 +30,11 @@ import gguf  # noqa: E402  — the path has to be set first
 DIM, LAYERS, HEADS, KV_HEADS, FEED_FORWARD = 64, 2, 4, 4, 128
 
 writer = gguf.GGUFWriter(str(out), "llama")
-writer.add_context_length(128)
+# 4096 rather than 128. Nothing in a two-layer model depends on it — there are
+# no trained position embeddings here — and 128 made the model unusable for the
+# one thing besides `engine-needs.sh` it is for: a smoke run of the real agent
+# prompt, which is about 1800 tokens and was refused outright as too long.
+writer.add_context_length(4096)
 writer.add_embedding_length(DIM)
 writer.add_block_count(LAYERS)
 writer.add_feed_forward_length(FEED_FORWARD)

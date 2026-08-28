@@ -117,7 +117,12 @@ KSHA256  := 0d21cd11933f49f7151b7c9dbb8cc3fddc8c8abe506434b850feecf41fc28a76
 
 THALYX    := $(ROOT)/target/$(TARGET)/release/thalyx
 INITRAMFS := $(BUILD)/initramfs.cpio
-MEMORY    := 2048
+# Enough for the machine *and* a model. It was 2048, which is plenty for Thalyx
+# and not enough for the smallest tier: Qwen2.5-1.5B-Instruct-Q4_K_M is about
+# 1.1 GB of weights before any context, and the engine's manifest asks for 4 GiB
+# because that is the ceiling `module_standard` gives it. QEMU allocates this
+# lazily, so a machine that never loads a model pays nothing for it.
+MEMORY    ?= 6144
 
 # The store disk. Raw and not qcow2: a raw image can be formatted and mounted
 # with mkfs.btrfs and a loop device, which every Linux has, while qcow2 needs
@@ -135,8 +140,40 @@ STOREDEV  := /dev/vda
 # distinction between what Thalyx *is* and what has been installed on it.
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
+# ─────────────────────────────────────────────────────────────── the engine
+#
+# llama.cpp's `llama-completion`, as a module. Cesar's decree of 2026-08-28: the
+# engine is not part of Thalyx, it is the first real module — signed, installed,
+# confined under `module_standard`, with the memory its manifest asks for.
+#
+# Neither the engine nor the weights go anywhere near the image. `make count`
+# says the image is the kernel and one program and it must keep saying that; a
+# thirteen-megabyte C++ program and a gigabyte of weights are *data on the
+# store*, which is the whole distinction between what Thalyx is and what has
+# been installed on it.
+#
+# Both are inputs rather than things this Makefile builds:
+#
+#     make -C image engine                     builds ENGINE, prints where
+#     make -C image store-stage MODEL=<gguf>   puts both on the stage
+#
+# MODEL is empty on purpose and there is no default. Thalyx never downloads
+# weights — `Gamas-de-Modelo.md` makes the tier a decision about the human's own
+# hardware — so the file is named by whoever is building the disk.
+ENGINE     ?= $(BUILD)/engine/llama.cpp/build/bin/llama-completion
+MODEL      ?=
+ENGINE_ID  := dev.thalyx.engine
+ENGINE_TIER ?= ligera
+# Where the two of them live inside the machine. Spelled the same way in
+# crates/thalyx-cli/src/engine_module.rs, which is what a grant has to name: a
+# confined module sees only the paths its manifest was granted, at the names
+# they already have.
+ENGINE_DATA   := /opt/thalyx/data/engine
+ENGINE_MODELS := $(ENGINE_DATA)/models
+ENGINE_RUN    := $(ENGINE_DATA)/run
+
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor hook-check boot pin-kernel \
+        store store-stage greeter engine engine-stage lsm doctor hook-check boot pin-kernel \
         esp run-uefi initramfs-check installed run-installed run-hardware
 
 all: doctor kernel binary image hook-check
@@ -805,6 +842,7 @@ store-stage: binary greeter
 	    echo "the module is installed on the stage, and step 2 needs it not to be"; \
 	    exit 1; \
 	fi
+	@$(MAKE) --no-print-directory engine-stage
 	@# Written last, and only on success. `store` looks for this and not for
 	@# the directory: an interrupted stage leaves the directory sitting there
 	@# looking finished, and a disk built from it would be missing whatever
@@ -813,6 +851,37 @@ store-stage: binary greeter
 	@echo
 	@echo "  staged: $(STAGE)"
 	@echo "  now:    sudo make -C image store"
+
+# Build llama.cpp. Separate from everything else and never a prerequisite: it
+# is a C++ build of a foreign project that takes minutes, and a `make` that ran
+# it every time would make every other target unusable.
+engine:
+	@$(ROOT)/dev/build-engine.sh $(BUILD)/engine
+
+# The engine module, and the weights it runs, onto the stage.
+#
+# Called by `store-stage` and doing nothing when there is no engine or no model,
+# because a store with no agent is a supported machine rather than a broken one
+# — `Principio-Doble-Ruta.md` is the reason the whole system works without one.
+# What it must not do is fail *quietly*: a machine that boots with no agent
+# because MODEL was misspelled looks exactly like one built on purpose.
+#
+# Three things go on, and the third is the one that makes it usable:
+#
+#   1. the weights, at $(ENGINE_MODELS), on the `modules` subvolume;
+#   2. the engine, packed and **installed** into the stage's store;
+#   3. the agent's settings, naming the tier, the weights and the module.
+#
+# Installed rather than left in the repository, which is where the greeter
+# deliberately stays. The greeter is uninstalled because step 2 of
+# `Criterio-de-Salida-Fase-1.md` is a person installing it, and a machine that
+# booted with it already there would make that step unperformable. The engine is
+# not that: Cesar's decree of 2026-08-28 is that the machine **boots able to be
+# spoken to**, and an engine the human has to install first is five commands
+# standing between the power button and the first sentence. The .thmod stays in
+# the repository as well, so it can be reinstalled by hand.
+engine-stage:
+	@$(ROOT)/dev/stage-engine.sh "$(STAGE)" "$(BUILD)" "$(THALYX)" "$(ENGINE)" "$(MODEL)" "$(ENGINE_ID)" "$(ENGINE_TIER)" "$(ENGINE_MODELS)" "$(ENGINE_RUN)"
 
 # The disk itself. Needs root, for the loop device and for the mount.
 #

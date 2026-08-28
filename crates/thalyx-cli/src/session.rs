@@ -1743,6 +1743,25 @@ fn dispatch(
     answering_in: &mut crate::files::Face,
     line: &str,
 ) -> Result<Flow, Box<dyn std::error::Error>> {
+    dispatch_asking(store, standing, here, answering_in, line, true)
+}
+
+/// The same, with a say over whether the model may be consulted.
+///
+/// `may_ask` is false for the line the model itself produced. Without it the
+/// recursion has no floor: a proposal the dispatch does not recognise would
+/// come straight back here and be handed to the model again, and a model that
+/// keeps proposing the same unrecognised verb would spin forever, spending an
+/// inference each time round. One hop is all the arrangement needs — the model
+/// turns a sentence into a verb, and verbs are what the session runs.
+fn dispatch_asking(
+    store: &Store,
+    standing: &Standing,
+    here: &mut crate::files::Where,
+    answering_in: &mut crate::files::Face,
+    line: &str,
+    may_ask: bool,
+) -> Result<Flow, Box<dyn std::error::Error>> {
     let mut face = *answering_in;
     let mut flow = Flow::Stay;
 
@@ -2147,6 +2166,17 @@ fn dispatch(
         "correr" | "run" => {
             start_module(store, "", face);
         }
+        // Not a verb. Which is where the agent lives: everything above is
+        // something the rules resolve without a model, and this is the
+        // remainder `Principio-Doble-Ruta.md` describes — the sentences a
+        // person says when they do not know, or do not want to use, the word
+        // the machine has for the thing.
+        _ if may_ask => match understand(store, here.at(), line, face) {
+            Understood::Nothing => {}
+            Understood::Verb(rewritten) => {
+                flow = dispatch_asking(store, standing, here, &mut face, &rewritten, false)?;
+            }
+        },
         _ => {
             println!();
             println!("  I have no model loaded, so I can only act on what the rules");
@@ -2157,6 +2187,151 @@ fn dispatch(
     }
     *answering_in = face;
     Ok(flow)
+}
+
+/// What came back from asking the agent about a line that is not a verb.
+enum Understood {
+    /// Nothing to run — it was answered here, or refused here, or the model
+    /// declined. Either way the session goes on.
+    Nothing,
+    /// A line of the session's own vocabulary, to be run as if typed.
+    Verb(String),
+}
+
+/// Hand one sentence to the agent and turn what comes back into a verb.
+///
+/// The whole of the agent is reused and none of it is re-decided here: the
+/// transcript, the router, the prompt, the grammar, the parser, the attribution
+/// and the provenance are `thalyx_agent::plan`, exactly as `thalyx agent plan`
+/// calls it. What this adds is the last step that was missing — the verb it
+/// worked out is *run*, at this prompt, with the confirmation that verb already
+/// asks for.
+///
+/// Nothing here executes anything itself, and that is the point rather than
+/// tidiness. A proposal comes back as **a line of text in the session's own
+/// vocabulary**, and the session runs it through the same dispatch a person
+/// types into. So a model cannot reach an operation a person could not, cannot
+/// skip a confirmation, and cannot invent a verb: a name the dispatch does not
+/// have simply does not run.
+fn understand(
+    store: &Store,
+    here: &std::path::Path,
+    line: &str,
+    face: crate::files::Face,
+) -> Understood {
+    use thalyx_agent::{ForeignText, Segment, Transcript};
+
+    let model = match crate::agent::model_for(store) {
+        Ok(model) => model,
+        Err(error) => {
+            say_the_agent_cannot(face, line, &error.to_string());
+            return Understood::Nothing;
+        }
+    };
+
+    // Where the session is standing goes in as system state, not as something
+    // the person said. It is what makes "crea una carpeta llamada pruebas"
+    // land here rather than at a path the model chose — and it is attributed
+    // as the machine's own knowledge, which is what
+    // `Contrato-Estructurado.md` requires of a field nobody typed.
+    let transcript = Transcript::new()
+        .with(Segment::thalyx(format!(
+            "the session is standing in {}",
+            here.display()
+        )))
+        .with(Segment::typed(line));
+
+    let caller = thalyx_contract::Caller {
+        module_id: "dev.thalyx.agent".to_string(),
+        request_id: format!("session-{}", thalyx_journal::now()),
+    };
+
+    let plan = match thalyx_agent::plan(&transcript, model.as_ref(), ForeignText::NeverActs, caller)
+    {
+        Ok(plan) => plan,
+        Err(error) => {
+            say_the_agent_cannot(face, line, &error.to_string());
+            return Understood::Nothing;
+        }
+    };
+
+    let operation = plan.operation();
+    let targets = plan.targets().to_vec();
+
+    // An install is the one thing that arrives as a contract rather than as a
+    // verb. It still becomes the session's own word for it, because `instalar`
+    // is what carries the trusted-path confirmation, and a second way in would
+    // be a second way to get that wrong.
+    let Some(verb) = crate::catalogue::verb_with_id(operation) else {
+        if face.is_machine() {
+            face.say(thalyx_files::machine::declined(
+                "understand",
+                "no_such_verb",
+                &format!("the model proposed `{operation}`, which is not a verb of this machine"),
+            ));
+        } else {
+            println!();
+            println!("  I understood that as `{operation}`, and there is no such verb");
+            println!("  here. Nothing was done.");
+            println!();
+        }
+        return Understood::Nothing;
+    };
+
+    let rewritten = if targets.is_empty() {
+        verb.names[0].to_string()
+    } else {
+        format!("{} {}", verb.names[0], targets.join(" "))
+    };
+
+    // Said out loud, always. A machine that quietly turns what somebody said
+    // into a different command and runs it is a machine nobody can trust with
+    // the next sentence: the human has to see the verb before it happens, and
+    // the verbs that change anything ask again anyway.
+    if face.is_machine() {
+        face.say(thalyx_files::machine::answer(
+            "understand",
+            vec![
+                ("said", serde_json::json!(line)),
+                ("operation", serde_json::json!(operation)),
+                ("arguments", serde_json::json!(targets)),
+                ("running", serde_json::json!(rewritten)),
+            ],
+        ));
+    } else {
+        println!();
+        println!("  I understood that as: {rewritten}");
+        println!();
+    }
+
+    Understood::Verb(rewritten)
+}
+
+/// Why nothing happened, without ending the session over it.
+///
+/// A model that is missing, that failed to load, that said something
+/// unparseable, or that declined are four different sentences and all four
+/// leave the machine exactly as usable as it was — which is
+/// `Principio-Doble-Ruta.md` being load-bearing. The error text is printed
+/// rather than summarised because it is the one thing that says which of the
+/// four happened.
+fn say_the_agent_cannot(face: crate::files::Face, line: &str, why: &str) {
+    if face.is_machine() {
+        face.say(thalyx_files::machine::declined(
+            "understand",
+            "no_answer",
+            why,
+        ));
+        return;
+    }
+    println!();
+    println!("  I could not make a verb of that.");
+    println!("    {why}");
+    println!();
+    println!("  Everything the rules already understand still works. `describe`");
+    println!("  lists every verb, and `thalyx agent plan \"{line}\"` shows what");
+    println!("  I would make of that and who understood it.");
+    println!();
 }
 
 // ─────────────────────────────────────────── installing this machine onto a disk
