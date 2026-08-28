@@ -1,0 +1,18 @@
+{
+  "about": "A method reached through a field of a type that came from somewhere else: `server.store.persist()`.",
+  "category": "field access",
+  "why_it_matters": "The case that started this. `handler.rs` imports `server.rs` and never names `store.rs`, yet changing `Store::persist` breaks it. `grep persist` found it and the index did not.",
+  "dependents": {
+    "src/store.rs": [
+      { "from": "src/handler.rs", "via": "symbol", "through": "persist" },
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/server.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "persist": {
+      "definitions": ["src/store.rs:4 function"],
+      "uses": ["src/handler.rs:4"]
+    }
+  }
+}

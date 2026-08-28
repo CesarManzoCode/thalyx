@@ -61,6 +61,94 @@ pub enum GraphError {
 /// first time one of them was tuned.
 pub use thalyx_files::CEILING;
 
+/// How large a tree a query may rebuild the index for on its own.
+///
+/// Not the same number as [`CEILING`], and deliberately much smaller. `CEILING`
+/// answers *is this tree worth indexing at all*; this answers *may a question
+/// silently do it*, and the difference is that somebody is waiting for the
+/// answer with no idea a rebuild is happening.
+///
+/// Picked from a measurement rather than from taste: indexing this repository —
+/// 250 files, 5 400 declared names, 57 000 mentions — takes a little under half
+/// a second, which is about 2 ms a file. Two thousand files is therefore a few
+/// seconds, which is the most a question may cost before the caller should have
+/// been told instead of made to wait. Above it the answer says the index is
+/// stale, by how much, and that `index_build` is the thing to call — which is
+/// the same conversation as before, held only where it is actually needed.
+pub const AUTO_REFRESH_CEILING: usize = 2_000;
+
+/// What a query did about an index that had fallen behind.
+///
+/// Four cases and not a boolean, because the three that are not "it was fine"
+/// need different things from the caller: nothing, patience, or a call to
+/// `index_build`. A boolean would have collapsed the last two into the one
+/// answer a caller cannot act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refreshed {
+    /// The index already matched the tree.
+    NotNeeded,
+    /// It did not, and now it does.
+    Rebuilt {
+        was: Staleness,
+        took_ms: u128,
+        report: BuildReport,
+    },
+    /// It did not, and rebuilding it is too much to do inside a question.
+    Declined {
+        estimated_files: usize,
+        ceiling: usize,
+        was: Staleness,
+    },
+    /// It did not, and the rebuild could not be done.
+    Failed { was: Staleness, why: String },
+}
+
+impl Refreshed {
+    /// The word a program matches on. Stable, never translated.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Refreshed::NotNeeded => "not_needed",
+            Refreshed::Rebuilt { .. } => "rebuilt",
+            Refreshed::Declined { .. } => "declined_too_large",
+            Refreshed::Failed { .. } => "failed",
+        }
+    }
+
+    /// One line saying what happened and, where there is one, what to do.
+    pub fn describe(&self) -> String {
+        match self {
+            Refreshed::NotNeeded => "the index was already current".to_string(),
+            Refreshed::Rebuilt {
+                was,
+                took_ms,
+                report,
+            } => format!(
+                "the index was stale ({} added, {} modified, {} removed) and was rebuilt \
+                 in {took_ms} ms: {} files, {} names",
+                was.added.len(),
+                was.modified.len(),
+                was.removed.len(),
+                report.files_indexed,
+                report.symbols
+            ),
+            Refreshed::Declined {
+                estimated_files,
+                ceiling,
+                was,
+            } => format!(
+                "the index is stale ({} files differ) and this tree holds about \
+                 {estimated_files} files, more than the {ceiling} a question rebuilds on \
+                 its own. Call `index_build` to rebuild it.",
+                was.total()
+            ),
+            Refreshed::Failed { was, why } => format!(
+                "the index is stale ({} files differ) and could not be rebuilt: {why}",
+                was.total()
+            ),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, GraphError>;
 
 /// A file in the graph.
@@ -77,11 +165,63 @@ pub struct Node {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Edge {
     pub from: String,
-    /// The reference exactly as written in the source.
+    /// The reference exactly as written in the source, or — for a [`Via::Symbol`]
+    /// edge — the name that was used.
     pub raw_target: String,
     /// The file it resolves to, when it resolves inside the tree at all.
     pub to: Option<String>,
     pub line: usize,
+    /// How the edge was learned. Never merged away: the two are different
+    /// evidence and a caller that could not tell them apart would either
+    /// distrust both or trust both.
+    pub via: Via,
+}
+
+/// How an edge came to be known.
+///
+/// The distinction exists because of a defect found by running the system, on
+/// 2026-08-28: asked what depends on `src/store.rs`, the index answered with the
+/// two files that write `use crate::store::…` and missed a third that reaches
+/// the same code as `server.store.save()`. `grep` found it. The index already
+/// held the evidence — `save` is a declared name and the mention was recorded —
+/// and simply never turned it into an edge.
+///
+/// So `dependencies` used to mean **imports**, while the word an agent reads it
+/// as is *everything that would break*. Rather than rename the primitive into
+/// something narrower, the missing half is now recorded, and each row says which
+/// half it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Via {
+    /// The file declared it: `use`, `mod`, `import`, `#include`, `require`.
+    /// What the file says about itself, and true regardless of what else exists.
+    Import,
+    /// The file used a name that exactly one file in this tree declares.
+    ///
+    /// Weaker evidence than an import and deliberately so: it is a fact about
+    /// the tree as a whole, and it stops being true if a second file starts
+    /// declaring the same name. The uniqueness requirement is what keeps it
+    /// precise — see [`Index::build`].
+    Symbol,
+}
+
+impl Via {
+    /// The word a program matches on. Stable, never translated.
+    pub fn word(self) -> &'static str {
+        match self {
+            Via::Import => "import",
+            Via::Symbol => "symbol",
+        }
+    }
+
+    fn from_word(word: &str) -> Self {
+        // Fails closed, rule 9: a row written by a version that does not exist
+        // yet is reported as the weaker evidence, never as the stronger one.
+        match word {
+            "import" => Via::Import,
+            _ => Via::Symbol,
+        }
+    }
 }
 
 /// A query result, inseparable from the index's freshness at the time.
@@ -114,6 +254,12 @@ pub struct BuildReport {
     pub symbols: usize,
     /// Places one of those names is used, not counting where it was declared.
     pub mentions: usize,
+    /// Of `edges`, how many were learned from a uniquely-declared name rather
+    /// than from an import. Reported because it is the number that says whether
+    /// this tree is one where imports tell the whole story — and a caller that
+    /// only saw the total could not tell a tree with none from a build that
+    /// stopped recording them.
+    pub edges_via_symbol: usize,
 }
 
 /// A name, and where it comes from.
@@ -272,6 +418,36 @@ impl Index {
         let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut declared_at: std::collections::HashSet<(String, String, usize)> =
             std::collections::HashSet::new();
+        // Which file declares each name **and lets another file see it** — or
+        // `None` once a second file does the same.
+        //
+        // The two conditions are the whole precision guard for symbol edges,
+        // and both were paid for.
+        //
+        // *Exactly one* file: a name only one file declares can be pointed at
+        // without a compiler, because a use of it resolves there or resolves
+        // nowhere in this tree. Two declarations make it a guess, and a guess
+        // is what an index must not put in a dependency list.
+        //
+        // *Exported*: the first version had only the rule above, and asked what
+        // depends on `thalyx-snapshot/src/lib.rs` it answered with thirty-three
+        // files. That crate declares `fn place` and `fn relative` — both
+        // private, both ordinary words — so every file in the repository
+        // holding a `let relative = …` was reported as a dependent. A private
+        // name cannot be referred to from another file: that is not a heuristic
+        // about the code, it is the language saying the edge is impossible.
+        // Found by running the index over this repository and reading the rows,
+        // which is where the other three precision defects came from too.
+        let mut declared_uniquely_in: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        // Every name each file declares, at any visibility. A file that has its
+        // own private `validate_name` and calls it was being reported as
+        // depending on the one other crate that happens to declare a public
+        // one — because only exported declarations are candidates, so the
+        // private one next door was not there to make the name ambiguous. A
+        // file calling something it declares itself is never reaching outward.
+        let mut declares: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
         for (absolute, relative) in &files {
             let metadata = match std::fs::metadata(absolute) {
@@ -283,16 +459,17 @@ impl Index {
             };
             let language = Language::from_path(absolute);
 
-            transaction.execute(
-                "INSERT OR REPLACE INTO nodes (path, language, size, mtime_ns) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
+            transaction
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO nodes (path, language, size, mtime_ns) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?
+                .execute(rusqlite::params![
                     relative,
                     language.map(|l| l.name()),
                     metadata.len() as i64,
                     staleness::mtime_nanos(&metadata),
-                ],
-            )?;
+                ])?;
             report.files_indexed += 1;
 
             let Some(language) = language else { continue };
@@ -309,12 +486,44 @@ impl Index {
             }
 
             for found in thalyx_parser::definitions(language, &source) {
-                transaction.execute(
-                    "INSERT INTO symbols (name, kind, path, line) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![found.name, found.kind.word(), relative, found.line as i64],
-                )?;
+                // `prepare_cached` rather than `execute`, here and for the
+                // mentions below, because `execute` compiles the statement
+                // again for every row and these two are the rows there are tens
+                // of thousands of. Priced by swapping just these two back:
+                // `crates/` — 305 files, 5 524 names, 58 390 mentions — takes
+                // 588.2 ms with `execute` and 480.4 ms with this, best of seven
+                // in release. It is not a microoptimisation looking for a
+                // reason; it is what pays for most of what the symbol edges
+                // below cost.
+                transaction
+                    .prepare_cached(
+                        "INSERT INTO symbols (name, kind, path, line) VALUES (?1, ?2, ?3, ?4)",
+                    )?
+                    .execute(rusqlite::params![
+                        found.name,
+                        found.kind.word(),
+                        relative,
+                        found.line as i64
+                    ])?;
                 report.symbols += 1;
                 defined.insert(found.name.clone());
+                if found.exported {
+                    match declared_uniquely_in.entry(found.name.clone()) {
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(Some(relative.clone()));
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut slot) => {
+                            // A name declared twice *in the same file* — a Rust
+                            // `fn` and a `const` of the same name, or two `impl`
+                            // blocks — is still one place to look. It is only a
+                            // second *file* that makes the name ambiguous.
+                            if slot.get().as_deref() != Some(relative.as_str()) {
+                                slot.insert(None);
+                            }
+                        }
+                    }
+                }
+                declares.insert((relative.clone(), found.name.clone()));
                 declared_at.insert((relative.clone(), found.name, found.line));
             }
         }
@@ -326,6 +535,14 @@ impl Index {
         // identifier of every file in memory until then would make indexing a
         // large tree a memory question, which is a worse trade than reading the
         // files again out of the page cache.
+        // One row per (file, name), because a file that calls `save` in nine
+        // places depends on where `save` lives once. Nine rows would make a
+        // dependent count meaningless, which is the same reason the import
+        // edges are deduped by (file, target).
+        let mut symbol_edges: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut pending_symbol_edges: Vec<(String, String, String, usize)> = Vec::new();
+
         for (absolute, relative) in &files {
             let Some(language) = Language::from_path(absolute) else {
                 continue;
@@ -334,8 +551,18 @@ impl Index {
                 continue;
             };
 
+            // Both questions over one scan of the file. Asked separately they
+            // scrub every file twice, which measured at 53 ms on `crates/` of
+            // this repository — 533.7 ms against 480.4 ms.
+            //
+            // The second is what this file makes up for itself. A name it binds
+            // is its own binding, and its own binding shadows anything outside —
+            // so a symbol edge for it would be about a name nobody is using.
+            let (mentioned, bound_here) =
+                thalyx_parser::identifiers_and_bindings(language, &source);
+
             let mut seen_here = std::collections::HashSet::new();
-            for (name, line) in thalyx_parser::identifiers(language, &source) {
+            for (name, line) in mentioned {
                 if !defined.contains(&name) {
                     continue;
                 }
@@ -352,11 +579,32 @@ impl Index {
                 if !seen_here.insert((name.clone(), line)) {
                     continue;
                 }
-                transaction.execute(
-                    "INSERT INTO mentions (name, path, line) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![name, relative, line as i64],
-                )?;
+                transaction
+                    .prepare_cached("INSERT INTO mentions (name, path, line) VALUES (?1, ?2, ?3)")?
+                    .execute(rusqlite::params![name, relative, line as i64])?;
                 report.mentions += 1;
+
+                // The half of "what depends on this" that imports cannot see.
+                //
+                // Found by running the system: `server.store.save()` in a third
+                // file made that file a dependent of `src/store.rs`, and asked
+                // what depended on `store.rs` the index named only the two files
+                // that wrote `use crate::store::…`. The evidence was already
+                // here — this loop had just recorded the mention — and nothing
+                // turned it into an edge.
+                //
+                // Only for a name exactly one file declares, and never back at
+                // the file that declares it. Both conditions are precision and
+                // not tidiness: without the first the edge is a guess, and
+                // without the second every file would depend on itself.
+                if let Some(Some(declared_in)) = declared_uniquely_in.get(&name)
+                    && declared_in != relative
+                    && !declares.contains(&(relative.clone(), name.clone()))
+                    && !bound_here.contains(&name)
+                    && symbol_edges.insert((relative.clone(), name.clone()))
+                {
+                    pending_symbol_edges.push((relative.clone(), name, declared_in.clone(), line));
+                }
             }
         }
 
@@ -375,16 +623,54 @@ impl Index {
             .filter(|(from, reference)| seen_edges.insert((from.clone(), reference.target.clone())))
             .collect();
 
+        // Which file-to-file dependencies the imports already state. A symbol
+        // edge that lands on one of these says nothing new — the file declared
+        // the dependency itself, which is the stronger evidence — and every such
+        // row would be a second line about the same fact in an answer whose
+        // whole purpose is to cost less than reading the files.
+        let mut stated_by_import: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+
         for (from, reference) in pending_edges {
             let resolved = resolve(&from, &reference.target, reference.kind, &known);
-            transaction.execute(
-                "INSERT INTO edges (from_path, raw_target, to_path, line) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![from, reference.target, resolved, reference.line as i64],
-            )?;
+            if let Some(target) = &resolved {
+                stated_by_import.insert((from.clone(), target.clone()));
+            }
+            transaction
+                .prepare_cached(
+                    "INSERT INTO edges (from_path, raw_target, to_path, line, via) \
+                     VALUES (?1, ?2, ?3, ?4, 'import')",
+                )?
+                .execute(rusqlite::params![
+                    from,
+                    reference.target,
+                    resolved,
+                    reference.line as i64
+                ])?;
             report.edges += 1;
             if resolved.is_some() {
                 report.edges_resolved += 1;
             }
+        }
+
+        // What is left is exactly the interesting set: a file that reaches
+        // another file's code without ever naming that file. Field access, a
+        // method on a type it was handed, a re-export it went through, a trait
+        // bound — the cases an import list cannot show and a caller used to have
+        // to find with `grep`.
+        for (from, name, to, line) in pending_symbol_edges {
+            if stated_by_import.contains(&(from.clone(), to.clone())) {
+                continue;
+            }
+            transaction
+                .prepare_cached(
+                    "INSERT INTO edges (from_path, raw_target, to_path, line, via) \
+                     VALUES (?1, ?2, ?3, ?4, 'symbol')",
+                )?
+                .execute(rusqlite::params![from, name, to, line as i64])?;
+            report.edges += 1;
+            report.edges_resolved += 1;
+            report.edges_via_symbol += 1;
         }
 
         transaction.execute(
@@ -399,6 +685,76 @@ impl Index {
     /// Whether the index still matches the tree.
     pub fn freshness(&self) -> Result<Freshness> {
         staleness::check(&self.connection, &self.root)
+    }
+
+    /// Bring the index up to date if it is behind, when that is cheap enough.
+    ///
+    /// ## The turn this exists to delete
+    ///
+    /// Found in the first real run of an external agent, 2026-08-28. Asked a
+    /// question about a tree it had just changed, Claude got an answer that did
+    /// not match what it had done, worked out that the answer carried
+    /// `fresh: stale`, called `thalyx_state`, called `thalyx_index`, and asked
+    /// its question again. Four turns, three of them spent on the index's
+    /// bookkeeping rather than on the task.
+    ///
+    /// Every one of those turns was the caller doing something Thalyx could
+    /// have done itself, and doing it with a model's attention — the most
+    /// expensive thing in the loop. The freshness field was never the problem;
+    /// *making the caller act on it* was.
+    ///
+    /// ## What is still not decided here
+    ///
+    /// The honesty rule of [[FS-en-Grafo]] does not move: the answer still
+    /// carries what the freshness was, what was done about it, and what it is
+    /// now. A rebuild that was declined or that failed says so, in a field, and
+    /// the rows come back anyway with the stale label they had. Nothing here
+    /// ever reports `current` on the strength of having tried.
+    pub fn refresh_if_stale(&mut self) -> Result<Refreshed> {
+        self.refresh_if_stale_within(AUTO_REFRESH_CEILING)
+    }
+
+    /// The same, with the ceiling named.
+    ///
+    /// It exists so the ceiling can be tested for what it does rather than for
+    /// what it is: a test that had to build two thousand files to see a refusal
+    /// would take longer than the refusal exists to prevent, and would be
+    /// measuring the temporary directory.
+    pub fn refresh_if_stale_within(&mut self, ceiling: usize) -> Result<Refreshed> {
+        let before = self.freshness()?;
+        let Freshness::Stale(staleness) = before else {
+            return Ok(Refreshed::NotNeeded);
+        };
+
+        // How big the tree is, from the two numbers already in hand: what the
+        // index holds, plus what appeared since. Cheap on purpose — asking the
+        // filesystem again would be a second walk to decide whether to do a
+        // third, and the walk is most of what a rebuild costs.
+        let estimated_files = self.node_count()? + staleness.added.len();
+        if estimated_files > ceiling {
+            return Ok(Refreshed::Declined {
+                estimated_files,
+                ceiling,
+                was: staleness,
+            });
+        }
+
+        let began = std::time::Instant::now();
+        match self.build() {
+            Ok(report) => Ok(Refreshed::Rebuilt {
+                was: staleness,
+                took_ms: began.elapsed().as_millis(),
+                report,
+            }),
+            // A rebuild that could not happen is not a tree that did not change.
+            // Rule 10, in the place where confusing the two would have the
+            // caller looking for a filesystem problem that is really a
+            // read-only store.
+            Err(error) => Ok(Refreshed::Failed {
+                was: staleness,
+                why: error.to_string(),
+            }),
+        }
     }
 
     /// Every node, with the index's freshness attached.
@@ -441,14 +797,28 @@ impl Index {
     /// meaningless.
     pub fn dependents_of(&self, path: &str) -> Result<Answer<Vec<Edge>>> {
         let answer = self.edges_where("to_path = ?1", path)?;
-        let mut seen = std::collections::HashSet::new();
-        let rows = answer
-            .rows
-            .into_iter()
-            .filter(|edge| seen.insert(edge.from.clone()))
-            .collect();
+
+        // One row per dependent, and when a file has both kinds of evidence the
+        // import is the row that survives. Keeping whichever the sort happened
+        // to reach first would make a file that plainly writes `use
+        // crate::store::Store` report itself as a symbol-level guess, which is
+        // the weaker claim about the stronger fact.
+        let mut best: std::collections::BTreeMap<String, Edge> = std::collections::BTreeMap::new();
+        for edge in answer.rows {
+            match best.entry(edge.from.clone()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(edge);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    if slot.get().via == Via::Symbol && edge.via == Via::Import {
+                        slot.insert(edge);
+                    }
+                }
+            }
+        }
+
         Ok(Answer {
-            rows,
+            rows: best.into_values().collect(),
             freshness: answer.freshness,
         })
     }
@@ -456,7 +826,7 @@ impl Index {
     fn edges_where(&self, condition: &str, parameter: &str) -> Result<Answer<Vec<Edge>>> {
         let freshness = self.freshness()?;
         let sql = format!(
-            "SELECT from_path, raw_target, to_path, line FROM edges WHERE {condition} \
+            "SELECT from_path, raw_target, to_path, line, via FROM edges WHERE {condition} \
              ORDER BY from_path, line"
         );
         let mut statement = self.connection.prepare(&sql)?;
@@ -467,6 +837,7 @@ impl Index {
                     raw_target: row.get(1)?,
                     to: row.get(2)?,
                     line: row.get::<_, i64>(3)? as usize,
+                    via: Via::from_word(&row.get::<_, String>(4)?),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -838,6 +1209,92 @@ mod tests {
         let mut index = Index::in_memory(dir.path()).unwrap();
         index.build().unwrap();
         index
+    }
+
+    #[test]
+    fn a_file_that_reaches_the_code_through_a_field_is_a_dependent() {
+        // The defect, verbatim. `handler.rs` imports `server.rs` and never
+        // names `store.rs`, and it calls `Store::persist` through a field of
+        // `Server`. Asked what depends on `store.rs`, the index used to answer
+        // with the two files that write `use crate::store::…`; `grep persist`
+        // on Linux found the third. The mention was already in the index —
+        // nothing turned it into an edge.
+        let dir = tree(&[
+            (
+                "src/store.rs",
+                "pub struct Store;\nimpl Store {\n    pub fn persist(&self) {}\n}\n",
+            ),
+            (
+                "src/server.rs",
+                "use crate::store::Store;\npub struct Server {\n    pub store: Store,\n}\n",
+            ),
+            (
+                "src/handler.rs",
+                "use crate::server::Server;\npub fn handle(s: &Server) {\n    s.store.persist();\n}\n",
+            ),
+        ]);
+        let index = indexed(&dir);
+
+        let dependent = index
+            .dependents_of("src/store.rs")
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|edge| edge.from == "src/handler.rs")
+            .expect("the file that calls `persist` depends on the file that declares it");
+
+        assert_eq!(dependent.via, Via::Symbol);
+        assert_eq!(dependent.raw_target, "persist");
+        assert_eq!(dependent.line, 3);
+    }
+
+    #[test]
+    fn a_name_two_files_declare_never_becomes_an_edge() {
+        // The precision guard, and the reason the rule is *exactly one* file.
+        // With two declarations a use of the name could be either, and an edge
+        // to one of them would be a coin toss presented as a fact — which is
+        // worse than the missing row this whole change exists to add.
+        let dir = tree(&[
+            ("src/disk.rs", "pub fn flush() {}\n"),
+            ("src/cache.rs", "pub fn flush() {}\n"),
+            ("src/caller.rs", "pub fn stop() {\n    flush();\n}\n"),
+        ]);
+        let index = indexed(&dir);
+
+        for ambiguous in ["src/disk.rs", "src/cache.rs"] {
+            assert!(
+                index.dependents_of(ambiguous).unwrap().rows.is_empty(),
+                "`{ambiguous}` got a dependent from a name two files declare"
+            );
+        }
+
+        // And the index still says what it knows: two declarations and one use.
+        // Refusing to draw the edge is not refusing to answer.
+        let found = index.symbol("flush").unwrap().rows;
+        assert_eq!(found.definitions.len(), 2);
+        assert_eq!(found.uses.len(), 1);
+    }
+
+    #[test]
+    fn a_symbol_edge_is_not_drawn_where_an_import_already_says_it() {
+        // Both rows would be about the same dependency, and the answer this
+        // whole primitive exists to make cheaper would be paying twice for it.
+        let dir = tree(&[
+            (
+                "src/thing.rs",
+                "pub struct Thing;\npub fn make() -> Thing { Thing }\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::thing::Thing;\npub fn go() -> Thing {\n    crate::thing::make()\n}\n",
+            ),
+        ]);
+        let index = indexed(&dir);
+
+        let rows = index.dependencies_of("src/user.rs").unwrap().rows;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].via, Via::Import);
+        assert_eq!(rows[0].to.as_deref(), Some("src/thing.rs"));
     }
 
     // ─────────────────────────────────────────── symbols, which is punto C2

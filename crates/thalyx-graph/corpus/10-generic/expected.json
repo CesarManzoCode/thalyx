@@ -1,0 +1,21 @@
+{
+  "about": "A generic instantiated with a type from a file the user never imports.",
+  "category": "generic",
+  "why_it_matters": "`wiring.rs` imports the container and writes the argument inline. The container is found by the import; the argument is only findable by name.",
+  "dependents": {
+    "src/widget.rs": [
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/wiring.rs", "via": "symbol", "through": "Widget" }
+    ]
+  },
+  "symbols": {
+    "Widget": {
+      "definitions": ["src/widget.rs:1 type"],
+      "uses": ["src/wiring.rs:3", "src/wiring.rs:5"]
+    },
+    "Holder": {
+      "definitions": ["src/holder.rs:1 type"],
+      "uses": ["src/wiring.rs:1", "src/wiring.rs:3", "src/wiring.rs:4"]
+    }
+  }
+}

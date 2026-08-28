@@ -158,7 +158,17 @@ defined and what depends on it, it answered in **four calls** — one index, two
 symbol lookups, one dependents query — without opening a single file. The same
 model with `Read` and `grep` took eight turns and twice the wall time. That is
 **one run of one task, which is an anecdote and not a result**; the harness is
-`dev/bench-external-agent.sh`. The decree is
+`dev/bench-external-agent.sh`, which since 2026-08-28 reads the agent's own
+`stream-json` and so measures **both** arms in the same units — tools called by
+name, bytes handed back to the model, files read, text searches, turns, wall
+time, tokens and cost. That run also found a real hole and it is closed: the
+Linux arm found a dependent the index missed, because the code was reached
+through a field and the file never names it. A dependency edge is no longer only
+an import — a name that exactly one file in the tree declares, exports, and the
+using file neither binds nor declares, is one too, and every row says which kind
+it is. `crates/thalyx-graph/corpus/` is twelve small trees with the right answers
+written beside them, 44 exact checks in milliseconds, and it is what says where
+the index still stops. The decree is
 `vault/07-Adopcion-y-Fases/Agentes-Externos.md`; how to run it is
 **[docs/AGENT.md](docs/AGENT.md)**. **virtio-serial itself has not
 carried a byte yet** — everything above the transport ran over a UNIX socket,

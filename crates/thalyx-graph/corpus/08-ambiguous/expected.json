@@ -1,0 +1,19 @@
+{
+  "about": "The same name declared in two files, and called in a third.",
+  "category": "precision guard",
+  "why_it_matters": "This is the case a symbol edge must NOT answer. Two files declare `flush`, so a call to `flush` could be either, and an edge to one of them would be a coin toss presented as a fact. The index still reports the name honestly — two definitions and one use — and refuses to turn it into a dependency.",
+  "dependents": {
+    "src/disk.rs": [
+      { "from": "src/lib.rs", "via": "import" }
+    ],
+    "src/cache.rs": [
+      { "from": "src/lib.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "flush": {
+      "definitions": ["src/cache.rs:1 function", "src/disk.rs:1 function"],
+      "uses": ["src/caller.rs:2"]
+    }
+  }
+}

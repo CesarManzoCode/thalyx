@@ -131,6 +131,113 @@ Lo que sí queda deliberadamente sin cubrir: los atributos extendidos, porque SE
 
 Nada de esto se puede compilar ni verificar en el contenedor de desarrollo, que no tiene `bpftool`, ni bpffs, ni `vmlinux.h`. Por eso `dev/verify.sh` trae la medición que lo comprueba en hardware.
 
+## Qué significa "depende" — revisión del 2026-08-28
+
+Hasta hoy una arista del grafo era **un import**: `use`, `mod`, `import`,
+`#include`, `require`. Eso es lo que el archivo declara de sí mismo, es cierto
+siempre, y es la mitad de la pregunta.
+
+La otra mitad la encontró Claude corriendo el sistema. Preguntado qué depende de
+`src/store.rs`, el índice contestó con los dos archivos que escriben
+`use crate::store::…` y **se le escapó un tercero** que llega al mismo código
+como `server.store.persist()`. `grep persist` lo encontró. La evidencia ya
+estaba adentro del índice — la mención estaba registrada — y nada la convertía
+en arista.
+
+Así que `dependencias` significaba *imports*, y la palabra que un agente lee ahí
+es *todo lo que se rompería*. La distancia entre las dos es exactamente el error
+que un agente comete confiando en la respuesta.
+
+**Ahora hay dos clases de arista y cada fila dice cuál es:**
+
+- `via: import` — el archivo la declaró. Evidencia fuerte, cierta sola.
+- `via: symbol` — el archivo usa un nombre que **exactamente un** archivo del
+  árbol declara. Evidencia más débil a propósito: es un hecho sobre el árbol
+  entero, y deja de ser cierto si un segundo archivo empieza a declarar ese
+  nombre.
+
+**Cuatro condiciones, y las cuatro se pagaron.** Las tres últimas salieron de
+correr el índice sobre este repositorio y leer las filas, no de pensarlo:
+
+1. **Exactamente un archivo declara el nombre.** Dos declaraciones lo vuelven una
+   adivinanza, y una adivinanza presentada como hecho es peor que la fila que
+   falta. El índice sigue contestando la verdad sobre el nombre — dos
+   definiciones y un uso — y se niega a dibujar la arista.
+2. **El nombre es visible desde afuera.** La regla de cada lenguaje, no una
+   heurística: `pub` en Rust, `export` en JavaScript, mayúscula inicial en Go,
+   no-`static` en C, sin guion bajo inicial en Python. `thalyx-snapshot` declara
+   `fn place` y `fn relative`, las dos privadas y las dos palabras corrientes, y
+   cada archivo del repositorio con un `let relative = …` figuraba como
+   dependiente. Un nombre privado **no puede** alcanzarse desde otro archivo: eso
+   no es una suposición sobre el código, es el lenguaje diciendo que la arista es
+   imposible.
+3. **El archivo que lo usa no lo ata.** `thalyx-snapshot` también declara
+   `pub fn directory(&self)` y `pub fn subvolume(&self)` — públicas, únicas, y
+   palabras del idioma. Con las dos reglas de arriba tenía **41 dependientes**,
+   casi todos archivos con un `for directory in …` o un campo llamado
+   `subvolume`. Un archivo que ata un nombre habla de su propia atadura, y su
+   atadura tapa cualquier cosa de afuera. Quedaron 19, y 17 son referencias
+   reales entre crates que ningún import podía resolver.
+4. **El archivo no declara ese nombre él mismo**, a cualquier visibilidad. Un
+   archivo con su propio `fn validate_name` privado, llamándolo, figuraba como
+   dependiente del único crate con uno público — porque sólo las declaraciones
+   exportadas son candidatas, así que la privada de al lado no estaba ahí para
+   volver ambiguo el nombre.
+
+Y una arista de símbolo que caiga donde ya hay un import no se escribe: sería una
+segunda línea sobre el mismo hecho, en una respuesta cuyo propósito entero es
+costar menos que leer los archivos.
+
+**Lo que queda mal, contado y no escondido.** Sobre el archivo más difícil del
+repo quedan dos filas falsas de diecinueve: un método de la biblioteca estándar
+que se llama igual que una función libre (`ops.difference(&otros)`), y un
+segmento intermedio de una ruta de otro crate (`thalyx_btrfs::subvolume::create`).
+Las dos necesitan saber de qué tipo es el receptor, que es un compilador. Se
+dejan porque son dos, y porque el error que evitarían es una fila de más, no una
+de menos.
+
+Con un mecanismo se resuelven, medidos en `crates/thalyx-graph/corpus/`: la
+llamada directa por ruta sin `use`, el acceso por campo, el método sobre un tipo
+que llegó de otro lado, el trait nombrado en una cota, el módulo de directorio, y
+el re-export — que es el caso donde el import no resuelve **a nada** porque
+`crate::Engine` no es un archivo.
+
+Lo que sigue sin saberse, escrito y no escondido: **un alias**. `use X as Y` da
+la dependencia entre archivos por el import, pero `Y` no es `X` para el índice, y
+seguir esa ligadura es un compilador y no un escaneo. Está en el corpus como
+límite declarado, y `THALYX_REQUIRE_FULL_CORPUS=1` lo convierte en falla.
+
+## Una consulta repara el índice que necesita — revisión del 2026-08-28
+
+La regla de honestidad de arriba no se mueve: la respuesta sigue llevando la
+frescura en el mismo objeto que las filas. Lo que cambió es **quién actúa sobre
+ella**.
+
+En la primera corrida real de un agente externo, Claude preguntó por un árbol que
+acababa de cambiar, recibió una respuesta que no coincidía con lo que había
+hecho, dedujo del campo `fresh` que el índice estaba atrasado, llamó a `state`,
+llamó a `indexar`, y volvió a preguntar. Cuatro turnos, tres de ellos gastados en
+la contabilidad del índice. Nada ahí estaba roto — el índice dijo exactamente lo
+que sabía. Lo que estaba mal es que resolverlo quedaba en manos de lo más caro
+del circuito.
+
+Ahora `buscar`, `depende` y `usan` reconstruyen el índice antes de contestar,
+**cuando es barato**: el techo es 2 000 archivos, sacado de una medición y no del
+gusto — indexar `crates/` de este repo (297 archivos, 5 495 nombres, 58 135
+menciones) tarda 452 ms, o sea milisegundos por archivo. Por encima del techo no
+se reconstruye nada: la respuesta dice `refreshed: declined_too_large`, cuánto
+mide el árbol, y que lo que hay que llamar es `indexar`.
+
+Y las cuatro salidas se nombran, nunca un booleano: `not_needed`, `rebuilt`,
+`declined_too_large`, `failed`. Las tres últimas piden cosas distintas de quien
+pregunta — nada, paciencia, o una llamada — y un booleano habría juntado las dos
+últimas en la única respuesta sobre la que no se puede actuar. Nada reporta
+`current` por haberlo intentado: una reconstrucción que se rechazó o que falló
+devuelve las filas viejas con la etiqueta vieja.
+
+Quien quiera lo contrario — saber qué tenía el índice, que es una pregunta real y
+justo la que un refresco automático destruiría — lo pide con `refrescar=no`.
+
 ## Relacionado
 - [[Parser-Mecanico]]
 - [[Coherencia-Doble-Ruta]]

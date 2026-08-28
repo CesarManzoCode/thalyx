@@ -1,0 +1,16 @@
+{
+  "about": "A public method whose name is an ordinary English word, and another file that binds that word as a local.",
+  "category": "precision guard",
+  "why_it_matters": "`directory` is public, declared once, and reachable — the two earlier guards both pass it. But `walker.rs` binds `directory` in a `for` and again in a `let`, and its own binding shadows anything outside, so it is talking about itself. This is the case that made `thalyx-snapshot` look like it had forty-one dependents.",
+  "dependents": {
+    "src/paths.rs": [
+      { "from": "src/lib.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "directory": {
+      "definitions": ["src/paths.rs:4 function"],
+      "uses": ["src/walker.rs:3", "src/walker.rs:4", "src/walker.rs:5"]
+    }
+  }
+}
