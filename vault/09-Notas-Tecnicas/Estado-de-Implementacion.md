@@ -84,6 +84,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Corrido entero contra hierro real en **tres gamas** (1.5B, 3B, 7B). `grammar-check` probó que la gramática restringe en media y alta; en ligera dijo `PROVEN` **sin control** —el brazo libre no dijo nada— y ahora exige que lo diga. `Truncated` distingue presupuesto agotado de regla violada |
 | La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |
 | `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Tres gamas medidas el 2026-08-08**; la máxima quedó `N/D` porque el proceso murió por falta de memoria antes de la primera inferencia. Un rechazo por atribución imprime **qué** id fue |
+| La costura del motor | `crates/thalyx-agent/llama.rs` (`Engine`, `EngineCall`, `ProcessEngine`) | Entra un vector de argumentos, salen bytes. Arriba de la línea no cambió nada de lo que el agente sabe sobre una respuesta; abajo hay dos maneras de arrancar `llama.cpp`. `Engine::scratch_root` es la parte con filo: dice **dónde** se le puede escribir el prompt, porque un módulo sólo ve lo que le concedieron |
+| El motor de inferencia, como módulo | `crates/thalyx-cli/src/engine_module.rs`, `dev/build-engine.sh`, `dev/stage-engine.sh` | **2026-08-28.** `llama-completion` estático, empaquetado en un `.thmod` firmado, instalado en el store y corrido por `thalyx_core::run` — el mismo que corre `correr` — bajo `module_standard`, con uid propio, cgroup, seccomp, raíz pivotada y los 4 GiB que pide su manifiesto. Un proceso por respuesta: no hay demonio ni servidor. El GGUF es un dato del store en `/opt/thalyx/data/engine/models`, así que cambiar el modelo es copiar un archivo. La imagen sigue siendo el kernel y un programa. Ver [[Motor-de-Inferencia-como-Modulo]] |
+| El agente, desde la pantalla | `crates/thalyx-cli/src/session.rs` (`understand`) | Una línea que no es verbo va al agente, y lo que vuelve se convierte en **una línea del vocabulario de la sesión** que el mismo dispatch corre. Así un modelo no puede alcanzar una operación que una persona no pueda, ni saltarse una confirmación, ni inventar un verbo. Se dice en voz alta antes de correrlo, y un salto: lo que el modelo produjo no vuelve a consultar al modelo |
 | Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Escribe y **lee**; lo no confirmable se muestra y no se usa |
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
@@ -295,9 +298,14 @@ cosas ningún verbo puede usar.
 | Los casos sin medición del banco | Ninguna fracción de acierto es todavía la puntuación de su gama: 6 casos en ligera y 1 en media y en alta no produjeron respuesta |
 | Salir a internet | Que el store pueda traer un módulo de algún lado. DHCP, DNS y TLS tendrían que vivir dentro de `thalyx`, y **de dónde** es una pregunta de Fase 2 sin contestar. Ver [[Red]] |
 | WiFi | Necesita firmware binario en la imagen y un suplicante WPA, que en todos lados es un demonio aparte. Obliga a revisar qué quiere decir «el kernel y un programa» |
-| **El agente, en la máquina** | Que Thalyx arrancado tenga agente. `llama.rs` arranca `llama.cpp` con `Command::new`, un binario del `PATH`, y la imagen lleva `/init` y nada más — así que **una máquina arrancada no tiene motor y no puede tenerlo** mientras la imagen sea el kernel y un programa. Decretado el 2026-08-28: el motor es el primer módulo real. Ver [[Motor-de-Inferencia-como-Modulo]] |
-| El tope de memoria de un módulo | Que quepa un modelo. `profile.rs` topa en 1 GiB y ningún manifiesto puede pedir más. Es de Cesar: es política y cuesta su hierro |
+| Que un Qwen2.5 real acierte la intención desde la pantalla | Es una medición del modelo, no de la máquina: la cadena entera está construida y corrida con un llama.cpp real, y lo que falta es correr `thalyx agent bench` contra las gamas desde adentro |
 
+> **Actualizado el 2026-08-28, más tarde.** Los dos renglones de abajo se
+> quitan: los dos están construidos. El tope de memoria lo pide el manifiesto y
+> lo aprueba Cesar al instalar, y el motor es un módulo instalado que corre
+> confinado — ver el renglón «El motor de inferencia, como módulo» arriba y
+> [[Motor-de-Inferencia-como-Modulo]].
+>
 > **Actualizado el 2026-08-28.** Se agregan dos renglones, y el primero es una
 > ausencia que llevaba desde el principio sin estar escrita: **el agente no está
 > en la máquina.** Nada mintió — cada nota del agente decía la verdad sobre lo

@@ -661,6 +661,17 @@ pub fn verb_named(word: &str) -> Option<&'static Verb> {
     VERBS.iter().find(|verb| verb.names.contains(&word.trim()))
 }
 
+/// The verb a stable machine name identifies.
+///
+/// The other direction from [`verb_named`], and it exists because the agent
+/// speaks in ids: `thalyx_agent::ProposedOperation::name` is `make_directory`,
+/// and what the session's dispatch matches is `mkdir`. One table answers both,
+/// so a verb the model can propose and a verb a person can type cannot come
+/// apart.
+pub fn verb_with_id(id: &str) -> Option<&'static Verb> {
+    VERBS.iter().find(|verb| verb.id == id)
+}
+
 /// Every spelling of every verb, for tab completion.
 ///
 /// Generated rather than listed, which removes the second of the three copies.

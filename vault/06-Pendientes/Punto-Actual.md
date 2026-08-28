@@ -14,6 +14,98 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La máquina tiene agente: una frase suya llega a un modelo y algo pasa — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Lo que faltaba desde que se decretó el agente mínimo estaba en el punto 3 del
+> bloque de abajo: **no hay agente adentro**. Todo lo demás existía —el prompt,
+> la gramática GBNF, el parser, el contrato, el router, la atribución, las
+> gamas— y ninguna de esas piezas se podía alcanzar desde la única cara que
+> tiene la máquina. Escribir algo que no fuera un verbo contestaba *«no tengo
+> modelo cargado»*, lo cual era cierto y era también el agente entero siendo
+> inalcanzable.
+>
+> Ahora la cadena está cerrada de punta a punta:
+>
+> ```
+> pantalla → session/dispatch → thalyx-agent → prompt + gramática
+>          → motor llama.cpp instalado como módulo → GGUF del store
+>          → inferencia real → contrato → router/validación → verbo de Thalyx
+> ```
+>
+> ### Las cuatro decisiones que la hacen así
+>
+> 1. **El motor es un módulo, no parte de Thalyx.** `llama-completion` de
+>    llama.cpp, empaquetado en un `.thmod` firmado, instalado en el store,
+>    confinado bajo `module_standard` con el uid, el cgroup, el seccomp y la
+>    raíz pivotada que recibe cualquier otro módulo. La imagen sigue siendo el
+>    kernel y **un** programa: `make -C image count` lo dice.
+> 2. **Un proceso por respuesta.** No hay demonio, no hay servidor, no hay API
+>    HTTP. `thalyx_core::run` —el mismo que ejecuta `correr`— lanza el motor,
+>    espera, y lo que el módulo escribió en su `stdout` es la respuesta. Una
+>    inferencia es un módulo corriendo, con su entrada en el diario.
+> 3. **La costura es angosta a propósito.** `thalyx_agent::llama::Engine`:
+>    entra un vector de argumentos, salen bytes. Arriba de esa línea no cambió
+>    nada —el prompt, el marcador, la gramática, dónde termina una respuesta,
+>    qué es una respuesta rota— y abajo hay dos implementaciones:
+>    `ProcessEngine` (un programa en el `PATH`, que es lo que tiene una máquina
+>    de desarrollo) y `ModuleEngine` (el módulo instalado, que es lo que tiene
+>    la máquina). El crate del agente no puede lanzar procesos confinados y no
+>    debe poder: todo lo que sabe llegó de un modelo que no es de confiar.
+> 4. **El disco arranca listo.** El motor se instala en el stage y la elección
+>    de gama queda escrita, así que la máquina arranca **pudiendo ser hablada**.
+>    El greeter sigue sin instalar a propósito —el paso 2 del criterio de salida
+>    es una persona instalándolo— y el motor es el requisito contrario.
+>
+> ### Lo que se arregló en el camino
+>
+> - **El prompt se escribía en `/tmp`.** Un módulo sólo ve lo que su manifiesto
+>   le concedió, así que un prompt fuera de esos directorios es un archivo que
+>   el motor tiene orden de leer y no puede ver — y vuelve como «llama.cpp no
+>   completó el prompt», culpando a llama.cpp de un error de Thalyx. El motor
+>   ahora dice **dónde** se le puede escribir (`Engine::scratch_root`) y hay una
+>   prueba que sólo falla si eso se rompe.
+> - **`llama.cpp` no enlazaba estático.** Tres banderas, encontradas por tres
+>   enlaces fallidos, en este orden: `LLAMA_OPENSSL=OFF` (cpp-httplib encuentra
+>   el OpenSSL del sistema, que sólo existe como `.so`), `GGML_OPENMP=OFF`
+>   (`libgomp` igual) y `GGML_NATIVE=OFF` (la máquina que construye el store no
+>   es necesariamente la que lo arranca, y `-march=native` en un módulo es una
+>   instrucción ilegal en el CPU de otro). Están escritas en
+>   `dev/build-engine.sh` para que nadie las vuelva a encontrar.
+> - **`agent model use` fallaba al grabar una ruta que todavía no existe.** El
+>   store se construye en una máquina y se arranca en otra: la ruta que se graba
+>   es la de adentro y los bytes que se miden son los del stage. `--reading`.
+> - **El modelo diminuto declaraba 128 tokens de contexto** y el prompt real
+>   mide ~1800, así que rechazaba la única cosa para la que servía además de
+>   `engine-needs.sh`. Ahora declara 4096, que en un modelo de dos capas no
+>   cuesta nada.
+>
+> ### Qué está probado y qué no
+>
+> **Probado en el contenedor, con un llama.cpp real y un GGUF real** (dos capas,
+> hecho por `gguf-py` de llama.cpp):
+>
+> - el binario es estático, sin intérprete y sin bibliotecas compartidas;
+> - se empaqueta, se firma y se instala como módulo, con los 4 GiB que pide;
+> - `thalyx agent model check` lo corre **a través del sistema de módulos**, el
+>   motor lee el prompt del directorio concedido, carga los pesos, obedece la
+>   gramática y lo que imprime vuelve a Thalyx;
+> - una frase que no es un verbo, escrita en la sesión, se convierte en un verbo
+>   y **se ejecuta**: `crea una carpeta llamada pruebas` → `mkdir pruebas` → la
+>   carpeta existe. (Con un motor de reemplazo: es una afirmación sobre el
+>   cableado, no sobre el juicio de un modelo.)
+>
+> **No probado aquí, y nombrado en vez de supuesto:**
+>
+> - **confinado.** Este contenedor no tiene BPF LSM, así que la corrida fue
+>   `--unconfined` y el diario la anotó como degradada. La §45 de
+>   `dev/verify.sh` lo corre confinado en la máquina de Cesar, y dice NOT PROVEN
+>   si no puede;
+> - **que un Qwen2.5 real acierte la intención.** El modelo de dos capas produce
+>   un objeto gramatical y vacío. Eso es una medición del modelo, no de la
+>   máquina, y `thalyx agent bench` es lo que la hace.
+
 > ## La máquina se puede usar: se puede escribir en ella, y se puede terminar lo que se empieza — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
@@ -39,7 +131,8 @@ tags: [continuidad, punto-actual, sesiones]
 >    `loadkeys` no cabe en la imagen. La tecla que en un teclado latinoamericano
 >    dice `ñ` mandaba `;`. Un SO cuya bóveda entera está en español, en el que
 >    no se podía escribir en español.
-> 3. **No hay agente adentro** — decretado el 2026-08-28, sigue pendiente.
+> 3. **No hay agente adentro** — decretado el 2026-08-28. **Cerrado** el
+>    mismo día: ver el bloque de arriba.
 > 4. **Una cosa a la vez** bajo la pantalla.
 > 5. **Nada entra ni sale** (`red` lee y no manda), y un store recién instalado
 >    está vacío.
