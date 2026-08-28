@@ -4479,6 +4479,76 @@ que es el alias que ya vale en los dos objetivos. Estaba escrita, era correcta,
 y la entrega de la pantalla no la siguió — una convención que vive sólo en un
 comentario la obedece quien lo lee. Ahora hay una comprobación que la exige.
 
+## Regla derivada: una prueba que no puede existir sin poner en riesgo la máquina vive en `verify.sh`, no en `cargo test` — 2026-08-28
+
+Salió construyendo la costura de confirmaciones. Había que probar que
+`instalar-en` pide la ruta del disco y **no** acepta un `sí`, y llegar a esa
+pregunta exige nombrar un disco que el verbo acepte borrar.
+
+La primera versión nombró un dispositivo inexistente y **pasó por vacío**:
+`instalar-en` se niega ante un dispositivo que no abre *antes* de preguntar
+nada, así que la prueba afirmaba que un `sí` no autorizó una pregunta que nunca
+se hizo. Es la misma clase que ya está catalogada dos veces aquí, y sólo se
+agarró porque se leyó la salida en vez del código de salida.
+
+**El arreglo no es nombrar un disco mejor.** Apuntar un verbo que borra discos a
+un disco de verdad y teclearle `sí` es una prueba que borra la máquina justo el
+día en que lo que mide está roto — que es el único día en que corre distinto.
+`THALYX_ROOT` no aísla un disco; nada lo aísla. Es la regla 11 otra vez, con la
+consecuencia más cara posible.
+
+Así que la afirmación vive en la etapa 42 de `verify.sh`, sobre un dispositivo
+de bucle que el guion crea y destruye, donde el disco que se borra es un archivo
+que el guion escribió. Y ahí sí se rompió en las dos direcciones antes de
+creerle: la peligrosa (un `sí` que autoriza) y la del espejo (un confirmador que
+niega todo, que sin la columna de control se ve igual que uno que funciona).
+
+**Y el patrón que la agarró:** `grep 'that is not'` pegaba en *«That is not the
+same as not looking»*, una frase de `discos` tres renglones arriba. Un marcador
+tomado de una frase en prosa es un marcador que otra prosa cumple. El que quedó
+es la oración que el confirmador mismo imprime y nada más.
+
+## Regla derivada: una justificación que sobrevive a que la desmientan es un cuento — 2026-08-28
+
+El comentario de `said_so_far` decía que leer el búfer con `seek` movería la
+posición donde el verbo escribe, y que por eso se lee con `pread`. Se puso el
+`seek` de vuelta para ver la prueba fallar —que es lo que este proyecto hace
+antes de creerle a una prueba— y **no falló**: `read_to_end` deja el offset al
+final, que es donde estaba.
+
+La razón verdadera es más angosta y sigue decidiendo lo mismo: `pread` no puede
+mover esa posición en absoluto, así que vale para una lectura parcial, para una
+que se corta a la mitad por un error, y para quien después lea sólo la cola. El
+comentario dice ésa.
+
+Lo que se aprende no es sobre `pread`. Es que **romper una prueba a propósito
+también prueba el comentario de al lado**, y que una explicación que no se puede
+desmentir no es una explicación — es una historia que se cuenta el código a sí
+mismo. Regla 5 apuntada al texto en vez de al instrumento.
+
+## Regla derivada: el encoding de otro sistema se lee entero o no se lee — 2026-08-28
+
+Las tablas de teclado del kernel guardan `K(tipo, valor)`, pero **sólo cuando el
+byte alto llega a `0xf0`**; por debajo de eso la entrada es un punto de Unicode
+tal cual. La primera versión de las pruebas leyó el tipo sin restar el `0xf0` y
+concluyó que la distribución latinoamericana no tiene `ñ`.
+
+La tabla estaba bien. El lector estaba mal. Se agarró porque la afirmación de al
+lado era lo bastante específica para ser obviamente falsa —«la tecla 39 da
+`ñ`»— y no porque algo fallara de forma visible: un lector que hubiera dicho «no
+es una letra» para media tabla habría pasado cualquier prueba escrita en
+términos de «tiene letras».
+
+Dos consecuencias, y la segunda es la regla:
+
+1. El decodificador vive en el módulo y no en la prueba. Dos lectores de un
+   encoding es cómo llegan a no coincidir, y aquí el segundo lector iba a ser el
+   verbo que le dice a una persona qué hace una tecla.
+2. **Una afirmación sobre datos ajenos necesita su columna de control igual que
+   una negativa.** «Esta distribución tiene `ñ`» pasa contra una tabla igual en
+   todos lados. Lo que se afirma es la *diferencia*: la tecla que aquí da `ñ` es
+   la que en el mapa compilado del kernel da `;`.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

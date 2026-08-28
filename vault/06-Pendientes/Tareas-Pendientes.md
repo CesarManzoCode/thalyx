@@ -82,7 +82,35 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
       vacía.**
 
 - [x] **Los verbos, por la pantalla, y la pantalla como cara del arranque** — hecho el 2026-08-28, decretado por Cesar ese día: *«no quiero un comando para activar ui, quiero ya la ui, la que se ve al iniciar»*. El ciclo de seiscientas líneas no hubo que reescribirlo: sus brazos tocan cuatro cosas —la tienda, dónde está parada la persona, qué cara contesta y cómo llegó a existir este proceso— y nada más, así que salieron enteros a `session::dispatch`. Lo que imprimen se atrapa en el **descriptor** (`thalyx-capture`), que es lo único que también atrapa lo que imprime un módulo. Etapa 41 de `verify.sh`. **Nadie lo ha visto sobre hierro.**
-- [ ] **La confirmación del camino confiable, dibujada.** Lo que le falta a la pantalla para que un verbo consequente se pueda *terminar* ahí. Hoy `instalar`, `observar`, `instalar-en` y `ejecutar` **rechazan** en la pantalla en vez de preguntar en ella, porque la entrada está en `/dev/null` mientras corre un verbo y todos comprueban `is_terminal` antes de preguntar. Es un rechazo honesto y con la salida escrita —Ctrl-C baja a la sesión de texto y ahí se contesta—, pero el tipo `Confirmation` ya existe en `thalyx-screen`, ya se prueba y ya toma la pantalla entera: falta cablearlo. Ver [[La-Pantalla]] y [[Camino-Confiable]].
+- [x] **La confirmación del camino confiable, dibujada** — **hecho el
+      2026-08-28, y el hueco era más grande de lo que decía este renglón.** No
+      eran cuatro verbos que rechazan: eran **ocho lugares** con los mismos
+      cinco renglones escritos a mano, `editar` entre ellos —que nadie
+      nombraba— y habían derivado sobre qué cuenta como un sí. Ahora es
+      `crates/thalyx-cli/src/ask.rs`: una sola comparación que las dos caras
+      llaman, y la negativa se queda en cada verbo porque esa frase es del
+      verbo. El cambio que lo hace posible es de orden: **decir de qué se trata
+      va antes de revisar si hay terminal**, porque el contexto es la
+      confirmación y una negativa emitida antes de que exista no deja nada que
+      dibujar. Etapa 42 de `verify.sh`; la mitad del vidrio sólo se ve
+      arrancando la imagen. Ver [[La-Pantalla]] y [[Camino-Confiable]].
+- [x] **Que la máquina se pueda teclear en español** — **hecho el 2026-08-28**,
+      y no estaba escrito en ningún lado: un `grep` de `keymap` en todo el repo
+      salía vacío. El kernel lleva un mapa compilado adentro y es US QWERTY,
+      `loadkeys` no cabe en la imagen, y la tecla que en un teclado
+      latinoamericano dice `ñ` mandaba `;`. `thalyx-screen` hasta calienta los
+      glifos de `áéíóúüñ¿¡` — se podían dibujar y no escribir. Las tablas se
+      generan de `kbd` con `dev/keymap-table.py` (regla 6: una distribución es
+      un dato sobre el mundo). Verbo `teclado`, carga en el arranque, y
+      `thalyx.teclado=no` de salida. Etapa 43. **Sólo su hierro contesta si la
+      carga de verdad funciona.**
+- [x] **El techo de memoria de un módulo** — **decidido por Cesar el 2026-08-28
+      y construido el mismo día.** `module_standard` topaba en 1 GiB y ningún
+      manifiesto podía pedir más, así que el motor de inferencia no cabía. Su
+      decisión: lo que pida el manifiesto, aprobado por él al instalar. Es un
+      permiso `persistent`, así que usa el camino confiable y el registro que ya
+      existen. El gigabyte pasa de techo a piso. Etapa 44.
+
 - [ ] **El agente adentro de la máquina.** Elegido por Cesar el 2026-08-27 junto con la pantalla. Las cuatro gamas se midieron en Fedora con `llama-completion` en el `PATH`; adentro de la imagen no hay llama.cpp y no puede haberlo —el kernel y un programa—, así que tendría que ser un **programa ajeno en el store corrido con `ejecutar`**, que es exactamente para lo que se construyó G1. Lo que falta averiguar y sólo su hardware contesta: si un llama.cpp enlazado estáticamente corre bajo ese confinamiento, con qué concesiones, y qué huella tiene sobre Thalyx en vez de sobre Fedora — que es la medición definitiva de las gamas que está pendiente desde el 2026-08-08.
 - [ ] **Decidir si la pantalla lleva ratón.** Hoy no, y la razón es que una pantalla sin ventanas no tiene qué apretar. Costaría `CONFIG_INPUT_EVDEV` y un HID de ratón en `thalyx.config`, que es el archivo que **sólo su hardware verifica** y donde las tres opciones que faltaron históricamente se encontraron arrancando. Decisión de Cesar, y no bloquea nada. Ver [[La-Pantalla]].
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.

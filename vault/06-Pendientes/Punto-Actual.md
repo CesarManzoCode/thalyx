@@ -14,6 +14,108 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La máquina se puede usar: se puede escribir en ella, y se puede terminar lo que se empieza — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar arrancó la imagen y preguntó qué le falta al sistema para que él, por
+> voluntad propia, pueda pasar **un día completo adentro**. Medido contra el
+> código, el hueco más grande no estaba escrito en ningún lado.
+>
+> ### Lo que se midió, y no es lo que la bóveda decía
+>
+> Seis cosas separan el arranque de la foto de un día de uso. Dos de ellas nadie
+> las había notado:
+>
+> 1. **La pantalla que arranca es una ventana, no un taller.** Bajo
+>    `thalyx-capture` el descriptor 0 es `/dev/null` —a propósito, si no la
+>    máquina se cuelga con una pregunta que nadie ve— así que los ocho lugares
+>    que se detienen a preguntar encuentran que no hay terminal y se niegan.
+>    `instalar`, `ejecutar`, `observar`, `instalar-en` **y `editar`** se pueden
+>    leer ahí y no se pueden acabar. La bóveda tenía escrita sólo «la
+>    confirmación dibujada»; `editar` no lo nombraba nadie.
+> 2. **No se podía teclear español.** Un `grep` de `keymap` en todo el repo
+>    salía vacío. El kernel lleva un mapa compilado adentro y es US QWERTY, y
+>    `loadkeys` no cabe en la imagen. La tecla que en un teclado latinoamericano
+>    dice `ñ` mandaba `;`. Un SO cuya bóveda entera está en español, en el que
+>    no se podía escribir en español.
+> 3. **No hay agente adentro** — decretado el 2026-08-28, sigue pendiente.
+> 4. **Una cosa a la vez** bajo la pantalla.
+> 5. **Nada entra ni sale** (`red` lee y no manda), y un store recién instalado
+>    está vacío.
+> 6. **El techo de 1 GiB** por módulo, que el motor no cabe.
+>
+> ### Sus dos decisiones
+>
+> Preguntadas con opciones, contestadas el mismo día:
+>
+> - **El día es escribir y pensar con el agente, y además operar la máquina.**
+>   No desarrollar Thalyx desde adentro, que abriría la Fase 2.
+> - **El techo de memoria: lo que pida el manifiesto, aprobado por él al
+>   instalar.** No un número fijo más grande.
+>
+> ### Lo entregado
+>
+> **A — una pregunta, dos caras** (`crates/thalyx-cli/src/ask.rs`). Las ocho
+> confirmaciones tenían los mismos cinco renglones escritos a mano, y habían
+> derivado sobre qué es un sí: `intento abandonar` tomaba `si` y `sí`, y el
+> verbo que le quita el guardián al kernel no tomaba ninguno. Ahora hay una sola
+> comparación y las dos caras la llaman; lo que no se comparte es la negativa,
+> que es del verbo. Y el orden cambió: **decir de qué se trata va antes de
+> revisar si hay terminal**, porque el contexto *es* la confirmación y una
+> negativa emitida antes de que exista no deja nada que dibujar.
+>
+> **B — el teclado** (`crates/thalyx-term/src/keymap.rs`). Las tablas se
+> generan de `kbd` con `dev/keymap-table.py`, nunca se escriben: una
+> distribución es un dato sobre el mundo y la regla 6 aplica. `teclado` dice qué
+> hay —preguntándole al kernel, no a Thalyx— y `teclado latino|ingles` lo
+> cambia. Se carga en el arranque, con `thalyx.teclado=no` de salida de
+> emergencia, y hay prueba de que las letras de `teclado ingles` están en la
+> misma tecla en las dos distribuciones, o sea que el camino de regreso se
+> teclea desde donde haría falta.
+>
+> **C — el techo por manifiesto.** Una petición de memoria es un permiso
+> `persistent`: sale por el camino confiable que ya existe, se guarda donde ya
+> se guarda, y `for_permissions` sube el techo. El gigabyte pasa de techo a
+> piso. Con unidad siempre (`4GiB`, nunca `4294967296`), nunca `jit`, negado si
+> no cabe en la máquina, y dos concesiones dan la mayor y no su suma. Entero en
+> [[Motor-de-Inferencia-como-Modulo]].
+>
+> **1506 pruebas verdes**, `clippy` limpio, y la compilación de musl —la regla
+> 12— corrida de verdad: este contenedor no la podía hacer y ahora sí, con
+> `apt-get install musl-tools`.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && make -C image image
+> ```
+>
+> Y **arrancar la imagen**, que es lo único que contesta las dos mitades que
+> este contenedor no tiene:
+>
+> - **Teclear `ñ`.** Si sale `ñ`, la pieza B funciona en hierro. Si sale otra
+>   cosa, `teclado ingles` regresa el mapa del kernel; si el teclado quedó
+>   inservible, `thalyx.teclado=no` en la entrada de arranque.
+> - **Teclear `instalar <algo>` o `ejecutar <programa>` en la pantalla.** Antes
+>   rechazaba; ahora debe dibujar la confirmación con el contexto arriba y
+>   tomar la respuesta. **Ctrl-C cancela** — el aviso decía «Escape» y era
+>   imposible: un Escape solo es el prefijo de toda flecha.
+>
+> `sudo ./dev/verify.sh` trae **tres etapas nuevas** (42, 43, 44) sobre las 189
+> de la corrida anterior.
+>
+> ### Lo que sigue, y por qué está en ese orden
+>
+> **D — el motor adentro de la máquina.** Es lo único que queda de lo que él
+> decidió, y es lo más grande. Ahora no lo bloquea nada: el confinamiento le
+> alcanza (31 de 31 llamadas), el techo ya se puede pedir, y `ejecutar` ya se
+> puede confirmar desde la pantalla — que era el hueco por el que el motor no
+> se podía ni arrancar desde la cara con la que la máquina viene.
+>
+> Los dos huecos que quedan del día y **no** están decididos: que se pueda hacer
+> más de una cosa a la vez, y por dónde entra y sale algo de la máquina.
+
 > ## El agente no está en la máquina, y por dónde entra — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
