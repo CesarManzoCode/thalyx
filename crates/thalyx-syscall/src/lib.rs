@@ -290,6 +290,50 @@ impl RawMode {
         }
         Some(Self { fd, saved })
     }
+
+    /// The same, and with the kernel's signal keys turned off as well.
+    ///
+    /// **Only the screen uses this, and the reason is the opposite of the one
+    /// that keeps `ISIG` on above.** At a text prompt, Ctrl-C sending `SIGINT`
+    /// is the escape hatch: the process dies and the person gets their machine
+    /// back. With the console in [`GraphicsMode`] that same escape hatch is the
+    /// trap — the process dies before `Drop` can put the console back, and what
+    /// the person gets back is a black screen on a machine that is running
+    /// fine, with no second terminal to fix it from.
+    ///
+    /// So the screen takes the signal keys itself and treats Ctrl-C as
+    /// [`crate`]'s caller sees fit — which is to leave, restoring the console on
+    /// the way out. The hatch is the same size; it just goes through `Drop`.
+    pub fn enter_without_signals(terminal: std::os::fd::BorrowedFd<'_>) -> Option<Self> {
+        let guard = Self::enter(terminal)?;
+
+        // SAFETY: `guard.fd` was a terminal a moment ago, when `enter` read and
+        // wrote its `termios` through it. Reading it again writes one `termios`
+        // through a pointer to a live local.
+        #[allow(unsafe_code)]
+        let mut raw = unsafe {
+            let mut raw: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(guard.fd, &raw mut raw) != 0 {
+                return None;
+            }
+            raw
+        };
+        // IXON as well as ISIG: Ctrl-S with flow control on freezes the terminal,
+        // and a frozen terminal in graphics mode looks exactly like a crash.
+        raw.c_lflag &= !libc::ISIG;
+        raw.c_iflag &= !libc::IXON;
+
+        // SAFETY: `raw` is a live, fully initialised `termios` read from the
+        // kernel and modified in two flags.
+        #[allow(unsafe_code)]
+        let applied = unsafe { libc::tcsetattr(guard.fd, libc::TCSANOW, &raw const raw) };
+        if applied != 0 {
+            return None;
+        }
+        // `guard` still carries the `termios` from before any of this, so
+        // dropping it restores what the terminal had at the start.
+        Some(guard)
+    }
 }
 
 impl Drop for RawMode {
@@ -2515,5 +2559,229 @@ mod bpf_tests {
         let name = kernel_name("thalyx_policy");
         assert_eq!(&name[..13], b"thalyx_policy");
         assert!(name[13..].iter().all(|b| *b == 0));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The display.
+//
+// `vault/02-Arquitectura/La-Pantalla.md`. Everything that decides how the screen
+// *looks* is in `thalyx-screen`, which is pure and testable with no display at
+// all. What is here is only what needs a device: asking the kernel how this
+// framebuffer is shaped, mapping it, and taking the text console out of the way.
+// ---------------------------------------------------------------------------
+
+/// `FBIOGET_VSCREENINFO`, from `include/uapi/linux/fb.h`: `0x4600`.
+///
+/// Spelled out for the same reason as [`BLKRRPART`]: `_IOR` is a C macro and
+/// this workspace has no C.
+const FBIOGET_VSCREENINFO: u64 = 0x4600;
+/// `FBIOGET_FSCREENINFO`: `0x4602`.
+const FBIOGET_FSCREENINFO: u64 = 0x4602;
+
+/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`.
+const KDGETMODE: u64 = 0x4B3B;
+const KDSETMODE: u64 = 0x4B3A;
+/// `KD_TEXT` is 0 and `KD_GRAPHICS` is 1.
+const KD_TEXT: libc::c_long = 0;
+const KD_GRAPHICS: libc::c_long = 1;
+
+/// How this display is shaped, as the kernel describes it.
+///
+/// Every field is read rather than assumed. The one that costs the most when
+/// guessed is `line_length`: a framebuffer commonly pads each row, and writing
+/// `width * bytes` per row instead slides every row left by the padding, which
+/// shears the whole picture diagonally and reads as a drawing bug rather than
+/// as one ignored field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub bits_per_pixel: u32,
+    /// `(offset, length)` in bits, from `struct fb_bitfield`.
+    pub red: (u32, u32),
+    pub green: (u32, u32),
+    pub blue: (u32, u32),
+    /// Bytes from the start of one row to the start of the next.
+    pub line_length: usize,
+    /// How many bytes the mapping has.
+    pub buffer_len: usize,
+}
+
+/// `struct fb_var_screeninfo` is 160 bytes on every architecture Thalyx
+/// targets: it is all `__u32`, so there is no padding to differ.
+const FB_VAR_SCREENINFO: usize = 160;
+/// `struct fb_fix_screeninfo` is 80 bytes on 64-bit, where the two `unsigned
+/// long` members are eight wide and force alignment.
+const FB_FIX_SCREENINFO: usize = 80;
+
+/// Ask the display how it is shaped.
+pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeometry> {
+    use std::os::fd::AsRawFd;
+
+    let word = |bytes: &[u8], at: usize| -> u32 {
+        u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    };
+
+    let mut var = [0u8; FB_VAR_SCREENINFO];
+    // SAFETY: the buffer is exactly the size the ioctl writes, it is a live
+    // local, and the descriptor is borrowed for the call.
+    #[allow(unsafe_code)]
+    let read_var = unsafe {
+        libc::ioctl(
+            framebuffer.as_raw_fd(),
+            FBIOGET_VSCREENINFO as libc::c_ulong,
+            var.as_mut_ptr(),
+        )
+    };
+    if read_var != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut fix = [0u8; FB_FIX_SCREENINFO];
+    // SAFETY: as above, with the size this second ioctl writes.
+    #[allow(unsafe_code)]
+    let read_fix = unsafe {
+        libc::ioctl(
+            framebuffer.as_raw_fd(),
+            FBIOGET_FSCREENINFO as libc::c_ulong,
+            fix.as_mut_ptr(),
+        )
+    };
+    if read_fix != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Offsets into `fb_var_screeninfo`: xres, yres, then four more `__u32`
+    // before `bits_per_pixel`, then the four `fb_bitfield`s of three `__u32`
+    // each. Written as arithmetic on named steps rather than as bare numbers,
+    // so that a field added upstream is a visible edit rather than a silent
+    // shift.
+    let bitfield = |which: usize| -> (u32, u32) {
+        let base = 32 + which * 12;
+        (word(&var, base), word(&var, base + 4))
+    };
+
+    // Offsets into `fb_fix_screeninfo`: `char id[16]`, then `unsigned long
+    // smem_start` aligned to 8, then `__u32 smem_len`. `line_length` sits at 48
+    // after three `__u16`s and their padding.
+    let geometry = DisplayGeometry {
+        width: word(&var, 0),
+        height: word(&var, 4),
+        bits_per_pixel: word(&var, 24),
+        red: bitfield(0),
+        green: bitfield(1),
+        blue: bitfield(2),
+        line_length: word(&fix, 48) as usize,
+        buffer_len: word(&fix, 24) as usize,
+    };
+
+    // Rule 9: a display that answers nonsense is refused rather than mapped.
+    // A zero here is not a small screen, it is a struct read at the wrong
+    // offset, and mapping zero bytes then writing into it is the version of
+    // this bug that takes the machine down instead of printing a sentence.
+    if geometry.width == 0
+        || geometry.height == 0
+        || geometry.line_length == 0
+        || geometry.buffer_len == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "this display reports {}x{} with a {}-byte row and a {}-byte buffer, \
+                 which is not a display",
+                geometry.width, geometry.height, geometry.line_length, geometry.buffer_len
+            ),
+        ));
+    }
+
+    Ok(geometry)
+}
+
+impl Mapped {
+    /// The mapped bytes, to write into.
+    ///
+    /// **Only the framebuffer uses this.** Everything else that maps something
+    /// here is reading what the kernel wrote — a ring buffer, a map — and the
+    /// narrow [`Mapped::write_first_u64`] exists so that those callers cannot
+    /// write anywhere else by accident. A display is the one mapping whose
+    /// whole purpose is to be overwritten.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: `address` and `length` come from a successful `mmap` of
+        // exactly that length, and the mapping lives as long as `self` because
+        // `Drop` is what unmaps it. `&mut self` is what makes this the only
+        // live view of those bytes on this side; the device on the other side
+        // is a display, which reads them and does not write them back.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::slice::from_raw_parts_mut(self.address.cast::<u8>(), self.length)
+        }
+    }
+}
+
+/// The console put into graphics mode for as long as this value lives.
+///
+/// ## Why this is a guard and not two calls
+///
+/// It is the same failure as [`RawMode`], one step worse. A console left in
+/// graphics mode draws nothing at all: no shell, no kernel message, no login —
+/// **a black screen on a machine that is running fine.** On the image there is
+/// no second terminal to recover from, so a session that exits without
+/// restoring the mode has bricked the display until the machine is power
+/// cycled.
+///
+/// So the restore rides on `Drop`, which runs on the ordinary path and while a
+/// panic unwinds. It cannot cover a `SIGKILL`, and nothing can.
+///
+/// ## What this buys besides the pixels
+///
+/// The kernel stops drawing the text console over the frame — which is also
+/// what stops `printk` from landing on top of the screen. The 2026-08-07 boot
+/// where a repeating USB error wrote over the prompt every few seconds cannot
+/// happen here: in graphics mode those messages go to the log and not to the
+/// glass. They are still readable with `nucleo`.
+pub struct GraphicsMode {
+    fd: std::os::fd::RawFd,
+    saved: libc::c_long,
+}
+
+impl GraphicsMode {
+    /// Take the console out of the way, or say why it could not be taken.
+    ///
+    /// The previous mode is read rather than assumed to be `KD_TEXT`, so that
+    /// restoring puts back what was there. Assuming would be right today and
+    /// wrong the first time something else has already claimed the console.
+    pub fn enter(console: BorrowedFd<'_>) -> io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let fd = console.as_raw_fd();
+
+        let mut saved: libc::c_long = KD_TEXT;
+        // SAFETY: `KDGETMODE` writes one `long` through the pointer, which is to
+        // a live local. The descriptor is borrowed for the call.
+        #[allow(unsafe_code)]
+        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::c_ulong, &raw mut saved) };
+        if read != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: `KDSETMODE` takes its argument by value, not by pointer.
+        #[allow(unsafe_code)]
+        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::c_ulong, KD_GRAPHICS) };
+        if set != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd, saved })
+    }
+}
+
+impl Drop for GraphicsMode {
+    fn drop(&mut self) {
+        // SAFETY: putting back the mode this guard read from the kernel, on a
+        // descriptor that was valid when the guard was made and which the guard
+        // does not outlive.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::ioctl(self.fd, KDSETMODE as libc::c_ulong, self.saved);
+        }
     }
 }

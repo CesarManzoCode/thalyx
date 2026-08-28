@@ -39,6 +39,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ### 2. Arquitectura general (cómo está construido)
 - [[Superficie-para-el-LLM]] — **el catálogo entero** de lo que se puede crear o cambiar para que un LLM se mueva mejor aquí, y el criterio de cinco costos que decide si algo entra
+- [[La-Pantalla]] — **una sola pantalla que es Thalyx**: sin ventanas, sin escritorio, y la tipografía cargando procedencia
 - [[Arquitectura-Asimetrica]] — cara humana vs. cara IA
 - [[Core-Nucleo]] — el núcleo del sistema operativo
 - [[Core]] — el orquestador del flujo, y por qué es un solo proceso con módulos internos

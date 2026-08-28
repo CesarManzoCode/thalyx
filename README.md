@@ -122,6 +122,18 @@ contracted into a single `NOT PROVEN` line. A marker and the lines under it are
 one result, and the two lines this run could not establish are named in its own
 summary rather than here. See [docs/STATUS.md](docs/STATUS.md).
 
+**Drawn, and not yet run on a display.** On 2026-08-27 Thalyx got a screen:
+one surface with the conversation at its centre, panels around it, no windows
+and no desktop — `vault/02-Arquitectura/La-Pantalla.md`. It is drawn by Thalyx
+into the framebuffer the firmware already configured, with no X, no Wayland and
+no compositor, and it lives inside the one program like everything else, so
+`make -C image count` still says `1`. The composition is pure and has 43 tests
+that need no display; a frame can be written to a PNG with `thalyx dev screen`
+and looked at anywhere. **No hardware has shown it yet.** `thalyx screen
+--describe` walks every step of the path except writing to the device, so a
+machine can be asked whether it would work without any risk of being left with
+a black display.
+
 **Built and covered by over 1,300 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.

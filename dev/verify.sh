@@ -5885,6 +5885,154 @@ else
     fi
 fi
 
+step "40. the screen composes real pixels, and the trusted path looks like nothing else"
+
+# `vault/02-Arquitectura/La-Pantalla.md`, decreed 2026-08-27.
+#
+# Two halves with very different costs, and this stage is careful about which
+# one it is answering:
+#
+#   · **The composition.** Runs anywhere, this container included, because
+#     `thalyx-screen` is pure and a frame is memory. What is checked is the one
+#     property of the screen that is security and not taste — that the trusted
+#     path's colour is on a confirmation and on nothing else — plus its control,
+#     which is the ordinary screen having none of it. Rule 4: without the
+#     control, a palette that painted the whole display red would pass.
+#
+#   · **The display.** Needs a framebuffer, which this container does not have.
+#     `thalyx screen --describe` walks every step of the path except writing to
+#     the device and taking the console, so it can be run on a real machine
+#     without any risk of leaving it black.
+#
+# Rule 5, the instrument includes the harness: the pixels are read back by a
+# PNG decoder written here out of `zlib` and `struct`, not by Thalyx. A frame
+# checked by the code that drew it would prove only that it is self-consistent.
+
+SCREEN_DIR="$WORK/screen"
+mkdir -p "$SCREEN_DIR"
+
+"$THALYX" dev screen "$SCREEN_DIR/working.png" --sample trabajando --width 1280 --height 800 \
+    > "$WORK/screen-working.log" 2>&1
+"$THALYX" dev screen "$SCREEN_DIR/confirming.png" --sample confirmando --width 1280 --height 800 \
+    > "$WORK/screen-confirming.log" 2>&1
+
+read -r -d '' READ_PNG <<'PYEOF' || true
+import struct, sys, zlib
+
+def pixels(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit("not a PNG")
+    at, width, height, idat = 8, None, None, b""
+    while at < len(data):
+        (length,) = struct.unpack(">I", data[at:at + 4])
+        kind = data[at + 4:at + 8]
+        body = data[at + 8:at + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, colour = struct.unpack(">IIBB", body[:10])
+            if (depth, colour) != (8, 2):
+                raise SystemExit(f"depth {depth} colour {colour} is not 8-bit truecolour")
+        elif kind == b"IDAT":
+            idat += body
+        at += 12 + length
+    raw, out, stride = zlib.decompress(idat), [], width * 3
+    for row in range(height):
+        start = row * (stride + 1)
+        filter_type = raw[start]
+        # Only filter 0 is undone, and an encoder that used another one is a
+        # failure rather than something to guess at: this reader exists to check
+        # the pixels, and a row it unfiltered wrongly would compare colours that
+        # were never drawn.
+        if filter_type != 0:
+            raise SystemExit(f"row {row} used filter {filter_type}, which this reader does not undo")
+        out.append(bytes(raw[start + 1:start + 1 + stride]))
+    return width, height, out
+
+width, height, rows = pixels(sys.argv[1])
+wanted = tuple(int(sys.argv[2][i:i + 2], 16) for i in (0, 2, 4))
+found = 0
+for line in rows:
+    for x in range(0, len(line), 3):
+        if tuple(line[x:x + 3]) == wanted:
+            found += 1
+print(f"{width} {height} {found}")
+PYEOF
+
+TRUST_RGB=ff4d3d
+AGENT_RGB=e8b44f
+
+SCREEN_CONFIRM=$(python3 -c "$READ_PNG" "$SCREEN_DIR/confirming.png" "$TRUST_RGB" 2>&1)
+SCREEN_ORDINARY=$(python3 -c "$READ_PNG" "$SCREEN_DIR/working.png" "$TRUST_RGB" 2>&1)
+SCREEN_VOICE=$(python3 -c "$READ_PNG" "$SCREEN_DIR/working.png" "$AGENT_RGB" 2>&1)
+
+CONFIRM_SIZE=$(echo "$SCREEN_CONFIRM" | cut -d' ' -f1-2)
+CONFIRM_TRUST=$(echo "$SCREEN_CONFIRM" | cut -d' ' -f3)
+ORDINARY_TRUST=$(echo "$SCREEN_ORDINARY" | cut -d' ' -f3)
+ORDINARY_AGENT=$(echo "$SCREEN_VOICE" | cut -d' ' -f3)
+
+if [ ! -s "$SCREEN_DIR/working.png" ] || [ ! -s "$SCREEN_DIR/confirming.png" ]; then
+    failed "\`thalyx dev screen\` wrote nothing; see $WORK/screen-working.log"
+    excerpt "$WORK/screen-working.log"
+elif [ "$CONFIRM_SIZE" != "1280 800" ]; then
+    failed "the frame came out [$CONFIRM_SIZE] and 1280x800 was asked for"
+elif [ "${CONFIRM_TRUST:-0}" -lt 1000 ]; then
+    failed "a confirmation was drawn with ${CONFIRM_TRUST:-0} pixels of the trusted path's colour, which is not a screen anybody would notice"
+elif [ "${ORDINARY_TRUST:-1}" -ne 0 ]; then
+    # The control. If the trusted path's colour turns up during ordinary use its
+    # presence stops meaning anything, and a confirmation becomes just another
+    # red thing on a screen full of them.
+    failed "the ordinary screen carries $ORDINARY_TRUST pixels of the trusted path's colour, so its presence signals nothing"
+elif [ "${ORDINARY_AGENT:-0}" -lt 100 ]; then
+    # The positive control for the control: a reader that found nothing anywhere
+    # would make the line above pass for the wrong reason.
+    failed "the ordinary screen has no pixels of the agent's colour either, so the reader is finding nothing rather than proving anything"
+else
+    proven "a confirmation is $CONFIRM_TRUST pixels of a colour the ordinary screen uses zero times, read back by a PNG decoder that is not Thalyx, with the agent's $ORDINARY_AGENT pixels as the control that the reader works"
+fi
+
+if [ ! -e /dev/fb0 ]; then
+    GAP="the screen composed correctly, and this machine has no /dev/fb0 so nothing checked that a real display would take it"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    "$THALYX" screen --describe --structured > "$WORK/screen-display.log" 2>&1
+    DISPLAY_SAID=$(grep '^{' "$WORK/screen-display.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    said = json.loads(line)
+    if said.get("op") == "screen_describe":
+        print(said["width"], said["height"], said["line_length"], said["would_draw"], said["refused"])
+        break
+' 2>/dev/null)
+    # The control, and it is not Thalyx: sysfs answers the same two questions
+    # through a completely different path from the ioctl.
+    SYSFS_SIZE=$(tr ',' ' ' < /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+    SYSFS_STRIDE=$(cat /sys/class/graphics/fb0/stride 2>/dev/null)
+
+    THALYX_SIZE=$(echo "$DISPLAY_SAID" | cut -d' ' -f1-2)
+    THALYX_STRIDE=$(echo "$DISPLAY_SAID" | cut -d' ' -f3)
+    WOULD_DRAW=$(echo "$DISPLAY_SAID" | cut -d' ' -f4)
+
+    if [ -z "$DISPLAY_SAID" ]; then
+        failed "this machine has a framebuffer and \`thalyx screen --describe\` said nothing a program can read; see $WORK/screen-display.log"
+        excerpt "$WORK/screen-display.log"
+    elif [ "$WOULD_DRAW" != "True" ]; then
+        failed "Thalyx will not draw on this display: $(echo "$DISPLAY_SAID" | cut -d' ' -f5-); see $WORK/screen-display.log"
+        excerpt "$WORK/screen-display.log"
+    elif [ -z "$SYSFS_SIZE" ]; then
+        GAP="Thalyx read this display as [$THALYX_SIZE] and would draw on it, and sysfs did not answer so nothing independent confirmed the size"
+        if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+    elif [ "$THALYX_SIZE" != "$SYSFS_SIZE" ]; then
+        failed "the ioctl and sysfs disagree about this display: thalyx=[$THALYX_SIZE] sysfs=[$SYSFS_SIZE]"
+    elif [ -n "$SYSFS_STRIDE" ] && [ "$THALYX_STRIDE" != "$SYSFS_STRIDE" ]; then
+        # The field that shears the whole picture when it is wrong, and the one
+        # nothing else would have caught: a stride read from the wrong offset is
+        # still a plausible number.
+        failed "the row length disagrees: thalyx=[$THALYX_STRIDE] sysfs=[$SYSFS_STRIDE], which is the field that shears the picture"
+    else
+        proven "this display is $THALYX_SIZE with a $THALYX_STRIDE-byte row by both the ioctl and sysfs, and a full frame at that size converts into the buffer the kernel reported"
+    fi
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never
