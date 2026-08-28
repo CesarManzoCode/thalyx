@@ -67,7 +67,7 @@ because a module is not in the image — it is on the disk beside it.
 Two inputs, both of them yours to provide. Thalyx never downloads weights.
 
 ```sh
-# 1. Build llama.cpp's llama-completion, static. A few minutes, once.
+# 1. Build the engine — llama.cpp, static, resident. A few minutes, once.
 make -C image engine
 
 # 2. Build the disk with the engine, a GGUF, and the tier already chosen.

@@ -124,6 +124,12 @@ INITRAMFS := $(BUILD)/initramfs.cpio
 # lazily, so a machine that never loads a model pays nothing for it.
 MEMORY    ?= 6144
 
+# How many cores the machine gets. Four rather than two since 2026-08-28: the
+# engine picks its thread count from `available_parallelism`, so `-smp 2` was
+# not a smaller VM, it was a model running at half speed for no reason anybody
+# had decided. QEMU costs nothing for cores that idle.
+CPUS      ?= 4
+
 # The store disk. Raw and not qcow2: a raw image can be formatted and mounted
 # with mkfs.btrfs and a loop device, which every Linux has, while qcow2 needs
 # `qemu-nbd`, a kernel module and a device to attach it to. The disk is sparse,
@@ -142,9 +148,14 @@ GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
 # ─────────────────────────────────────────────────────────────── the engine
 #
-# llama.cpp's `llama-completion`, as a module. Cesar's decree of 2026-08-28: the
-# engine is not part of Thalyx, it is the first real module — signed, installed,
-# confined under `module_standard`, with the memory its manifest asks for.
+# llama.cpp, as a module. Cesar's decree of 2026-08-28: the engine is not part
+# of Thalyx, it is the first real module — signed, installed, confined under
+# `module_standard`, with the memory its manifest asks for.
+#
+# The program inside it is `engine/thalyx-engine.cpp` since the same day: same
+# llama.cpp, same pinned tag, same flags, built by the same `cmake`, shaped as a
+# program that loads the GGUF once and then answers requests on a pipe. See
+# `dev/build-engine.sh` and `vault/05-Decisiones-y-Debates/Motor-Residente.md`.
 #
 # Neither the engine nor the weights go anywhere near the image. `make count`
 # says the image is the kernel and one program and it must keep saying that; a
@@ -160,7 +171,7 @@ GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 # MODEL is empty on purpose and there is no default. Thalyx never downloads
 # weights — `Gamas-de-Modelo.md` makes the tier a decision about the human's own
 # hardware — so the file is named by whoever is building the disk.
-ENGINE     ?= $(BUILD)/engine/llama.cpp/build/bin/llama-completion
+ENGINE     ?= $(BUILD)/engine/llama.cpp/build/bin/thalyx-engine
 MODEL      ?=
 ENGINE_ID  := dev.thalyx.engine
 ENGINE_TIER ?= ligera
@@ -174,6 +185,7 @@ ENGINE_RUN    := $(ENGINE_DATA)/run
 
 .PHONY: all kernel binary image run count clean toolchain config-check \
         store store-stage greeter engine engine-stage lsm doctor hook-check boot pin-kernel \
+        boot-graphical run-serial \
         esp run-uefi initramfs-check installed run-installed run-hardware
 
 all: doctor kernel binary image hook-check
@@ -974,7 +986,21 @@ store:
 # reason — the same shape of mistake as grepping file(1) for a phrase: a proxy
 # for the property instead of the property.
 
+# The machine, with its screen — which is the machine.
+#
+# It used to be `boot`, which is `-nographic`: no display at all, the session on
+# a serial line. That was right when Thalyx had only a text session and wrong
+# from the day the framebuffer became the face it boots into, and it stayed
+# wrong for a while because `make run` still *worked* — a serial console is a
+# usable Thalyx, so nothing failed, it was just the wrong machine every time.
+#
+# `run-serial` is the old behaviour under a name that says what it is, and
+# `boot` is untouched because `dev/verify.sh` drives it and expects a serial
+# console it can read.
 run: $(BZIMAGE) $(INITRAMFS)
+	@$(MAKE) --no-print-directory boot-graphical
+
+run-serial: $(BZIMAGE) $(INITRAMFS)
 	@$(MAKE) --no-print-directory boot
 
 # The same boot, building nothing at all.
@@ -1039,13 +1065,41 @@ boot:
 	@# that ships.
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -kernel $(BZIMAGE) \
 	    -initrd $(INITRAMFS) \
 	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
 	    -append "console=ttyS0,115200 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+
+# The same boot, on the glass.
+#
+# Two differences from `boot` and both are the same difference: the display is
+# on, and the kernel's console is `tty0`, so `session::run` finds a framebuffer
+# and lands on the screen instead of on a serial line. `-serial mon:stdio` keeps
+# the kernel's messages in the terminal at the same time, which is what makes a
+# boot that dies before the framebuffer is up diagnosable — the same reason
+# `WATCH` does it for the firmware path.
+#
+# It builds nothing, for the reason `boot` builds nothing: see above.
+boot-graphical:
+	@test -f $(BZIMAGE) && test -f $(INITRAMFS) || { \
+	    echo "  nothing to boot: the kernel or the image is not built."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    echo; \
+	    exit 1; \
+	}
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp $(CPUS) \
+	    -kernel $(BZIMAGE) \
+	    -initrd $(INITRAMFS) \
+	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
+	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
+	    -serial mon:stdio \
+	    -append "console=tty0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
 
 # ──────────────────────────────────────────────── booting with no bootloader
 
@@ -1150,7 +1204,7 @@ run-uefi: esp
 	cp $(OVMF_VARS) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars.fd \
 	    -drive format=raw,file=fat:rw:$(ESP) \
@@ -1265,7 +1319,7 @@ run-installed:
 	cp $(OVMF_VARS) $(BUILD)/ovmf-vars-installed.fd
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-installed.fd \
 	    -drive format=raw,file=$(INSTALLED) \
@@ -1386,7 +1440,7 @@ run-hardware:
 	qemu-system-x86_64 \
 	    -machine $(HWMACHINE) \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-hardware.fd \
 	    -device qemu-xhci,id=xhci \

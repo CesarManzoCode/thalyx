@@ -1453,6 +1453,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // keeping it.
         face: crate::files::Face::Human,
         watch: KernelWatch::from_now(),
+        // The screen turns this on for as long as it owns the loop.
+        thinking_elsewhere: false,
     };
 
     // The screen, before the first prompt, on the machine that has one.
@@ -1531,6 +1533,17 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // to the console it is standing on. The variant exists for the
             // screen, which has no console to write it to.
             Flow::Stay | Flow::Emptied => {}
+            // Never on this surface — `thinking_elsewhere` is false here, so
+            // `act_on` asks the model and returns a verb. Answered rather than
+            // ignored anyway: a flow that fell through silently would be a
+            // sentence the machine swallowed.
+            Flow::Thinking(said) => {
+                let read = interpret(session.store, session.here.at(), &said);
+                say_interpretation(session.face, &said, &read);
+                if let Interpretation::Verb { rewritten, .. } = read {
+                    session.act_on_proposal(&rewritten)?;
+                }
+            }
             Flow::Leave => break,
             // This surface's editor, which is the ANSI one. The terminal stays
             // as it is: the editor draws in place on purpose, and raw mode is
@@ -1684,6 +1697,21 @@ pub(crate) enum Flow {
     /// crosses the dispatcher. The surface opens it, which is also where a file
     /// that stopped being readable between the two gets reported.
     ToTheEditor(std::path::PathBuf),
+    /// Not a verb, and the surface said it would ask the model itself.
+    ///
+    /// The third thing whose meaning is a property of the surface, and it
+    /// arrived the way the other two did — by being right on the terminal and
+    /// wrong on the screen. Asking the model takes seconds, and on the screen
+    /// those seconds were spent inside `act_on`, so nothing redrew: no clock,
+    /// no spinner, a frame frozen on the glass with the person's own sentence
+    /// as the last thing on it. A machine that looks dead is a machine nobody
+    /// waits for.
+    ///
+    /// So the screen takes the sentence back and asks on a worker thread, and
+    /// what comes back is **a line of this session's own vocabulary** run
+    /// through this same dispatch. The worker never touches the machine; see
+    /// [`interpret`].
+    Thinking(String),
 }
 
 /// Everything a typed line reads and may change.
@@ -1698,6 +1726,14 @@ pub(crate) struct Session<'a> {
     pub here: crate::files::Where,
     pub face: crate::files::Face,
     pub watch: KernelWatch,
+    /// Whether a sentence that is not a verb comes back as [`Flow::Thinking`]
+    /// instead of being asked here.
+    ///
+    /// The screen sets it while it owns the loop, because on the glass the wait
+    /// has to be drawn. The text session leaves it false: a terminal that is
+    /// waiting looks like a terminal that is waiting, and there is nothing on
+    /// it that stops being true meanwhile.
+    pub thinking_elsewhere: bool,
 }
 
 impl<'a> Session<'a> {
@@ -1714,19 +1750,65 @@ impl<'a> Session<'a> {
             here: crate::files::Where::start(),
             face: crate::files::Face::Human,
             watch: KernelWatch::from_now(),
+            thinking_elsewhere: false,
         }
     }
 
     /// Run one line and say what it did to the session.
     pub(crate) fn act_on(&mut self, line: &str) -> Result<Flow, Box<dyn std::error::Error>> {
-        dispatch(
+        let ask = if self.thinking_elsewhere {
+            Ask::Elsewhere
+        } else {
+            Ask::Here
+        };
+        dispatch_asking(
             self.store,
             &self.standing,
             &mut self.here,
             &mut self.face,
             line,
+            ask,
         )
     }
+
+    /// Run a line the model produced, which is never handed back to the model.
+    ///
+    /// What the screen calls once a worker has come back with a verb. Same
+    /// dispatch, same confirmations, same everything — the only difference from
+    /// [`Session::act_on`] is the floor under the recursion. See [`Ask::Never`].
+    pub(crate) fn act_on_proposal(
+        &mut self,
+        line: &str,
+    ) -> Result<Flow, Box<dyn std::error::Error>> {
+        dispatch_asking(
+            self.store,
+            &self.standing,
+            &mut self.here,
+            &mut self.face,
+            line,
+            Ask::Never,
+        )
+    }
+}
+
+/// Who asks the model about a line that is not a verb, and whether anyone does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ask {
+    /// Ask it here and wait. The text session, where waiting is what a terminal
+    /// does and there is nothing on screen that stops being true meanwhile.
+    Here,
+    /// Hand the sentence back to the surface, which will ask on a thread. See
+    /// [`Flow::Thinking`].
+    Elsewhere,
+    /// Do not ask. This is the line the model itself produced.
+    ///
+    /// Without it the recursion has no floor: a proposal the dispatch does not
+    /// recognise would come straight back here and be handed to the model
+    /// again, and a model that keeps proposing the same unrecognised verb would
+    /// spin forever, spending an inference each time round. One hop is all the
+    /// arrangement needs — the model turns a sentence into a verb, and verbs
+    /// are what the session runs.
+    Never,
 }
 
 /// Every verb, in one place, for whichever face is asking.
@@ -1735,32 +1817,15 @@ impl<'a> Session<'a> {
 /// same verbs instead of growing a second set of them. The parameters are the
 /// four things an arm can read or change and nothing else — which is what made
 /// the lift safe: the loop's other locals, the terminal and the kernel watch,
-/// are never touched by an arm.
-fn dispatch(
-    store: &Store,
-    standing: &Standing,
-    here: &mut crate::files::Where,
-    answering_in: &mut crate::files::Face,
-    line: &str,
-) -> Result<Flow, Box<dyn std::error::Error>> {
-    dispatch_asking(store, standing, here, answering_in, line, true)
-}
-
-/// The same, with a say over whether the model may be consulted.
-///
-/// `may_ask` is false for the line the model itself produced. Without it the
-/// recursion has no floor: a proposal the dispatch does not recognise would
-/// come straight back here and be handed to the model again, and a model that
-/// keeps proposing the same unrecognised verb would spin forever, spending an
-/// inference each time round. One hop is all the arrangement needs — the model
-/// turns a sentence into a verb, and verbs are what the session runs.
+/// are never touched by an arm. The fifth says who asks the model, and only
+/// [`Session`] chooses it: see [`Ask`].
 fn dispatch_asking(
     store: &Store,
     standing: &Standing,
     here: &mut crate::files::Where,
     answering_in: &mut crate::files::Face,
     line: &str,
-    may_ask: bool,
+    may_ask: Ask,
 ) -> Result<Flow, Box<dyn std::error::Error>> {
     let mut face = *answering_in;
     let mut flow = Flow::Stay;
@@ -2171,12 +2236,19 @@ fn dispatch_asking(
         // remainder `Principio-Doble-Ruta.md` describes — the sentences a
         // person says when they do not know, or do not want to use, the word
         // the machine has for the thing.
-        _ if may_ask => match understand(store, here.at(), line, face) {
-            Understood::Nothing => {}
-            Understood::Verb(rewritten) => {
-                flow = dispatch_asking(store, standing, here, &mut face, &rewritten, false)?;
+        // The surface asks, and comes back with a verb. Before this the
+        // screen asked from inside the keystroke and stopped drawing for as
+        // long as the model took.
+        _ if may_ask == Ask::Elsewhere => {
+            flow = Flow::Thinking(line.to_string());
+        }
+        _ if may_ask == Ask::Here => {
+            let read = interpret(store, here.at(), line);
+            say_interpretation(face, line, &read);
+            if let Interpretation::Verb { rewritten, .. } = read {
+                flow = dispatch_asking(store, standing, here, &mut face, &rewritten, Ask::Never)?;
             }
-        },
+        }
         _ => {
             println!();
             println!("  I have no model loaded, so I can only act on what the rules");
@@ -2189,44 +2261,51 @@ fn dispatch_asking(
     Ok(flow)
 }
 
-/// What came back from asking the agent about a line that is not a verb.
-enum Understood {
-    /// Nothing to run — it was answered here, or refused here, or the model
-    /// declined. Either way the session goes on.
-    Nothing,
+/// What the agent made of a line that is not a verb.
+///
+/// A value and never an action, which is the property the screen leans on: the
+/// worker thread that produced it holds no store, opens no file and runs no
+/// verb. It hands back a sentence in the session's own vocabulary, and the
+/// session — on its own thread, with the display and the keyboard — is what
+/// runs it, through the same dispatch a person types into.
+pub(crate) enum Interpretation {
     /// A line of the session's own vocabulary, to be run as if typed.
-    Verb(String),
+    Verb {
+        rewritten: String,
+        operation: String,
+        targets: Vec<String>,
+    },
+    /// The model proposed something this machine has no verb for.
+    NoSuchVerb(String),
+    /// Missing, unloadable, unparseable, or declined. See
+    /// [`say_interpretation`] for why those four stay four.
+    Cannot(String),
 }
 
-/// Hand one sentence to the agent and turn what comes back into a verb.
+/// Hand one sentence to the agent and work out what verb it means.
 ///
 /// The whole of the agent is reused and none of it is re-decided here: the
 /// transcript, the router, the prompt, the grammar, the parser, the attribution
 /// and the provenance are `thalyx_agent::plan`, exactly as `thalyx agent plan`
-/// calls it. What this adds is the last step that was missing — the verb it
-/// worked out is *run*, at this prompt, with the confirmation that verb already
-/// asks for.
+/// calls it.
 ///
-/// Nothing here executes anything itself, and that is the point rather than
-/// tidiness. A proposal comes back as **a line of text in the session's own
-/// vocabulary**, and the session runs it through the same dispatch a person
-/// types into. So a model cannot reach an operation a person could not, cannot
-/// skip a confirmation, and cannot invent a verb: a name the dispatch does not
-/// have simply does not run.
-fn understand(
-    store: &Store,
-    here: &std::path::Path,
-    line: &str,
-    face: crate::files::Face,
-) -> Understood {
+/// **Nothing here executes anything**, and that is the point rather than
+/// tidiness. A proposal comes back as a line of text, and the session runs it
+/// through the same dispatch a person types into. So a model cannot reach an
+/// operation a person could not, cannot skip a confirmation, and cannot invent
+/// a verb: a name the dispatch does not have simply does not run. It is also
+/// what makes this safe to call from a worker thread — the authority stays with
+/// the session, and the thread only produces a proposal.
+///
+/// It prints nothing, for the same reason. On the screen the output of a verb
+/// is caught by `thalyx-capture`, and a thread printing outside that capture
+/// would write ANSI onto a console that is in graphics mode.
+pub(crate) fn interpret(store: &Store, here: &std::path::Path, line: &str) -> Interpretation {
     use thalyx_agent::{ForeignText, Segment, Transcript};
 
     let model = match crate::agent::model_for(store) {
         Ok(model) => model,
-        Err(error) => {
-            say_the_agent_cannot(face, line, &error.to_string());
-            return Understood::Nothing;
-        }
+        Err(error) => return Interpretation::Cannot(error.to_string()),
     };
 
     // Where the session is standing goes in as system state, not as something
@@ -2249,33 +2328,18 @@ fn understand(
     let plan = match thalyx_agent::plan(&transcript, model.as_ref(), ForeignText::NeverActs, caller)
     {
         Ok(plan) => plan,
-        Err(error) => {
-            say_the_agent_cannot(face, line, &error.to_string());
-            return Understood::Nothing;
-        }
+        Err(error) => return Interpretation::Cannot(error.to_string()),
     };
 
-    let operation = plan.operation();
+    let operation = plan.operation().to_string();
     let targets = plan.targets().to_vec();
 
     // An install is the one thing that arrives as a contract rather than as a
     // verb. It still becomes the session's own word for it, because `instalar`
     // is what carries the trusted-path confirmation, and a second way in would
     // be a second way to get that wrong.
-    let Some(verb) = crate::catalogue::verb_with_id(operation) else {
-        if face.is_machine() {
-            face.say(thalyx_files::machine::declined(
-                "understand",
-                "no_such_verb",
-                &format!("the model proposed `{operation}`, which is not a verb of this machine"),
-            ));
-        } else {
-            println!();
-            println!("  I understood that as `{operation}`, and there is no such verb");
-            println!("  here. Nothing was done.");
-            println!();
-        }
-        return Understood::Nothing;
+    let Some(verb) = crate::catalogue::verb_with_id(&operation) else {
+        return Interpretation::NoSuchVerb(operation);
     };
 
     let rewritten = if targets.is_empty() {
@@ -2284,27 +2348,70 @@ fn understand(
         format!("{} {}", verb.names[0], targets.join(" "))
     };
 
-    // Said out loud, always. A machine that quietly turns what somebody said
-    // into a different command and runs it is a machine nobody can trust with
-    // the next sentence: the human has to see the verb before it happens, and
-    // the verbs that change anything ask again anyway.
-    if face.is_machine() {
-        face.say(thalyx_files::machine::answer(
-            "understand",
-            vec![
-                ("said", serde_json::json!(line)),
-                ("operation", serde_json::json!(operation)),
-                ("arguments", serde_json::json!(targets)),
-                ("running", serde_json::json!(rewritten)),
-            ],
-        ));
-    } else {
-        println!();
-        println!("  I understood that as: {rewritten}");
-        println!();
+    Interpretation::Verb {
+        rewritten,
+        operation,
+        targets,
     }
+}
 
-    Understood::Verb(rewritten)
+/// Say what the agent made of it, before anything happens.
+///
+/// Always, and out loud. A machine that quietly turns what somebody said into a
+/// different command and runs it is a machine nobody can trust with the next
+/// sentence: the human has to see the verb before it happens, and the verbs
+/// that change anything ask again anyway.
+///
+/// One function rather than one per surface, because the screen and the text
+/// session say the same four things and two copies of that sentence is one
+/// surface quietly telling a person something the other would not have.
+pub(crate) fn say_interpretation(face: crate::files::Face, line: &str, read: &Interpretation) {
+    match read {
+        Interpretation::Verb {
+            rewritten,
+            operation,
+            targets,
+        } => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::answer(
+                    "understand",
+                    vec![
+                        ("said", serde_json::json!(line)),
+                        ("operation", serde_json::json!(operation)),
+                        ("arguments", serde_json::json!(targets)),
+                        ("running", serde_json::json!(rewritten)),
+                    ],
+                ));
+            } else {
+                println!();
+                println!("  I understood that as: {rewritten}");
+                // What it cost, when a resident engine is what answered.
+                // Nothing on a machine whose rules answered, and nothing the
+                // first time somebody reads it either — see `cost_line`.
+                if let Some(cost) = crate::engine_module::cost_line() {
+                    println!("  {cost}");
+                }
+                println!();
+            }
+        }
+        Interpretation::NoSuchVerb(operation) => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::declined(
+                    "understand",
+                    "no_such_verb",
+                    &format!(
+                        "the model proposed `{operation}`, which is not a verb of this machine"
+                    ),
+                ));
+            } else {
+                println!();
+                println!("  I understood that as `{operation}`, and there is no such verb");
+                println!("  here. Nothing was done.");
+                println!();
+            }
+        }
+        Interpretation::Cannot(why) => say_the_agent_cannot(face, line, why),
+    }
 }
 
 /// Why nothing happened, without ending the session over it.

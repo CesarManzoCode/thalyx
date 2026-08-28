@@ -42,6 +42,7 @@
 use crate::files::Face;
 use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
 use thalyx_core::Store;
 use thalyx_screen::{Bar, Guard, Panel, PixelFormat, Prompt, Row, Screen, Tone, Turn, Typography};
 
@@ -352,10 +353,47 @@ fn refresh(screen: &mut Screen, session: &crate::session::Session<'_>) {
     ];
     screen.right = vec![
         machine_panel(session.store),
+        model_panel(),
         running_panel(),
         memory_panel(),
         network_panel(),
     ];
+}
+
+/// Where the model is, as a panel.
+///
+/// It is on the glass rather than behind a verb because it is the one thing on
+/// this machine whose state a person has to know before typing: an engine
+/// still loading its weights makes the next sentence take seconds, and a
+/// machine that did not say so is a machine that looks broken for those
+/// seconds. `frío`/`tibio` beside the same pid is also the evidence that the
+/// weights were loaded once — see `engine_module`.
+fn model_panel() -> Panel {
+    use crate::engine_module::ModelState;
+
+    let rows = match crate::engine_module::model_state() {
+        ModelState::Cold => vec![Row::toned("sin cargar", Tone::Muted)],
+        ModelState::Loading => vec![Row::toned("cargando…", Tone::Muted)],
+        ModelState::Ready {
+            pid,
+            load_ms,
+            threads,
+            context,
+            answered,
+            ..
+        } => vec![
+            Row::toned("listo", Tone::Ok),
+            Row::pair("motor", format!("pid {pid}")),
+            Row::pair("carga", format!("{:.1} s", load_ms as f32 / 1000.0)),
+            Row::pair("hilos", format!("{threads} ▪ ctx {context}")),
+            Row::pair("frases", answered.to_string()),
+        ],
+        // The reason, not just the fact. A panel that said only `no` would send
+        // whoever read it looking for the model rather than at the sentence
+        // that says which part of starting it failed.
+        ModelState::Failed(why) => vec![Row::toned(first_clause(&why), Tone::Refused)],
+    };
+    Panel::new("modelo", rows)
 }
 
 /// What the session's own first screen says, as a panel.
@@ -661,6 +699,20 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
         pending: crate::term::take_pending(),
     };
 
+    // From here to the `return`s below, a sentence that is not a verb comes
+    // back as `Flow::Thinking` instead of being asked inside the keystroke.
+    // Put back on the way out, so the text session under this one waits for the
+    // model itself — which is right there and wrong here.
+    session.thinking_elsewhere = true;
+
+    // The weights, starting to load now, on a thread, so the first sentence
+    // probably finds them in. Nothing waits for it: the screen is already
+    // drawn by the time this returns, and a request that arrives mid-load
+    // simply waits for the same engine behind the same lock rather than
+    // starting a second one.
+    crate::engine_module::prewarm(session.store.root());
+
+    let mut thinking: Option<Thinking> = None;
     let mut line = thalyx_term::Line::new();
     // What has been typed before, newest last. Its own list rather than the text
     // session's, which lives inside `term::Terminal` and belongs to a reader
@@ -682,7 +734,66 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
 
         if let Some(left) = leaving {
             crate::term::give_pending(&painter.pending);
+            session.thinking_elsewhere = false;
             return Ok(left);
+        }
+
+        // The model, when one is being asked. The keyboard is deliberately not
+        // read while this is in flight: there is one engine and one inference
+        // at a time, so a second sentence would only queue anyway, and what
+        // gets typed meanwhile is still in the terminal's own buffer when the
+        // loop comes back to it. What must not stop is the drawing, and it
+        // does not — every `TICK` this redraws with the spinner turned and the
+        // clock moved on.
+        if let Some(waiting) = thinking.as_mut() {
+            match waiting.answer.recv_timeout(TICK) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    waiting.tick(&mut painter.screen);
+                    continue;
+                }
+                answered => {
+                    let waiting = thinking.take().expect("just matched");
+                    waiting.done(&mut painter.screen);
+                    let read = answered.unwrap_or_else(|_| {
+                        crate::session::Interpretation::Cannot(
+                            "the thread that was asking the model went away".to_string(),
+                        )
+                    });
+
+                    // Said on the screen through the same capture a verb's
+                    // output goes through, so what the person reads is the same
+                    // sentence the text session prints.
+                    let said = &waiting.said;
+                    let (given_back, caught) =
+                        crate::ask::while_the_display_can_ask(painter, || {
+                            thalyx_capture::what_it_says(|| {
+                                crate::session::say_interpretation(session.face, said, &read)
+                            })
+                        });
+                    painter = given_back;
+                    if let Ok((_, printed)) = caught {
+                        for turn in answer(&printed) {
+                            push(&mut painter.screen, turn);
+                        }
+                    }
+                    if let Some(cost) = crate::engine_module::cost_line() {
+                        push(&mut painter.screen, Turn::machine(cost));
+                    }
+
+                    // The verb, on this thread, through the same dispatch a
+                    // person types into — with the confirmations it asks for
+                    // drawn here, on the glass, by the loop that holds the
+                    // keyboard. The worker produced a proposal and nothing else.
+                    if let crate::session::Interpretation::Verb { rewritten, .. } = read {
+                        let (given_back, left, again) = run_proposal(session, painter, &rewritten);
+                        painter = given_back;
+                        leaving = left;
+                        let _ = again;
+                        refresh(&mut painter.screen, session);
+                    }
+                    continue;
+                }
+            }
         }
 
         if painter.pending.is_empty() {
@@ -750,10 +861,19 @@ pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen>
                         history.push(typed.clone());
                     }
                     push(&mut painter.screen, Turn::person(&typed));
-                    let (given_back, left) = run_one(session, painter, &typed);
+                    let (given_back, left, ask) = run_one(session, painter, &typed);
                     painter = given_back;
                     leaving = left;
                     refresh(&mut painter.screen, session);
+                    if let Some(said) = ask {
+                        thinking = Some(Thinking::about(
+                            &mut painter.screen,
+                            session.store.root(),
+                            session.here.at(),
+                            &said,
+                        ));
+                        break;
+                    }
                 }
                 _ => {}
             }
@@ -773,14 +893,42 @@ fn run_one(
     session: &mut crate::session::Session<'_>,
     painter: crate::ask::Painter,
     typed: &str,
-) -> (crate::ask::Painter, Option<Left>) {
+) -> (crate::ask::Painter, Option<Left>, Option<String>) {
+    run_line(session, painter, typed, false)
+}
+
+/// The same, for the verb a model proposed, which is never asked about again.
+///
+/// One function under both because everything after the dispatch is identical —
+/// the capture, the turns, the editor, the confirmations. See
+/// `session::Ask::Never` for the floor this puts under the recursion.
+fn run_proposal(
+    session: &mut crate::session::Session<'_>,
+    painter: crate::ask::Painter,
+    verb: &str,
+) -> (crate::ask::Painter, Option<Left>, Option<String>) {
+    run_line(session, painter, verb, true)
+}
+
+fn run_line(
+    session: &mut crate::session::Session<'_>,
+    painter: crate::ask::Painter,
+    typed: &str,
+    from_the_model: bool,
+) -> (crate::ask::Painter, Option<Left>, Option<String>) {
     // The display is lent to the verb for exactly as long as it runs, so that a
     // verb which stops to ask draws its question here instead of refusing for
     // want of a terminal. Lent **inside** the capture and not outside it,
     // because the question's context is what the verb has printed, and that
     // only exists once the capture is in place.
     let (painter, caught) = crate::ask::while_the_display_can_ask(painter, || {
-        thalyx_capture::what_it_says(|| session.act_on(typed))
+        thalyx_capture::what_it_says(|| {
+            if from_the_model {
+                session.act_on_proposal(typed)
+            } else {
+                session.act_on(typed)
+            }
+        })
     });
     let mut painter = painter;
 
@@ -796,7 +944,7 @@ fn run_one(
                     "No pude ejecutar eso sin perder lo que dijera: {error}"
                 )),
             );
-            return (painter, None);
+            return (painter, None, None);
         }
     };
 
@@ -804,8 +952,16 @@ fn run_one(
         push(&mut painter.screen, turn);
     }
 
+    let mut ask_the_model = None;
     let left = match outcome {
         Ok(crate::session::Flow::Stay) => None,
+        // Not a verb. The dispatch handed the sentence back rather than
+        // spending the next several seconds inside this call, and the loop
+        // asks the model on a thread — see `Flow::Thinking`.
+        Ok(crate::session::Flow::Thinking(said)) => {
+            ask_the_model = Some(said);
+            None
+        }
         Ok(crate::session::Flow::Leave) => Some(Left::Finished),
         // **Here and not inside the capture**, which is the whole point of the
         // verb answering with a transition. By this line the capture has been
@@ -840,7 +996,100 @@ fn run_one(
             None
         }
     };
-    (painter, left)
+    (painter, left, ask_the_model)
+}
+
+// ────────────────────────────────────────────────────── the model, off the loop
+
+/// The characters the wait is drawn with, one per frame.
+///
+/// Braille rather than a bar, because it is one cell wide in every font this
+/// machine has and a spinner that changes width redraws the whole line under it.
+const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+/// How long the loop waits for the model before redrawing.
+///
+/// Short enough that the clock ticks and the spinner turns — a frame that stops
+/// changing is the thing this whole arrangement exists to prevent — and long
+/// enough that the wait is not a busy loop on a machine with four cores, three
+/// of which the model wants.
+const TICK: Duration = Duration::from_millis(120);
+
+/// One sentence being turned into a verb, somewhere else.
+struct Thinking {
+    /// What the person actually typed, kept so the answer can name it.
+    said: String,
+    /// Where in the conversation the "pensando…" turn is, so it can be replaced
+    /// by the answer rather than left above it.
+    at: usize,
+    since: std::time::Instant,
+    frame: usize,
+    answer: std::sync::mpsc::Receiver<crate::session::Interpretation>,
+}
+
+impl Thinking {
+    /// Ask the model on a thread, and put a turn on the screen saying so.
+    ///
+    /// The thread gets a store of its own opened from the same root, and
+    /// nothing else: no display, no keyboard, no `Where`, no session. What it
+    /// produces is a proposal, and the loop is what runs it. That is not
+    /// tidiness — `vault/11-Seguridad/Modelo-de-Amenaza.md` puts the model
+    /// outside the TCB, and a worker that could act would be the model reaching
+    /// past the confirmation the session asks for.
+    fn about(screen: &mut Screen, root: &Path, here: &Path, said: &str) -> Thinking {
+        let (sender, answer) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        let here = here.to_path_buf();
+        let sentence = said.to_string();
+        std::thread::spawn(move || {
+            let read = match Store::open(&root) {
+                Ok(store) => crate::session::interpret(&store, &here, &sentence),
+                Err(error) => crate::session::Interpretation::Cannot(error.to_string()),
+            };
+            // A send that fails means the screen stopped waiting, which is not
+            // this thread's problem to report to anybody.
+            let _ = sender.send(read);
+        });
+
+        let at = screen.conversation.len();
+        push(screen, Turn::agent(format!("{} pensando…", SPINNER[0])));
+        Thinking {
+            said: said.to_string(),
+            at,
+            since: std::time::Instant::now(),
+            frame: 0,
+            answer,
+        }
+    }
+
+    /// Turn the spinner and say how long it has been, on the same turn.
+    fn tick(&mut self, screen: &mut Screen) {
+        self.frame = (self.frame + 1) % SPINNER.len();
+        let waited = self.since.elapsed().as_secs();
+        let what = match crate::engine_module::model_state() {
+            // The weights are what the seconds are going into, and saying so is
+            // the difference between a machine that is thinking and a machine
+            // that has hung. The first request after boot pays for this; the
+            // ones after it do not, and the person can see which they are in.
+            crate::engine_module::ModelState::Loading => "cargando el modelo",
+            _ => "pensando",
+        };
+        let line = if waited >= 2 {
+            format!("{} {what}… {waited} s", SPINNER[self.frame])
+        } else {
+            format!("{} {what}…", SPINNER[self.frame])
+        };
+        if let Some(turn) = screen.conversation.get_mut(self.at) {
+            *turn = Turn::agent(line);
+        }
+    }
+
+    /// Take the "pensando…" turn back off, so the answer replaces it.
+    fn done(&self, screen: &mut Screen) {
+        if self.at < screen.conversation.len() {
+            screen.conversation.truncate(self.at);
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────── the editor, on the glass

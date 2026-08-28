@@ -145,17 +145,30 @@ black, Ctrl-C on an empty line gives the text console back blind, while
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
 
-**New, 2026-08-28.** The engine is a module. `llama.cpp`'s `llama-completion`,
+**New, 2026-08-28.** The engine is a module, and it stays alive. `llama.cpp`
 built static, packed into a signed `.thmod`, installed on the store and run by
 the same launcher every other module goes through — its own cgroup, its own
-user, a pivoted root, the same syscall filter, and the 4 GiB its manifest asks
-for. One process per answer: no daemon, no server, no HTTP. The weights are data
-on the store, so changing the model is copying a file. The image is still the
-kernel and one program, and `make -C image count` says so. A sentence that is
-not a verb, typed at the machine's own screen, now reaches a model and comes
-back as a verb the session runs. What a container cannot check — the run
-actually confined, and whether a real Qwen2.5 gets an ordinary sentence right —
-is §45 of `dev/verify.sh` and `thalyx agent bench`.
+user, a pivoted root, the same syscall filter, and the memory its manifest asks
+for. It **loads the weights once**: `llama-completion` answers once and dies, so
+a second sentence used to read two gigabytes off disk again, which is most of
+what a local model costs spent on work the first sentence had already done. The
+module's program is now `engine/thalyx-engine.cpp` — same llama.cpp, same pinned
+tag, same flags, built by the same `cmake` — which loads the GGUF once and then
+answers length-prefixed requests on a pipe. No daemon, no server, no HTTP, no
+TCP: granting `net/outbound` to the least trusted program on the machine so that
+two local processes could talk would be weakening the isolation for
+convenience. There is still exactly one launcher — `run::start` hands back a
+`RunningModule` that owns the cgroup, the policy and the process, and `run()` is
+that same `start` followed by `wait`. The weights are data on the store, so
+changing the model is copying a file, and the image is still the kernel and one
+program. On the screen a sentence that is not a verb goes to a worker thread
+while the frame keeps composing, so the machine says `pensando…` with the clock
+still moving instead of freezing; the worker proposes and the session acts.
+Under every proposal the machine prints `motor <pid> ▪ frío|tibio ▪ <s>`, and
+the same pid twice is two sentences answered by one process. What a container
+cannot check — the run actually confined, and whether a real Qwen2.5 gets an
+ordinary sentence right — is §45 and §46 of `dev/verify.sh` and `thalyx agent
+bench`.
 
 **Partly proven.** The conversational agent has a model — `llama.cpp` invoked as
 a process, four decreed tiers — and three of the four were measured on one

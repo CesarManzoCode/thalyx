@@ -391,6 +391,10 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       perilla de política, no una decisión arquitectónica», y ningún manifiesto
       puede pedir más. Bajo ese tope no cabe un modelo de ninguna gama útil.
       **Es de Cesar**: es política y cuesta su hierro.
+- [x] **Que el motor deje de recargar los pesos en cada frase** — hecho el 2026-08-28. `llama-completion` es de una respuesta por construcción, así que la segunda frase volvía a leer el GGUF entero. Ahora el módulo es `thalyx-engine`: el mismo `llama.cpp` en la misma etiqueta, compilado por el mismo `cmake`, que carga los pesos una vez y contesta peticiones enmarcadas por una tubería. `run::start` devuelve un `RunningModule` que posee el confinamiento y el proceso; `run()` es ese `start` más `wait`, así que no hay un segundo lanzador. La pantalla pregunta en un hilo y sigue componiendo el marco mientras tanto. Ver [[Motor-Residente]].
+
+- [ ] **Anotar frío contra tibio con un modelo real.** La sesión ya imprime `motor <pid> ▪ frío|tibio ▪ <s>` bajo cada propuesta, y §46 de `verify.sh` comprueba que dos frases van por un solo proceso. Lo que falta son los dos números con un Qwen2.5-3B y ocho gigas concedidos, medidos dentro de la máquina. Ver [[Motor-Residente]].
+
 - [ ] **Medir el motor compilado contra musl estático.** Lo medido es glibc, y
       la regla 12 dice que una compilación con otra configuración es otro
       sistema. No se puede hacer en el contenedor: no hay objetivo de rustup ni

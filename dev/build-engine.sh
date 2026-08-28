@@ -38,6 +38,18 @@
 # The first three were each found by a failed link, in that order. They are
 # written down so the next person does not find them again.
 #
+# ## What gets built, since 2026-08-28: `thalyx-engine`, not `llama-completion`
+#
+# `llama-completion` is one-shot by construction, so a machine that was asked
+# two things paid for loading the weights twice — several seconds of a local
+# model's whole cost, spent again on work the previous sentence had already
+# done. `engine/thalyx-engine.cpp` is the same llama.cpp at the same tag with
+# the same flags, shaped as a program that loads the GGUF once and then answers
+# framed requests on a pipe. It is copied into the checkout's `tools/` and built
+# by the same configure, rather than linked by hand against the static archives:
+# ggml's backend link order is fiddly and moves between tags, and getting it
+# wrong is a link failure on somebody else's machine.
+#
 #   dev/build-engine.sh [output-directory]
 #
 # Leaves the checkout and the build under the directory it is given, so a second
@@ -54,6 +66,7 @@ REPO="${THALYX_LLAMA_CPP_URL:-https://github.com/ggml-org/llama.cpp}"
 WORK="${1:-${TMPDIR:-/tmp}/thalyx-engine}"
 SOURCE="$WORK/llama.cpp"
 BUILD="$SOURCE/build"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf '  %s\n' "$*" >&2; }
 
@@ -69,6 +82,13 @@ if [ ! -d "$SOURCE/.git" ]; then
     say "fetching llama.cpp $REF into $SOURCE"
     git clone --depth 1 --branch "$REF" "$REPO" "$SOURCE" >&2
 fi
+
+# Thalyx's own program, into llama.cpp's tree. Copied every run rather than
+# once, so editing the engine and rebuilding does what anyone would expect.
+mkdir -p "$SOURCE/tools/thalyx-engine"
+cp "$HERE/engine/thalyx-engine.cpp" "$HERE/engine/CMakeLists.txt" "$SOURCE/tools/thalyx-engine/"
+grep -q 'add_subdirectory(thalyx-engine)' "$SOURCE/tools/CMakeLists.txt" \
+    || printf '\nadd_subdirectory(thalyx-engine)\n' >> "$SOURCE/tools/CMakeLists.txt"
 
 GENERATOR=()
 command -v ninja > /dev/null && GENERATOR=(-G Ninja)
@@ -86,10 +106,10 @@ cmake -B "$BUILD" -S "$SOURCE" "${GENERATOR[@]}" \
     -DLLAMA_BUILD_SERVER=OFF \
     -DCMAKE_EXE_LINKER_FLAGS="-static" >&2
 
-say "building llama-completion — this takes a few minutes"
-cmake --build "$BUILD" --target llama-completion -j "$(nproc)" >&2
+say "building thalyx-engine — this takes a few minutes"
+cmake --build "$BUILD" --target thalyx-engine -j "$(nproc)" >&2
 
-ENGINE="$BUILD/bin/llama-completion"
+ENGINE="$BUILD/bin/thalyx-engine"
 [ -x "$ENGINE" ] || { say "the build finished and $ENGINE is not there"; exit 1; }
 
 # The check that matters, and it is two questions rather than one. A program can

@@ -319,6 +319,22 @@ que el dispatch no tiene simplemente no corre. Y un solo salto: lo que produjo
 el modelo no vuelve a consultar al modelo, o un modelo que repite una propuesta
 que nadie reconoce gira para siempre gastando una inferencia por vuelta.
 
+## Revisión — 2026-08-28, el mismo día: el motor se queda vivo
+
+Lo escrito arriba sobre *un proceso por respuesta* dejó de ser cierto horas
+después de arrancar. `llama-completion` es de una sola respuesta por
+construcción, así que la segunda frase volvía a leer el GGUF entero: la mayor
+parte de lo que cuesta un modelo local, gastada otra vez en trabajo ya hecho.
+
+**Nada de este decreto cambia.** El motor sigue siendo un módulo firmado,
+instalado, corrido por `thalyx_core::run` bajo `module_standard`, con su uid, su
+cgroup, su seccomp y su raíz pivotada. Lo que cambia es la forma del programa
+que hay adentro: carga los pesos una vez y contesta peticiones por una tubería
+hasta que Thalyx cierra el otro extremo. El binario se llama `thalyx-engine` y
+lo compila el mismo `cmake`, en la misma etiqueta, con las mismas banderas.
+
+Ver [[Motor-Residente]].
+
 ## Lo que sigue sin estar probado
 
 - **Confinado de verdad.** El contenedor no tiene BPF LSM, así que lo corrido
@@ -327,11 +343,14 @@ que nadie reconoce gira para siempre gastando una inferencia por vuelta.
 - **Que un Qwen2.5 real acierte la intención.** El modelo de dos capas de
   `dev/tiny-model.py` produce un objeto gramatical y vacío, lo cual prueba toda
   la tubería y nada del modelo. `thalyx agent bench` es lo que mide eso.
-- **La latencia desde la pantalla.** Una inferencia es un módulo arrancando y
-  cargando pesos; nadie ha medido cuánto se siente eso desde el vidrio.
+- **La latencia desde la pantalla.** Contestado en parte por [[Motor-Residente]]:
+  la carga de pesos ya no ocurre por frase, y la pantalla ya no se bloquea
+  mientras se infiere. Lo que sigue sin número es cuánto tarda una inferencia
+  tibia con un Qwen2.5-3B real dentro de la máquina.
 
 ## Relacionado
 
+- [[Motor-Residente]] — la revisión del mismo día: los pesos se cargan una vez
 - [[Agente-Conversacional]] — qué es el agente, y que está fuera de la TCB
 - [[Gamas-de-Modelo]] — las cuatro gamas y lo que cada una cuesta
 - [[Sistema-de-Modulos]] — el ciclo que esto obliga a existir de verdad

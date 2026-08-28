@@ -223,6 +223,17 @@ These were all learned by something going wrong. They are recorded in
     Stage 2 now runs the image Makefile's own build line, and
     `THALYX_REQUIRE_IMAGE_BUILD=1` turns its skips into failures.
 
+13. **When the claim is that something expensive stopped happening, count the
+    times it happened.** The resident engine reloaded the model on every
+    sentence because `if let (false, Some(stale)) = (usable, held.take())`
+    builds the whole tuple before matching, so `take()` ran unconditionally and
+    the live engine was dropped on every call. Nothing looked wrong: every
+    sentence was answered correctly, and the only thing that changed was the
+    cost — which is the entire thing that change existed to reduce. A test
+    written as "the second sentence is also answered" passes. What caught it was
+    a stand-in that appends its pid to a file when it starts, and an assertion
+    about how many lines that file has.
+
 ## How to write code here
 
 - **Rust 2024, cargo workspace, `clippy` with warnings denied, `cargo fmt`.**

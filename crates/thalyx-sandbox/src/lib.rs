@@ -276,12 +276,67 @@ pub type Result<T> = std::result::Result<T, SandboxError>;
 /// Holding one of these is the proof that the ordering rule was followed: it
 /// cannot be constructed without the policy already having been written.
 pub struct Confinement<'a> {
-    cgroup: Cgroup,
+    held: Held,
     policy_store: &'a dyn PolicyStore,
+}
+
+/// A confinement that has given up its borrow of the policy store.
+///
+/// [`Confinement`] borrows the store so the thing that wrote a policy and the
+/// thing that withdraws it cannot be two different kernels. That is right for
+/// every run that ends inside the call that started it, and it is exactly
+/// wrong for a **resident** module: the engine loads two gigabytes of weights
+/// and then waits for the next sentence, so its confinement outlives the frame
+/// that established it, and a value holding a borrow cannot be kept anywhere
+/// but in that frame.
+///
+/// So the borrow is given up and the store is named again at teardown. What is
+/// *not* given up is anything the confinement owns — the cgroup directory, the
+/// policy written into the kernel, the profile in force after it was adjusted
+/// for the grants. **Dropping one of these without calling [`Held::release`]
+/// leaves both the cgroup and its policy behind**, and an entry left in the
+/// map after its directory is gone becomes the policy of whatever cgroup the
+/// kernel gives that inode to next. Whoever holds one owns that release.
+pub struct Held {
+    cgroup: Cgroup,
     cgroup_id: u64,
     applied: thalyx_permd::Policy,
     profile: Profile,
     permissions: Vec<Permission>,
+}
+
+/// What one launch needs, beyond the confinement it happens inside.
+///
+/// A struct rather than six more parameters, and not only because clippy counts
+/// them: `program`, `uid` and `channel` are three values of three different
+/// shapes that all mean "this particular start", and at a call site they were
+/// a row of positional arguments where two neighbours were both `Option`.
+pub struct Launch<'a> {
+    pub module_dir: &'a Path,
+    /// The entrypoint, as a path on the host.
+    pub program: &'a Path,
+    /// The unprivileged user, when the profile gives one.
+    pub uid: Option<u32>,
+    pub args: &'a [std::ffi::OsString],
+    /// The module's end of its socket to Thalyx. See the note on `spawn`.
+    pub channel: Option<std::os::fd::BorrowedFd<'a>>,
+    pub stdin: Stdin,
+}
+
+/// What a module gets on descriptor 0.
+///
+/// [`Stdin::Closed`] is what every module has ever had and stays the default;
+/// the long comment on [`launch::spawn`] is about why it is not the terminal.
+/// Nothing in that reasoning is about a pipe *from Thalyx* — the objection is
+/// to a module reading what the human types, which is how a module could
+/// answer a confirmation on the human's behalf. [`Stdin::Piped`] hands the
+/// module a pipe whose only writer is Thalyx, which is what the channel on
+/// descriptor 3 already is, and it exists for one caller: a resident module
+/// that is sent requests rather than argv.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stdin {
+    Closed,
+    Piped,
 }
 
 impl<'a> Confinement<'a> {
@@ -362,15 +417,73 @@ impl<'a> Confinement<'a> {
         };
 
         Ok(Self {
-            cgroup,
+            held: Held {
+                cgroup,
+                cgroup_id,
+                applied,
+                profile,
+                permissions: permissions.to_vec(),
+            },
             policy_store,
-            cgroup_id,
-            applied,
-            profile,
-            permissions: permissions.to_vec(),
         })
     }
 
+    /// Give up the borrow of the policy store, keeping everything else.
+    ///
+    /// For a module that outlives the call that started it. See [`Held`].
+    pub fn detach(self) -> Held {
+        self.held
+    }
+
+    pub fn cgroup(&self) -> &Cgroup {
+        self.held.cgroup()
+    }
+
+    pub fn cgroup_id(&self) -> u64 {
+        self.held.cgroup_id()
+    }
+
+    /// The policy actually written to the kernel.
+    pub fn policy(&self) -> thalyx_permd::Policy {
+        self.held.policy()
+    }
+
+    /// The profile in force, after it was adjusted for what was granted.
+    pub fn profile(&self) -> &Profile {
+        self.held.profile()
+    }
+
+    /// Start a module inside this confinement, with descriptor 0 closed.
+    pub fn spawn(
+        &self,
+        helper: &Path,
+        module_dir: &Path,
+        program: &Path,
+        uid: Option<u32>,
+        args: &[std::ffi::OsString],
+        channel: Option<std::os::fd::BorrowedFd<'_>>,
+    ) -> Result<std::process::Child> {
+        self.held.spawn(
+            helper,
+            Launch {
+                module_dir,
+                program,
+                uid,
+                args,
+                channel,
+                stdin: Stdin::Closed,
+            },
+        )
+    }
+
+    /// Withdraw the policy and remove the cgroup, in that order.
+    pub fn release(self) -> Result<bool> {
+        let store = self.policy_store;
+        self.held.release(store)
+    }
+}
+
+impl Held {
     pub fn cgroup(&self) -> &Cgroup {
         &self.cgroup
     }
@@ -401,15 +514,15 @@ impl<'a> Confinement<'a> {
     /// and to record which number it is on. `None` starts a program with no
     /// channel, which is what the sandbox's own tests need and what no real
     /// module should ever get: see [`launch::LaunchSpec::channel_fd`].
-    pub fn spawn(
-        &self,
-        helper: &Path,
-        module_dir: &Path,
-        program: &Path,
-        uid: Option<u32>,
-        args: &[std::ffi::OsString],
-        channel: Option<std::os::fd::BorrowedFd<'_>>,
-    ) -> Result<std::process::Child> {
+    pub fn spawn(&self, helper: &Path, start: Launch<'_>) -> Result<std::process::Child> {
+        let Launch {
+            module_dir,
+            program,
+            uid,
+            args,
+            channel,
+            stdin,
+        } = start;
         let uid = if self.profile.own_user { uid } else { None };
         let rootfs = if self.profile.pivot_root {
             Some(rootfs::RootFs::for_module_as(
@@ -450,7 +563,7 @@ impl<'a> Confinement<'a> {
             channel_fd,
         };
 
-        launch::spawn(helper, &spec, args)
+        launch::spawn(helper, &spec, args, stdin)
     }
 
     /// Withdraw the policy and remove the cgroup, in that order.
@@ -459,7 +572,7 @@ impl<'a> Confinement<'a> {
     /// same module is running, and stripping its permissions mid-flight would
     /// deny it operations the human confirmed. Returns whether the
     /// confinement was actually torn down.
-    pub fn release(self) -> Result<bool> {
+    pub fn release(self, policy_store: &dyn PolicyStore) -> Result<bool> {
         if !self.cgroup.is_empty()? {
             return Ok(false);
         }
@@ -468,7 +581,7 @@ impl<'a> Confinement<'a> {
         // and inode numbers are reused; an entry left in the map after its
         // directory is gone would become the policy of whatever cgroup the
         // kernel allocates that inode to next.
-        thalyx_permd::revoke(self.policy_store, self.cgroup_id)?;
+        thalyx_permd::revoke(policy_store, self.cgroup_id)?;
         self.cgroup.remove()?;
         Ok(true)
     }

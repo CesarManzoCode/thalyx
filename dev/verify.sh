@@ -6473,7 +6473,13 @@ step "45. the engine is a module, and a real inference goes through it"
 #
 # Two inputs, both named rather than searched for:
 #
-#   THALYX_ENGINE        a `llama-completion`. `dev/build-engine.sh` builds one.
+#   THALYX_ENGINE        a `thalyx-engine`. `dev/build-engine.sh` builds one.
+#                        Since 2026-08-28 that is the resident engine and not
+#                        `llama-completion`: same llama.cpp, same tag, same
+#                        flags, shaped as a program that loads the GGUF once and
+#                        then answers framed requests on a pipe. §46 is where
+#                        that residency is measured; this stage measures that a
+#                        real inference goes through the module system at all.
 #   THALYX_ENGINE_MODEL  a GGUF. Any real one; `dev/tiny-model.py` makes a
 #                        two-layer one that exercises the engine and answers
 #                        nothing, which is enough for everything below except
@@ -6483,12 +6489,12 @@ step "45. the engine is a module, and a real inference goes through it"
 # rule 11: this machine has a real store at that path, and a stage that made
 # directories inside it would have changed the machine it was measuring.
 
-ENGINE_BIN="${THALYX_ENGINE:-$(command -v llama-completion || true)}"
+ENGINE_BIN="${THALYX_ENGINE:-$(command -v thalyx-engine || true)}"
 ENGINE_GGUF="${THALYX_ENGINE_MODEL:-}"
 ENGINE_GAP=""
 
 if [ -z "$ENGINE_BIN" ]; then
-    ENGINE_GAP="a real inference through the engine module — there is no llama-completion on this machine. Build one: dev/build-engine.sh, then THALYX_ENGINE=<path>"
+    ENGINE_GAP="a real inference through the engine module — there is no thalyx-engine on this machine. Build one: dev/build-engine.sh, then THALYX_ENGINE=<path>"
 elif [ -z "$ENGINE_GGUF" ] || [ ! -f "$ENGINE_GGUF" ]; then
     ENGINE_GAP="a real inference through the engine module — no weights. Set THALYX_ENGINE_MODEL to a GGUF; dev/tiny-model.py builds a small real one"
 fi
@@ -6511,7 +6517,7 @@ else
     ENGINE_ROOT="$WORK/engine-store"
     ENGINE_DATA="$WORK/engine-data"
     mkdir -p "$ENGINE_ROOT" "$ENGINE_DATA/models" "$ENGINE_DATA/run" "$WORK/engine-pack/bin"
-    cp "$ENGINE_BIN" "$WORK/engine-pack/bin/llama-completion"
+    cp "$ENGINE_BIN" "$WORK/engine-pack/bin/thalyx-engine"
     cp "$ENGINE_GGUF" "$ENGINE_DATA/models/model.gguf"
 
     "$THALYX" dev keygen --out "$WORK/engine.key" > /dev/null 2>&1
@@ -6548,7 +6554,7 @@ action   = "4GiB"
 type     = "persistent"
 
 [entrypoints]
-run = "bin/llama-completion"
+run = "bin/thalyx-engine"
 TOML
 
     if ! "$THALYX" dev pack "$WORK/engine-pack" --manifest "$WORK/engine-manifest.toml"             --key "$WORK/engine.key" --out "$WORK/engine.thmod" > "$WORK/engine-pack.log" 2>&1; then
@@ -6602,6 +6608,79 @@ TOML
         unproven "that the configured tier answers an ordinary sentence with the right verb — that is a measurement of the model, not of this machine: \`thalyx agent bench\`"
     fi
 fi
+
+step "46. the weights are loaded once, and the second sentence does not pay for them"
+
+# The claim Cesar made the shape of on 2026-08-28: *no me digas "persistent"
+# porque existe un objeto Rust persistente mientras el proceso sigue muriendo*.
+#
+# So what is asked here is a question about processes, and it is asked of one
+# `thalyx session` that is given two sentences — because the engine lives inside
+# a session's lifetime, and two `agent model check` invocations are two Thalyx
+# processes and therefore two engines however residency works.
+#
+# The evidence is the line the session prints under every proposal: `motor
+# <pid> ▪ frío|tibio ▪ <s>`. Two of them naming the same pid is one process
+# answering both sentences; the second saying `tibio` is that process not having
+# loaded the weights again. Both halves are checked, because either alone can
+# be true of something else — a machine that never restarted anything would
+# also print one pid, and one that reported `tibio` from a counter nobody set
+# would print it whatever happened.
+#
+# It reuses §45's store, engine and weights, so a machine that could not do §45
+# says so once rather than twice.
+
+if [ -n "$ENGINE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_ENGINE_TESTS:-0}" = 1 ]; then
+        failed "the resident engine — $ENGINE_GAP"
+    else
+        unproven "that the weights are loaded once for two sentences — $ENGINE_GAP"
+    fi
+elif [ ! -d "${ENGINE_ROOT:-/nonexistent}" ]; then
+    unproven "that the weights are loaded once for two sentences — §45 never got as far as an installed engine module"
+else
+    RESIDENT_HOME="$WORK/resident-home"
+    rm -rf "$RESIDENT_HOME"
+    mkdir -p "$RESIDENT_HOME"
+
+    # Unconfined only if §45 found it had to be. The confinement is established
+    # by the same call that starts the resident — `run::start` — so on a machine
+    # that can enforce, this measures both at once.
+    RESIDENT_ENV=(env "THALYX_ENGINE_DATA=$ENGINE_DATA" "HOME=$RESIDENT_HOME")
+    if [ "${ENGINE_CONFINED:-1}" != 1 ]; then
+        RESIDENT_ENV+=("THALYX_ENGINE_UNCONFINED=1")
+    fi
+
+    printf 'cd %s\ncrea una carpeta llamada primera\ncrea una carpeta llamada segunda\nsalir\n' \
+        "$RESIDENT_HOME" \
+        | (cd "$RESIDENT_HOME" && "${RESIDENT_ENV[@]}" "$THALYX" --root "$ENGINE_ROOT" session) \
+        > "$WORK/resident.log" 2>&1 || true
+
+    ENGINE_PIDS=$(grep -o 'motor [0-9]*' "$WORK/resident.log" 2>/dev/null | awk '{print $2}')
+    DISTINCT=$(printf '%s\n' "$ENGINE_PIDS" | grep -c '[0-9]' || true)
+    UNIQUE=$(printf '%s\n' "$ENGINE_PIDS" | grep '[0-9]' | sort -u | wc -l)
+
+    if [ "$DISTINCT" -lt 2 ]; then
+        # A tiny model answers nothing the grammar can turn into a verb, so the
+        # cost line may never be printed. That is not a failure of residency and
+        # is not reported as one — rule 10.
+        unproven "that the weights are loaded once for two sentences — the session printed $DISTINCT engine lines, which means the model did not produce two proposals. With a real Qwen2.5 this is the stage that answers it"
+        excerpt "$WORK/resident.log" 25
+    elif [ "$UNIQUE" -ne 1 ]; then
+        failed "two sentences were answered by $UNIQUE different engine processes — the weights were loaded again"
+        excerpt "$WORK/resident.log" 25
+    elif ! printf '%s' "$(grep -o 'motor [0-9]* ▪ [a-zíó]*' "$WORK/resident.log" | tail -1)" | grep -q 'tibio'; then
+        failed "the second sentence was answered by the same process and still reported a cold load, so what `tibio` means is not what happened"
+        excerpt "$WORK/resident.log" 25
+    else
+        proven "two sentences went through one engine process, and the second one did not load the weights: $(printf '%s' "$ENGINE_PIDS" | tr '\n' ' ')"
+    fi
+fi
+
+# The half no automated stage can answer: the screen. Whether the frame keeps
+# composing while the model thinks is a claim about pixels on a display nobody
+# is looking at here.
+unproven "that the screen keeps drawing while an inference runs — boot it: make -C image run, and watch the spinner and the clock while it answers"
 
 # ------------------------------------------------- the machine, as it is left
 #

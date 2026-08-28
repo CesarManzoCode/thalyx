@@ -14,6 +14,11 @@
 #   2. the engine, packed into a signed .thmod and **installed**;
 #   3. the agent's settings — tier, weights, and the module that runs them.
 #
+# The entrypoint is `bin/thalyx-engine` and not `bin/llama-completion` since
+# 2026-08-28. Same llama.cpp, same tag, same flags; what changed is that the
+# program stays alive with the weights in it instead of exiting after one
+# answer. See `dev/build-engine.sh` and `engine/thalyx-engine.cpp`.
+#
 # Installed, where the greeter is deliberately left uninstalled. The greeter is
 # step 2 of `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md` — a person
 # installing a signed module — and a machine that booted with it already there
@@ -80,7 +85,7 @@ echo "  memory: $MEMORY ceiling for tier $TIER"
 
 rm -rf "$BUILD/engine-pack"
 mkdir -p "$BUILD/engine-pack/bin" "$STAGE/modules/engine/models" "$STAGE/modules/engine/run"
-cp "$ENGINE" "$BUILD/engine-pack/bin/llama-completion"
+cp "$ENGINE" "$BUILD/engine-pack/bin/thalyx-engine"
 cp "$MODEL" "$STAGE/modules/engine/models/model.gguf"
 
 # The grants are directories rather than the two files, and that is deliberate.
@@ -94,7 +99,7 @@ format_version = 1
 id             = "$ENGINE_ID"
 name           = "llama.cpp"
 version        = "1.0.0"
-description    = "The inference engine: llama-completion, static, one process per answer"
+description    = "The inference engine: llama.cpp, static, resident — the weights load once"
 license        = "MIT"
 publisher_key  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 distribution   = "prebuilt"
@@ -128,7 +133,7 @@ action   = "$MEMORY"
 type     = "persistent"
 
 [entrypoints]
-run = "bin/llama-completion"
+run = "bin/thalyx-engine"
 TOML
 
 "$THALYX" dev pack "$BUILD/engine-pack" \

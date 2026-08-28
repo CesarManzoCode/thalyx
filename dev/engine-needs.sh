@@ -16,8 +16,12 @@
 #
 # ## What it needs, and what it does instead of guessing
 #
-# A real engine and a real model. The engine is llama.cpp's `llama-completion`,
-# which is what `crates/thalyx-agent/src/llama.rs` already drives. The model is
+# A real engine and a real model. The engine here is llama.cpp's
+# `llama-completion` — the one-shot tool `ProcessEngine` drives on a development
+# machine — and that is deliberate: what this script measures is which syscalls
+# *inference* makes, which is the same set whatever shape the program around it
+# has. The machine's own engine is the resident `thalyx-engine`; it is the same
+# llama.cpp at the same tag, so the answer carries over. The model is
 # built here, by llama.cpp's own `gguf-py`, because the alternative was a file
 # this script's author invented and rule 6 says a fixture proves the format
 # matches your model of it.

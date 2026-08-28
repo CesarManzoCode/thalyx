@@ -4549,6 +4549,38 @@ Dos consecuencias, y la segunda es la regla:
    todos lados. Lo que se afirma es la *diferencia*: la tecla que aquí da `ñ` es
    la que en el mapa compilado del kernel da `;`.
 
+## Regla derivada: un patrón evalúa sus dos mitades antes de decidir cuál usa — 2026-08-28
+
+El motor residente cargaba el modelo otra vez en cada frase, y la línea que lo
+causaba compilaba, pasaba `clippy` y se lee correcta:
+
+```rust
+if let (false, Some(stale)) = (usable, held.take()) {
+    stale.retire();
+}
+```
+
+La tupla se construye **antes** de comparar con el patrón, así que `held.take()`
+corría siempre. Cuando el motor sí servía —`usable == true`— el brazo no
+entraba, `stale` nunca se ligaba, y el residente que acababa de sacarse del sitio
+se destruía al final de la sentencia. La siguiente frase encontraba `None` y
+arrancaba otro proceso con los pesos otra vez.
+
+Tres cosas de esto, y la tercera es la regla:
+
+1. **No hubo error visible.** Cada frase se contestó bien. Lo único que cambió
+   fue el coste, que es exactamente lo que la fase entera existía para bajar.
+2. **`RunningModule` no tenía `Drop`**, así que el proceso tirado seguía vivo:
+   la máquina acumulaba un motor por frase, cada uno con el modelo cargado. Peor
+   que el fallo que se estaba reparando. Ahora tiene uno, y mata el proceso.
+3. **Lo que agarró el defecto fue contar procesos, no observar comportamiento.**
+   `the_engine_stays_alive` hace que el motor de mentira anote su pid en un
+   archivo al arrancar, y la afirmación es sobre cuántas líneas tiene ese
+   archivo. Una prueba escrita como «la segunda frase también se contesta»
+   habría pasado. Cuando lo que se afirma es *que algo caro no volvió a pasar*,
+   la prueba tiene que contar las veces que pasó — no comprobar el resultado,
+   que es el mismo de las dos formas.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

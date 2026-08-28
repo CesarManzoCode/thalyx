@@ -14,9 +14,86 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El primer arranque real en QEMU: el motor no encendía — 2026-08-28
+> ## El motor se queda vivo, y la pantalla deja de congelarse — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El arranque en QEMU del bloque siguiente probó que la cadena entera existe:
+> una frase en español llegó a un Qwen2.5-3B confinado y `ls` mostró la carpeta.
+> Lo que ese arranque también mostró es que **el motor era por lotes**.
+> `llama-completion` es de una sola respuesta por construcción, así que la
+> segunda frase volvía a leer dos gigabytes de disco y a construir el contexto
+> otra vez: la mayor parte de lo que cuesta un modelo local, gastada de nuevo en
+> trabajo ya hecho. Y la llamada ocurría dentro de la pulsación de Enter, así
+> que durante esos segundos el marco no se redibujaba — ni el reloj.
+>
+> Las dos cosas están cerradas. **El decreto de que el motor es un módulo no
+> cambió en nada**: sigue firmado, instalado, corrido por `thalyx_core::run`
+> bajo `module_standard`, con su uid, su cgroup, su seccomp y su raíz pivotada.
+> Lo que cambió es la forma del programa que hay adentro.
+>
+> **`engine/thalyx-engine.cpp`.** El mismo `llama.cpp` en la misma etiqueta
+> fijada (`b10665`), con las mismas banderas y el mismo enlace estático; se copia
+> dentro de `tools/` del checkout y lo compila el mismo `cmake`, para que el
+> orden de enlace de los backends de ggml no sea algo que este repositorio
+> resuelva a mano. Carga el GGUF una vez, anuncia que está listo, y contesta
+> peticiones enmarcadas por una tubería hasta que Thalyx cierra el otro extremo.
+> No reimplementa inferencia: debajo del protocolo todo es la librería `common`
+> de `llama.cpp`.
+>
+> **Nada de red.** Ni HTTP, ni TCP, ni el servidor que `llama.cpp` ya trae:
+> conceder `net/outbound` al programa menos confiable de la máquina para que dos
+> procesos del mismo anfitrión se hablen es debilitar el aislamiento por
+> comodidad. El protocolo es little-endian con longitud por delante, y se mandan
+> **rutas y no texto** — los archivos ya están donde al módulo se le concedió
+> leerlos, así que la inferencia sigue siendo inspeccionable en disco.
+>
+> **Un solo lanzador.** `thalyx_core::run` se partió por dentro en `run::start`
+> → `RunningModule` → `wait`/`shutdown`, y `run()` es `start` seguido de `wait`.
+> El camino ordinario ejerce el mismo código que el residente mantiene abierto,
+> así que no hay un segundo lugar donde acertar con el cgroup, la política, el
+> filtro seccomp, la raíz y el uid.
+>
+> **La pantalla ya no se bloquea.** Una línea que no es un verbo vuelve como
+> `Flow::Thinking` en vez de gastar segundos dentro de la pulsación; la pantalla
+> pregunta en un hilo, dibuja `⠋ pensando…` con el reloj corriendo cada 120 ms, y
+> cuando llega la respuesta la corre por el **mismo** dispatch, en el hilo que
+> tiene el teclado. El trabajador propone y no actúa. Y al arrancar, la sesión
+> gráfica lanza un hilo que precalienta los pesos, así que la primera frase
+> probablemente encuentra el modelo ya adentro.
+>
+> **La evidencia se cuenta en procesos, no en objetos.** Bajo cada propuesta la
+> sesión imprime `motor <pid> ▪ frío|tibio ▪ <s>`: el mismo pid dos veces son dos
+> frases contestadas por un proceso. Y la prueba se escribió igual —
+> `the_engine_stays_alive` empaqueta el binario de la propia prueba como módulo
+> del motor y ese motor de mentira anota su pid al arrancar; lo que se afirma es
+> cuántas líneas tiene ese archivo.
+>
+> **Eso agarró un defecto que nada más habría agarrado.**
+> `if let (false, Some(stale)) = (usable, held.take())` evalúa las dos mitades de
+> la tupla antes de comparar con el patrón, así que `take()` corría siempre y el
+> residente vivo se tiraba en cada llamada. Todas las frases se contestaban bien;
+> lo único que cambiaba era el costo, que es justo lo que esta fase existía para
+> bajar. Y como `RunningModule` no tenía `Drop`, el proceso tirado seguía vivo:
+> la máquina acumulaba un motor por frase con el modelo cargado en cada uno.
+> Ahora tiene `Drop` y la regla está en [[Estrategia-de-Pruebas]].
+>
+> De paso, dos cosas de herramienta: **`make -C image run` abre la interfaz
+> gráfica** —era `-nographic`, que fue correcto hasta el día en que la pantalla
+> se volvió la cara del sistema y siguió *funcionando* después, que es por lo que
+> nadie lo notó— y `run-serial` es la ruta vieja con un nombre que dice lo que
+> es. `CPUS ?= 4`, porque el motor escoge sus hilos con
+> `available_parallelism` y `-smp 2` era un modelo a media velocidad sin que
+> nadie lo hubiera decidido.
+>
+> **Lo que falta y lo dice `verify.sh`:** §45 y §46 en el hierro de Cesar —
+> residencia *y* confinamiento los establece la misma llamada, pero este
+> contenedor no tiene BPF LSM y lo medido aquí corrió `--unconfined`. Y los dos
+> números, frío contra tibio, con un Qwen2.5-3B real. Ver [[Motor-Residente]].
+>
+> ---
+>
+> ## El primer arranque real en QEMU: el motor no encendía — 2026-08-28
 >
 > El primer defecto real del motor no lo encontró ninguna prueba. Lo encontró
 > arrancar la imagen en QEMU y hablarle:

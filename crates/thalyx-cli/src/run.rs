@@ -63,6 +63,9 @@ pub fn run(asked: Asked<'_>) -> Fallible {
             request_id,
             origin: Origin::UserUtterance,
             unconfined,
+            // `correr` waits for what it started. The resident wiring is the
+            // engine's and only the engine's — see `thalyx_core::run::Wiring`.
+            wiring: thalyx_core::run::Wiring::Collected,
         },
     )?;
 
@@ -357,6 +360,7 @@ pub fn foresee(asked: Asked<'_>) -> Fallible {
             request_id,
             origin: Origin::UserUtterance,
             unconfined,
+            wiring: thalyx_core::run::Wiring::Collected,
         },
     ) {
         Ok(foreseen) => foreseen,
