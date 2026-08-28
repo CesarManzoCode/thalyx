@@ -84,6 +84,8 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Fases-de-Implementacion]] — las 4 fases del roadmap
 - [[Criterio-de-Salida-Fase-1]] — la definición de terminado de la Fase 1
 - [[Condiciones-de-Adopcion]] — gates para abrir a usuarios (NO son de Fase 1)
+- [[Prioridad-Operativa]] — **la prioridad de esta etapa**: demostrar y medir que Thalyx mejora el trabajo de un agente; qué queda diferido y qué no cambia
+- [[Evidencia-de-Agentes]] — **el documento canónico de evidencia**: cada corrida medida, incluidas las que no favorecen a Thalyx
 - [[Por-Que-Elegirian-Este-SO]] — análisis honesto de propuesta de valor, con huecos reconocidos
 
 ### 9. Investigación

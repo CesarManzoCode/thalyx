@@ -16,6 +16,11 @@ Mapa de contenido de todos los debates que se dieron durante el diseño del proy
 3. [[Debate-Agente-Fine-Tuning]] — ¿qué pasa con el agente y el fine-tuning?
 4. [[Decision-Licencia]] — ¿qué licencia, y por qué GPLv3 no alcanza?
 
+## Decisiones de estrategia
+
+- [[Ritmo-de-Construccion]] — qué se le pregunta a Cesar y qué se hace sin preguntar.
+- [[Prioridad-Operativa]] — 2026-08-28: se reordena la prioridad de la etapa hacia demostrar y medir la ventaja para agentes. La visión no cambia; cambia el orden de ejecución.
+
 ## Debates de ecosistema
 
 5. [[Sistema-Reputacion-Sybil]] — ¿qué pasa con el sistema de reputación anti-Sybil?

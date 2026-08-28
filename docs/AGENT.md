@@ -180,6 +180,12 @@ src/server.rs
 **One run of one task is an anecdote.** What the script gives you is the ability
 to run the comparison at all.
 
+Every run that has actually been made is written down, one by one — including
+the one where Thalyx showed no advantage — in
+`vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`. That note is the canonical
+record: numbers there are never averaged across runs, and a run that did not
+favour Thalyx is written up in the same detail as one that did.
+
 ---
 
 ## When something is wrong

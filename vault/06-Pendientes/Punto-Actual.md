@@ -14,6 +14,55 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## La prioridad de la etapa se reordena: demostrar y medir la ventaja para agentes — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **Nada se construyó en este paso.** Es documentación, estrategia y
+> formalización: dos notas nuevas y revisiones fechadas en las que ya existían.
+>
+> **Lo que cambia**, decretado por Cesar el 2026-08-28 y escrito entero en
+> [[Prioridad-Operativa]]: durante esta etapa la prioridad operativa es
+> demostrar que Thalyx mejora el trabajo de agentes reales, medirlo, hacer
+> dogfooding, mejorar sólo lo que la evidencia pida, absorber mecanismos ya
+> demostrados por otras herramientas, bajar la fricción de adopción
+> —proyecto → VM → el mismo agente → trabajar— y **posponer la habitabilidad
+> general que no ayude a eso**. En una frase:
+>
+> > Primero demostrar que Thalyx hace mejor al agente. Después hacer que Thalyx
+> > pueda reemplazar al resto de la máquina.
+>
+> **Lo que NO cambia, y es la mitad importante:** la visión. [[Filosofia-Fundacional]]
+> sigue intacta, la imagen sigue siendo el kernel y un programa, MCP sigue siendo
+> un adaptador y no la API interna, y el agente externo sigue siendo software no
+> confiable. Navegador, paquetes, catálogo de aplicaciones, escritorio,
+> multimedia y compatibilidad por completitud quedan **diferidos, no
+> abandonados**. Nada de eso estaba decretado, así que lo que se defiere es una
+> aspiración de orden, no un decreto: [[Construccion-del-ISO]] ya decía que no
+> hay gestor de paquetes y [[La-Pantalla]] que no hay escritorio.
+>
+> **La regla de prioridad**, para no tener que releer la nota: una tarea va
+> primero si aumenta de forma medible el éxito del agente, o baja costo/tokens/
+> contexto, o baja tiempo/trabajo, o mejora seguridad/reversibilidad, o facilita
+> la adopción. Si no toca ninguna, normalmente espera. No sustituye a los cinco
+> costos de [[Superficie-para-el-LLM]]: los cinco deciden qué merece existir, y
+> esta regla decide qué merece el tiempo de esta etapa, exigiendo además que el
+> efecto se vea en una corrida.
+>
+> **Y la evidencia queda en un solo lugar**: [[Evidencia-de-Agentes]], con las
+> tres corridas completas —READ #1, READ #2 y **CHANGE #1, que no favorece a
+> Thalyx y está escrito igual de completo**—, la corrida histórica etiquetada
+> como anterior al endurecimiento del índice, los límites de lo que tres
+> observaciones pueden decir, y el **protocolo del bug real** para cuando
+> aparezca uno: congelar el SHA, describirlo, una sola comparación seria con los
+> dos brazos, y guardar streams, costo, parches y pruebas. Un bug cuyo problema
+> central sea el puente o el índice roto **no sirve** para esa comparación.
+>
+> **Lo que sigue pendiente y es de Cesar:** correr
+> `dev/bench-external-agent.sh --task reversible` sobre `UidRegistry`, que sigue
+> **PREPARADO / NO EJECUTADO** — el bloque de abajo dice cómo y qué decidir antes
+> del `CLAUDE.md`.
+
 > ## El arnés tiene la tarea que sí ejercita la frontera reversible, y no se ha corrido — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

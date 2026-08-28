@@ -466,6 +466,48 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       un enlazador, una libc. Deliberadamente **no** en esta etapa: primero se
       quiere saber si las primitivas aportan valor. Ver [[Agentes-Externos]].
 
+## La campaña de evidencia con agentes, decidida el 2026-08-28
+
+Prioridad de la etapa: [[Prioridad-Operativa]]. Todo lo medido, y el protocolo
+con el que se mide, en [[Evidencia-de-Agentes]].
+
+- [ ] **Correr el banco reversible.** `dev/bench-external-agent.sh --task
+      reversible` con `--symbol UidRegistry` y
+      `dev/bench-expect/reversible-UidRegistry.txt`. **PREPARADO / NO
+      EJECUTADO** desde `cb05b05`. Es de Cesar: cuesta corridas de Claude y
+      cuesta su hierro, porque el hash de después del brazo B va con la máquina
+      apagada (`sudo make -C image agent-export`, y una segunda pasada con
+      `--arms none --restored-b`).
+- [ ] **Decidir qué hacer con el `CLAUDE.md` en el brazo A.** El brazo A trabaja
+      dentro de la copia y Claude Code se lo carga; el brazo B no lo ve. Le suma
+      tokens al brazo A por algo que no es la tarea, **o sea al lado que
+      favorece a Thalyx**. Se evita apuntando `--project` a una copia sin
+      `CLAUDE.md`. Va antes de la primera corrida, no después.
+- [ ] **El primer bug real medido con el protocolo de dogfooding.** Espera a que
+      aparezca un bug adecuado; no se fabrica uno. Excluidos los bugs cuyo
+      problema central sea que el puente, el MCP o el índice del brazo B esté
+      roto.
+- [ ] **Saber cuánto se mueve una corrida por sí sola.** Ninguna tarea se ha
+      repetido, así que no hay varianza medida y los porcentajes son de esas
+      corridas concretas. Es la misma lección que las gamas del modelo:
+      **medir dos veces antes de comparar.** Ver [[Gamas-de-Modelo]].
+- [ ] **Medir otras clases de cambio y otro repositorio.** Hoy son dos de
+      lectura y una de escritura simple, en dos proyectos ajenos.
+- [ ] **Decidir si el grader pasa de presencia de cadenas a algo más.**
+      `--expect-file` comprueba que la respuesta contenga la verdad conocida, no
+      equivalencia semántica: puede reprobar una respuesta correcta escrita de
+      otra forma, y aprobar una que nombra los archivos correctos dentro de un
+      razonamiento equivocado. Cambiar el instrumento hace incomparables las
+      corridas anteriores, así que va con decisión y con antes/después.
+- [ ] **Evaluar —no implementar— los mecanismos externos** que
+      [[Prioridad-Operativa]] enumera: edición por símbolo, resultados
+      comprimidos o progresivos, batching, respaldo de LSP/rust-analyzer, capas
+      de precisión. Cada uno tiene que pasar por los cinco costos de
+      [[Superficie-para-el-LLM]] y por [[Criterio-de-Inclusion-de-Primitivas]],
+      y ninguno se construye antes de tener la medición que lo pida. **La
+      decisión que ya se tomó, y que vale como precedente: después de CHANGE #1
+      no se optimizó `thalyx_edit`.**
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].

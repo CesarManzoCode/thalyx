@@ -46,6 +46,29 @@ tags: [fases, roadmap, implementacion]
 
 ## Revisiones
 
+### 2026-08-28 — Se reordena la prioridad de esta etapa; las fases no cambian
+**Antes:** después de la Fase 1 el trabajo avanzaba hacia habitabilidad general
+—que Thalyx pudiera ser la máquina completa de alguien— con los benchmarks de
+primitivas colgados de la Fase 2 y el ecosistema de la Fase 4.
+**Ahora:** la prioridad operativa es **demostrar y medir que Thalyx mejora el
+trabajo de agentes reales**, y el trabajo de habitabilidad general que no sirva
+a esa meta queda **diferido**. Las fases siguen escritas como estaban y ninguna
+se cancela. Ver [[Prioridad-Operativa]].
+**Motivo:** el puente de [[Agentes-Externos]] hizo posible por primera vez
+comparar el mismo modelo sobre las dos superficies, y las primeras corridas
+—[[Evidencia-de-Agentes]]— dieron evidencia cuantitativa de una ventaja fuerte
+en comprensión de código. Validar y maximizar esa ventaja es más barato y más
+medible que seguir ensanchando la máquina, y **la evidencia caduca**: se mide
+con los agentes que existen hoy.
+**Lo que esto no dice:** que la prioridad anterior fuera un error. Sin el núcleo
+de la Fase 1 no había primitivas que medir, y sin la habitabilidad mínima de
+agosto —pantalla, teclado, motor— no había máquina donde medirlas.
+**Consecuencia sobre estas fases:** los benchmarks que la Fase 2 pone en los
+meses 12-18 **se adelantan en parte** — los de trabajo de agentes ya están
+corriendo; los de overhead de las primitivas contra [[Decision-Kernel-vs-Userspace]]
+siguen donde estaban. El [[Scheduler-Predictivo]] no se adelanta y la Fase 4
+tampoco.
+
 ### 2026-08-27 — La pantalla vuelve, porque la razón para posponerla se venció
 **Antes:** la interfaz de la Fase 1 es sólo CLI, y la GUI queda pospuesta.
 **Ahora:** existe [[La-Pantalla]], decretada por Cesar el 2026-08-27, y se

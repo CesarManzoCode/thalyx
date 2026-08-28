@@ -343,3 +343,20 @@ esto sirve.
 - [[Camino-Confiable]] — por qué el primer `abandonar` pregunta.
 - [[Condiciones-de-Adopcion]] — el costo de probar es cero, y por eso es una VM.
 - [[Motor-Residente]] — el mismo argumento sobre red que se usó acá.
+
+## Revisiones
+
+### 2026-08-28 — El registro de evidencia se muda a un documento canónico
+**Antes:** las mediciones vivían en esta nota, que es donde se hicieron.
+**Ahora:** el registro canónico —cada corrida con sus números completos, los dos
+brazos, los límites y el protocolo del bug real— es [[Evidencia-de-Agentes]].
+Las tablas de arriba **se quedan donde están**: son el estado en que quedó este
+decreto el día que se escribió, y la nota canónica no las contradice, las amplía
+(las tres corridas con todas sus métricas, no sólo costo y tiempo).
+**Motivo:** una cifra repetida en dos lugares diverge en cuanto se agrega la
+cuarta corrida. Lo nuevo se escribe allá; esto queda como historia con fecha.
+**Y lo que este decreto conserva entero:** MCP sigue siendo un adaptador, no la
+API interna y no la visión final; nada en `thalyx-mcp` abre un archivo del
+workspace; y el agente externo sigue siendo software no confiable. Que la
+prioridad de la etapa pase a medir agentes —[[Prioridad-Operativa]]— no relaja
+ninguna de esas tres.
