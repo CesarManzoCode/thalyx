@@ -105,6 +105,7 @@ pub fn working() -> Screen {
                  necesitas más tiempo hay que concederlo otra vez.",
             ),
         ],
+        scrollback: 0,
         prompt: Prompt {
             line: "permisos dev.thalyx.greeter".into(),
             caret: 27,

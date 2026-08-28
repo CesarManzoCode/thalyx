@@ -6,23 +6,39 @@
 //! exists; what is here is the other two halves: reading the machine's real
 //! state into a [`Screen`], and getting a frame onto `/dev/fb0`.
 //!
-//! ## What this delivery does and does not do
+//! ## This is the face, not a way to reach one
 //!
-//! It draws the machine, and the prompt takes typing. **It does not yet run the
-//! verbs.** That is deliberate rather than unfinished: `session::run` is one
-//! six-hundred-line loop that prints as it goes, and turning it into something
-//! that hands an answer back would be a large edit to the most exercised code in
-//! the project. Doing that in the same delivery as the first pixels anybody has
-//! ever seen would mean that if Cesar's machine comes up black, there is no way
-//! to tell which of the two changes did it — which is the rule in `CLAUDE.md`
-//! about not stacking a second unverified change on the first.
+//! Cesar, 2026-08-28: *«no quiero un comando para activar ui, quiero ya la ui,
+//! la que se ve al iniciar»*. So [`show`] is what `session::run` calls **before
+//! it prints a prompt**, and the text session is the fallback rather than the
+//! front door. A verb named `pantalla` still exists, and it is the way back
+//! after Ctrl-C — not the way in.
 //!
-//! So this one answers the questions only his hardware can answer: whether
-//! `/dev/fb0` is there, whether that firmware packs a pixel the way the code
-//! assumed, whether the console gives the display up and takes it back, whether
-//! the keyboard still reaches us in graphics mode, and whether the layout is
-//! right at his resolution.
-
+//! ## The verbs run here, and how
+//!
+//! The first delivery of this file drew the machine and did nothing with what
+//! was typed, because `session::run` was one six-hundred-line loop that printed
+//! as it went. What made that loop reusable was noticing that its arms touch
+//! exactly four things — the store, where the person is standing, which face
+//! answers, and how this process came to exist — and none of the rest. It is
+//! [`crate::session::dispatch`] now, and both faces call it.
+//!
+//! What the arms print is caught at the **descriptor**, by `thalyx-capture`,
+//! rather than by threading a writer through all of them. That is not a
+//! shortcut: `correr` and `ejecutar` start other programs, and a module's
+//! output is on descriptor 1 of a process this one does not control. Anything
+//! narrower would draw an empty answer for the two verbs whose whole point is
+//! running something.
+//!
+//! ## What still needs his hardware
+//!
+//! Everything about the glass. Whether `/dev/fb0` is there, whether that
+//! firmware packs a pixel the way the code assumed, whether the console gives
+//! the display up and takes it back, whether the keyboard still reaches us in
+//! graphics mode, and whether the layout is right at his resolution. None of it
+//! can be asked in a container with no display, and [`describe`] exists so the
+//! first question can be asked without the console being taken to ask it.
+//!
 use crate::files::Face;
 use std::io::Read;
 use std::path::Path;
@@ -251,28 +267,96 @@ fn network_panel() -> Panel {
     Panel::new("red", rows)
 }
 
-/// The screen this machine is, right now.
-pub fn live(store: &Store, here: &Path) -> Screen {
+/// What this machine is showing, right now, in panels.
+///
+/// Rebuilt after every verb rather than kept and patched. A panel that said
+/// eleven files after `rm` deleted one would be a screen quietly lying about
+/// the thing the person just did, and the cost of asking again is one listing.
+fn refresh(screen: &mut Screen, session: &crate::session::Session<'_>) {
+    let here = session.here.at().to_path_buf();
+    screen.bar = Bar {
+        machine: "thalyx".to_string(),
+        store: store_words(),
+        guard: guard_now(),
+        clock: clock(),
+    };
+    screen.left = vec![
+        where_panel(&here),
+        files_panel(&here),
+        modules_panel(session.store),
+    ];
+    screen.right = vec![
+        machine_panel(session.store),
+        running_panel(),
+        memory_panel(),
+        network_panel(),
+    ];
+}
+
+/// What the session's own first screen says, as a panel.
+///
+/// This is the same reading `thalyx session` prints as its banner, and it is on
+/// the screen for the reason the banner exists at all: the first thing a machine
+/// shows is the easiest place in the system to put on a show, and nobody checks
+/// a banner. Every line here is `ok`, `no` or `?`, and `?` is never drawn as
+/// `no` — rule 10, in colour.
+fn machine_panel(store: &Store) -> Panel {
+    use crate::session::Outcome;
+
+    let rows = crate::session::gather(store)
+        .iter()
+        .map(|reading| match &reading.outcome {
+            Outcome::Found(text) => Row::pair(reading.subject, first_clause(text)),
+            Outcome::Absent(text) => Row::toned(
+                format!("{}  {}", reading.subject, first_clause(text)),
+                Tone::Refused,
+            ),
+            // Muted and not `Refused`: unreadable is not absent, and a screen
+            // that drew them the same would be telling somebody to go fix a
+            // thing that may well be there.
+            Outcome::Unreadable(text) => Row::toned(
+                format!("{}  ?  {}", reading.subject, first_clause(text)),
+                Tone::Muted,
+            ),
+        })
+        .collect();
+    Panel::new("máquina", rows)
+}
+
+/// The first clause of a reading, because a panel column is narrow.
+///
+/// The whole sentence is still one keystroke away in the text session, and a
+/// panel that wrapped every reading over four lines would push the ones below it
+/// off the display — which is how a reading that says something is missing stops
+/// being seen.
+fn first_clause(text: &str) -> String {
+    let cut = text.find(" — ").unwrap_or(text.len());
+    text[..cut].chars().take(46).collect()
+}
+
+/// The screen a machine has just come up on.
+fn live(session: &crate::session::Session<'_>) -> Screen {
     let mut screen = Screen::new(Bar {
         machine: "thalyx".to_string(),
         store: store_words(),
         guard: guard_now(),
         clock: clock(),
     });
-    screen.left = vec![where_panel(here), files_panel(here), modules_panel(store)];
-    screen.right = vec![running_panel(), memory_panel(), network_panel()];
+    refresh(&mut screen, session);
     screen.conversation = vec![
         Turn::machine(format!(
-            "Thalyx está en la pantalla. El store es {}.",
+            "Thalyx. El store es {}, y esto es la máquina — no hay nada debajo.",
             store_words()
         )),
         Turn::agent(
-            "Esta es la pantalla de Thalyx, dibujada por Thalyx sobre el framebuffer \
-             que el firmware dejó configurado: sin X, sin Wayland, sin compositor. \
-             Los verbos todavía se teclean en la sesión de texto; aquí se está \
-             comprobando el dibujo.",
+            "Escribe abajo. Los verbos son los mismos que en la sesión de texto: \
+             `ls`, `cat`, `cd`, `modulos`, `procesos`, `estado`, `describe` los \
+             enumera todos. Tab completa, las flechas repiten lo anterior, \
+             AvPág y RePág recorren lo que ya se dijo.",
         ),
-        Turn::machine("Escape o Ctrl-C devuelve la consola de texto."),
+        Turn::machine(
+            "Ctrl-C con la línea vacía baja a la sesión de texto; `pantalla` vuelve aquí.",
+        ),
     ];
     screen.prompt = Prompt::default();
     screen
@@ -374,42 +458,115 @@ pub fn describe(face: Face) -> Fallible {
     Ok(())
 }
 
-/// Draw the machine on the display until somebody presses Ctrl-C.
-pub fn show(store: &Store) -> Fallible {
+/// Why the screen could not come up.
+///
+/// A type and not a string, because `describe` advertises exactly two error
+/// words for this verb and a caller has been promised it can write its handling
+/// before it ever sees one. Formatting the reason into prose and then matching
+/// on the prose is the same mistake as rule 5's grep for a sentence the probe
+/// had stopped printing.
+#[derive(Debug)]
+pub struct NoScreen {
+    /// `not_a_terminal` or `no_display`.
+    pub code: &'static str,
+    /// The whole of it, for a person.
+    pub why: String,
+}
+
+impl NoScreen {
+    fn no_display(error: impl std::fmt::Display) -> Self {
+        Self {
+            code: "no_display",
+            why: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for NoScreen {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "{}", self.why)
+    }
+}
+
+impl std::error::Error for NoScreen {}
+
+/// Why the screen stopped being on the display.
+pub enum Left {
+    /// The person asked for the text session, with Ctrl-C on an empty line.
+    /// On the machine that is the only way out of the screen, and it is not a
+    /// way out of Thalyx.
+    ForTheTextSession,
+    /// `salir` in a session that has somewhere to go back to. Never on the
+    /// machine, where the verb refuses.
+    Finished,
+}
+
+/// How many drawn lines one press of AvPág/RePág moves.
+///
+/// Not a screenful, because the screen does not know how many lines fit until
+/// it has wrapped them, and a page that overshot would skip the line somebody
+/// was reading. A fixed step that is smaller than any display is the safe one.
+const SCROLL_STEP: usize = 8;
+
+/// How much of one answer is kept. A `cat` of something large would otherwise
+/// grow this process's memory by the size of the file, on a machine whose whole
+/// point is that there is nothing else running to notice.
+const MOST_LINES_OF_AN_ANSWER: usize = 500;
+
+/// How many turns the conversation keeps. Roughly a long afternoon of use.
+const MOST_TURNS: usize = 400;
+
+/// Draw the machine on the display, and run what is typed into it.
+///
+/// This is what boot lands on. `session::run` calls it before it prints a single
+/// prompt, and the text session underneath is what it falls back to — so a
+/// display that cannot be drawn on is an `Err` here and a working machine there,
+/// never a machine that stops.
+pub fn show(session: &mut crate::session::Session<'_>) -> Result<Left, NoScreen> {
+    use std::io::IsTerminal;
     use std::os::fd::AsFd;
+
+    // Before the device, and this one is not about the display at all. A screen
+    // is a keyboard as well as a picture, and a session being fed from a pipe
+    // has none: taking the console there would black out a machine to draw a
+    // frame nobody can type into, and — because `catalogue_is_true` types every
+    // advertised verb into a piped session — it would do it on whatever machine
+    // was running the tests. Rule 11.
+    if !std::io::stdin().is_terminal() {
+        return Err(NoScreen {
+            code: "not_a_terminal",
+            why: "the screen needs a keyboard, and this input is not a terminal".to_string(),
+        });
+    }
 
     let display = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(FRAMEBUFFER)
-        .map_err(|error| {
-            format!(
+        .map_err(|error| NoScreen {
+            code: "no_display",
+            why: format!(
                 "{FRAMEBUFFER} could not be opened: {error}. \
                  On this machine that means either the kernel has no framebuffer \
                  (`FB_EFI` and `FB` in thalyx.config) or this is not a Thalyx \
                  machine and there is a display server holding it."
-            )
+            ),
         })?;
 
-    let geometry = thalyx_syscall::display_geometry(display.as_fd())?;
-    println!(
-        "display  {}x{}  {} bits  row {} bytes  buffer {} bytes",
-        geometry.width,
-        geometry.height,
-        geometry.bits_per_pixel,
-        geometry.line_length,
-        geometry.buffer_len
-    );
-
-    let mut mapped = thalyx_syscall::map_shared(display.as_fd(), 0, geometry.buffer_len, true)?;
+    let geometry =
+        thalyx_syscall::display_geometry(display.as_fd()).map_err(NoScreen::no_display)?;
+    let mut mapped = thalyx_syscall::map_shared(display.as_fd(), 0, geometry.buffer_len, true)
+        .map_err(NoScreen::no_display)?;
 
     // The console goes into graphics mode only once the mapping exists, so a
     // machine that fails to map still has a readable console to say so on.
     let console = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(CONSOLE)?;
-    let _graphics = thalyx_syscall::GraphicsMode::enter(console.as_fd())?;
+        .open(CONSOLE)
+        .map_err(NoScreen::no_display)?;
+    let _graphics =
+        thalyx_syscall::GraphicsMode::enter(console.as_fd()).map_err(NoScreen::no_display)?;
 
     let stdin = std::io::stdin();
     // Without signals, and the reason is in `RawMode::enter_without_signals`:
@@ -418,13 +575,19 @@ pub fn show(store: &Store) -> Fallible {
     let _raw = thalyx_syscall::RawMode::enter_without_signals(stdin.as_fd());
 
     let mut typography = Typography::embedded();
-    let here = std::env::current_dir().unwrap_or_else(|_| Path::new("/").to_path_buf());
-    let mut screen = live(store, &here);
+    let mut screen = live(session);
     let mut line = thalyx_term::Line::new();
+    // What has been typed before, newest last. Its own list rather than the text
+    // session's, which lives inside `term::Terminal` and belongs to a reader
+    // this one does not use.
+    let mut history: Vec<String> = Vec::new();
+    let mut recalled: Option<usize> = None;
 
     let mut input = stdin.lock();
-    let mut pending: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 64];
+    let mut pending: Vec<u8> = crate::term::take_pending();
+    let mut chunk = [0u8; 256];
+    let mut leaving: Option<Left> = None;
+
     loop {
         screen.prompt = Prompt {
             line: line.as_string(),
@@ -433,19 +596,27 @@ pub fn show(store: &Store) -> Fallible {
         };
         let canvas =
             thalyx_screen::compose(&screen, &mut typography, geometry.width, geometry.height);
-        canvas.write_into(
-            mapped.bytes_mut(),
-            geometry.line_length,
-            format_of(&geometry),
-        )?;
+        canvas
+            .write_into(
+                mapped.bytes_mut(),
+                geometry.line_length,
+                format_of(&geometry),
+            )
+            .map_err(NoScreen::no_display)?;
 
-        let read = input.read(&mut chunk)?;
-        if read == 0 {
-            break;
+        if let Some(left) = leaving {
+            crate::term::give_pending(&pending);
+            return Ok(left);
         }
-        pending.extend_from_slice(&chunk[..read]);
 
-        let mut leaving = false;
+        if pending.is_empty() {
+            let read = input.read(&mut chunk).map_err(NoScreen::no_display)?;
+            if read == 0 {
+                return Ok(Left::ForTheTextSession);
+            }
+            pending.extend_from_slice(&chunk[..read]);
+        }
+
         // `decode` answers `None` when what is buffered is the *prefix* of
         // something longer — half an arrow key across two reads. Stopping there
         // and waiting for more is the whole reason it reports a length; guessing
@@ -453,35 +624,230 @@ pub fn show(store: &Store) -> Fallible {
         while let Some((key, used)) = thalyx_term::decode(&pending) {
             pending.drain(..used);
             match key {
-                thalyx_term::Key::Interrupt | thalyx_term::Key::EndOfInput => leaving = true,
-                thalyx_term::Key::Char(c) => line.insert(c),
+                // Ctrl-C on a line with something in it throws the line away,
+                // the same as in the text session. On an empty line it is the
+                // way down to that session — deliberately two presses from the
+                // middle of typing, because leaving the screen by accident on a
+                // machine with no other face is worse than typing Ctrl-C twice.
+                thalyx_term::Key::Interrupt => {
+                    if line.is_empty() {
+                        leaving = Some(Left::ForTheTextSession);
+                    } else {
+                        line.clear();
+                    }
+                }
+                thalyx_term::Key::EndOfInput => leaving = Some(Left::ForTheTextSession),
+                thalyx_term::Key::Char(c) => {
+                    line.insert(c);
+                    recalled = None;
+                }
                 thalyx_term::Key::Backspace => line.backspace(),
                 thalyx_term::Key::Delete => line.delete(),
                 thalyx_term::Key::Left => line.left(),
                 thalyx_term::Key::Right => line.right(),
                 thalyx_term::Key::Home => line.home(),
                 thalyx_term::Key::End => line.end(),
-                // Enter has nothing to run yet. It clears the line rather than
-                // doing nothing, so that a person can tell the keyboard is
-                // reaching us — see the note at the top about why the verbs are
-                // not wired in yet.
-                thalyx_term::Key::Enter => {
-                    if !line.is_empty() {
-                        screen.conversation.push(Turn::person(line.as_string()));
-                        screen.conversation.push(Turn::machine(
-                            "Los verbos todavía no pasan por la pantalla. Ver `pantalla` en Punto-Actual.",
-                        ));
+                thalyx_term::Key::PageUp => screen.scrollback += SCROLL_STEP,
+                thalyx_term::Key::PageDown => {
+                    screen.scrollback = screen.scrollback.saturating_sub(SCROLL_STEP)
+                }
+                thalyx_term::Key::Up => recall(&history, &mut recalled, &mut line, true),
+                thalyx_term::Key::Down => recall(&history, &mut recalled, &mut line, false),
+                thalyx_term::Key::Tab => {
+                    if let Some(said) = complete(session, &mut line) {
+                        push(&mut screen, Turn::machine(said));
                     }
+                }
+                thalyx_term::Key::Enter => {
+                    let typed = line.as_string().trim().to_string();
                     line.clear();
+                    recalled = None;
+                    // An answer brings the view back to the bottom. Anything
+                    // else means the machine replies somewhere the person is not
+                    // looking.
+                    screen.scrollback = 0;
+                    if typed.is_empty() {
+                        continue;
+                    }
+                    if history.last().map(String::as_str) != Some(typed.as_str()) {
+                        history.push(typed.clone());
+                    }
+                    push(&mut screen, Turn::person(&typed));
+                    leaving = run_one(session, &mut screen, &typed);
+                    refresh(&mut screen, session);
                 }
                 _ => {}
             }
-        }
-        if leaving {
-            break;
+            if leaving.is_some() {
+                break;
+            }
         }
     }
-    Ok(())
+}
+
+/// Run one typed line with its output caught, and put the answer on the screen.
+///
+/// Returns `Some` when the line asked to leave. Every other outcome — including
+/// a verb that failed — is a turn of the conversation, because on this machine
+/// a failure is something to read, not something to exit for.
+fn run_one(
+    session: &mut crate::session::Session<'_>,
+    screen: &mut Screen,
+    typed: &str,
+) -> Option<Left> {
+    let caught = thalyx_capture::what_it_says(|| session.act_on(typed));
+
+    let (outcome, said) = match caught {
+        Ok(both) => both,
+        // The redirection itself failed. Running the verb anyway would print
+        // onto a console in graphics mode and could stop on a question nobody
+        // can answer — see `capture`. Saying so is the cautious answer.
+        Err(error) => {
+            push(
+                screen,
+                Turn::machine(format!(
+                    "No pude ejecutar eso sin perder lo que dijera: {error}"
+                )),
+            );
+            return None;
+        }
+    };
+
+    for turn in answer(&said) {
+        push(screen, turn);
+    }
+
+    match outcome {
+        Ok(crate::session::Flow::Stay) => None,
+        Ok(crate::session::Flow::Leave) => Some(Left::Finished),
+        Ok(crate::session::Flow::ToTheScreen) => {
+            push(
+                screen,
+                Turn::machine("Ya estás en la pantalla. Ctrl-C con la línea vacía baja al texto."),
+            );
+            None
+        }
+        // A verb that came back with an error has already printed most of what
+        // it wanted to say; this is the part `main` would have put on stderr.
+        Err(error) => {
+            push(screen, Turn::machine(error.to_string()));
+            None
+        }
+    }
+}
+
+/// What a verb printed, as turns of the conversation.
+///
+/// One turn and not one per line: the rule between two lines of the same answer
+/// is not a boundary between two things said, and drawing it as one would put a
+/// coloured bar down the middle of every listing.
+fn answer(said: &str) -> Vec<Turn> {
+    let text = said.trim_end_matches('\n');
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= MOST_LINES_OF_AN_ANSWER {
+        return vec![Turn::machine(text)];
+    }
+    // The tail, because that is what a terminal would have left on the screen,
+    // and said rather than silently cut: an answer that was trimmed and does not
+    // say so is an answer nobody can tell from a complete one.
+    let kept = lines[lines.len() - MOST_LINES_OF_AN_ANSWER..].join("\n");
+    vec![
+        Turn::machine(format!(
+            "… {} líneas antes de esto no se guardaron.",
+            lines.len() - MOST_LINES_OF_AN_ANSWER
+        )),
+        Turn::machine(kept),
+    ]
+}
+
+/// Add a turn, and forget the oldest once there are too many.
+fn push(screen: &mut Screen, turn: Turn) {
+    screen.conversation.push(turn);
+    if screen.conversation.len() > MOST_TURNS {
+        let excess = screen.conversation.len() - MOST_TURNS;
+        screen.conversation.drain(..excess);
+    }
+}
+
+/// Walk back and forth through what has been typed.
+fn recall(
+    history: &[String],
+    recalled: &mut Option<usize>,
+    line: &mut thalyx_term::Line,
+    backwards: bool,
+) {
+    if history.is_empty() {
+        return;
+    }
+    let next = match (*recalled, backwards) {
+        (None, true) => Some(history.len() - 1),
+        (None, false) => None,
+        (Some(0), true) => Some(0),
+        (Some(index), true) => Some(index - 1),
+        (Some(index), false) if index + 1 < history.len() => Some(index + 1),
+        // Past the newest is the empty line the person was typing, which is
+        // where Down has to be able to get back to.
+        (Some(_), false) => None,
+    };
+    *recalled = next;
+    line.clear();
+    if let Some(index) = next {
+        for c in history[index].chars() {
+            line.insert(c);
+        }
+    }
+}
+
+/// Complete what is being typed, and say what the choices were when there are
+/// several.
+///
+/// The same list the text session's Tab uses — `session::completions` — so a
+/// verb that completes in one face completes in the other.
+fn complete(session: &crate::session::Session<'_>, line: &mut thalyx_term::Line) -> Option<String> {
+    let typed = line.as_string();
+    let before: String = typed.chars().take(line.cursor()).collect();
+    let candidates = crate::session::completions(session.here.at(), &before);
+
+    let fragment = before.rsplit(' ').next().unwrap_or("").to_string();
+    let matching: Vec<&String> = candidates
+        .iter()
+        .filter(|candidate| candidate.starts_with(&fragment))
+        .collect();
+
+    let shared = match matching.split_first() {
+        None => return None,
+        Some((first, rest)) => rest.iter().fold((*first).clone(), |shared, candidate| {
+            let keep = shared
+                .chars()
+                .zip(candidate.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            shared.chars().take(keep).collect()
+        }),
+    };
+
+    for c in shared.chars().skip(fragment.chars().count()) {
+        line.insert(c);
+    }
+
+    if matching.len() > 1 && shared.chars().count() == fragment.chars().count() {
+        // Only when Tab could not add anything: a list printed on every press
+        // would bury the conversation under the same twelve names.
+        Some(
+            matching
+                .iter()
+                .take(40)
+                .map(|candidate| candidate.as_str())
+                .collect::<Vec<_>>()
+                .join("  "),
+        )
+    } else {
+        None
+    }
 }
 
 /// Write a frame to a PNG instead of to a display.

@@ -1208,6 +1208,56 @@ pub fn place_on(from: std::os::fd::RawFd, onto: std::os::fd::RawFd) -> io::Resul
     Ok(())
 }
 
+/// A second name for a descriptor, on whatever number the kernel has free.
+///
+/// The saving half of a redirection: [`place_on`] destroys what was on a
+/// number, so the only way back is to have taken a copy of it first. A caller
+/// that redirects without this leaves the process with no stdout at all, which
+/// on the machine's own session means a screen that never says anything again.
+pub fn duplicate(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    // SAFETY: one integer in, one out, no memory touched. `F_DUPFD_CLOEXEC`
+    // rather than plain `dup` because a saved copy of stdout has no business
+    // reaching a module across `exec` — see `clear_cloexec` for the one
+    // descriptor that does.
+    #[allow(unsafe_code)]
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `copy` is a descriptor the kernel just created and nothing else
+    // owns, so making it an `OwnedFd` gives it exactly one owner.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) })
+}
+
+/// A file that exists only in memory, with no name and no filesystem under it.
+///
+/// For catching what a verb prints while the screen holds the display. A
+/// temporary file would need somewhere to put it, and the image mounts no
+/// `/tmp` — `vault/02-Arquitectura/Arranque-y-Init.md`'s list is `/proc`,
+/// `/sys`, `/dev`, `/run` and the three under `/sys`. Anonymous memory needs
+/// none of them, cannot collide with another session's file, and is gone when
+/// the descriptor closes even if the process is killed mid-verb.
+pub fn memory_file(name: &str) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    let label = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with a NUL in it"))?;
+    // SAFETY: the pointer is to a NUL-terminated string that outlives the call,
+    // which is the only requirement `memfd_create` places on it. The flag is
+    // the documented close-on-exec one.
+    #[allow(unsafe_code)]
+    let fd = unsafe { libc::memfd_create(label.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor from the kernel with no other owner.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
 /// The channel Thalyx left open, from inside a module.
 ///
 /// Refuses anything that is not a socket. Without that check a module started

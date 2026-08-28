@@ -23,6 +23,7 @@ members = [
     "crates/thalyx-proc",
     "crates/thalyx-net",
     "crates/thalyx-screen",
+    "crates/thalyx-capture",
     "crates/thalyx-core",
     "crates/thalyx-cli",
     "modules/dev.thalyx.greeter",
@@ -56,6 +57,7 @@ thalyx-files = { path = "crates/thalyx-files" }
 thalyx-proc = { path = "crates/thalyx-proc" }
 thalyx-net = { path = "crates/thalyx-net" }
 thalyx-screen = { path = "crates/thalyx-screen" }
+thalyx-capture = { path = "crates/thalyx-capture" }
 thalyx-term = { path = "crates/thalyx-term" }
 thalyx-edit = { path = "crates/thalyx-edit" }
 thalyx-core = { path = "crates/thalyx-core" }

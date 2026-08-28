@@ -122,17 +122,24 @@ contracted into a single `NOT PROVEN` line. A marker and the lines under it are
 one result, and the two lines this run could not establish are named in its own
 summary rather than here. See [docs/STATUS.md](docs/STATUS.md).
 
-**Drawn, and not yet run on a display.** On 2026-08-27 Thalyx got a screen:
-one surface with the conversation at its centre, panels around it, no windows
-and no desktop — `vault/02-Arquitectura/La-Pantalla.md`. It is drawn by Thalyx
-into the framebuffer the firmware already configured, with no X, no Wayland and
-no compositor, and it lives inside the one program like everything else, so
-`make -C image count` still says `1`. The composition is pure and has 43 tests
-that need no display; a frame can be written to a PNG with `thalyx dev screen`
-and looked at anywhere. **No hardware has shown it yet.** `thalyx screen
---describe` walks every step of the path except writing to the device, so a
-machine can be asked whether it would work without any risk of being left with
-a black display.
+**The face a Thalyx machine comes up on, and no hardware has shown it yet.**
+On 2026-08-27 Thalyx got a screen: one surface with the conversation at its
+centre, panels around it, no windows and no desktop —
+`vault/02-Arquitectura/La-Pantalla.md`. On 2026-08-28 it became **what boot
+lands on** rather than something you type a command to reach: the machine's own
+session goes to the display before it prints a prompt, and the text session is
+what is behind it. The verbs run there — one dispatch for both faces, with what
+they print caught at the file descriptor so that a module started by `correr`
+is caught too. It is drawn by Thalyx into the framebuffer the firmware already
+configured, with no X, no Wayland and no compositor, and it lives inside the one
+program like everything else, so `make -C image count` still says `1`. The
+composition is pure and has 45 tests that need no display; a frame can be
+written to a PNG with `thalyx dev screen` and looked at anywhere. **No hardware
+has shown it yet.** `thalyx screen --describe` walks every step of the path
+except writing to the device, so a machine can be asked whether it would work
+without any risk of being left with a black display — and if it does come up
+black, Ctrl-C on an empty line gives the text console back blind, while
+`thalyx.pantalla=no` on the kernel command line boots straight into it.
 
 **Built and covered by over 1,300 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the

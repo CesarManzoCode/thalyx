@@ -203,6 +203,14 @@ These were all learned by something going wrong. They are recorded in
     `catalogue_is_true.rs`, which types every verb the machine advertises and
     had no idea one of them was that one. The precondition lives in
     `tests/machine_guard/mod.rs` so that a file which does not know can use it.
+    On 2026-08-28 the same rule turned up somewhere nobody had looked:
+    **descriptors 0, 1 and 2 belong to the process**, and `cargo test` runs one
+    binary's tests as threads inside one process — so the capture that lets the
+    screen show a verb's output caught `libtest`'s progress lines instead of its
+    own, while passing alone and passing with `--test-threads=1`. What has no
+    owner is not isolated by an environment variable; the only real separation is
+    a separate process, which in Rust means a separate crate — hence
+    `thalyx-capture`.
 
 ## How to write code here
 

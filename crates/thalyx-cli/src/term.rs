@@ -80,6 +80,31 @@ pub fn read_answer() -> std::io::Result<Option<String>> {
 }
 
 /// How the line ended.
+/// Hand over whatever this reader has buffered and has not decoded yet.
+///
+/// The screen reads `stdin` itself rather than through this file, so there are
+/// two readers of one descriptor and exactly one of them may hold bytes. Bytes
+/// already out of the kernel are invisible to the other reader: a person who
+/// typed `pantalla` and then began the next word before the display came up
+/// would lose those keystrokes with no sign that anything had happened. Same
+/// defect, same shape, as the one `read_key` exists to avoid — one buffer, and
+/// it moves with whoever is reading.
+pub fn take_pending() -> Vec<u8> {
+    std::mem::take(&mut *PENDING.lock().expect("the input buffer"))
+}
+
+/// Take them back when the screen hands the keyboard over.
+///
+/// Put in **front** of anything this reader has: what the screen was holding was
+/// typed first, and reordering a person's keystrokes is worse than dropping
+/// them, because the line that arrives looks deliberate.
+pub fn give_pending(bytes: &[u8]) {
+    let mut buffer = PENDING.lock().expect("the input buffer");
+    let mut merged = bytes.to_vec();
+    merged.extend_from_slice(&buffer);
+    *buffer = merged;
+}
+
 /// Read one key, taking what is already buffered before asking the kernel.
 ///
 /// The editor's loop, and it goes through `PENDING` for the same reason every

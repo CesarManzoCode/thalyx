@@ -33,13 +33,13 @@ use thalyx_core::Store;
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
 /// One thing Thalyx tried to find out about the machine it is running on.
-struct Reading {
-    subject: &'static str,
+pub(crate) struct Reading {
+    pub(crate) subject: &'static str,
     /// What was found, or why it could not be.
-    outcome: Outcome,
+    pub(crate) outcome: Outcome,
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     /// Checked, and this is what it says.
     Found(String),
     /// Checked, and the answer is that it is not there.
@@ -53,7 +53,7 @@ enum Outcome {
 }
 
 impl Reading {
-    fn mark(&self) -> &'static str {
+    pub(crate) fn mark(&self) -> &'static str {
         match self.outcome {
             Outcome::Found(_) => "  ok ",
             Outcome::Absent(_) => "  no ",
@@ -61,7 +61,7 @@ impl Reading {
         }
     }
 
-    fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         match &self.outcome {
             Outcome::Found(t) | Outcome::Absent(t) | Outcome::Unreadable(t) => t,
         }
@@ -75,7 +75,7 @@ impl Reading {
 /// running as a program somebody started are different facts, and a session
 /// that claimed the first while being the second would be doing exactly the
 /// theatre this project refuses.
-enum Standing {
+pub(crate) enum Standing {
     /// Started by init. Leaving means the machine stops, because there is
     /// nothing else here.
     TheMachine,
@@ -303,7 +303,7 @@ fn modules(store: &Store) -> Outcome {
     }
 }
 
-fn gather(store: &Store) -> Vec<Reading> {
+pub(crate) fn gather(store: &Store) -> Vec<Reading> {
     vec![
         Reading {
             subject: "kernel",
@@ -1216,7 +1216,7 @@ fn trouble_since(messages: &[thalyx_syscall::KernelMessage], seen: Option<u64>) 
 /// this would be hiding, which is the one thing this system is not allowed to
 /// do — so the prompt says, in its own words, that there is something to look
 /// at, and `nucleo` is where it is.
-struct KernelWatch {
+pub(crate) struct KernelWatch {
     seen: Option<u64>,
     /// Said once and then not again. A watcher that cannot read the kernel and
     /// announces it before every prompt has reinvented the problem it exists to
@@ -1354,6 +1354,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  Ctrl-X leaves, Ctrl-U takes back the last change. A");
             println!("  program says `editar <archivo> cambiar 12 <texto>`");
             println!("  instead, because it cannot see a screen.");
+            println!("  `pantalla` puts the one screen back on the display. On");
+            println!("  this machine that is where boot landed and this text is");
+            println!("  what is behind it; `screen` is the same verb.");
             println!("  `ensayo <verbo> …` says what one of those would do");
             println!("  without doing any of it.");
             println!("  `structured on` makes every one of those answer in JSON");
@@ -1406,7 +1409,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
             println!("  `editar <archivo> ver|poner|cambiar|borrar <línea> …`,");
-            println!("  `ensayo <verbo> …`, `describe`,");
+            println!("  `ensayo <verbo> …`, `describe`, `pantalla`/`screen`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
@@ -1430,20 +1433,47 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         println!("  so and stop. `correr <id> {UNCONFINED_WORD}` runs it anyway.");
     }
     println!();
+    // Everything a typed line may change, in one place because there are now
+    // two places a line can be typed. The screen and the text session run the
+    // same verbs against the same state — where you are, which face answers,
+    // what the kernel has been saying — so leaving the screen and coming back
+    // does not put you somewhere else with a different mode on.
+    let mut session = Session {
+        store,
+        standing,
+        // Where the person is. Carried across lines because that is what makes
+        // a relative name mean anything — without it every verb would need the
+        // whole path typed out, which is the difference between a system
+        // somebody can work in and one they can only inspect.
+        here: crate::files::Where::start(),
+        // Which face the file verbs answer in. Human until something asks
+        // otherwise, because a person who has not asked for JSON must never be
+        // handed it — `vault/01-Filosofia/Filosofia-Fundacional.md` requires the
+        // human keep everything, and being unable to read the answers is not
+        // keeping it.
+        face: crate::files::Face::Human,
+        watch: KernelWatch::from_now(),
+    };
 
-    let mut watch = KernelWatch::from_now();
-
-    // Where the person is. Carried across lines because that is what makes a
-    // relative name mean anything — without it every verb would need the whole
-    // path typed out, which is the difference between a system somebody can work
-    // in and one they can only inspect.
-    let mut here = crate::files::Where::start();
-
-    // Which face the file verbs answer in. Human until something asks otherwise,
-    // because a person who has not asked for JSON must never be handed it —
-    // `vault/01-Filosofia/Filosofia-Fundacional.md` requires the human keep
-    // everything, and being unable to read the answers is not keeping it.
-    let mut face = crate::files::Face::Human;
+    // The screen, before the first prompt, on the machine that has one.
+    //
+    // Cesar, 2026-08-28: *«no quiero un comando para activar ui, quiero ya la
+    // ui, la que se ve al iniciar»*. A screen you have to ask for is a screen
+    // the person holding the machine has to be told about, and on a machine
+    // with no shell behind it there is nobody to tell them. So this is not a
+    // verb that starts the interface; the interface is what boot lands on, and
+    // the text session is what is behind it.
+    //
+    // Three conditions, and all three are read rather than assumed:
+    // [`wants_the_screen`] covers the two that are decisions — this process is
+    // the machine's own session, and nobody asked for text on the kernel
+    // command line — and `screen::show` covers the one that is a fact about the
+    // hardware. A display that cannot be drawn on comes back as an error and
+    // the text session below carries on, which is the whole reason the fallback
+    // is a return value and not a panic.
+    if wants_the_screen(&session.standing) && to_the_screen(&mut session) {
+        return Ok(());
+    }
 
     // Opened once and held: raw mode is a change to the terminal that outlives
     // this program, and every transition in and out is a chance to leave it
@@ -1454,7 +1484,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // Before the prompt and not after it, so the notice never lands on a
         // line the human is in the middle of typing — which is the whole defect
         // this exists to answer.
-        if let Some(notice) = watch.since_last_prompt() {
+        if let Some(notice) = session.watch.since_last_prompt() {
             println!("{notice}");
         }
         // The location is in the prompt rather than only in `donde`, because a
@@ -1478,12 +1508,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // The braces are the whole difference from the human prompt: which face
         // is on is otherwise invisible until something is typed, and a person
         // who cannot see the mode they are in cannot leave it.
-        let prompt = match face {
+        let prompt = match session.face {
             crate::files::Face::Machine if !terminal.on_a_terminal() => String::new(),
-            crate::files::Face::Machine => format!("  {{{}}} > ", here.briefly()),
-            crate::files::Face::Human => format!("  {} > ", here.briefly()),
+            crate::files::Face::Machine => format!("  {{{}}} > ", session.here.briefly()),
+            crate::files::Face::Human => format!("  {} > ", session.here.briefly()),
         };
-        let at = here.at().to_path_buf();
+        let at = session.here.at().to_path_buf();
         let line = match terminal.read_line(&prompt, |before| completions(&at, before))? {
             crate::term::Ended::Line(line) => line,
             // Ctrl-C throws the line away and gives a fresh prompt. It is not a
@@ -1492,398 +1522,597 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             crate::term::Ended::Closed => break,
         };
         let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
 
-        match line {
-            "" => continue,
-            "salir" | "exit" | "quit" => match &standing {
-                Standing::TheMachine => {
-                    if face.is_machine() {
-                        face.say(thalyx_files::machine::refused(
-                            "leave",
-                            "nowhere_to_go",
-                            "power_off",
-                            "there is nowhere to go; `apagar` turns the machine off",
-                        ));
-                    } else {
-                        println!();
-                        println!("  There is nowhere to go. Turning the machine off is");
-                        println!("  `apagar`; anything else keeps you here.");
-                        println!();
-                    }
-                }
-                Standing::AProgram { under } => {
-                    // Said *before* the stream ends, which is the whole point of
-                    // this one: a caller that got a closed pipe with nothing in
-                    // it cannot tell a session that left from one that crashed.
-                    if face.is_machine() {
-                        face.say(thalyx_files::machine::answer(
-                            "leave",
-                            vec![
-                                ("left", serde_json::json!(true)),
-                                ("to", serde_json::json!(under)),
-                            ],
-                        ));
-                    } else {
-                        println!("  Back to {under}.");
-                    }
+        match session.act_on(line)? {
+            Flow::Stay => {}
+            Flow::Leave => break,
+            Flow::ToTheScreen => {
+                // Raw mode goes back before the screen takes the keyboard: two
+                // termios settings on one descriptor, and the one put back last
+                // wins. Dropping it here means the screen's own is the only one
+                // in force, and re-opening it after means the text session gets
+                // a terminal it configured rather than one the screen left
+                // behind.
+                drop(terminal);
+                let finished = to_the_screen(&mut session);
+                terminal = crate::term::Terminal::open();
+                if finished {
                     break;
                 }
-            },
-            "estado" | "status" => {
-                let readings = gather(store);
-                if face == crate::files::Face::Machine {
-                    println!("{}", state_object(&readings));
-                } else {
-                    for reading in &readings {
-                        println!(
-                            "{} {:<12} {}",
-                            reading.mark(),
-                            reading.subject,
-                            reading.text()
-                        );
-                    }
-                }
-            }
-            "apagar" | "poweroff" => {
-                power_off(&standing, face);
-            }
-            _ if starts_any(line, &["modulos ", "módulos ", "modules "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::modules::installed(store, rest, face)?;
-            }
-            "modules" | "modulos" | "módulos" => {
-                crate::modules::installed(store, "", face)?;
-            }
-            _ if starts_any(line, &["disponibles ", "available ", "repo "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::modules::available(store, rest, face)?;
-            }
-            "disponibles" | "available" | "repo" => {
-                crate::modules::available(store, "", face)?;
-            }
-            "permisos" | "permissions" => {
-                crate::modules::permissions(store, face)?;
-            }
-            // The two directions of the kernel guard. `permisos` says what is
-            // granted; these two decide whether any of it is real.
-            "negar" | "deny" => {
-                crate::guard::set(
-                    &thalyx_permd::KernelStore::default_map(),
-                    thalyx_permd::Mode::Enforcing,
-                    face,
-                    false,
-                )?;
-            }
-            "observar" | "observe" => {
-                crate::guard::set(
-                    &thalyx_permd::KernelStore::default_map(),
-                    thalyx_permd::Mode::Observing,
-                    face,
-                    false,
-                )?;
-            }
-            "revertir" | "rollback" => {
-                revert(store, line, face);
-            }
-            "recuerdos" | "recordar" | "memory" | "recall" => {
-                if face == crate::files::Face::Machine {
-                    let _ = crate::agent::recall_object(store, SESSION_TASK);
-                } else {
-                    show_memory(store);
-                }
-            }
-            _ if line.starts_with("instalar ") || line.starts_with("install ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_module(store, rest, line, face);
-            }
-            "instalar" | "install" => {
-                if face.is_machine() {
-                    face.say(thalyx_files::machine::refused(
-                        "install",
-                        "nothing_asked",
-                        "list_available",
-                        "which one — `instalar <id>`",
-                    ));
-                } else {
-                    println!();
-                    println!("  Which one. `disponibles` lists what the repository holds.");
-                    println!();
-                }
-            }
-            "discos" | "disks" => {
-                list_disks(face);
-            }
-            // Point 8, and the one listing verb whose things cannot be acted on.
-            // See `crate::net`: the closing sentence is the verb.
-            "red" | "network" => {
-                crate::net::interfaces(face)?;
-            }
-            // ─────────────────────────────────────────── files, layer 1 of the decree
-            //
-            // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
-            // work without the agent. These four are the smallest set that makes
-            // the rest of it possible — a person who cannot see what is there
-            // cannot copy, move or delete it either.
-            "clear" | "limpiar" | "cls" => {
-                crate::files::clear(face);
-            }
-            // The verb the objective decree was waiting on: everything below
-            // already returns facts, and this is what lets something ask for
-            // them instead of for sentences about them.
-            _ if starts_any(line, &["structured ", "estructurado "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::structured(&mut face, rest);
-            }
-            "structured" | "estructurado" => {
-                crate::files::structured(&mut face, "");
-            }
-            // A1: the machine reading itself out loud, so that something that
-            // arrived knowing nothing about Thalyx can ask instead of guessing.
-            _ if starts_any(line, &["describe ", "describir "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::catalogue::describe(face, rest);
-            }
-            "describe" | "describir" => {
-                crate::catalogue::describe(face, "");
-            }
-            // C1: the semantic index, reachable by something that is not
-            // Thalyx's own CLI for the first time.
-            _ if starts_any(line, &["indexar ", "index "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::build(store.root(), &here, rest, face)?;
-            }
-            "indexar" | "index" => {
-                crate::index::build(store.root(), &here, "", face)?;
-            }
-            _ if starts_any(line, &["depende ", "depends "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::edges(store.root(), &here, rest, false, face)?;
-            }
-            "depende" | "depends" => {
-                crate::index::edges(store.root(), &here, "", false, face)?;
-            }
-            _ if starts_any(line, &["usan ", "dependents "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::edges(store.root(), &here, rest, true, face)?;
-            }
-            "usan" | "dependents" => {
-                crate::index::edges(store.root(), &here, "", true, face)?;
-            }
-            // C2: a symbol, not a line. The question `grep` answers with two
-            // hundred matches of which one is the definition.
-            _ if starts_any(line, &["buscar ", "symbol "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::symbol(store.root(), &here, rest, face)?;
-            }
-            "buscar" | "symbol" => {
-                crate::index::symbol(store.root(), &here, "", face)?;
-            }
-            // F2: what this machine did, said by the machine rather than
-            // reconstructed from a conversation that ended.
-            _ if starts_any(line, &["historia ", "history "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::history::show(store, rest, face)?;
-            }
-            "historia" | "history" => {
-                crate::history::show(store, "", face)?;
-            }
-            // D2: begin something, and be able to take all of it back.
-            _ if starts_any(line, &["intento ", "attempt "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::attempt::run(store, &here, rest, face, &crate::new_request_id())?;
-            }
-            // B3: what the kernel has seen change, and who did it.
-            _ if starts_any(line, &["cambios ", "changes "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::changes::show(rest, face)?;
-            }
-            "cambios" | "changes" => {
-                crate::changes::show("", face)?;
-            }
-            "intento" | "attempt" => {
-                crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;
-            }
-            // Point 5 of the usable terminal. Two shapes of the same verb: with
-            // a subverb it addresses lines and answers, without one it opens a
-            // screen — which is the only way one verb can serve a person and a
-            // program without either of them losing something.
-            _ if starts_any(line, &["editar ", "edit "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::edit::run(&here, rest, face)?;
-            }
-            "editar" | "edit" => {
-                crate::edit::run(&here, "", face)?;
-            }
-            // Point 6. Two verbs and not one, because `buscar` already answers a
-            // third question and a caller that has to work out which of three a
-            // single verb answered pays the ambiguity cost on every call.
-            _ if starts_any(line, &["encontrar ", "find "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::search::by_name(&here, rest, face)?;
-            }
-            "encontrar" | "find" => {
-                crate::search::by_name(&here, "", face)?;
-            }
-            _ if starts_any(line, &["contenido ", "grep "]) => {
-                // Not trimmed on the right: the text is the rest of the line
-                // verbatim, and a search for `fn main ` with a trailing space is
-                // a search a person can mean. Only the left side is trimmed,
-                // which is the split's own separator.
-                let rest = line
-                    .split_once(' ')
-                    .map(|(_, r)| r.trim_start())
-                    .unwrap_or("");
-                crate::search::in_contents(&here, rest, face)?;
-            }
-            "contenido" | "grep" => {
-                crate::search::in_contents(&here, "", face)?;
-            }
-            // Point 7, over /proc. `matar` goes through a pidfd, so the signal
-            // reaches the process the number named at the moment it was read
-            // and never one that inherited the number since.
-            _ if starts_any(line, &["procesos ", "ps "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::proc::running(rest, face)?;
-            }
-            "procesos" | "ps" => {
-                crate::proc::running("", face)?;
-            }
-            "memoria" | "free" => {
-                crate::proc::memory(face)?;
-            }
-            _ if starts_any(line, &["matar ", "stop ", "kill "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::proc::stop(rest, face)?;
-            }
-            "matar" | "stop" | "kill" => {
-                crate::proc::stop("", face)?;
-            }
-            // D1: what a verb would do, without doing any of it.
-            _ if starts_any(line, &["ensayo ", "rehearse "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::rehearse(&here, store, rest, face)?;
-            }
-            "ensayo" | "rehearse" => {
-                crate::files::rehearse(&here, store, "", face)?;
-            }
-            "pwd" | "donde" | "dónde" | "where" => {
-                crate::files::where_am_i(&here, face);
-            }
-            _ if starts_any(line, &["cd ", "ir ", "go "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::go(&mut here, rest, face);
-            }
-            // Unlike `instalar` and `correr`, the bare verb is not a question:
-            // `ir` with nothing after it means home, which is somewhere a person
-            // always wants to be able to get back to in one word.
-            "cd" | "ir" | "go" => {
-                crate::files::go(&mut here, "", face);
-            }
-            _ if starts_any(line, &["ls ", "ver ", "look "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::look(&here, rest, face);
-            }
-            "ls" | "ver" | "look" => {
-                crate::files::look(&here, "", face);
-            }
-            _ if starts_any(line, &["cat ", "leer ", "read "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::read(&here, rest, face);
-            }
-            _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, true, face)?;
-            }
-            _ if starts_any(line, &["touch ", "crear "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, false, face)?;
-            }
-            _ if starts_any(line, &["cp ", "copiar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, false, face)?;
-            }
-            _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, true, face)?;
-            }
-            _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::erase(&here, rest, face)?;
-            }
-            "cat" | "leer" | "read" => {
-                crate::files::read(&here, "", face);
-            }
-            // The bare forms, and they are here because a test that drove the
-            // prompt found they were missing. Every arm above matches on a
-            // **trailing space**, so `rm` typed alone was not a verb at all and
-            // fell through to "I have no model loaded" — the same defect Cesar
-            // hit with `clear` on the first real session, still alive in five
-            // verbs. A common command answering with a speech about something
-            // else is exactly how a system reads as unfinished.
-            //
-            // Each one lands on its own "which one" rather than on a shared
-            // message, because `cp` needs two names and `rm` needs one, and a
-            // hint that does not say which is a hint nobody can act on.
-            "mkdir" | "crear-carpeta" | "nueva-carpeta" => {
-                crate::files::make(&here, "", true, face)?;
-            }
-            "touch" | "crear" => {
-                crate::files::make(&here, "", false, face)?;
-            }
-            "cp" | "copiar" => {
-                crate::files::transfer(&here, "", false, face)?;
-            }
-            "mv" | "mover" | "renombrar" => {
-                crate::files::transfer(&here, "", true, face)?;
-            }
-            "rm" | "borrar" | "eliminar" => {
-                crate::files::erase(&here, "", face)?;
-            }
-            _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_onto(rest, face, false);
-            }
-            "instalar-en" | "install-onto" => {
-                println!();
-                println!("  Which disk. `discos` lists them.");
-                println!();
-            }
-            "nucleo" | "núcleo" | "kernel" | "dmesg" => {
-                show_kernel(false, face);
-            }
-            "nucleo todo" | "núcleo todo" | "kernel all" => {
-                show_kernel(true, face);
-            }
-            "nucleo lento" | "núcleo lento" | "kernel slow" => {
-                show_slowest(face);
-            }
-            // Before `correr`'s arms and deliberately its own verb: a program
-            // nobody signed never reaches the one that only takes modules.
-            _ if starts_any(line, &["ejecutar ", "execute "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::foreign::execute(store, rest, face)?;
-            }
-            "ejecutar" | "execute" => {
-                crate::foreign::execute(store, "", face)?;
-            }
-            _ if line.starts_with("correr ") || line.starts_with("run ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                start_module(store, rest, face);
-            }
-            "correr" | "run" => {
-                start_module(store, "", face);
-            }
-            _ => {
-                println!();
-                println!("  I have no model loaded, so I can only act on what the rules");
-                println!("  already understand. `thalyx agent plan \"{line}\"` shows what");
-                println!("  I would make of that, and says who understood it.");
-                println!();
             }
         }
     }
 
     Ok(())
+}
+
+/// Put the screen on the display, and say — in whichever face is on — what came
+/// of it.
+///
+/// `true` means the session is over, which only ever happens where there is
+/// somewhere to go: on the machine `salir` refuses, so the screen's only way out
+/// is back to the text session below it.
+///
+/// The refusal is the reason this is one function and not two call sites. A
+/// program that typed `pantalla` has been promised `no_display` or
+/// `not_a_terminal` by `describe`, and it must get that object whether it asked
+/// at the first prompt or the fiftieth.
+fn to_the_screen(session: &mut Session<'_>) -> bool {
+    match crate::screen::show(session) {
+        Ok(crate::screen::Left::ForTheTextSession) => {
+            if session.face.is_machine() {
+                session.face.say(thalyx_files::machine::answer(
+                    "screen",
+                    vec![
+                        ("drawn", serde_json::json!(true)),
+                        ("left_for", serde_json::json!("session")),
+                    ],
+                ));
+            }
+            false
+        }
+        Ok(crate::screen::Left::Finished) => true,
+        Err(refusal) => {
+            if session.face.is_machine() {
+                session.face.say(thalyx_files::machine::refused(
+                    "screen",
+                    refusal.code,
+                    "session",
+                    &refusal.why,
+                ));
+            } else {
+                // Said on the console that is still a console, because the screen
+                // never took it. A machine that comes up in text with no
+                // explanation looks broken; one that says why looks like a
+                // machine that checked.
+                println!();
+                println!("  The screen did not come up, so this is the text session:");
+                println!("  {refusal}");
+                println!();
+            }
+            false
+        }
+    }
+}
+
+/// Whether this process should come up on the display rather than in text.
+///
+/// Two facts, and neither of them is «is there a framebuffer» — that one is the
+/// display's to answer, and it is answered by trying.
+///
+/// **This process is the machine's own session.** `thalyx session` typed into a
+/// terminal on Fedora is a program somebody started, and a program that grabbed
+/// the framebuffer out from under the display server holding it would be doing
+/// the opposite of what was asked. The screen is still one word away there.
+///
+/// **Nobody asked for text.** `thalyx.pantalla=no` on the kernel command line
+/// brings the machine up in the text session, and it exists because the failure
+/// this change can cause is a machine that boots to a black rectangle. Without
+/// a way to say «not this time» from the boot entry, the only way back from that
+/// would be another medium — which is not a recovery, it is a reinstall.
+fn wants_the_screen(standing: &Standing) -> bool {
+    matches!(standing, Standing::TheMachine) && !text_was_asked_for()
+}
+
+/// The kernel command line's word for «come up in text».
+const TEXT_PARAMETER: &str = "thalyx.pantalla=";
+
+/// Whether the boot entry asked for the text session.
+///
+/// Anything other than `no` is not an answer to this question and is ignored,
+/// which is deliberate: a typo must not be the difference between a machine that
+/// comes up and one that does not, and the value that has to be exactly right is
+/// the one that turns the screen **off**, never the one that leaves it on.
+fn text_was_asked_for() -> bool {
+    let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") else {
+        // Rule 10: unreadable is not «it said no». Failing to read the command
+        // line is not permission to override what the machine was told, and the
+        // default is the screen.
+        return false;
+    };
+    said_no_to_the_screen(&cmdline)
+}
+
+/// The command line read apart from where it is read, so it can be tested.
+fn said_no_to_the_screen(cmdline: &str) -> bool {
+    cmdline
+        .split_ascii_whitespace()
+        .filter_map(|word| word.strip_prefix(TEXT_PARAMETER))
+        .any(|value| value == "no" || value == "texto" || value == "text")
+}
+
+/// What a typed line did to where the session stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flow {
+    /// Keep taking lines.
+    Stay,
+    /// The caller asked to leave, and there is somewhere to leave to.
+    Leave,
+    /// Go to the display. From the text session that means entering the screen;
+    /// from the screen it means the person is already there and is told so.
+    ToTheScreen,
+}
+
+/// Everything a typed line reads and may change.
+///
+/// One struct because there are two places a line can be typed — the screen and
+/// the text session — and the alternative is each of them keeping its own copy
+/// of where you are and which face answers. Two copies of that is a person who
+/// pressed Escape and found themselves in a different directory.
+pub(crate) struct Session<'a> {
+    pub store: &'a Store,
+    pub standing: Standing,
+    pub here: crate::files::Where,
+    pub face: crate::files::Face,
+    pub watch: KernelWatch,
+}
+
+impl<'a> Session<'a> {
+    /// A session that has just opened, standing wherever this process is.
+    ///
+    /// For `thalyx screen` typed at a shell, which enters the display without
+    /// the text session ever having run. It reads its standing the same way the
+    /// session does — from who this process's parent is — so the screen it opens
+    /// says the same thing about this machine that the banner would have.
+    pub(crate) fn opening(store: &'a Store) -> Self {
+        Self {
+            store,
+            standing: standing(),
+            here: crate::files::Where::start(),
+            face: crate::files::Face::Human,
+            watch: KernelWatch::from_now(),
+        }
+    }
+
+    /// Run one line and say what it did to the session.
+    pub(crate) fn act_on(&mut self, line: &str) -> Result<Flow, Box<dyn std::error::Error>> {
+        dispatch(
+            self.store,
+            &self.standing,
+            &mut self.here,
+            &mut self.face,
+            line,
+        )
+    }
+}
+
+/// Every verb, in one place, for whichever face is asking.
+///
+/// Lifted out of the session loop on 2026-08-28 so that the screen could run the
+/// same verbs instead of growing a second set of them. The parameters are the
+/// four things an arm can read or change and nothing else — which is what made
+/// the lift safe: the loop's other locals, the terminal and the kernel watch,
+/// are never touched by an arm.
+fn dispatch(
+    store: &Store,
+    standing: &Standing,
+    here: &mut crate::files::Where,
+    answering_in: &mut crate::files::Face,
+    line: &str,
+) -> Result<Flow, Box<dyn std::error::Error>> {
+    let mut face = *answering_in;
+    let mut flow = Flow::Stay;
+
+    match line {
+        "" => {}
+        // The way back to the display. On the machine the screen is where
+        // boot already landed, so this is what Escape undoes; on a machine
+        // whose display was not there at boot, or in a session somebody
+        // started from a shell, it is the way in.
+        "pantalla" | "screen" => {
+            flow = Flow::ToTheScreen;
+        }
+        "salir" | "exit" | "quit" => match &standing {
+            Standing::TheMachine => {
+                if face.is_machine() {
+                    face.say(thalyx_files::machine::refused(
+                        "leave",
+                        "nowhere_to_go",
+                        "power_off",
+                        "there is nowhere to go; `apagar` turns the machine off",
+                    ));
+                } else {
+                    println!();
+                    println!("  There is nowhere to go. Turning the machine off is");
+                    println!("  `apagar`; anything else keeps you here.");
+                    println!();
+                }
+            }
+            Standing::AProgram { under } => {
+                // Said *before* the stream ends, which is the whole point of
+                // this one: a caller that got a closed pipe with nothing in
+                // it cannot tell a session that left from one that crashed.
+                if face.is_machine() {
+                    face.say(thalyx_files::machine::answer(
+                        "leave",
+                        vec![
+                            ("left", serde_json::json!(true)),
+                            ("to", serde_json::json!(under)),
+                        ],
+                    ));
+                } else {
+                    println!("  Back to {under}.");
+                }
+                flow = Flow::Leave;
+            }
+        },
+        "estado" | "status" => {
+            let readings = gather(store);
+            if face == crate::files::Face::Machine {
+                println!("{}", state_object(&readings));
+            } else {
+                for reading in &readings {
+                    println!(
+                        "{} {:<12} {}",
+                        reading.mark(),
+                        reading.subject,
+                        reading.text()
+                    );
+                }
+            }
+        }
+        "apagar" | "poweroff" => {
+            power_off(standing, face);
+        }
+        _ if starts_any(line, &["modulos ", "módulos ", "modules "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::modules::installed(store, rest, face)?;
+        }
+        "modules" | "modulos" | "módulos" => {
+            crate::modules::installed(store, "", face)?;
+        }
+        _ if starts_any(line, &["disponibles ", "available ", "repo "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::modules::available(store, rest, face)?;
+        }
+        "disponibles" | "available" | "repo" => {
+            crate::modules::available(store, "", face)?;
+        }
+        "permisos" | "permissions" => {
+            crate::modules::permissions(store, face)?;
+        }
+        // The two directions of the kernel guard. `permisos` says what is
+        // granted; these two decide whether any of it is real.
+        "negar" | "deny" => {
+            crate::guard::set(
+                &thalyx_permd::KernelStore::default_map(),
+                thalyx_permd::Mode::Enforcing,
+                face,
+                false,
+            )?;
+        }
+        "observar" | "observe" => {
+            crate::guard::set(
+                &thalyx_permd::KernelStore::default_map(),
+                thalyx_permd::Mode::Observing,
+                face,
+                false,
+            )?;
+        }
+        "revertir" | "rollback" => {
+            revert(store, line, face);
+        }
+        "recuerdos" | "recordar" | "memory" | "recall" => {
+            if face == crate::files::Face::Machine {
+                let _ = crate::agent::recall_object(store, SESSION_TASK);
+            } else {
+                show_memory(store);
+            }
+        }
+        _ if line.starts_with("instalar ") || line.starts_with("install ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            install_module(store, rest, line, face);
+        }
+        "instalar" | "install" => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    "install",
+                    "nothing_asked",
+                    "list_available",
+                    "which one — `instalar <id>`",
+                ));
+            } else {
+                println!();
+                println!("  Which one. `disponibles` lists what the repository holds.");
+                println!();
+            }
+        }
+        "discos" | "disks" => {
+            list_disks(face);
+        }
+        // Point 8, and the one listing verb whose things cannot be acted on.
+        // See `crate::net`: the closing sentence is the verb.
+        "red" | "network" => {
+            crate::net::interfaces(face)?;
+        }
+        // ─────────────────────────────────────────── files, layer 1 of the decree
+        //
+        // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
+        // work without the agent. These four are the smallest set that makes
+        // the rest of it possible — a person who cannot see what is there
+        // cannot copy, move or delete it either.
+        "clear" | "limpiar" | "cls" => {
+            crate::files::clear(face);
+        }
+        // The verb the objective decree was waiting on: everything below
+        // already returns facts, and this is what lets something ask for
+        // them instead of for sentences about them.
+        _ if starts_any(line, &["structured ", "estructurado "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::structured(&mut face, rest);
+        }
+        "structured" | "estructurado" => {
+            crate::files::structured(&mut face, "");
+        }
+        // A1: the machine reading itself out loud, so that something that
+        // arrived knowing nothing about Thalyx can ask instead of guessing.
+        _ if starts_any(line, &["describe ", "describir "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::catalogue::describe(face, rest);
+        }
+        "describe" | "describir" => {
+            crate::catalogue::describe(face, "");
+        }
+        // C1: the semantic index, reachable by something that is not
+        // Thalyx's own CLI for the first time.
+        _ if starts_any(line, &["indexar ", "index "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::build(store.root(), here, rest, face)?;
+        }
+        "indexar" | "index" => {
+            crate::index::build(store.root(), here, "", face)?;
+        }
+        _ if starts_any(line, &["depende ", "depends "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::edges(store.root(), here, rest, false, face)?;
+        }
+        "depende" | "depends" => {
+            crate::index::edges(store.root(), here, "", false, face)?;
+        }
+        _ if starts_any(line, &["usan ", "dependents "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::edges(store.root(), here, rest, true, face)?;
+        }
+        "usan" | "dependents" => {
+            crate::index::edges(store.root(), here, "", true, face)?;
+        }
+        // C2: a symbol, not a line. The question `grep` answers with two
+        // hundred matches of which one is the definition.
+        _ if starts_any(line, &["buscar ", "symbol "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::symbol(store.root(), here, rest, face)?;
+        }
+        "buscar" | "symbol" => {
+            crate::index::symbol(store.root(), here, "", face)?;
+        }
+        // F2: what this machine did, said by the machine rather than
+        // reconstructed from a conversation that ended.
+        _ if starts_any(line, &["historia ", "history "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::history::show(store, rest, face)?;
+        }
+        "historia" | "history" => {
+            crate::history::show(store, "", face)?;
+        }
+        // D2: begin something, and be able to take all of it back.
+        _ if starts_any(line, &["intento ", "attempt "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::attempt::run(store, here, rest, face, &crate::new_request_id())?;
+        }
+        // B3: what the kernel has seen change, and who did it.
+        _ if starts_any(line, &["cambios ", "changes "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::changes::show(rest, face)?;
+        }
+        "cambios" | "changes" => {
+            crate::changes::show("", face)?;
+        }
+        "intento" | "attempt" => {
+            crate::attempt::run(store, here, "", face, &crate::new_request_id())?;
+        }
+        // Point 5 of the usable terminal. Two shapes of the same verb: with
+        // a subverb it addresses lines and answers, without one it opens a
+        // screen — which is the only way one verb can serve a person and a
+        // program without either of them losing something.
+        _ if starts_any(line, &["editar ", "edit "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::edit::run(here, rest, face)?;
+        }
+        "editar" | "edit" => {
+            crate::edit::run(here, "", face)?;
+        }
+        // Point 6. Two verbs and not one, because `buscar` already answers a
+        // third question and a caller that has to work out which of three a
+        // single verb answered pays the ambiguity cost on every call.
+        _ if starts_any(line, &["encontrar ", "find "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::search::by_name(here, rest, face)?;
+        }
+        "encontrar" | "find" => {
+            crate::search::by_name(here, "", face)?;
+        }
+        _ if starts_any(line, &["contenido ", "grep "]) => {
+            // Not trimmed on the right: the text is the rest of the line
+            // verbatim, and a search for `fn main ` with a trailing space is
+            // a search a person can mean. Only the left side is trimmed,
+            // which is the split's own separator.
+            let rest = line
+                .split_once(' ')
+                .map(|(_, r)| r.trim_start())
+                .unwrap_or("");
+            crate::search::in_contents(here, rest, face)?;
+        }
+        "contenido" | "grep" => {
+            crate::search::in_contents(here, "", face)?;
+        }
+        // Point 7, over /proc. `matar` goes through a pidfd, so the signal
+        // reaches the process the number named at the moment it was read
+        // and never one that inherited the number since.
+        _ if starts_any(line, &["procesos ", "ps "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::proc::running(rest, face)?;
+        }
+        "procesos" | "ps" => {
+            crate::proc::running("", face)?;
+        }
+        "memoria" | "free" => {
+            crate::proc::memory(face)?;
+        }
+        _ if starts_any(line, &["matar ", "stop ", "kill "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::proc::stop(rest, face)?;
+        }
+        "matar" | "stop" | "kill" => {
+            crate::proc::stop("", face)?;
+        }
+        // D1: what a verb would do, without doing any of it.
+        _ if starts_any(line, &["ensayo ", "rehearse "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::rehearse(here, store, rest, face)?;
+        }
+        "ensayo" | "rehearse" => {
+            crate::files::rehearse(here, store, "", face)?;
+        }
+        "pwd" | "donde" | "dónde" | "where" => {
+            crate::files::where_am_i(here, face);
+        }
+        _ if starts_any(line, &["cd ", "ir ", "go "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::go(here, rest, face);
+        }
+        // Unlike `instalar` and `correr`, the bare verb is not a question:
+        // `ir` with nothing after it means home, which is somewhere a person
+        // always wants to be able to get back to in one word.
+        "cd" | "ir" | "go" => {
+            crate::files::go(here, "", face);
+        }
+        _ if starts_any(line, &["ls ", "ver ", "look "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::look(here, rest, face);
+        }
+        "ls" | "ver" | "look" => {
+            crate::files::look(here, "", face);
+        }
+        _ if starts_any(line, &["cat ", "leer ", "read "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::read(here, rest, face);
+        }
+        _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::make(here, rest, true, face)?;
+        }
+        _ if starts_any(line, &["touch ", "crear "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::make(here, rest, false, face)?;
+        }
+        _ if starts_any(line, &["cp ", "copiar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::transfer(here, rest, false, face)?;
+        }
+        _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::transfer(here, rest, true, face)?;
+        }
+        _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::erase(here, rest, face)?;
+        }
+        "cat" | "leer" | "read" => {
+            crate::files::read(here, "", face);
+        }
+        // The bare forms, and they are here because a test that drove the
+        // prompt found they were missing. Every arm above matches on a
+        // **trailing space**, so `rm` typed alone was not a verb at all and
+        // fell through to "I have no model loaded" — the same defect Cesar
+        // hit with `clear` on the first real session, still alive in five
+        // verbs. A common command answering with a speech about something
+        // else is exactly how a system reads as unfinished.
+        //
+        // Each one lands on its own "which one" rather than on a shared
+        // message, because `cp` needs two names and `rm` needs one, and a
+        // hint that does not say which is a hint nobody can act on.
+        "mkdir" | "crear-carpeta" | "nueva-carpeta" => {
+            crate::files::make(here, "", true, face)?;
+        }
+        "touch" | "crear" => {
+            crate::files::make(here, "", false, face)?;
+        }
+        "cp" | "copiar" => {
+            crate::files::transfer(here, "", false, face)?;
+        }
+        "mv" | "mover" | "renombrar" => {
+            crate::files::transfer(here, "", true, face)?;
+        }
+        "rm" | "borrar" | "eliminar" => {
+            crate::files::erase(here, "", face)?;
+        }
+        _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            install_onto(rest, face, false);
+        }
+        "instalar-en" | "install-onto" => {
+            println!();
+            println!("  Which disk. `discos` lists them.");
+            println!();
+        }
+        "nucleo" | "núcleo" | "kernel" | "dmesg" => {
+            show_kernel(false, face);
+        }
+        "nucleo todo" | "núcleo todo" | "kernel all" => {
+            show_kernel(true, face);
+        }
+        "nucleo lento" | "núcleo lento" | "kernel slow" => {
+            show_slowest(face);
+        }
+        // Before `correr`'s arms and deliberately its own verb: a program
+        // nobody signed never reaches the one that only takes modules.
+        _ if starts_any(line, &["ejecutar ", "execute "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::foreign::execute(store, rest, face)?;
+        }
+        "ejecutar" | "execute" => {
+            crate::foreign::execute(store, "", face)?;
+        }
+        _ if line.starts_with("correr ") || line.starts_with("run ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            start_module(store, rest, face);
+        }
+        "correr" | "run" => {
+            start_module(store, "", face);
+        }
+        _ => {
+            println!();
+            println!("  I have no model loaded, so I can only act on what the rules");
+            println!("  already understand. `thalyx agent plan \"{line}\"` shows what");
+            println!("  I would make of that, and says who understood it.");
+            println!();
+        }
+    }
+    *answering_in = face;
+    Ok(flow)
 }
 
 // ─────────────────────────────────────────── installing this machine onto a disk
@@ -1921,7 +2150,7 @@ fn verbs() -> Vec<String> {
 /// The first word is a verb and everything after it is a path, which is the
 /// whole rule. Offering file names where a verb belongs would put `Documentos`
 /// at the start of a line, where nothing can run it.
-fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
+pub(crate) fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
     if !before.contains(' ') {
         return verbs();
     }
@@ -2546,6 +2775,47 @@ const INSTALL_WORKSPACE: &str = "/run/thalyx/install";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_boot_entry_can_ask_for_text_and_only_that_exact_word_turns_the_screen_off() {
+        // The escape hatch from a machine that comes up black, so the thing it
+        // must never do is fire by accident. Every line below that is *not* the
+        // request leaves the screen on, including the ones that look like it:
+        // a boot entry a person half-edited must not be the difference between
+        // a machine that draws and one that does not.
+        let real = "BOOT_IMAGE=/thalyx console=tty0 thalyx.disco=/dev/sda2";
+        assert!(!said_no_to_the_screen(real));
+        assert!(!said_no_to_the_screen(""));
+        assert!(!said_no_to_the_screen("thalyx.pantalla=si"));
+        assert!(!said_no_to_the_screen("thalyx.pantalla="));
+        assert!(!said_no_to_the_screen("thalyx.pantalla"));
+        // Not a prefix match, and not a substring one: a parameter that merely
+        // contains the word is a different parameter.
+        assert!(!said_no_to_the_screen("otra.thalyx.pantalla=no"));
+        assert!(!said_no_to_the_screen("thalyx.pantalla=nostromo"));
+
+        for asked in [
+            "thalyx.pantalla=no",
+            "thalyx.pantalla=texto",
+            "thalyx.pantalla=text",
+        ] {
+            assert!(
+                said_no_to_the_screen(&format!("{real} {asked}")),
+                "{asked} did not turn the screen off"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_somebody_started_from_a_shell_does_not_take_the_display() {
+        // The screen at boot is for the machine's own session. `thalyx session`
+        // typed into a terminal on Fedora is a program somebody started, and a
+        // program that grabbed the framebuffer out from under the display server
+        // holding it would be taking a machine over rather than being one.
+        assert!(!wants_the_screen(&Standing::AProgram {
+            under: "bash".to_string()
+        }));
+    }
 
     /// One record, shaped like the kernel's own.
     fn said(sequence: u64, priority: u8) -> thalyx_syscall::KernelMessage {

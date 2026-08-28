@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-27
+fecha-actualizacion: 2026-08-28
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -13,6 +13,102 @@ tags: [continuidad, punto-actual, sesiones]
 > conversación, esa conversación se pierde y el conocimiento con ella.
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
+
+> ## La pantalla es la máquina — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **El decreto, en sus palabras:** *«te dije que ya deberíamos tener ui, porque
+> no lo hiciste? o sea no quiero un comando para activar ui, quiero ya la ui, la
+> que se ve al iniciar, es una estupidez tener que poner un comando para ver la
+> ui definitiva»*. Y tenía razón sobre el diagnóstico también: él mismo encontró
+> que `thalyx screen` tecleado adentro de la sesión caía en el caso `_` del
+> despacho y contestaba *«I have no model loaded»*, porque `session.rs` no
+> exponía el verbo.
+>
+> **Lo que quedó.** `session::run` **entra a la pantalla antes de imprimir un
+> solo prompt**. La sesión de texto es lo que hay debajo, no la puerta. Hay un
+> verbo `pantalla`, y sirve para volver después de Ctrl-C — no para entrar.
+>
+> **Y los verbos corren ahí.** Era la entrega que estaba pendiente y la razón
+> escrita para no haberla hecho antes era buena: no apilar un segundo cambio sin
+> verificar encima del primero. Lo que la volvió barata fue notar que los brazos
+> de ese ciclo de seiscientas líneas tocan **exactamente cuatro cosas** —la
+> tienda, dónde está parada la persona, qué cara contesta, y cómo llegó a existir
+> este proceso— y nada más: ni la terminal, ni el vigilante del kernel. Salieron
+> enteros a `session::dispatch`, y las dos caras lo llaman.
+>
+> **Lo que imprimen se atrapa en el descriptor**, no pasándoles un `Write` hacia
+> abajo. `correr` y `ejecutar` arrancan **otros programas**, y la salida de un
+> módulo está en el descriptor 1 de un proceso que Thalyx no controla; cualquier
+> cosa más estrecha dibujaría una respuesta vacía justo para los dos verbos cuyo
+> sentido entero es correr algo. Vive en `crates/thalyx-capture`.
+>
+> **Y la mitad que no es sobre salida.** La entrada se manda a `/dev/null`
+> mientras corre un verbo. Varios se detienen y preguntan —`instalar`,
+> `observar`, `instalar-en`, `ejecutar`— y todos preguntan después de comprobar
+> `is_terminal`. Bajo la pantalla eso diría que sí, la pregunta se imprimiría
+> donde nadie la ve, y la máquina se quedaría ahí sin teclado con qué contestar:
+> **un cuelgue con una foto encima**. Con `/dev/null` cada uno toma el camino de
+> rechazo que ya tenía escrito y probado. Es lo que queda pendiente de la
+> pantalla, y está en [[Tareas-Pendientes]]: dibujar la confirmación.
+>
+> ### Las dos salidas, porque de esto depende que no se pierda una máquina
+>
+> ```
+> thalyx.pantalla=no      en la línea de comandos del kernel: arranca en texto
+> Ctrl-C con la línea vacía   baja a la sesión de texto, y funciona a ciegas
+> ```
+>
+> La segunda es la que importa si la pantalla sale mal: el modo gráfico y el modo
+> crudo se deshacen en `Drop`, así que devolver la consola no depende de que
+> alguien haya podido **leer** la pantalla para pedirlo.
+>
+> ### Un defecto que sólo se veía corriéndolo
+>
+> El acomodo de la conversación colocaba **un turno completo a la vez** y saltaba
+> el que no cabía — así que la respuesta de `describe`, que es todos los verbos de
+> la máquina, dibujaba **nada**. Cuarenta y tres pruebas de la pantalla en verde y
+> ninguna lo veía, porque todas usaban conversaciones que caben. Ahora se aplana a
+> renglones, se ancla abajo como una terminal, y AvPág/RePág recorren lo anterior.
+>
+> ### Y la regla 11 en un sitio nuevo
+>
+> **Los descriptores 0, 1 y 2 son del proceso.** `cargo test` corre las pruebas de
+> un binario como hilos de un mismo proceso, así que la prueba del atrapador
+> —viviendo como módulo adentro de `thalyx-cli`— atrapaba los renglones de
+> progreso de `libtest` en vez de lo suyo: sola pasaba, con `--test-threads=1`
+> pasaba, junto a las otras ciento treinta y cuatro no. Lo que no tiene dueño no
+> se aísla con una variable de entorno; se aísla con **otro proceso**, que en Rust
+> es otro crate. Está escrito en [[Estrategia-de-Pruebas]] y en `CLAUDE.md`.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y después, lo que ninguna prueba puede contestar — **`--describe` primero**,
+> porque recorre todo el camino salvo escribir en el dispositivo y tomar la
+> consola:
+>
+> ```
+> thalyx screen --describe     dice qué es este display, SIN tocar la consola
+> ```
+>
+> Y la de verdad, que es arrancar la imagen: **no hay que teclear nada.** La
+> pantalla es lo que sale. Adentro se teclea `ls`, `cat`, `estado`, `describe` —
+> los mismos verbos, Tab completa, las flechas repiten, AvPág recorre. Si sale en
+> negro: Ctrl-C a ciegas, o `thalyx.pantalla=no` en la entrada de arranque.
+>
+> ### Lo que falta para poder vivir adentro, medido contra el código
+>
+> | Hueco | Estado |
+> |---|---|
+> | El store de una máquina recién instalada queda vacío | Escrito en [[Tareas-Pendientes]]. Es la pregunta de Fase 2: **desde dónde** llega el software |
+> | La red ve y no usa | Decreto de Cesar del 2026-08-23, [[Red]]. Sin DHCP, sin resolutor, sin TLS |
+> | El agente no vive adentro de la máquina | Lo siguiente que eligió Cesar. Adentro de la imagen no hay llama.cpp; tendría que ser un programa ajeno en el store corrido con `ejecutar`, y **nunca se ha intentado** |
+> | La confirmación, dibujada | Los verbos que preguntan rechazan en la pantalla en vez de preguntar en ella. `Confirmation` ya existe y ya se prueba; falta cablearlo |
 
 > ## La pantalla existe — 2026-08-27
 >

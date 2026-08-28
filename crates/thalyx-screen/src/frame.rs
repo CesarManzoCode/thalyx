@@ -60,7 +60,13 @@ pub fn compose(screen: &Screen, typography: &mut Typography, width: u32, height:
             Side::Right,
         );
     }
-    draw_conversation(&mut canvas, typography, &layout, &screen.conversation);
+    draw_conversation(
+        &mut canvas,
+        typography,
+        &layout,
+        &screen.conversation,
+        screen.scrollback,
+    );
     draw_prompt(&mut canvas, typography, &layout, &screen.prompt);
     canvas
 }
@@ -351,11 +357,31 @@ fn draw_panel(
     }
 }
 
+/// One drawn line of the conversation, after wrapping.
+///
+/// The conversation is flattened to lines before anything is placed, and that
+/// is the whole difference from the first version of this function. That one
+/// placed whole turns and skipped any turn taller than the region — so an
+/// answer longer than the display did not appear *at all*, which is exactly
+/// what `describe` and a long `ls` are. A screen that goes blank when the
+/// answer is big is worse than one that shows the tail of it.
+struct Drawn {
+    voice: Voice,
+    face: Face,
+    size: f32,
+    height: f32,
+    /// Whether this is the first line of its turn, which is where the gap
+    /// between one speaker and the next belongs.
+    opens_a_turn: bool,
+    text: String,
+}
+
 fn draw_conversation(
     canvas: &mut Canvas,
     typography: &mut Typography,
     layout: &Layout,
     turns: &[Turn],
+    scrollback: usize,
 ) {
     let metrics = &layout.metrics;
     let region = layout.centre;
@@ -363,23 +389,65 @@ fn draw_conversation(
     let text_left = region.left as f32 + metrics.padding * 2.0 + rule_width as f32;
     let text_width = (region.right() as f32 - text_left - metrics.padding * 1.5).max(1.0);
 
-    // Composed from the bottom because the newest turn is the one that must be
-    // on the screen. Laying it out from the top and letting the end fall off
-    // means a machine that answers and shows you the question.
-    let mut bottom = region.bottom() as f32 - metrics.padding;
-    for turn in turns.iter().rev() {
+    let mut lines: Vec<Drawn> = Vec::new();
+    for turn in turns {
         let face = voice_face(turn.voice);
         let size = if turn.voice == Voice::Machine {
             metrics.fact
         } else {
             metrics.body
         };
-        let line_height = typography.line_height(face, size);
-        let lines = typography.wrap(face, size, text_width, &turn.text);
-        let block_height = line_height * lines.len() as f32;
-        let top = bottom - block_height;
+        let height = typography.line_height(face, size);
+        // Every newline in a captured answer is a line the person would have
+        // seen at a terminal, and `wrap` is about width and not about the text
+        // having decided where it ends. Splitting first is what keeps a table
+        // of file names a table.
+        for (index, paragraph) in turn.text.split('\n').enumerate() {
+            let wrapped = typography.wrap(face, size, text_width, paragraph);
+            let wrapped = if wrapped.is_empty() {
+                // An empty line inside an answer is spacing the verb chose, and
+                // dropping it would run two blocks of output together.
+                vec![String::new()]
+            } else {
+                wrapped
+            };
+            for (part, text) in wrapped.into_iter().enumerate() {
+                lines.push(Drawn {
+                    voice: turn.voice,
+                    face,
+                    size,
+                    height,
+                    opens_a_turn: index == 0 && part == 0,
+                    text,
+                });
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return;
+    }
+
+    // Composed from the bottom because the newest line is the one that must be
+    // on the screen. Laying it out from the top and letting the end fall off
+    // means a machine that answers and shows you the question.
+    //
+    // `scrollback` moves that anchor up the list. It is clamped here rather
+    // than by whoever set it: the screen loop counts key presses and has no way
+    // to know how many lines an answer wrapped into, and a scrollback past the
+    // start would show nothing — an empty conversation is the one thing this is
+    // never allowed to draw.
+    let last = lines
+        .len()
+        .saturating_sub(scrollback)
+        .max(1)
+        .min(lines.len());
+
+    let mut bottom = region.bottom() as f32 - metrics.padding;
+    for line in lines[..last].iter().rev() {
+        let top = bottom - line.height;
         if top < region.top as f32 + metrics.padding {
-            // This turn does not fit. Everything above it is older, so there is
+            // This line does not fit. Everything above it is older, so there is
             // nothing left to draw.
             break;
         }
@@ -389,18 +457,31 @@ fn draw_conversation(
                 region.left + metrics.padding as i32,
                 top.round() as i32,
                 rule_width,
-                block_height.round() as u32,
+                line.height.round() as u32,
             ),
-            voice_colour(turn.voice),
+            voice_colour(line.voice),
         );
 
-        let style = TextStyle::new(face, size, voice_colour(turn.voice));
-        let mut baseline = top + typography.ascent(face, size);
-        for line in &lines {
-            typography.draw(canvas, text_left, baseline, line, style);
-            baseline += line_height;
+        if !line.text.is_empty() {
+            let style = TextStyle::new(line.face, line.size, voice_colour(line.voice));
+            typography.draw(
+                canvas,
+                text_left,
+                top + typography.ascent(line.face, line.size),
+                &line.text,
+                style,
+            );
         }
-        bottom = top - metrics.padding * 0.9;
+
+        // The gap belongs above the first line of a turn and nowhere else:
+        // between two lines of one answer it would put white space through the
+        // middle of a listing.
+        bottom = top
+            - if line.opens_a_turn {
+                metrics.padding * 0.9
+            } else {
+                0.0
+            };
     }
 }
 
@@ -719,6 +800,96 @@ mod tests {
             }
         }
         assert!(ink, "nothing was drawn at the bottom of the conversation");
+    }
+
+    /// Whether anything at all was drawn in a band of the conversation.
+    ///
+    /// `INK` is the ground the conversation sits on, so «not the ground» is
+    /// «something is there». The same reading the test above uses, lifted out
+    /// because three tests now need it.
+    fn something_is_drawn(canvas: &Canvas, layout: &Layout, from_the_bottom: i32) -> bool {
+        let band_top = layout.centre.bottom() - from_the_bottom;
+        for y in band_top..layout.centre.bottom() {
+            for x in layout.centre.left..layout.centre.right() {
+                if canvas.pixel(x as u32, y as u32) != Some(color::INK) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Every pixel of the conversation, so two frames can be compared.
+    fn conversation_pixels(canvas: &Canvas, layout: &Layout) -> Vec<Option<crate::Color>> {
+        let mut pixels = Vec::new();
+        for y in layout.centre.top..layout.centre.bottom() {
+            for x in layout.centre.left..layout.centre.right() {
+                pixels.push(canvas.pixel(x as u32, y as u32));
+            }
+        }
+        pixels
+    }
+
+    /// A long answer, of the shape a verb actually produces.
+    fn a_long_answer() -> Turn {
+        Turn::machine(
+            (0..300)
+                .map(|index| format!("línea {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    #[test]
+    fn an_answer_taller_than_the_display_is_drawn_rather_than_skipped() {
+        // The defect this file had until the conversation was flattened to
+        // lines: placement worked a whole turn at a time, and a turn that did
+        // not fit was passed over — so the answer to `describe`, which is every
+        // verb this machine has, drew **nothing at all**. A screen that goes
+        // blank exactly when the answer is big is worse than one that shows the
+        // tail of it, and it is the failure a person would report as "the screen
+        // stopped responding".
+        let mut screen = Screen::new(a_bar());
+        screen.conversation = vec![a_long_answer()];
+
+        let mut typography = Typography::embedded();
+        let canvas = compose(&screen, &mut typography, 1280, 800);
+        let layout = Layout::for_size(1280, 800);
+        assert!(
+            something_is_drawn(&canvas, &layout, 40),
+            "an answer longer than the display left the conversation empty"
+        );
+    }
+
+    #[test]
+    fn scrolling_back_changes_what_is_on_the_screen_and_never_empties_it() {
+        // Two claims, and the second is the one that would go wrong quietly. A
+        // scrollback that did nothing would look like a screen with no way to
+        // read a long answer; a scrollback that ran off the start would look
+        // like a machine that lost it.
+        let mut screen = Screen::new(a_bar());
+        screen.conversation = vec![a_long_answer()];
+
+        let mut typography = Typography::embedded();
+        let layout = Layout::for_size(1280, 800);
+        let bottom = conversation_pixels(&compose(&screen, &mut typography, 1280, 800), &layout);
+
+        screen.scrollback = 40;
+        let scrolled = conversation_pixels(&compose(&screen, &mut typography, 1280, 800), &layout);
+        assert_ne!(
+            bottom, scrolled,
+            "RePág drew the same frame, so there is no way to read the top of a long answer"
+        );
+
+        // Further back than there are lines. Clamped where the lines are known,
+        // because the screen loop counts key presses and has no way to know how
+        // many lines an answer wrapped into.
+        screen.scrollback = 100_000;
+        let past_the_start = compose(&screen, &mut typography, 1280, 800);
+        assert!(
+            something_is_drawn(&past_the_start, &layout, 40),
+            "scrolling past the oldest line left the conversation blank"
+        );
     }
 
     #[test]

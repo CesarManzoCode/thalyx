@@ -6033,6 +6033,101 @@ for line in sys.stdin:
     fi
 fi
 
+step "41. the screen is the face a machine comes up on, and refusing it does not cost the machine"
+
+# Cesar, 2026-08-28: «no quiero un comando para activar ui, quiero ya la ui, la
+# que se ve al iniciar». `session::run` now enters the screen before it prints a
+# prompt, so this stage is about the two ways that can go wrong on a machine
+# that is not the one it was written for.
+#
+#   · **A session with no keyboard must refuse rather than draw.** A pipe has no
+#     way to answer a screen, and `catalogue_is_true` types every advertised verb
+#     into a session exactly like that — so a `pantalla` that drew would take over
+#     the display of whatever machine was running the suite. Rule 11.
+#
+#   · **A refusal must leave a machine that still works.** There is nothing behind
+#     the session on the image, so a verb that ended it because a display was
+#     missing would turn "no framebuffer" into "no computer".
+#
+# The first is measured rather than asked: `strace` watches for the framebuffer
+# being opened at all, with `thalyx screen --describe` beside it as the control
+# that the tracer sees such an open when there is one. Rule 4 — without the
+# control, a tracer that saw nothing anywhere would pass this for free.
+
+SCREEN_ROOT="$WORK/screen-face"
+mkdir -p "$SCREEN_ROOT"
+"$THALYX" --root "$SCREEN_ROOT" store status > /dev/null 2>&1
+
+printf 'structured on\npantalla\npwd\nsalir\n' \
+    | "$THALYX" --root "$SCREEN_ROOT" session > "$WORK/screen-piped.log" 2>&1
+
+SCREEN_REFUSAL=$(grep '^{' "$WORK/screen-piped.log" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "screen":
+        print(said.get("error"), said.get("ok"))
+        break
+' 2>/dev/null)
+SCREEN_STILL_ANSWERS=$(grep -c '"op": *"where"' "$WORK/screen-piped.log" 2>/dev/null || true)
+
+if [ -z "$SCREEN_REFUSAL" ]; then
+    failed "\`pantalla\` down a pipe answered nothing a program can read; see $WORK/screen-piped.log"
+    excerpt "$WORK/screen-piped.log"
+elif [ "$SCREEN_REFUSAL" != "not_a_terminal False" ]; then
+    failed "\`pantalla\` down a pipe answered [$SCREEN_REFUSAL] and not the advertised not_a_terminal"
+elif [ "${SCREEN_STILL_ANSWERS:-0}" -lt 1 ]; then
+    # The half that matters more. A refusal that ended the session would be a
+    # machine that stops because it has no monitor.
+    failed "the session stopped answering after the screen refused; see $WORK/screen-piped.log"
+    excerpt "$WORK/screen-piped.log"
+else
+    proven "a session with no keyboard refuses the screen with the word it advertised, and goes on answering verbs afterwards"
+fi
+
+if ! command -v strace > /dev/null 2>&1; then
+    GAP="the screen refused a pipe, and without strace nothing watched whether it opened /dev/fb0 on the way to refusing"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+elif [ ! -e /dev/fb0 ]; then
+    # Rule 4 again: with no framebuffer on this machine, "it never opened the
+    # framebuffer" is true of every program there is and proves nothing.
+    GAP="the screen refused a pipe, and this machine has no /dev/fb0 so not opening one says nothing"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    printf 'pantalla\nsalir\n' \
+        | strace -f -e trace=openat -o "$WORK/screen-piped.strace" \
+            "$THALYX" --root "$SCREEN_ROOT" session > /dev/null 2>&1
+    strace -f -e trace=openat -o "$WORK/screen-describe.strace" \
+        "$THALYX" screen --describe > /dev/null 2>&1
+
+    PIPED_OPENS=$(grep -c '/dev/fb0' "$WORK/screen-piped.strace" 2>/dev/null || true)
+    CONTROL_OPENS=$(grep -c '/dev/fb0' "$WORK/screen-describe.strace" 2>/dev/null || true)
+
+    if [ "${CONTROL_OPENS:-0}" -lt 1 ]; then
+        failed "the tracer did not see \`thalyx screen --describe\` open /dev/fb0 either, so it is seeing nothing rather than proving anything"
+    elif [ "${PIPED_OPENS:-0}" -ne 0 ]; then
+        failed "\`pantalla\` down a pipe opened /dev/fb0 $PIPED_OPENS time(s) before refusing, which is the display of this machine being taken by its own test suite"
+    else
+        proven "\`pantalla\` down a pipe never reaches /dev/fb0, while \`screen --describe\` opens it $CONTROL_OPENS time(s) under the same tracer"
+    fi
+fi
+
+# The escape hatch, read from the image rather than from the code that would
+# use it. `thalyx.pantalla=no` is the only way back from a machine that comes up
+# black, and a built-in command line that already carried it would mean no
+# machine ever draws — the mirror failure, and the one nobody would look for.
+IMAGE_CMDLINE=$(grep '^CONFIG_CMDLINE=' image/thalyx.config 2>/dev/null || true)
+if [ -z "$IMAGE_CMDLINE" ]; then
+    failed "image/thalyx.config has no CONFIG_CMDLINE, so nothing could say what a machine boots with"
+elif echo "$IMAGE_CMDLINE" | grep -q 'thalyx.pantalla='; then
+    failed "the built-in command line already answers thalyx.pantalla, so the escape hatch is the default: $IMAGE_CMDLINE"
+else
+    proven "the built-in command line leaves thalyx.pantalla unanswered, so a machine comes up on the screen and \`thalyx.pantalla=no\` is the way back from one that cannot"
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

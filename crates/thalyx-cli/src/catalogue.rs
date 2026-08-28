@@ -431,6 +431,20 @@ pub const VERBS: &[Verb] = &[
         summary: "Wipe the screen. Nothing on the machine changes.",
     },
     Verb {
+        id: "screen",
+        names: &["pantalla", "screen"],
+        takes: &[],
+        flags: &[],
+        answers: Some("screen"),
+        // It changes nothing about the machine — it changes which face is in
+        // front of the person. Said carefully because `changes` is what `ensayo`
+        // and every caller treat as consequential, and a verb marked consequential
+        // for taking over a console would make that word mean less everywhere else.
+        changes: false,
+        errors: &["no_display", "not_a_terminal"],
+        summary: "Put the one screen on this machine's display. Ctrl-C comes back here.",
+    },
+    Verb {
         id: "available",
         names: &["disponibles", "available", "repo"],
         takes: &[],

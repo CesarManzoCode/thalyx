@@ -2,6 +2,7 @@
 tipo: arquitectura
 estado: decretado
 fecha-decreto: 2026-08-27
+fecha-revision: 2026-08-28
 tags: [pantalla, interfaz, framebuffer, doble-ruta, camino-confiable]
 ---
 
@@ -231,25 +232,116 @@ de que exista una máquina que la muestre.
   sería una violación del decreto, no una mejora.
 - **No decide nada.** Dibuja lo que las tres caras ya contestan.
 
-## Lo que la primera entrega hace y lo que no
+## Lo que hay construido
 
-Construida el 2026-08-27. **Dibuja la máquina y el prompt acepta tecleo; los
-verbos todavía no pasan por la pantalla.**
+**La primera entrega, 2026-08-27.** Dibujaba la máquina y el prompt aceptaba
+tecleo; los verbos no pasaban por la pantalla. Era una frontera elegida: hacer
+las dos cosas juntas significaba que, si la máquina de Cesar arrancaba en negro,
+no había manera de saber cuál de los dos cambios fue.
 
-Eso es una frontera elegida, no algo a medias. `session::run` es un solo ciclo
-de seiscientas líneas que imprime conforme avanza, y volverlo algo que *devuelve*
-una respuesta es una edición grande al código más ejercido del proyecto. Hacer
-las dos cosas en la misma entrega significaría que, si la máquina de Cesar
-arranca en negro, **no hay manera de saber cuál de los dos cambios fue** — que
-es la regla de `CLAUDE.md` sobre no apilar un segundo cambio sin verificar
-encima del primero.
+**La segunda, 2026-08-28.** La pantalla **es** la cara del arranque y **corre los
+verbos**. Los dos cambios están decretados abajo, en Revisiones, y los dos son de
+él.
 
-Así que esta entrega contesta lo que sólo su hardware puede contestar: si
-`/dev/fb0` está, si ese firmware empaqueta un pixel como el código supuso, si la
-consola suelta la pantalla y la devuelve, si el teclado sigue llegando en modo
-gráfico, y si el acomodo es correcto a su resolución.
+Lo que sigue sin poderse comprobar aquí es todo lo que es vidrio: si `/dev/fb0`
+está, si ese firmware empaqueta un pixel como el código supuso, si la consola
+suelta la pantalla y la devuelve, si el teclado sigue llegando en modo gráfico, y
+si el acomodo es correcto a su resolución. `thalyx screen --describe` contesta la
+primera de ésas **sin tocar la consola**, que es la única manera honesta de
+preguntarla en una máquina que podría quedarse en negro con la respuesta.
 
 ## Revisiones
+
+### 2026-08-28 — La pantalla es lo que se ve al arrancar, no un verbo que la enciende
+
+**Decretado por Cesar.** Sus palabras:
+
+> te dije que ya deberíamos tener ui, porque no lo hiciste? o sea no quiero un
+> comando para activar ui, quiero ya la ui, la que se ve al iniciar, es una
+> estupidez tener que poner un comando para ver la ui definitiva
+
+**Antes:** `thalyx screen` la ponía, y adentro de la sesión ni siquiera eso —
+`session.rs` no exponía el verbo, así que `thalyx screen` tecleado adentro caía
+en el caso `_` del despacho y contestaba *«I have no model loaded»*. Él lo
+diagnosticó exactamente así antes de decretar.
+
+**Ahora:** `session::run` entra a la pantalla **antes de imprimir un solo
+prompt**. La sesión de texto es lo que queda debajo, no la puerta de entrada.
+Hay un verbo `pantalla` y sirve para **volver** después de Ctrl-C, no para
+entrar.
+
+**Motivo, y es sobre quién tiene que saber algo.** Una pantalla que se alcanza
+tecleando su nombre es una pantalla que la persona que tiene la máquina en las
+manos tuvo que aprender de alguien — y en una máquina sin shell no hay quién se
+lo diga. Es la misma razón por la que [[Decision-Capa-vs-SO-Nuevo]] dice que
+Thalyx es dueño del arranque: un sistema al que se llega corriendo un comando
+adentro de otra cosa no es dueño de nada.
+
+**Tres condiciones, y las tres se leen, ninguna se supone:**
+
+1. **Esta sesión es la de la máquina.** El padre es PID 1. `thalyx session`
+   tecleado en una terminal de Fedora es un programa que alguien arrancó, y un
+   programa que le arrebata el framebuffer al servidor gráfico que lo tiene
+   estaría haciendo lo contrario de lo que se le pidió.
+2. **Nadie pidió texto.** `thalyx.pantalla=no` en la línea de comandos del kernel
+   arranca en la sesión de texto. Existe porque la falla que este cambio puede
+   causar es una máquina que arranca a un rectángulo negro, y sin manera de decir
+   «esta vez no» desde la entrada de arranque, la única salida sería otro medio —
+   que no es una recuperación, es una reinstalación. Sólo `no`, `texto` o `text`
+   cuentan: un valor mal escrito deja la pantalla prendida, porque lo que tiene
+   que estar exactamente bien es lo que la **apaga**.
+3. **Este display se puede dibujar.** No se pregunta, se intenta: si el
+   framebuffer no abre, `show` devuelve el error, la sesión de texto sigue y dice
+   por qué. Una máquina que arranca en texto sin explicación parece rota; una que
+   dice por qué parece una máquina que revisó.
+
+**Y una salida a ciegas**, que es la que importa si la pantalla sale mal: Ctrl-C
+con la línea vacía devuelve la consola de texto **aunque no se vea nada**,
+porque el modo gráfico y el modo crudo se deshacen en `Drop` y no dependen de que
+alguien haya podido leer la pantalla para pedirlo.
+
+### 2026-08-28 — Los verbos corren en la pantalla, y lo que imprimen se atrapa en el descriptor
+
+La primera entrega no los corría porque `session::run` era un ciclo de
+seiscientas líneas que imprime conforme avanza. Lo que lo volvió reutilizable fue
+notar que **sus brazos tocan exactamente cuatro cosas** —la tienda, dónde está
+parada la persona, qué cara contesta, y cómo llegó a existir este proceso— y nada
+más: ni la terminal, ni el vigilante del kernel. Sacarlo a `session::dispatch` fue
+mecánico, y las dos caras lo llaman.
+
+**Lo que imprimen se atrapa en el descriptor**, no pasándoles un `Write` hacia
+abajo. No es un atajo: `correr` y `ejecutar` arrancan **otros programas**, y la
+salida de un módulo está en el descriptor 1 de un proceso que éste no controla.
+Cualquier cosa más estrecha dibujaría una respuesta vacía justo para los dos
+verbos cuyo sentido entero es correr algo.
+
+**Y la mitad que no es sobre salida.** La entrada se redirige a `/dev/null`
+mientras corre un verbo, y eso es lo que mantiene viva la máquina. Varios verbos
+se detienen y preguntan —`instalar`, `observar`, `instalar-en`, `ejecutar`— y
+todos preguntan leyendo una línea de una terminal, después de comprobar
+`is_terminal`. Bajo la pantalla esa comprobación diría que sí, la pregunta se
+imprimiría en un buffer que nadie ve, y la máquina se quedaría ahí para siempre
+sin teclado con qué contestarla: **un cuelgue con una foto encima**. Con
+`/dev/null` en el descriptor 0 todas contestan que no y toman el camino de
+rechazo que ya tenían escrito y probado. Regla 9, con código que ya existía.
+
+Falta, y está dicho: esos verbos **rechazan** en la pantalla en vez de preguntar
+en ella. La confirmación del camino confiable dibujada —[[Camino-Confiable]], el
+tipo `Confirmation` que ya existe y ya se prueba— es la entrega siguiente.
+
+### 2026-08-28 — Una respuesta más alta que la pantalla no se dibujaba en absoluto
+
+Encontrado al conectar los verbos. El acomodo de la conversación colocaba **un
+turno completo a la vez**, y un turno que no cabía se saltaba entero — de modo
+que la respuesta de `describe`, que es todos los verbos de la máquina, dibujaba
+**nada**.
+
+Ahora la conversación se aplana a renglones antes de colocar nada, y se ancla
+abajo: se ve la cola, como en una terminal, y AvPág/RePág recorren lo anterior.
+Una pantalla que se queda en blanco justo cuando la respuesta es grande es peor
+que una que muestra el final de ella, y es la falla que una persona reportaría
+como «se trabó».
+
 
 ### 2026-08-27 — Los pixeles no piden nada del kernel; el ratón sí, y sale
 

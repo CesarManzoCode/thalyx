@@ -4407,6 +4407,38 @@ La forma general: **una propiedad que dice «y nada más» se prueba en lo demá
 no en la cosa.** Una prueba escrita sobre el sujeto no puede fallar por lo que
 haya alrededor de él, que es exactamente de donde vendría el defecto.
 
+## Regla derivada: los descriptores 0, 1 y 2 son del proceso, y una prueba que los mueve movió el proceso entero — 2026-08-28
+
+La regla 11 otra vez, en un sitio donde nadie la había buscado. Las dos veces
+anteriores el interruptor global sin dueño era el guardián del kernel; esta vez
+es la **salida estándar**.
+
+**Qué pasó.** Para que la pantalla pueda mostrar lo que contesta un verbo, lo que
+el verbo imprime se atrapa moviendo los descriptores 0, 1 y 2 a un archivo en
+memoria mientras corre. La prueba de eso vivía como módulo adentro de
+`thalyx-cli` — y `cargo test` corre las pruebas de un binario como **hilos de un
+mismo proceso**. Los descriptores no son del hilo: son del proceso. Sola pasaba;
+con `--test-threads=1` pasaba; junto a las otras ciento treinta y cuatro
+atrapaba los renglones de progreso de `libtest` en vez de lo que ella misma había
+escrito.
+
+**Lo que quedó.** El código se mudó a su propio crate, `thalyx-capture`, que le
+da su propio proceso de pruebas, y las partes corren en orden dentro de una sola
+prueba en vez de como cuatro que el planificador pueda cruzar.
+
+**La forma general, que es la de la regla 11 y no una nueva:** *lo que no tiene
+dueño no se aísla con una variable de entorno.* `THALYX_ROOT` aísla la tienda;
+nada aísla los descriptores de un proceso, ni el guardián de un kernel. Cuando lo
+que una prueba cambia es de esa clase, **la única separación real es un proceso
+distinto** — y en Rust, un binario de pruebas distinto es un crate distinto.
+
+**Y una segunda lección del mismo día, que no es una regla sino un recordatorio
+de la 1:** el acomodo de la conversación colocaba un turno completo a la vez y
+saltaba el que no cabía, así que la respuesta de `describe` —todos los verbos de
+la máquina— dibujaba nada. Cuarenta y tres pruebas de la pantalla estaban en
+verde y ninguna lo veía, porque todas usaban conversaciones que caben. Lo
+encontró correr el sistema; la prueba se escribió después.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**

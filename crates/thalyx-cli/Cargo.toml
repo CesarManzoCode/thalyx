@@ -31,6 +31,7 @@ thalyx-files.workspace = true
 thalyx-proc.workspace = true
 thalyx-net.workspace = true
 thalyx-screen.workspace = true
+thalyx-capture.workspace = true
 thalyx-term.workspace = true
 thalyx-edit.workspace = true
 thalyx-contract.workspace = true

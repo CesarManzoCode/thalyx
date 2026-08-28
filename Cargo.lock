@@ -936,6 +936,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-capture"
+version = "0.1.0"
+dependencies = [
+ "thalyx-syscall",
+]
+
+[[package]]
 name = "thalyx-cli"
 version = "0.1.0"
 dependencies = [
@@ -951,6 +958,7 @@ dependencies = [
  "thalyx-agent",
  "thalyx-bpf",
  "thalyx-btrfs",
+ "thalyx-capture",
  "thalyx-contract",
  "thalyx-core",
  "thalyx-edit",

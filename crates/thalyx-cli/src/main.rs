@@ -350,7 +350,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 screen::describe(face)
             } else {
                 let store = Store::open(&root)?;
-                screen::show(&store)
+                let mut session = session::Session::opening(&store);
+                screen::show(&mut session).map(|_| ()).map_err(Into::into)
             }
         }
         Command::Enforce(command) => enforce::run(&root, command),

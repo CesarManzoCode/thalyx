@@ -111,6 +111,16 @@ pub enum ProposedOperation {
 
     Clear,
 
+    /// Put the one screen on the display —
+    /// `vault/02-Arquitectura/La-Pantalla.md`.
+    ///
+    /// Proposable because the catalogue is one surface and a verb missing from
+    /// the grammar is a verb a model has no way to ask for. It is also the one
+    /// verb whose answer is not text: it refuses on the structured face and on
+    /// anything that is not a keyboard, so a model that names it has named a
+    /// place to be rather than something done.
+    Screen,
+
     Available,
 
     /// `install_module` deserialises to this too, and that alias is not a
@@ -215,6 +225,7 @@ impl ProposedOperation {
             ProposedOperation::Attempt => "attempt",
             ProposedOperation::Changes => "changes",
             ProposedOperation::Clear => "clear",
+            ProposedOperation::Screen => "screen",
             ProposedOperation::Available => "available",
             ProposedOperation::Install => "install",
             ProposedOperation::Modules => "modules",
@@ -273,7 +284,7 @@ impl ProposedOperation {
     }
 
     /// Every operation the agent can propose.
-    pub const ALL: [ProposedOperation; 43] = [
+    pub const ALL: [ProposedOperation; 44] = [
         ProposedOperation::Nothing,
         ProposedOperation::List,
         ProposedOperation::Read,
@@ -301,6 +312,7 @@ impl ProposedOperation {
         ProposedOperation::Attempt,
         ProposedOperation::Changes,
         ProposedOperation::Clear,
+        ProposedOperation::Screen,
         ProposedOperation::Available,
         ProposedOperation::Install,
         ProposedOperation::Modules,

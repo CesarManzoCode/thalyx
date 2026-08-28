@@ -226,6 +226,16 @@ pub struct Screen {
     pub right: Vec<Panel>,
     pub conversation: Vec<Turn>,
     pub prompt: Prompt,
+    /// How far back through the conversation the person has scrolled, counted
+    /// in **drawn lines** rather than in turns.
+    ///
+    /// Lines and not turns because one answer can be longer than the display:
+    /// `describe` lists every verb this machine has, and a scrollback that moved
+    /// a turn at a time would jump from the whole of one answer to the whole of
+    /// the one before it, with no way to reach the middle of either. Zero is the
+    /// newest line at the bottom, which is where a screen that has just answered
+    /// must be.
+    pub scrollback: usize,
     /// When this is set, it is the only thing drawn.
     pub confirmation: Option<Confirmation>,
 }
@@ -239,6 +249,7 @@ impl Screen {
             right: Vec::new(),
             conversation: Vec::new(),
             prompt: Prompt::default(),
+            scrollback: 0,
             confirmation: None,
         }
     }
