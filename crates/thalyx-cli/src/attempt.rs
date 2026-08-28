@@ -463,7 +463,20 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
             Ok(())
         }
         Err(error) => {
-            declined(face, "unreadable", &error.to_string());
+            // The word matters to a caller that is a program. `superseded` is
+            // not a broken record and not a missing one: it is somebody else
+            // having settled this attempt between the plan and the yes, and an
+            // agent told `unreadable` would go looking for a corrupt file.
+            let word = match &error {
+                thalyx_core::CoreError::Attempt(
+                    thalyx_core::attempt::AttemptError::Superseded(_),
+                ) => "superseded",
+                thalyx_core::CoreError::Attempt(thalyx_core::attempt::AttemptError::NoneOpen) => {
+                    "none_open"
+                }
+                _ => "unreadable",
+            };
+            declined(face, word, &error.to_string());
             Ok(())
         }
     }

@@ -215,8 +215,20 @@ mod tests {
         // machine and cannot be walked from the host during a run, so if this
         // number is wrong there is nothing else to catch it.
         let mut metrics = Metrics::new(None);
-        metrics.call("thalyx_find", &json!({"query": "WidgetRenamed"}), 10, false, false);
-        metrics.call("thalyx_edit", &json!({"path": "a.rs", "action": "show"}), 10, false, false);
+        metrics.call(
+            "thalyx_find",
+            &json!({"query": "WidgetRenamed"}),
+            10,
+            false,
+            false,
+        );
+        metrics.call(
+            "thalyx_edit",
+            &json!({"path": "a.rs", "action": "show"}),
+            10,
+            false,
+            false,
+        );
         metrics.call(
             "thalyx_edit",
             &json!({"path": "a.rs", "action": "replace", "at": "3", "text": "WidgetRenamed"}),
