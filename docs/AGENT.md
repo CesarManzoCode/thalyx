@@ -147,7 +147,8 @@ your original, ever.
 ## Comparing it against ordinary tools
 
 ```sh
-dev/bench-external-agent.sh --project ~/code/my-project --symbol SomeType --task read
+dev/bench-external-agent.sh --project ~/code/my-project --symbol SomeType --task read \
+    --expect-file ~/code/my-project.expected
 ```
 
 Two arms, the same prompt, the same model, the same turn limit: Claude Code with
@@ -156,10 +157,28 @@ Thalyx tools on an identical copy inside the machine. Arm B has its ordinary
 tools taken away on purpose — left in, the model reaches for what it has used a
 billion times and the run measures nothing.
 
-It writes a summary with turns, wall time, whatever token counts Claude Code
-itself reports, and which Thalyx tools were called. **One run of one task is an
-anecdote.** What the script gives you is the ability to run the comparison at
-all.
+It writes `summary.json` with, for **both** arms: turns, wall time, whatever
+token counts and cost Claude Code itself reports, every tool called by name, how
+many bytes each handed back to the model, files read and text searches. A field
+the agent did not print is **absent**, never zero — the summary never carries a
+number nobody measured.
+
+`--expect-file` is optional and is what turns the run into a pass or a fail: one
+string per line that the final answer has to contain, written by hand from what
+you already know is true about the project — the file where the symbol is
+defined, and every file that really depends on it. Without it the summary
+reports no verdict at all rather than a guessed one, because an agent that
+answers confidently and wrongly must not score as a success. Lines starting with
+`#` are comments.
+
+```
+src/store.rs
+src/handler.rs
+src/server.rs
+```
+
+**One run of one task is an anecdote.** What the script gives you is the ability
+to run the comparison at all.
 
 ---
 
