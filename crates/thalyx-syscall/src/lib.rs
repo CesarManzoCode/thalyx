@@ -2713,6 +2713,44 @@ struct KeyEntry {
     value: u16,
 }
 
+/// The two representations of one keymap entry, and why they are two.
+///
+/// **This is the defect that made a Thalyx machine untypeable.** The image
+/// booted with `la-latin1` loaded and every key — `qwerty`, `asdfgh`, ASCII
+/// letters that have nothing to do with Spanish — drew a box. The same image
+/// booted with `thalyx.teclado=no` typed fine, which is the control that put
+/// the fault in the loading of the keymap and nowhere else.
+///
+/// The tables in `thalyx-term` are what `loadkeys --mktable` emits, which is the
+/// kernel's *internal* form: `q` is `0xfb71`, `ñ` is `0xf0f1`. But `KDSKBENT`
+/// does not take that form. `drivers/tty/vt/keyboard.c` passes what userspace
+/// hands it through `U(x)`, `((x) ^ 0xf000)`, before storing it — so a caller
+/// that wants `0xfb71` stored must send `0x0b71`. Sending `0xfb71` stored
+/// `0x0b71 ^ 0xf000`'s counterpart, an entry naming a type nothing prints, and
+/// the key drew a box.
+///
+/// **And the readback hid it.** `KDGKBENT` applies the same `U(x)` on the way
+/// out, so the wrong value went in, a differently wrong value was stored, and
+/// the ioctl handed back exactly the `0xfb71` that had been sent. Every check
+/// that asked the kernel what it held — `loaded()`, the probe in `teclado` —
+/// compared equal on a keyboard that did not work. Rule 5 again: the instrument
+/// included the harness, and here the harness was the kernel's own symmetry.
+///
+/// The conversion lives here and not in `keyboard.rs` or in the generated
+/// tables, because it is not a fact about the layout — it is the ABI of these
+/// two ioctls. Everything above this boundary speaks one representation.
+const KEYMAP_IOCTL_BIAS: u16 = 0xf000;
+
+/// Thalyx's representation → what `KDSKBENT` wants in `kb_value`.
+fn keymap_to_ioctl(value: u16) -> u16 {
+    value ^ KEYMAP_IOCTL_BIAS
+}
+
+/// What `KDGKBENT` returns in `kb_value` → Thalyx's representation.
+fn keymap_from_ioctl(value: u16) -> u16 {
+    value ^ KEYMAP_IOCTL_BIAS
+}
+
 /// What the console currently turns `keycode` into, under modifier `table`.
 ///
 /// **This is the instrument, and it is deliberately not Thalyx's own record of
@@ -2739,7 +2777,7 @@ pub fn keymap_entry(console: BorrowedFd<'_>, table: u8, keycode: u8) -> io::Resu
     if read != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(entry.value)
+    Ok(keymap_from_ioctl(entry.value))
 }
 
 /// Set what `keycode` produces under modifier `table`.
@@ -2754,7 +2792,7 @@ pub fn set_keymap_entry(
     let mut entry = KeyEntry {
         table,
         index: keycode,
-        value,
+        value: keymap_to_ioctl(value),
     };
     // SAFETY: as above.
     #[allow(unsafe_code)]
@@ -2769,6 +2807,44 @@ pub fn set_keymap_entry(
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod keymap_boundary_tests {
+    use super::*;
+
+    /// The three entries are the ones the broken machine was diagnosed with:
+    /// two ASCII letters, which is what proved the fault was not about Spanish
+    /// at all, and the `ñ` the whole layout exists for. The right-hand numbers
+    /// are what `U(x)` in `drivers/tty/vt/keyboard.c` requires userspace to send
+    /// for the left-hand ones to end up stored.
+    #[test]
+    fn a_table_entry_is_biased_before_the_kernel_sees_it() {
+        assert_eq!(keymap_to_ioctl(0xfb71), 0x0b71, "`q`");
+        assert_eq!(keymap_to_ioctl(0xfb61), 0x0b61, "`a`");
+        assert_eq!(keymap_to_ioctl(0xf0f1), 0x00f1, "`ñ`");
+    }
+
+    /// `KDGKBENT` applies the same transformation on the way out, and this is
+    /// the half whose absence made the round trip agree with itself while the
+    /// keyboard was broken. Written as the exact values the tables hold, so a
+    /// reader can put them beside `la_latin1.rs`.
+    #[test]
+    fn what_the_kernel_returns_comes_back_in_the_tables_representation() {
+        assert_eq!(keymap_from_ioctl(0x0b71), 0xfb71, "`q`");
+        assert_eq!(keymap_from_ioctl(0x0b61), 0xfb61, "`a`");
+        assert_eq!(keymap_from_ioctl(0x00f1), 0xf0f1, "`ñ`");
+    }
+
+    /// Not a tautology worth skipping: it is the property `loaded()` depends on
+    /// to recognise a layout it has just written, and the property that made the
+    /// defect invisible when only one side of it was applied.
+    #[test]
+    fn the_two_directions_undo_each_other() {
+        for value in [0xfb71u16, 0xf0f1, 0xf401, 0xf702, 0x0107, 0x0000, 0xffff] {
+            assert_eq!(keymap_from_ioctl(keymap_to_ioctl(value)), value);
+        }
+    }
 }
 
 /// `struct kbdiacruc` — a dead key, the letter after it, and what they make.

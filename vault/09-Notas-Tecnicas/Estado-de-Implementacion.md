@@ -195,6 +195,34 @@ dibujar y no escribir.
 **Que la carga de verdad funcione sólo lo contesta su hierro.** Etapa 43, que
 lee y nunca escribe: un keymap es un interruptor global sin dueño (regla 11).
 
+#### Y no funcionaba: la representación no era la que pide el ioctl (2026-08-28)
+
+Corriendo la imagen: con `la-latin1` cargado, **hasta las teclas ASCII** —
+`qwerty`, `asdfgh`, letras que no tienen nada que ver con el español — dibujaban
+cuadros. La misma imagen arrancada con `thalyx.teclado=no` escribía bien. Ese
+control deja la falla en la carga del keymap y en ningún otro lado: ni QEMU, ni
+el framebuffer, ni la fuente, ni el decodificador de entrada.
+
+La causa: las tablas que emite `loadkeys --mktable` están en la representación
+*interna* del kernel (`q` es `0xfb71`, `ñ` es `0xf0f1`), y `KDSKBENT` no recibe
+esa forma — `drivers/tty/vt/keyboard.c` pasa lo que le da userspace por `U(x)`,
+`x ^ 0xf000`, antes de guardarlo. Se le entregaba `0xfb71` directo, guardaba otra
+cosa, y la tecla dibujaba un cuadro.
+
+**Y la verificación lo tapaba.** `KDGKBENT` aplica la misma transformación de
+salida, así que el valor mal mandado volvía idéntico y todo lo que le preguntaba
+al kernel qué tenía —`loaded()`, la sonda de `teclado`— comparaba igual sobre un
+teclado que no servía. Regla 5 otra vez, y esta vez el instrumento equivocado era
+la simetría del propio kernel: un round-trip que coincide no prueba que lo
+guardado sea lo que se quería.
+
+La conversión quedó en `crates/thalyx-syscall/src/lib.rs`, en `keymap_to_ioctl` y
+`keymap_from_ioctl`, con sus pruebas. **No en `keyboard.rs` ni en las tablas
+generadas**: la diferencia no es un dato de la distribución, es el ABI de esos
+dos ioctls. Todo lo que está arriba de esa frontera —`loaded()`,
+`keymap::produces()`, `Layout::plainly()`— sigue hablando una sola
+representación, la de las tablas.
+
 ### La red, que se ve y no se usa
 
 Punto 8 de la terminal usable, decreto en [[Red]]. La configuración del kernel
