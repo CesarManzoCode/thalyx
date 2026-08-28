@@ -214,6 +214,97 @@ El brazo A encontró un dependiente que el brazo B **no**: `attempt.rs`, que usa
 contesta *quién nombra este símbolo*, no *a quién le afecta transitivamente*.
 Es un límite real del índice y queda escrito acá antes que en ningún otro lado.
 
+## Las tres corridas reales, y la tarea que faltaba — 2026-08-28
+
+Tres comparaciones con Claude Code de verdad, la misma tarea y el mismo modelo
+en los dos brazos:
+
+| tarea | correcto | costo | tiempo de pared |
+|---|---|---|---|
+| **lectura #1** | los dos | Thalyx **−46 %** | Thalyx **−18 %** |
+| **lectura #2** | los dos | Thalyx **−62 %** | Thalyx **−36 %** |
+| **edición simple, un archivo** | los dos | Thalyx −4 % ($0.0820 contra $0.0856) | Thalyx **+24 %** (15.1 s contra 12.2 s) |
+
+La edición salió **empatada**: los mismos 6 turnos y las mismas 5 llamadas a
+herramienta en los dos brazos, y el brazo B **nunca abrió un intento**.
+
+Eso no es una derrota, es una tarea mal elegida, y vale la pena escribir por
+qué: **un archivo cambiado una vez no tiene nada que revertir.** No hay
+dependientes que encontrar, no hay varias partes que dejar consistentes, y
+volver atrás es una edición más. Lo que esa tarea mide es el editor, y el editor
+de Thalyx no es la apuesta — la frontera reversible sí. Un agente que no
+necesita deshacer nada no abre un intento porque no le sirve de nada, que es
+exactamente lo que hizo.
+
+### La tarea `reversible`
+
+`dev/bench-external-agent.sh --task reversible`. Un símbolo se renombra en su
+definición y en todo lo que depende de él, el agente comprueba qué tocó, y al
+final **deja el árbol exactamente como estaba, byte por byte**. La pregunta,
+escrita antes de correrla:
+
+> Cuando una tarea exige cambiar varias partes relacionadas y después volver con
+> certeza al estado inicial, ¿la frontera reversible de Thalyx le reduce el
+> trabajo al mismo agente frente a Linux?
+
+Cuatro cosas la mantienen honesta:
+
+1. **El prompt es una sola cadena** para los dos brazos, y no nombra ninguna
+   herramienta, ni MCP, ni Thalyx. El `--self-test` del arnés lo comprueba
+   leyendo el propio archivo: cuenta que haya exactamente un `claude -p` y busca
+   las palabras prohibidas en el prompt. Así no se puede pudrir sin que algo
+   truene.
+2. **El cambio es mecánico.** `UidRegistry` pasa a ser `UidRegistryRenamed` — un
+   sufijo, no un nombre nuevo. No hay criterio que ejercer y por lo tanto no hay
+   diferencia de criterio entre los brazos.
+3. **El brazo A puede restaurar como quiera.** Su copia trae el `.git` del
+   proyecto y tiene `Bash`; `git checkout -- .` es una respuesta perfectamente
+   válida, y si resulta ser la barata, ése es el resultado. Lo único prohibido
+   —en los dos brazos— es compilar y correr pruebas, porque el brazo B no tiene
+   shell y no podría: dejarlo habría medido `cargo` en una columna y nada en la
+   otra.
+4. **"Restaurado" se comprueba desde afuera**, con `sha256` sobre el árbol
+   entero, no preguntándole a la máquina que hizo la afirmación.
+
+### La trampa que esa tarea trae adentro
+
+**Un agente que no hace nada restaura el árbol perfecto.** Un veredicto leído
+del hash solo pondría a un agente que se rehusó por encima de todos los que lo
+intentaron — y lo pondría más alto en el brazo B, que es la dirección en la que
+esta comparación no puede equivocarse nunca.
+
+Por eso `reversible.passed` es una conjunción, y cada parte viene de un
+instrumento distinto: **cambió de verdad** (el nombre nuevo apareció en alguna
+llamada, según el stream del propio agente), **restauró** (los bytes, según el
+anfitrión), y **contestó bien** (nombró los archivos que la verdad conocida
+exige, `--expect-file`). Si alguna se desconoce, no hay veredicto: no es `false`.
+
+### Y el brazo B se comprueba en dos pasos, a propósito
+
+El espacio de trabajo del brazo B vive adentro de la VM, en una imagen Btrfs que
+QEMU tiene abierta para escritura. Montarla mientras la máquina corre es como se
+corrompe un store. Así que el hash de *después* es necesariamente una segunda
+pasada, con la máquina apagada:
+
+```sh
+sudo make -C image agent-export INTO=/tmp/armB-after
+dev/bench-external-agent.sh --project … --symbol … --task reversible \
+    --arms none --restored-b /tmp/armB-after
+```
+
+Mientras no se haga, el resumen dice `restore_check: not_proven` y no supone
+nada. `THALYX_REQUIRE_RESTORE_CHECK=1` convierte ese salto en falla — regla 3,
+una variable por requisito.
+
+### Lo que todavía no está controlado, y hay que decidir
+
+El brazo A trabaja *dentro* de la copia, así que Claude Code le carga el
+`CLAUDE.md` del proyecto; el brazo B trabaja en un directorio vacío y no lo ve.
+Eso le suma tokens al brazo A por algo que no es la tarea, y **le suma al lado
+que favorece a Thalyx**, que es justo el sesgo que no se vale tener. Se evita
+apuntando `--project` a una copia sin `CLAUDE.md`; los dos brazos siguen siendo
+bytes idénticos porque los dos salen de la misma copia.
+
 ## Lo que esta etapa NO hace
 
 Escrito para que nadie lo empiece por accidente:

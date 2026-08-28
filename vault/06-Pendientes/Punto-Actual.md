@@ -14,9 +14,74 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El índice encuentra al dependiente que se llega por un campo, y las consultas se reparan solas — 2026-08-28
+> ## El arnés tiene la tarea que sí ejercita la frontera reversible, y no se ha corrido — 2026-08-28
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Ya hay tres corridas reales de Claude Code, misma tarea y mismo modelo en los
+> dos brazos, los dos contestando correcto:
+>
+> | tarea | costo | tiempo de pared |
+> |---|---|---|
+> | lectura #1 | Thalyx **−46 %** | Thalyx **−18 %** |
+> | lectura #2 | Thalyx **−62 %** | Thalyx **−36 %** |
+> | edición simple, un archivo | Thalyx −4 % | Thalyx **+24 %** |
+>
+> La tercera salió empatada: los mismos 6 turnos y las mismas 5 llamadas en los
+> dos brazos, y el brazo B **nunca abrió un intento**. Eso no es una derrota,
+> **es una tarea que no medía la apuesta**: un archivo cambiado una vez no tiene
+> nada que revertir, así que no hay frontera reversible que ejercitar y el agente
+> hizo bien en no abrir una. Lo que midió fue el editor.
+>
+> Lo nuevo es `dev/bench-external-agent.sh --task reversible`, la tarea que sí la
+> ejercita: localizar un símbolo, cambiarlo en su definición y en todos sus
+> dependientes, comprobar qué se tocó, y **dejar el árbol exactamente como
+> estaba, byte por byte**. La pregunta, escrita antes de correrla, está en
+> [[Agentes-Externos]].
+>
+> **Nada se corrió todavía.** Esto es instrumento, no resultado, y se probó
+> entero sin gastar una sola corrida: `dev/bench-summary.py --self-test` y
+> `dev/bench-external-agent.sh --self-test`, los dos en la etapa 50 de
+> `verify.sh`.
+>
+> Cuatro cosas la mantienen honesta:
+>
+> 1. **Un solo prompt** para los dos brazos, que no nombra ninguna herramienta,
+>    ni MCP, ni Thalyx. El self-test lo comprueba leyendo el propio archivo:
+>    cuenta que haya exactamente un `claude -p` y busca las palabras prohibidas.
+> 2. **El cambio es mecánico**: un sufijo, `UidRegistry` → `UidRegistryRenamed`.
+>    No hay criterio que ejercer, así que no hay diferencia de criterio.
+> 3. **El brazo A restaura como quiera**: su copia trae el `.git` y tiene `Bash`,
+>    y `git checkout -- .` es una respuesta válida. Lo único prohibido —en los
+>    dos brazos— es compilar y probar, porque el brazo B no tiene shell.
+> 4. **"Restaurado" se comprueba desde afuera**, con `sha256` sobre el árbol, no
+>    preguntándole a la máquina que hizo la afirmación.
+>
+> **Y la trampa que trae adentro, que es lo que más trabajo costó:** un agente
+> que no hace nada restaura el árbol perfecto. Un veredicto leído del hash solo
+> pondría a un agente que se rehusó por encima de todos los que lo intentaron, y
+> más alto en el brazo B — la dirección en la que esto no puede equivocarse
+> nunca. Por eso `reversible.passed` es una conjunción de tres instrumentos
+> distintos: **cambió de verdad** (el nombre nuevo apareció en alguna llamada,
+> según el stream del agente), **restauró** (los bytes, según el anfitrión), y
+> **contestó bien** (nombró los archivos de `--expect-file`). Si alguna se
+> desconoce no hay veredicto; no es `false`. Es la regla 4 otra vez, en un lugar
+> donde nadie la había buscado, y quedó escrita en [[Estrategia-de-Pruebas]].
+>
+> El brazo B se comprueba en **dos pasos a propósito**: su espacio de trabajo
+> vive en una imagen Btrfs que QEMU tiene abierta, y montarla mientras la máquina
+> corre es como se corrompe un store. Así que el hash de después va con la
+> máquina apagada, `sudo make -C image agent-export`, y una segunda pasada con
+> `--arms none --restored-b`. Mientras no se haga, el resumen dice
+> `not_proven`; `THALYX_REQUIRE_RESTORE_CHECK=1` lo vuelve falla.
+>
+> **Lo que falta y es de Cesar:** correrla, y decidir antes qué hacer con el
+> `CLAUDE.md`. El brazo A trabaja adentro de la copia, así que Claude Code se lo
+> carga, y el brazo B trabaja en un directorio vacío y no lo ve — le suma tokens
+> al brazo A por algo que no es la tarea, **o sea al lado que favorece a
+> Thalyx**. Se evita apuntando `--project` a una copia sin `CLAUDE.md`.
+
+> ## El índice encuentra al dependiente que se llega por un campo, y las consultas se reparan solas — 2026-08-28
 >
 > Endurecimiento de la superficie **antes** del primer benchmark, para que lo que
 > se mida sea Thalyx y no defectos que ya conocíamos. Todo salió de evidencia que

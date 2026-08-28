@@ -422,6 +422,23 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       bytes devueltos al modelo, archivos leídos, búsquedas, turnos, tiempo,
       tokens y costo— y `--expect-file` da veredicto de la tarea. Sin ese archivo
       no hay veredicto, nunca uno adivinado.
+      Ya van tres corridas: lectura **−46 %** y **−62 %** de costo para Thalyx, y
+      edición de un archivo **empatada** (−4 % de costo, +24 % de tiempo), con el
+      brazo B sin abrir un intento. Esa tercera no midió nada de lo que Thalyx
+      apuesta: un archivo cambiado una vez no tiene nada que revertir.
+
+- [ ] **Correr `--task reversible`, que es la tarea que sí ejercita la frontera.**
+      Existe desde el 2026-08-28 y **no se ha corrido**. Renombrar un símbolo en
+      su definición y en todos sus dependientes, comprobar qué se tocó, y dejar
+      el árbol exactamente como estaba. El primer símbolo recomendado es
+      `UidRegistry` —17 menciones, 6 archivos, dos crates, ninguna aparición
+      fuera del código— y su verdad conocida está en
+      `dev/bench-expect/reversible-UidRegistry.txt`.
+      **Antes de creerle a los números hay una decisión de Cesar**: el brazo A
+      trabaja adentro de la copia, así que Claude Code le carga el `CLAUDE.md`
+      del proyecto y el brazo B no lo ve. Le suma tokens al brazo A por algo que
+      no es la tarea, o sea **le suma al lado que favorece a Thalyx**. Se evita
+      corriendo contra una copia sin `CLAUDE.md`. Ver [[Agentes-Externos]].
 
 - [x] **Que el índice conteste por afectación y no sólo por nombre** — **hecho el
       2026-08-28.** Encontrado en la primera corrida real: el brazo de Linux
