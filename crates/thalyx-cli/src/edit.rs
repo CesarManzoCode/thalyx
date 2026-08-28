@@ -47,8 +47,38 @@
 
 use crate::files::{Face, Where};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use thalyx_edit::screen::{Editing, Reaction, Viewport};
 use thalyx_edit::{EditError, Edited, Text, machine};
+
+/// What `editar` leaves for the surface it was typed on to do.
+///
+/// **This exists because the editor is the one verb whose answer is a surface
+/// rather than words.** Every other verb finishes by printing; this one finishes
+/// by taking over the display until the person leaves it, and *which* display
+/// that is is not something the verb can know. Cesar found it by running the
+/// image: `crear prueba.txt` worked and `editar prueba.txt` answered «there is
+/// no terminal here to draw an editor on» — on the screen the machine boots
+/// into, which is nothing but display.
+///
+/// The reason is not a missing check, it is where the check was. The editor here
+/// writes ANSI to descriptor 1 and reads keys from descriptor 0, and under the
+/// screen descriptor 1 is `thalyx-capture`'s buffer and descriptor 0 is
+/// `/dev/null`. Faking a terminal there would have drawn the escape sequences
+/// into the conversation as text.
+///
+/// So the verb answers *open one*, and the surface — the text session or the
+/// screen — opens the one it has. That is the same shape [`Flow::Emptied`] took
+/// for `limpiar` and for the same reason: the meaning of the verb is a property
+/// of the surface, so the surface is what finishes it.
+///
+/// [`Flow::Emptied`]: crate::session::Flow::Emptied
+pub enum Opens {
+    /// Nothing more. The verb said everything it had to say.
+    Nothing,
+    /// A screen editor on this file, which only a surface can put up.
+    Editor(PathBuf),
+}
 
 /// The subverbs, in both spellings, and the order they are offered in.
 const ACTIONS: &[&str] = &[
@@ -63,7 +93,7 @@ const ACTIONS: &[&str] = &[
 /// for the rest costs one more call and never a guess.
 const PAGE: usize = 200;
 
-pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
+pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<Opens> {
     act(here, rest, face, false)
 }
 
@@ -75,17 +105,19 @@ pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
 /// is the run's own arithmetic and not a second copy of it, which is the same
 /// property `foresee_run` has and for the same reason.
 pub fn foresee(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
-    act(here, rest, face, true)
+    // A rehearsal never opens anything — `""` is `nothing_to_rehearse` below —
+    // so there is nothing here for a surface to do.
+    act(here, rest, face, true).map(|_| ())
 }
 
-fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Result<()> {
+fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Result<Opens> {
     // Only the name is split as words. Everything after it is taken from the
     // line byte for byte, because the third part is text going into a file and a
     // configuration line that starts with four spaces means something with them
     // and something else without. `words.rs` calls this the one carve-out.
     let named = match crate::words::first(rest) {
         Ok(Some(named)) => named,
-        Ok(None) => return which_file(face),
+        Ok(None) => return which_file(face).map(|()| Opens::Nothing),
         Err(why) => {
             if face.is_machine() {
                 face.say(thalyx_files::machine::refused(
@@ -97,12 +129,12 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
             } else {
                 println!("\n  {why}\n");
             }
-            return Ok(());
+            return Ok(Opens::Nothing);
         }
     };
     let (named, after) = named;
     if named.is_empty() {
-        return which_file(face);
+        return which_file(face).map(|()| Opens::Nothing);
     }
 
     let path = thalyx_files::resolve(here.at(), named.as_str());
@@ -112,18 +144,25 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
 
     let mut text = match Text::open(&path) {
         Ok(text) => text,
-        Err(error) => return refuse(op_of(rehearsing), &error, face),
+        Err(error) => return refuse(op_of(rehearsing), &error, face).map(|()| Opens::Nothing),
     };
 
+    // No subverb is the person's case, and it is the one that needs a surface.
+    // Answered **before** the match and by handing the file back rather than by
+    // opening anything, because which surface this was typed on is the one thing
+    // this verb cannot see — see [`Opens`]. The file is opened first all the
+    // same: a file that is not text or is over the ceiling is refused here,
+    // where a refusal is words, rather than by a display that has already gone
+    // blank to show it.
+    if action.is_empty() && !rehearsing {
+        return Ok(Opens::Editor(text.path().to_path_buf()));
+    }
+
     match action {
-        // No subverb is the person's case, and it is the one that needs a
-        // terminal. Refused with its own word rather than left to hang, because
-        // a program down a pipe waiting for a screen waits forever.
         // Both of these change nothing, so a rehearsal of them has nothing to
         // answer — and answering anyway would be a second, worse `ver`.
-        "" if rehearsing => nothing_to_rehearse("opening the screen", face),
+        "" => nothing_to_rehearse("opening the screen", face),
         "ver" | "show" if rehearsing => nothing_to_rehearse("`ver`", face),
-        "" => screen(&mut text, face),
         "ver" | "show" => show(&text, argument, face),
         "poner" | "insert" => {
             let (at, body) = split_argument(argument);
@@ -155,6 +194,7 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
             Ok(())
         }
     }
+    .map(|()| Opens::Nothing)
 }
 
 /// Split `12 texto` into the address and everything after it.
@@ -404,9 +444,20 @@ fn show(text: &Text, argument: &str, face: Face) -> std::io::Result<()> {
 
 // ───────────────────────────────────────────────────────────────── the screen
 
-/// Open the full-screen editor, or say why there is none.
-fn screen(text: &mut Text, face: Face) -> std::io::Result<()> {
+/// Open the full-screen editor **on this terminal**, or say why there is none.
+///
+/// Called by the text session, which is the surface that has a terminal. The
+/// screen has its own — same engine, different pixels — and the reason there are
+/// two is in [`Opens`]: what an editor draws on is a property of the surface,
+/// and the escape sequences below are meaningless anywhere but here.
+pub fn on_this_terminal(path: &Path, face: Face) -> std::io::Result<()> {
     use std::os::fd::AsFd;
+
+    let mut text = match Text::open(path) {
+        Ok(text) => text,
+        Err(error) => return refuse("edit", &error, face),
+    };
+    let text = &mut text;
 
     // Asked of the terminal rather than inferred from the face. A person can
     // turn the structured face on and still be at a keyboard, and refusing them
@@ -592,6 +643,82 @@ mod tests {
         // — and the person would never find out where it happened.
         assert_eq!(unescape("^\\d+$"), "^\\d+$");
         assert_eq!(unescape("trailing\\"), "trailing\\");
+    }
+
+    /// The defect, at the line it happened on.
+    ///
+    /// On the image `crear prueba.txt` worked and `editar prueba.txt` answered
+    /// *«there is no terminal here to draw an editor on»* — on the display the
+    /// machine boots into. What was wrong is that this verb answered the
+    /// question at all: it looked at descriptor 0, which under the screen is
+    /// `/dev/null`, and concluded there was nowhere to draw.
+    ///
+    /// So the claim here is that it no longer answers it. **No terminal is
+    /// faked and no check is deleted** — the check moved to the surface that
+    /// owns a terminal, and what comes back is the file for whichever surface
+    /// asked. This test runs under `cargo test`, whose descriptor 0 is not a
+    /// terminal either: before the change it would have been a refusal.
+    #[test]
+    fn a_file_asked_for_with_no_subverb_is_handed_back_for_a_surface_to_open() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("prueba.txt");
+        std::fs::write(&file, "uno\ndos\n").expect("the file");
+
+        match run(&Where::start(), &file.display().to_string(), Face::Human)
+            .expect("`editar <archivo>`")
+        {
+            // And the right file: a transition that named the wrong path would
+            // open an editor on somebody else's work, which is worse than the
+            // refusal it replaced.
+            Opens::Editor(opened) => assert_eq!(opened, file),
+            Opens::Nothing => {
+                panic!("`editar <archivo>` refused instead of asking for a surface")
+            }
+        }
+    }
+
+    /// The other route, unchanged: a subverb answers here and asks for nothing.
+    ///
+    /// Beside the one above rather than in another file, because the pair is the
+    /// claim — one verb, two shapes — and a change that made *every* `editar`
+    /// ask for a surface would leave a program down a pipe waiting for a screen.
+    #[test]
+    fn a_subverb_is_still_finished_by_the_verb_and_asks_for_no_surface() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("prueba.txt");
+        std::fs::write(&file, "uno\ndos\n").expect("the file");
+
+        for typed in ["ver", "cambiar 1 UNO", "borrar 2"] {
+            let asked = run(
+                &Where::start(),
+                &format!("{} {typed}", file.display()),
+                Face::Human,
+            )
+            .expect("`editar <archivo> <subverbo>`");
+            assert!(
+                matches!(asked, Opens::Nothing),
+                "`editar … {typed}` asked for a surface"
+            );
+        }
+        // And it really did the work, rather than reporting nothing because it
+        // took an early way out.
+        assert_eq!(std::fs::read_to_string(&file).expect("the file"), "UNO\n");
+    }
+
+    /// A file that cannot be opened is refused **here**, in words, and never by
+    /// a display that has already gone blank to show it.
+    #[test]
+    fn a_file_that_is_not_text_is_refused_before_any_surface_is_asked_for() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("binario");
+        std::fs::write(&file, [0u8, 159, 146, 150]).expect("the file");
+
+        let asked = run(&Where::start(), &file.display().to_string(), Face::Human)
+            .expect("`editar <binario>`");
+        assert!(
+            matches!(asked, Opens::Nothing),
+            "a binary file was handed to a surface to open"
+        );
     }
 
     #[test]

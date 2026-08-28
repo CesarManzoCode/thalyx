@@ -43,9 +43,9 @@ mod text;
 
 pub use canvas::{Canvas, Channel, PixelFormat, Rect, UnsupportedFormat};
 pub use color::Color;
-pub use frame::compose;
+pub use frame::{compose, editor_viewport};
 pub use layout::{Layout, Metrics};
-pub use state::{Bar, Confirmation, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice};
+pub use state::{Bar, Confirmation, Editor, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice};
 pub use text::{Face, TextStyle, Typography};
 
 /// The palette, by the role each colour plays.

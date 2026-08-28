@@ -218,6 +218,40 @@ impl Confirmation {
     }
 }
 
+/// A file open on the glass.
+///
+/// **Strings and two numbers, and deliberately nothing of the editing engine.**
+/// `thalyx-edit` decides what an edit is, what a key means and which part of a
+/// file is in view; a renderer that knew any of that would be the second place
+/// those are decided, and the two would disagree the first time one of them
+/// changed. What arrives here is one frame the engine has already worked out.
+///
+/// It exists because `editar` typed on the display had nowhere to draw. The
+/// editor Thalyx already had writes ANSI to a terminal, and under the screen
+/// there is no terminal — descriptor 1 is a capture buffer and the console is
+/// in graphics mode, so what a person got was the escape sequences as text or,
+/// after the check that stopped that, a refusal saying there was no screen on
+/// the one surface that is entirely screen.
+#[derive(Debug, Clone)]
+pub struct Editor {
+    /// The file and what is true of it: unsaved, how many lines, where the
+    /// cursor is. One line, already composed.
+    pub title: String,
+    /// One string per drawn row, already cut to the viewport by the engine. A
+    /// row past the end of the file is `~`, which is what every editor has put
+    /// there for fifty years and the one character nobody mistakes for their
+    /// own text.
+    pub lines: Vec<String>,
+    /// The keys, or what just happened. The same place both, because a person
+    /// looks in one spot for *did that work*.
+    pub legend: String,
+    /// Where the cursor is, in rows and columns of [`lines`].
+    ///
+    /// [`lines`]: Editor::lines
+    pub cursor_row: usize,
+    pub cursor_column: usize,
+}
+
 /// Everything on the display at one instant.
 #[derive(Debug, Clone)]
 pub struct Screen {
@@ -238,6 +272,11 @@ pub struct Screen {
     pub scrollback: usize,
     /// When this is set, it is the only thing drawn.
     pub confirmation: Option<Confirmation>,
+    /// A file being edited. Like a confirmation it is the whole display, and it
+    /// loses to one: a confirmation is the trusted path, and a machine that
+    /// drew an editor over the question authorising something would have broken
+    /// the one rule the trusted path is for.
+    pub editor: Option<Editor>,
 }
 
 impl Screen {
@@ -251,6 +290,7 @@ impl Screen {
             prompt: Prompt::default(),
             scrollback: 0,
             confirmation: None,
+            editor: None,
         }
     }
 }

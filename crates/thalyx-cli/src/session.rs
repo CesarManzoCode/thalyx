@@ -1532,6 +1532,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             // screen, which has no console to write it to.
             Flow::Stay | Flow::Emptied => {}
             Flow::Leave => break,
+            // This surface's editor, which is the ANSI one. The terminal stays
+            // as it is: the editor draws in place on purpose, and raw mode is
+            // already the mode it needs.
+            Flow::ToTheEditor(path) => crate::edit::on_this_terminal(&path, session.face)?,
             Flow::ToTheScreen => {
                 // Raw mode goes back before the screen takes the keyboard: two
                 // termios settings on one descriptor, and the one put back last
@@ -1648,7 +1652,9 @@ fn said_no_to_the_screen(cmdline: &str) -> bool {
 }
 
 /// What a typed line did to where the session stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Not `Copy`: `ToTheEditor` carries a path. Every use moves it once, which is
+/// what a transition is.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Flow {
     /// Keep taking lines.
     Stay,
@@ -1665,6 +1671,19 @@ pub(crate) enum Flow {
     /// sequence; on the screen it is dropping the conversation, and the screen
     /// drew that escape as the literal text `[2J[H` until this existed.
     Emptied,
+    /// `editar <archivo>` with nothing after it: put a text editor up on this
+    /// surface, on this file.
+    ///
+    /// The second verb whose meaning is a property of the surface, and it
+    /// arrived the same way `Emptied` did — by being run on the display and
+    /// coming out wrong. On the screen the verb answered *there is no terminal
+    /// here to draw an editor on*, which is true of the descriptors and absurd
+    /// about the machine: the screen is nothing but a place to draw.
+    ///
+    /// The path and not an open file, so that nothing of the editing engine
+    /// crosses the dispatcher. The surface opens it, which is also where a file
+    /// that stopped being readable between the two gets reported.
+    ToTheEditor(std::path::PathBuf),
 }
 
 /// Everything a typed line reads and may change.
@@ -1960,10 +1979,14 @@ fn dispatch(
         // program without either of them losing something.
         _ if starts_any(line, &["editar ", "edit "]) => {
             let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-            crate::edit::run(here, rest, face)?;
+            if let crate::edit::Opens::Editor(path) = crate::edit::run(here, rest, face)? {
+                flow = Flow::ToTheEditor(path);
+            }
         }
         "editar" | "edit" => {
-            crate::edit::run(here, "", face)?;
+            if let crate::edit::Opens::Editor(path) = crate::edit::run(here, "", face)? {
+                flow = Flow::ToTheEditor(path);
+            }
         }
         // Point 6. Two verbs and not one, because `buscar` already answers a
         // third question and a caller that has to work out which of three a

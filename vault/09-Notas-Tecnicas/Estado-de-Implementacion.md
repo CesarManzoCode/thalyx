@@ -223,6 +223,38 @@ dos ioctls. Todo lo que está arriba de esa frontera —`loaded()`,
 `keymap::produces()`, `Layout::plainly()`— sigue hablando una sola
 representación, la de las tablas.
 
+### El editor, que en la pantalla no abría (2026-08-28)
+
+Corriendo la imagen: `crear prueba.txt` funcionaba y creaba `/home/prueba.txt`;
+`editar prueba.txt` desde la pantalla gráfica contestaba **«there is no terminal
+here to draw an editor on; address lines instead»**. En la superficie que es
+puro lugar donde dibujar.
+
+La causa no era un chequeo faltante sino **dónde estaba el chequeo**. El editor
+de `crates/thalyx-cli/src/edit.rs` pedía el tamaño con
+`terminal_size(stdin)`, leía teclas del descriptor 0 y escribía ANSI al 1. Bajo
+la pantalla el 0 es `/dev/null` y el 1 es el buffer de `thalyx-capture`, así que
+la respuesta honesta de ese chequeo era «no hay terminal» — y fingir una habría
+metido las secuencias de escape en la conversación como texto.
+
+El arreglo: `editar <archivo>` sin subverbo ya no abre nada, **contesta una
+transición**. `Flow::ToTheEditor(ruta)`, la segunda de esas —`Flow::Emptied` fue
+la primera, por la misma razón: hay verbos cuyo significado es una propiedad de
+la superficie, y entonces la superficie es la que los termina.
+
+- sesión de texto → `edit::on_this_terminal`, el editor ANSI de siempre, con su
+  chequeo de `terminal_size` intacto y su refusal `no_screen` para un pipe;
+- pantalla gráfica → `screen::edit_on_the_glass`, que dibuja en el framebuffer y
+  lee del teclado que la pantalla ya tiene duplicado, **fuera del capture**.
+
+**Un solo motor.** `thalyx-edit` sigue decidiendo qué es una edición, qué hace
+cada tecla, qué cabe en la vista y qué es guardar; lo que se agregó en
+`thalyx-screen` es `Screen::editor`, un cuadro de cadenas y dos números que el
+motor ya calculó. Un segundo motor es cómo uno de los dos termina guardando un
+archivo que el otro habría rechazado.
+
+Falta el hierro: que se vea bien a su resolución sólo lo contesta su máquina.
+
 ### La red, que se ve y no se usa
 
 Punto 8 de la terminal usable, decreto en [[Red]]. La configuración del kernel

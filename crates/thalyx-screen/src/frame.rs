@@ -25,7 +25,9 @@
 use crate::canvas::{Canvas, Rect};
 use crate::color::{self, Color};
 use crate::layout::{Layout, Metrics};
-use crate::state::{Bar, Confirmation, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice};
+use crate::state::{
+    Bar, Confirmation, Editor, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice,
+};
 use crate::text::{Face, TextStyle, Typography};
 
 /// Draw `screen` at `width` × `height`.
@@ -36,6 +38,13 @@ pub fn compose(screen: &Screen, typography: &mut Typography, width: u32, height:
     // Not a layer over the rest: the rest is not drawn. See the module note.
     if let Some(confirmation) = &screen.confirmation {
         draw_confirmation(&mut canvas, typography, &layout, confirmation);
+        return canvas;
+    }
+
+    // Second, and the order is the rule: a confirmation is the trusted path, so
+    // a file open on the glass never covers the question authorising something.
+    if let Some(editor) = &screen.editor {
+        draw_editor(&mut canvas, typography, &layout, editor);
         return canvas;
     }
 
@@ -564,6 +573,141 @@ fn draw_prompt(canvas: &mut Canvas, typography: &mut Typography, layout: &Layout
             TextStyle::new(Face::Mono, size, color::INK),
         );
     }
+}
+
+/// Where an editor's text sits on a display, in one place.
+///
+/// **Shared by the drawing and by [`editor_viewport`], and that is the point.**
+/// The engine is told how many rows and columns it has and answers with a frame
+/// cut to exactly that; if the two arithmetics were written twice they would
+/// differ by a row the first time either changed, and what a person would see is
+/// a cursor drawn one line away from the letter they are typing.
+struct EditorGeometry {
+    left: f32,
+    /// Baseline of the first row of the file.
+    first_baseline: f32,
+    step: f32,
+    size: f32,
+    /// One character. Mono, so every character is this wide.
+    column: f32,
+    rows: usize,
+    columns: usize,
+}
+
+fn editor_geometry(typography: &mut Typography, layout: &Layout) -> EditorGeometry {
+    let metrics = &layout.metrics;
+    let size = metrics.fact;
+    let step = typography.line_height(Face::Mono, size);
+    let left = metrics.padding * 2.0;
+    let width = (layout.screen.width as f32 - left * 2.0).max(step);
+
+    // The title and the legend are not the file. Subtracted here, where the row
+    // count is decided, rather than by the caller: a viewport that quietly knew
+    // about a status bar is the arrangement that goes wrong the day there are
+    // two of them.
+    let title_baseline = metrics.padding * 1.5 + typography.ascent(Face::MonoBold, size);
+    let first_baseline = title_baseline + step * 1.6;
+    let legend_room = step * 2.2;
+    let room = layout.screen.height as f32 - first_baseline - legend_room;
+    let rows = (room / step).floor().max(1.0) as usize;
+
+    // `M` and not the widest glyph in the font: this is the mono face, where
+    // every advance is the same, and asking for a character that is actually in
+    // the file would make the column width depend on the file.
+    let column = typography.advance(Face::Mono, 'M', size).max(1.0);
+    let columns = (width / column).floor().max(1.0) as usize;
+
+    EditorGeometry {
+        left,
+        first_baseline,
+        step,
+        size,
+        column,
+        rows,
+        columns,
+    }
+}
+
+/// How much of a file fits on a display this size: rows first, then columns.
+///
+/// Public because the caller has to build the editing engine's viewport before
+/// it has anything to draw, and the only honest source for those two numbers is
+/// the code that will do the drawing.
+pub fn editor_viewport(typography: &mut Typography, width: u32, height: u32) -> (usize, usize) {
+    let layout = Layout::for_size(width, height);
+    let geometry = editor_geometry(typography, &layout);
+    (geometry.rows, geometry.columns)
+}
+
+fn draw_editor(canvas: &mut Canvas, typography: &mut Typography, layout: &Layout, editor: &Editor) {
+    let metrics = &layout.metrics;
+    let geometry = editor_geometry(typography, layout);
+
+    // The file's own ground, a shade off the screen's, so the edge of the text
+    // area is visible without a rule drawn around it.
+    canvas.fill(layout.screen, color::INK);
+
+    let title_baseline = geometry.first_baseline - geometry.step * 1.6;
+    typography.draw_within(
+        canvas,
+        geometry.left,
+        title_baseline,
+        layout.screen.width as f32 - geometry.left * 2.0,
+        &editor.title,
+        TextStyle::new(Face::MonoBold, geometry.size, color::HUMAN),
+    );
+
+    let mut baseline = geometry.first_baseline;
+    for line in &editor.lines {
+        // A row past the end of the file is muted: it is the editor speaking,
+        // not the file, and drawing it in the file's colour is how a person
+        // comes to think their file has a column of tildes in it.
+        let colour = if line == "~" {
+            color::MUTED
+        } else {
+            color::FACT
+        };
+        typography.draw(
+            canvas,
+            geometry.left,
+            baseline,
+            line,
+            TextStyle::new(Face::Mono, geometry.size, colour),
+        );
+        baseline += geometry.step;
+    }
+
+    // The cursor after the text, so it is on top of the character it is on.
+    // Drawn as an outline-thin block rather than a filled one for the same
+    // reason: a filled caret hides the letter underneath it, and the letter
+    // underneath it is the one being typed.
+    if editor.cursor_row < geometry.rows {
+        let ascent = typography.ascent(Face::Mono, geometry.size);
+        let x = geometry.left + geometry.column * editor.cursor_column as f32;
+        let y = geometry.first_baseline + geometry.step * editor.cursor_row as f32;
+        canvas.fill(
+            Rect::new(
+                x.round() as i32,
+                (y - ascent).round() as i32,
+                (geometry.column.round() as u32).max(1),
+                (ascent * 1.15).round().max(2.0) as u32,
+            ),
+            color::HUMAN,
+        );
+    }
+
+    let legend_baseline = layout.screen.height as f32
+        - metrics.padding * 1.5
+        - typography.line_height(Face::Prose, metrics.small)
+        + typography.ascent(Face::Prose, metrics.small);
+    typography.draw_within(
+        canvas,
+        geometry.left,
+        legend_baseline,
+        layout.screen.width as f32 - geometry.left * 2.0,
+        &editor.legend,
+        TextStyle::new(Face::Prose, metrics.small, color::MUTED),
+    );
 }
 
 /// One line of the confirmation, already resolved to how it is drawn.
