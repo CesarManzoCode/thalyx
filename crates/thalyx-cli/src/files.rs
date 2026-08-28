@@ -16,6 +16,7 @@
 //! types them. Everything they name — `/home`, `/opt/thalyx` — stays as it is on
 //! disk, because a path is not language.
 
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -40,12 +41,17 @@ impl Face {
         self == Face::Machine
     }
 
+    /// The same question, for the modules that print the other verbs.
+    pub fn is_machine(self) -> bool {
+        self.machine()
+    }
+
     /// Print a line of the structured face.
     ///
     /// Kept as a method so no caller has to remember that these go out without
     /// the blank lines and two-space indent the human face uses. Whitespace a
     /// person reads as breathing room is noise a parser has to strip.
-    fn say(self, line: String) {
+    pub fn say(self, line: String) {
         println!("{line}");
     }
 }
@@ -142,8 +148,23 @@ impl Where {
 /// cursor back at the top. Written out rather than borrowed from a terminal
 /// library, for the same reason as the cpio and the Btrfs writer — the image
 /// holds the kernel and one program.
-pub fn clear() {
+pub fn clear(face: Face) {
     use std::io::Write;
+
+    // A program gets an answer and not an escape sequence, and it gets one for
+    // the reason `machine.rs` gives for `cd`: **silence is never an answer.** A
+    // parser waiting on a stream cannot tell a screen it did not need cleared
+    // from a session that died mid-line, and this verb is otherwise the one that
+    // produces no output at all.
+    //
+    // Nothing is cleared for it either. There is no screen on that end, and
+    // writing `ESC[2J` into a pipe is bytes a caller has to strip before it can
+    // parse the line it is on.
+    if face.is_machine() {
+        face.say(machine::answer("clear", vec![("cleared", json!(false))]));
+        return;
+    }
+
     print!("\x1b[2J\x1b[H");
     // Flushed here because what follows is a prompt printed with `print!` and no
     // newline of its own; leaving this in the buffer would put the prompt on
@@ -294,11 +315,16 @@ impl Asked {
     ///
     /// The Spanish words are whole arguments and not letters, so `todo` cannot
     /// collide with a `-t` that might exist later.
-    fn parse(rest: &str) -> Self {
+    /// Takes the words rather than the line: the splitting happens once, in
+    /// `words.rs`, so that `ls "mi carpeta"` and `rm "mi carpeta"` agree about
+    /// where a name stops. A flag is read off the text and never off the quoting
+    /// — `ls "-la"` lists everything, exactly as it does in a shell, because a
+    /// shell's quoting speaks to the shell and not to the program.
+    fn parse(given: &[crate::words::Word]) -> Self {
         let mut asked = Asked::default();
         let mut place = Vec::new();
 
-        for word in rest.split_whitespace() {
+        for word in given.iter().map(crate::words::Word::as_str) {
             // `nombre=valor` before anything else, and only when the value is
             // one this understands. A file really named `limite=x` is
             // vanishingly rare and a mis-typed number is not — so a value that
@@ -386,7 +412,10 @@ fn window_asked(asked: &Asked) -> Result<thalyx_files::window::Asked, thalyx_fil
 /// That is the tie-break rule of the objective decree: the LLM is never given
 /// less, and a human comfort is never allowed to cost it capability.
 pub fn look(here: &Where, rest: &str, face: Face) {
-    let asked = Asked::parse(rest);
+    let Some(given) = crate::words::asked(face, "list", rest) else {
+        return;
+    };
+    let asked = Asked::parse(&given);
     let target = if asked.place.is_empty() {
         here.at().to_path_buf()
     } else {
@@ -625,11 +654,13 @@ fn print_excerpt(target: &Path, excerpt: &Excerpt) {
 /// A pattern that matches nothing comes back as **the pattern itself**, so the
 /// error a person reads names what they typed. Silently doing nothing is the
 /// one outcome that leaves them believing something happened.
-fn targets(here: &Where, word: &str) -> Vec<PathBuf> {
-    if !word.contains('*') && !word.contains('?') {
-        return vec![thalyx_files::resolve(here.at(), word)];
+fn targets(here: &Where, word: &crate::words::Word) -> Vec<PathBuf> {
+    // Asked of the word rather than of its text: `rm "a*b"` names one oddly
+    // named file and `rm a*b` names several, and the quotes are gone by here.
+    if !word.is_pattern() {
+        return vec![thalyx_files::resolve(here.at(), word.as_str())];
     }
-    let resolved = thalyx_files::resolve(here.at(), word);
+    let resolved = thalyx_files::resolve(here.at(), word.as_str());
     let (folder, pattern) = match (resolved.parent(), resolved.file_name()) {
         (Some(folder), Some(name)) => (folder.to_path_buf(), name.to_string_lossy().to_string()),
         _ => return vec![resolved],
@@ -640,20 +671,28 @@ fn targets(here: &Where, word: &str) -> Vec<PathBuf> {
     }
 }
 
-fn report(done: &thalyx_files::Done) {
-    match (done.what, &done.to) {
-        (thalyx_files::Did::Removed, _) => println!("  removed {}", done.path.display()),
-        (what, Some(to)) => println!(
-            "  {} {} -> {}",
-            what.word().replace('_', " "),
-            done.path.display(),
-            to.display()
-        ),
-        (what, None) => println!(
-            "  {} {}",
-            what.word().replace('_', " "),
-            done.path.display()
-        ),
+/// Whether these outcomes happened or were only foreseen.
+///
+/// The machine face does not need this — its `op` already says `rehearse`, and
+/// that is how a program tells the two apart. The human face has nothing but
+/// the sentence, and `ensayo rm notas.txt` answered `removed …` for a file that
+/// is still there.
+#[derive(Clone, Copy, PartialEq)]
+enum Tense {
+    Happened,
+    Foreseen,
+}
+
+fn report(done: &thalyx_files::Done, tense: Tense) {
+    // One fact, one sentence, two tenses. The alternative — a second printer for
+    // rehearsals — is the second version of events this module exists to avoid.
+    let verb = match tense {
+        Tense::Happened => done.what.word().replace('_', " "),
+        Tense::Foreseen => done.what.would().to_string(),
+    };
+    match &done.to {
+        Some(to) => println!("  {verb} {} -> {}", done.path.display(), to.display()),
+        None => println!("  {verb} {}", done.path.display()),
     }
 }
 
@@ -665,7 +704,7 @@ fn report(done: &thalyx_files::Done) {
 /// different runs of the same command.
 type Outcomes = Vec<Result<thalyx_files::Done, FileError>>;
 
-fn speak(face: Face, op: &str, outcomes: &Outcomes) {
+fn speak(face: Face, op: &str, outcomes: &Outcomes, tense: Tense) {
     if face.machine() {
         let results = outcomes
             .iter()
@@ -681,7 +720,7 @@ fn speak(face: Face, op: &str, outcomes: &Outcomes) {
     println!();
     for outcome in outcomes {
         match outcome {
-            Ok(done) => report(done),
+            Ok(done) => report(done, tense),
             Err(error) => println!("  {error}"),
         }
     }
@@ -710,7 +749,7 @@ fn incomplete(face: Face, op: &str, machine_why: &str, human_why: &str) {
 /// on — and then a real `rm` does nothing while the caller believes it worked —
 /// or left off, which is worse. Written in front of the command, it is a fact
 /// about that one line and cannot be forgotten in either direction.
-pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
+pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face) -> Fallible {
     let rest = rest.trim();
     let (word, arguments) = match rest.split_once(' ') {
         Some((word, arguments)) => (word, arguments.trim()),
@@ -765,10 +804,13 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 incomplete(face, "rehearse", "which one", "Which one.");
                 return Ok(());
             }
-            arguments
-                .split_whitespace()
+            let Some(named) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
+            named
+                .iter()
                 .map(|word| {
-                    let path = thalyx_files::resolve(here.at(), word);
+                    let path = thalyx_files::resolve(here.at(), word.as_str());
                     if directory {
                         thalyx_files::foresee_make_directory(&path)
                     } else {
@@ -778,7 +820,9 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .collect()
         }
         "copy" | "move" => {
-            let words: Vec<&str> = arguments.split_whitespace().collect();
+            let Some(words) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
             if words.len() != 2 {
                 incomplete(
                     face,
@@ -788,8 +832,8 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 );
                 return Ok(());
             }
-            let from = thalyx_files::resolve(here.at(), words[0]);
-            let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
+            let from = thalyx_files::resolve(here.at(), words[0].as_str());
+            let to = destination(&from, thalyx_files::resolve(here.at(), words[1].as_str()));
             vec![if verb.id == "move" {
                 thalyx_files::foresee_move(&from, &to)
             } else {
@@ -801,8 +845,11 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 incomplete(face, "rehearse", "which one", "Which one.");
                 return Ok(());
             }
+            let Some(named) = crate::words::asked(face, "rehearse", arguments) else {
+                return Ok(());
+            };
             let mut chosen = Vec::new();
-            for word in arguments.split_whitespace() {
+            for word in &named {
                 chosen.extend(targets(here, word));
             }
             chosen
@@ -810,6 +857,22 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
                 .map(|path| thalyx_files::foresee_remove(path))
                 .collect()
         }
+        // The rehearsal that matters most, because it is the only one whose
+        // real form cannot be taken back. It answers with everything that would
+        // let somebody notice they typed the wrong four digits.
+        "stop" => return crate::proc::rehearse_stop(arguments, face),
+        // The last verb that changed the machine and could not be rehearsed,
+        // closed on 2026-08-26. It is `editar`'s own path with the save left
+        // out — see `crate::edit::foresee`.
+        "edit" => {
+            crate::edit::foresee(here, arguments, face)?;
+            return Ok(());
+        }
+        // Worth more here than anywhere else: the input that does the damage
+        // is a path to somebody else's code, and the wrong one and the right
+        // one differ by a few characters that the confirmation will draw
+        // either way.
+        "execute" => return crate::foreign::rehearse(arguments, face),
         // `intento` is the one changing verb that already answers this, and it
         // answers it better than a rehearsal could: `intento` alone says what
         // abandoning would cost right now, and `intento abandonar` without the
@@ -830,10 +893,84 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
             }
             return Ok(());
         }
-        // `instalar`, `correr`, `revertir`, `instalar-en`, `apagar`. Each one
-        // changes the machine and none of them has a check half yet, so the
-        // honest answer is that this cannot be rehearsed — not a rehearsal that
-        // quietly reports nothing.
+        // The three whose "work it out" half already existed as a value, so the
+        // rehearsal is that half with the acting half never called. `install`
+        // resolves a candidate and reads what it asks for; `rollback` has had a
+        // `plan` separate from `apply` since it was written; `install_onto`
+        // computes the whole layout, finds the kernel and reads what is on the
+        // disk **before** the confirmation, which was done so that a confirmed
+        // wipe could never discover afterwards that there was no kernel — and
+        // that ordering is what makes this rehearsal a stop rather than a second
+        // implementation.
+        "install" => return Ok(crate::modules::foresee_install(store, arguments, face)?),
+        "rollback" => return Ok(crate::modules::foresee_rollback(store, face)?),
+        "install_onto" => {
+            crate::session::foresee_install_onto(arguments, face);
+            return Ok(());
+        }
+        // The kernel guard, both directions. Its rehearsal reads the flag
+        // rather than answering from the word that was typed, which is the
+        // only thing that makes it worth having: "would this change anything"
+        // and "is this machine denying" are the same question here.
+        "deny" | "observe" => {
+            let mode = if verb.id == "deny" {
+                thalyx_permd::Mode::Enforcing
+            } else {
+                thalyx_permd::Mode::Observing
+            };
+            crate::guard::set(&thalyx_permd::KernelStore::default_map(), mode, face, true)?;
+            return Ok(());
+        }
+        // `apagar`. Everything not written to the store is lost and that is all
+        // there is to say, but it has to be said: this is the one verb where a
+        // person finds out by losing it.
+        "power_off" => {
+            let why = "everything not written to the store would be lost, because the root filesystem is memory";
+            if face.machine() {
+                face.say(thalyx_files::machine::answer(
+                    "rehearse",
+                    vec![
+                        ("verb", serde_json::json!("power_off")),
+                        ("loses_unwritten_memory", serde_json::json!(true)),
+                        ("would_write", serde_json::json!(false)),
+                        ("message", serde_json::json!(why)),
+                    ],
+                ));
+            } else {
+                println!("\n  {why}.\n");
+            }
+            return Ok(());
+        }
+        // `correr`, and with it D1 is nine of nine. The reason this one had
+        // stayed open was that what a run would be allowed to do is a question
+        // for the kernel side, and Thalyx could not read the answer until
+        // 2026-08-25. It can now, so the rehearsal asks it.
+        "run" => {
+            let (id, unconfined) = match arguments.split_once(' ') {
+                Some((id, tail)) => (id.trim(), tail.trim() == crate::session::UNCONFINED_WORD),
+                None => (arguments, false),
+            };
+            if id.is_empty() {
+                incomplete(face, "rehearse", "which one", "Which one.");
+                return Ok(());
+            }
+            crate::run::foresee(crate::run::Asked {
+                root: store.root(),
+                module_id: id,
+                profile: crate::session::SESSION_PROFILE,
+                entrypoint: thalyx_core::run::DEFAULT_ENTRYPOINT,
+                args: Vec::new(),
+                unconfined,
+                request_id: crate::new_request_id(),
+                face,
+            })?;
+            return Ok(());
+        }
+        // Unreachable as of 2026-08-26: every verb whose `changes` is true has
+        // an arm above, and a test asserts that set. Kept because the match is
+        // on a string and the compiler cannot say so — and because the way a
+        // new consequential verb will arrive is by landing here, where it says
+        // so out loud instead of being rehearsed as nothing.
         _ => {
             let why = format!(
                 "`{}` changes the machine and cannot be rehearsed yet",
@@ -848,7 +985,7 @@ pub fn rehearse(here: &Where, rest: &str, face: Face) -> Fallible {
         }
     };
 
-    speak(face, "rehearse", &outcomes);
+    speak(face, "rehearse", &outcomes, Tense::Foreseen);
     Ok(())
 }
 
@@ -878,10 +1015,13 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
         return Ok(());
     }
 
-    let outcomes: Outcomes = rest
-        .split_whitespace()
+    let Some(named) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let outcomes: Outcomes = named
+        .iter()
         .map(|word| {
-            let path = thalyx_files::resolve(here.at(), word);
+            let path = thalyx_files::resolve(here.at(), word.as_str());
             if directory {
                 thalyx_files::make_directory(&path)
             } else {
@@ -890,14 +1030,16 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
         })
         .collect();
 
-    speak(face, op, &outcomes);
+    speak(face, op, &outcomes, Tense::Happened);
     Ok(())
 }
 
 /// `cp <de> <a>` and `mv <de> <a>`.
 pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible {
     let op = if moving { "move" } else { "copy" };
-    let words: Vec<&str> = rest.split_whitespace().collect();
+    let Some(words) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
     if words.len() != 2 {
         incomplete(
             face,
@@ -908,8 +1050,8 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
         return Ok(());
     }
 
-    let from = thalyx_files::resolve(here.at(), words[0]);
-    let to = destination(&from, thalyx_files::resolve(here.at(), words[1]));
+    let from = thalyx_files::resolve(here.at(), words[0].as_str());
+    let to = destination(&from, thalyx_files::resolve(here.at(), words[1].as_str()));
 
     let outcome = if moving {
         thalyx_files::move_to(&from, &to)
@@ -917,7 +1059,7 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
         thalyx_files::copy(&from, &to)
     };
 
-    speak(face, op, &vec![outcome]);
+    speak(face, op, &vec![outcome], Tense::Happened);
     Ok(())
 }
 
@@ -928,8 +1070,11 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
         return Ok(());
     }
 
+    let Some(named) = crate::words::asked(face, "remove", rest) else {
+        return Ok(());
+    };
     let mut chosen = Vec::new();
-    for word in rest.split_whitespace() {
+    for word in &named {
         chosen.extend(targets(here, word));
     }
 
@@ -953,7 +1098,7 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
         .iter()
         .map(|path| thalyx_files::remove(path))
         .collect();
-    speak(face, "remove", &outcomes);
+    speak(face, "remove", &outcomes, Tense::Happened);
     Ok(())
 }
 
@@ -961,11 +1106,17 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
 mod tests {
     use super::*;
 
+    /// The line as a verb receives it: split in `words.rs` first, because that
+    /// is the only way any of these reach `parse` at the real prompt.
+    fn parsed(line: &str) -> Asked {
+        Asked::parse(&crate::words::words(line).expect("no quotes in these"))
+    }
+
     // ──────────────────────────────────────────────── what the person asked for
 
     #[test]
     fn a_bare_ls_asks_for_nothing_in_particular() {
-        let asked = Asked::parse("");
+        let asked = parsed("");
         assert!(!asked.all);
         assert!(!asked.long);
         assert!(asked.place.is_empty());
@@ -975,14 +1126,14 @@ mod tests {
     fn grouped_flags_are_read_as_the_flags_they_are_and_not_as_a_folder() {
         // The failure this prevents: `-la` taken as a place, answering "not
         // there" for something the person typed correctly.
-        let asked = Asked::parse("-la");
+        let asked = parsed("-la");
         assert!(asked.all && asked.long);
         assert!(asked.place.is_empty(), "got {:?}", asked.place);
     }
 
     #[test]
     fn flags_and_a_place_together_keep_the_place() {
-        let asked = Asked::parse("-a Documentos");
+        let asked = parsed("-a Documentos");
         assert!(asked.all);
         assert_eq!(asked.place, "Documentos");
     }
@@ -990,13 +1141,13 @@ mod tests {
     #[test]
     fn both_spellings_of_a_flag_mean_the_same_thing() {
         // Cesar chose to keep both vocabularies, so the flags have both too.
-        assert_eq!(Asked::parse("-a"), Asked::parse("todo"));
-        assert_eq!(Asked::parse("-l"), Asked::parse("detalles"));
+        assert_eq!(parsed("-a"), parsed("todo"));
+        assert_eq!(parsed("-l"), parsed("detalles"));
     }
 
     #[test]
     fn an_unknown_flag_is_not_quietly_swallowed() {
-        let asked = Asked::parse("-z");
+        let asked = parsed("-z");
         // Kept as the place, so the person is told "-z is not there" instead of
         // being handed a listing of somewhere they did not ask about — which
         // would look like the flag worked.
@@ -1008,7 +1159,7 @@ mod tests {
     fn a_file_whose_name_begins_with_a_dash_is_still_reachable() {
         // A single `-` is not a flag: `len() > 1` is what keeps a file actually
         // named `-` from becoming unnameable.
-        assert_eq!(Asked::parse("-").place, "-");
+        assert_eq!(parsed("-").place, "-");
     }
 
     #[test]

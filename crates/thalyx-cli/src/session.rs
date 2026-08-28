@@ -33,13 +33,13 @@ use thalyx_core::Store;
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
 /// One thing Thalyx tried to find out about the machine it is running on.
-struct Reading {
-    subject: &'static str,
+pub(crate) struct Reading {
+    pub(crate) subject: &'static str,
     /// What was found, or why it could not be.
-    outcome: Outcome,
+    pub(crate) outcome: Outcome,
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     /// Checked, and this is what it says.
     Found(String),
     /// Checked, and the answer is that it is not there.
@@ -53,7 +53,7 @@ enum Outcome {
 }
 
 impl Reading {
-    fn mark(&self) -> &'static str {
+    pub(crate) fn mark(&self) -> &'static str {
         match self.outcome {
             Outcome::Found(_) => "  ok ",
             Outcome::Absent(_) => "  no ",
@@ -61,7 +61,7 @@ impl Reading {
         }
     }
 
-    fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         match &self.outcome {
             Outcome::Found(t) | Outcome::Absent(t) | Outcome::Unreadable(t) => t,
         }
@@ -75,7 +75,7 @@ impl Reading {
 /// running as a program somebody started are different facts, and a session
 /// that claimed the first while being the second would be doing exactly the
 /// theatre this project refuses.
-enum Standing {
+pub(crate) enum Standing {
     /// Started by init. Leaving means the machine stops, because there is
     /// nothing else here.
     TheMachine,
@@ -303,7 +303,7 @@ fn modules(store: &Store) -> Outcome {
     }
 }
 
-fn gather(store: &Store) -> Vec<Reading> {
+pub(crate) fn gather(store: &Store) -> Vec<Reading> {
     vec![
         Reading {
             subject: "kernel",
@@ -347,28 +347,61 @@ fn gather(store: &Store) -> Vec<Reading> {
 /// The kernel is asked to power off directly. There is no `shutdown` to call
 /// and nothing else running that would need to be told first: the session is
 /// the only child, and PID 1 is what invoked it.
-fn power_off(standing: &Standing) {
+fn power_off(standing: &Standing, face: crate::files::Face) {
+    const OP: &str = "power_off";
+
     match standing {
         Standing::TheMachine => {
-            println!();
-            println!("  Turning off. Anything not written to the store is gone,");
-            println!("  because the root filesystem is memory and always was.");
-            println!();
+            if face.is_machine() {
+                // Said before the syscall, because after it there is nobody to
+                // say anything: on success this call does not return. A caller
+                // that only ever heard from the failure branch would learn about
+                // a poweroff exactly when it did not happen.
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![("turning_off", serde_json::json!(true))],
+                ));
+            } else {
+                println!();
+                println!("  Turning off. Anything not written to the store is gone,");
+                println!("  because the root filesystem is memory and always was.");
+                println!();
+            }
             let _ = std::io::stdout().flush();
             // Only returns on failure: on success the machine is already off.
             // Reported rather than swallowed, because a poweroff that silently
             // did nothing leaves a prompt that looks like it ignored the human.
             let error = thalyx_syscall::reboot(thalyx_syscall::RebootCommand::PowerOff);
-            println!("  the kernel refused to power off: {error}");
-            println!("  that needs privilege I do not have here.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "refused_by_kernel",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!("  the kernel refused to power off: {error}");
+                println!("  that needs privilege I do not have here.");
+                println!();
+            }
         }
         Standing::AProgram { under } => {
-            println!();
-            println!("  No. I am a program under {under}, and turning this machine");
-            println!("  off would turn off something that is not mine. `salir`");
-            println!("  leaves; on the image this same word powers the machine down.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "not_the_machine",
+                    "leave",
+                    &format!(
+                        "this is a program under {under}; turning the machine off would turn off something that is not Thalyx's"
+                    ),
+                ));
+            } else {
+                println!();
+                println!("  No. I am a program under {under}, and turning this machine");
+                println!("  off would turn off something that is not mine. `salir`");
+                println!("  leaves; on the image this same word powers the machine down.");
+                println!();
+            }
         }
     }
 }
@@ -380,15 +413,26 @@ fn power_off(standing: &Standing) {
 /// `dmesg` to fall back on. `nucleo` shows what went wrong; `nucleo todo` shows
 /// everything, which is usually a lot and occasionally the only thing that
 /// helps.
-fn show_kernel(everything: bool) {
-    println!();
+fn show_kernel(everything: bool, face: crate::files::Face) {
+    const OP: &str = "kernel";
+
     let messages = match thalyx_syscall::kernel_messages() {
         Ok(messages) => messages,
         Err(error) => {
             // Rule 10 at the one place a human would read silence as calm.
-            println!("  I could not read what the kernel said: {error}");
-            println!("  That is not the same as it having said nothing.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "unreadable",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  I could not read what the kernel said: {error}");
+                println!("  That is not the same as it having said nothing.");
+                println!();
+            }
             return;
         }
     };
@@ -398,6 +442,62 @@ fn show_kernel(everything: bool) {
         .filter(|m| everything || m.is_trouble())
         .collect();
 
+    if face.is_machine() {
+        // Newest last, the order the kernel wrote them in, and the sequence
+        // number is the key: it is the kernel's own counter, it never repeats,
+        // and it is already the ordering — so a cursor into it names a place
+        // that stays put even as the buffer wraps and older lines vanish.
+        let page = match thalyx_files::window::page(
+            shown,
+            |message| message.sequence.to_be_bytes().to_vec(),
+            &thalyx_files::window::Asked::default(),
+        ) {
+            Ok(page) => page,
+            Err(why) => {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "bad_window",
+                    "read_the_error",
+                    &why.to_string(),
+                ));
+                return;
+            }
+        };
+
+        let rows: Vec<serde_json::Value> = page
+            .rows
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "sequence": message.sequence,
+                    "seconds": message.seconds,
+                    "priority": message.priority,
+                    // The kernel's grading, carried as the kernel's. Thalyx does
+                    // not re-grade somebody else's report, and a caller that
+                    // wants a different threshold has the number to do it with.
+                    "trouble": message.is_trouble(),
+                    "text": message.text,
+                })
+            })
+            .collect();
+
+        let mut carried = vec![
+            ("messages", serde_json::json!(rows)),
+            // What the filter left out, said rather than inferable. A caller
+            // reading four lines has no way to know whether the machine said
+            // four things or seven hundred, and the difference is the answer.
+            (
+                "scope",
+                serde_json::json!(if everything { "all" } else { "trouble" }),
+            ),
+            ("said", serde_json::json!(messages.len())),
+        ];
+        carried.extend(thalyx_files::machine::window_fields(&page));
+        face.say(thalyx_files::machine::answer(OP, carried));
+        return;
+    }
+
+    println!();
     if shown.is_empty() {
         if everything {
             println!("  The kernel's buffer is empty, which is stranger than it sounds.");
@@ -481,20 +581,48 @@ fn slowest_gaps(messages: &[thalyx_syscall::KernelMessage], how_many: usize) -> 
 /// what slow reading looks like.
 ///
 /// The kernel already timestamps every line. Nobody had subtracted them.
-fn show_slowest() {
-    println!();
+fn show_slowest(face: crate::files::Face) {
+    // The same op as `nucleo`, because it is the same verb: `describe` names
+    // one op per verb, and a caller that matched a second one would be matching
+    // something the catalogue never promised. What tells the two answers apart
+    // is `scope`, which every branch of this verb carries.
+    const OP: &str = "kernel";
+
     let messages = match thalyx_syscall::kernel_messages() {
         Ok(messages) => messages,
         Err(error) => {
-            println!("  I cannot read what the kernel said: {error}");
-            println!("  That is not the same as it having said nothing.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "unreadable",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  I cannot read what the kernel said: {error}");
+                println!("  That is not the same as it having said nothing.");
+                println!();
+            }
             return;
         }
     };
     if messages.len() < 2 {
-        println!("  Fewer than two messages, so there is no gap to measure.");
-        println!();
+        // Refused rather than answered with an empty list, because zero gaps
+        // and no way to measure a gap are different facts and only the second
+        // is true here. A caller told "no slow spots" would stop looking.
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                OP,
+                "too_few_messages",
+                "cannot",
+                "fewer than two messages, so there is no gap to measure",
+            ));
+        } else {
+            println!();
+            println!("  Fewer than two messages, so there is no gap to measure.");
+            println!();
+        }
         return;
     }
 
@@ -502,6 +630,36 @@ fn show_slowest() {
     let total = messages.last().map(|m| m.seconds).unwrap_or_default();
     let waited: f64 = gaps.iter().map(|gap| gap.seconds).sum();
 
+    if face.is_machine() {
+        let rows: Vec<serde_json::Value> = gaps
+            .iter()
+            .map(|gap| {
+                serde_json::json!({
+                    "seconds": gap.seconds,
+                    "at": gap.at,
+                    // Both sides, for the reason the human face prints both: the
+                    // message after a silence is the one that finished, the one
+                    // before is where the waiting started, and either alone
+                    // sends the reader to the wrong half.
+                    "after_line": gap.before,
+                    "then_line": gap.after,
+                })
+            })
+            .collect();
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("scope", serde_json::json!("slow")),
+                ("gaps", serde_json::json!(rows)),
+                ("boot_seconds", serde_json::json!(total)),
+                ("waited_seconds", serde_json::json!(waited)),
+                ("said", serde_json::json!(messages.len())),
+            ],
+        ));
+        return;
+    }
+
+    println!();
     println!("  The kernel talked for {total:.1}s. The longest silences in it:");
     println!();
     for gap in &gaps {
@@ -524,85 +682,6 @@ fn show_slowest() {
     println!();
 }
 
-/// What is installed, read from the store rather than from anything remembered.
-fn list_modules(store: &Store) {
-    println!();
-    match store.installed() {
-        Ok(list) if list.is_empty() => {
-            println!("  Nothing is installed.");
-            println!();
-            println!("  If a store was expected here, the first lines of the boot say");
-            println!("  whether one was mounted. An empty store and an absent one look");
-            println!("  the same from this list, and only the boot told them apart.");
-        }
-        Ok(list) => {
-            for (id, version) in &list {
-                println!("  {id} {version}");
-            }
-            println!();
-            println!("  `correr <id>` runs one.");
-        }
-        Err(error) => {
-            // Not "nothing is installed". Rule 10 again, at the one place a
-            // human is most likely to read the answer as an inventory.
-            println!("  I could not read the store: {error}");
-            println!("  That is not the same as it being empty, and I will not");
-            println!("  report it as empty.");
-        }
-    }
-    println!();
-}
-
-/// What is in the repository and could be installed.
-///
-/// Separate verb from `modulos` because they answer different questions, and
-/// conflating them is how a person ends up believing something is installed
-/// because they saw its name. `vault/07-Adopcion-y-Fases/Criterio-de-Salida-Fase-1.md`
-/// step 2 is installing from a local repository, and inside the machine there
-/// is no shell to hand a path to — so the repository has to be findable.
-fn list_available(store: &Store) {
-    println!();
-    let repo = store.repo_root();
-    match thalyx_core::repo::scan(&repo) {
-        Ok(scan) if scan.candidates.is_empty() && scan.rejected.is_empty() => {
-            println!("  The repository is empty.");
-            println!();
-            println!("  It is {}, on the store.", repo.display());
-        }
-        Ok(scan) => {
-            for candidate in &scan.candidates {
-                println!("  {} {}", candidate.module_id, candidate.version);
-            }
-            // Named, never silently dropped. A bundle whose signature does not
-            // check out is the single most important thing this list can say,
-            // and a resolver that only prints what passed would hide exactly
-            // the file somebody needs to look at.
-            for rejected in &scan.rejected {
-                println!();
-                println!(
-                    "  refused  {}",
-                    rejected
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| rejected.path.display().to_string())
-                );
-                println!("           {}", rejected.reason);
-            }
-            if !scan.candidates.is_empty() {
-                println!();
-                println!("  `instalar <id>` installs one, and shows what it asks for");
-                println!("  before anything is written.");
-            }
-        }
-        Err(error) => {
-            println!("  I could not read the repository: {error}");
-            println!("  That is not the same as it being empty.");
-        }
-    }
-    println!();
-}
-
 /// Install from the repository, through the trusted path.
 ///
 /// The confirmation is `TerminalConfirmer`, which prints a prompt the **core**
@@ -610,22 +689,36 @@ fn list_available(store: &Store) {
 /// decrees that the request is generated and rendered by the core, and this is
 /// the machine's end of it. It is step 3 of the exit criterion, and it is the
 /// same code path the host CLI uses, not a copy of it.
-fn install_module(store: &Store, name: &str, utterance: &str) {
-    println!();
+fn install_module(store: &Store, name: &str, utterance: &str, face: crate::files::Face) {
+    const OP: &str = "install";
+
     let candidate = match thalyx_core::repo::resolve(&store.repo_root(), name, None) {
         Ok(candidate) => candidate,
         Err(error) => {
-            println!("  {error}");
-            println!();
-            println!("  `disponibles` lists what the repository holds.");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "no_such_module",
+                    "list_available",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  {error}");
+                println!();
+                println!("  `disponibles` lists what the repository holds.");
+                println!();
+            }
             return;
         }
     };
 
-    println!("  {} {}", candidate.module_id, candidate.version);
-    println!("  from {}", candidate.path.display());
-    println!();
+    if !face.is_machine() {
+        println!();
+        println!("  {} {}", candidate.module_id, candidate.version);
+        println!("  from {}", candidate.path.display());
+        println!();
+    }
 
     let request = thalyx_core::InstallRequest {
         bundle_path: &candidate.path,
@@ -637,7 +730,69 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
     // consent would make the trusted path a formality.
     let mut confirmer = crate::render::TerminalConfirmer::new(false);
 
-    match thalyx_core::install(store, request, &mut confirmer) {
+    let installed = thalyx_core::install(store, request, &mut confirmer);
+
+    if face.is_machine() {
+        match &installed {
+            Ok(outcome) => {
+                let module_id = outcome.module_id.clone();
+                let version = outcome.version.clone();
+                let installed_at = store.current_link(&module_id);
+                remembering(store, "The install", |memory| {
+                    thalyx_agent::recollection::record_install(
+                        memory,
+                        SESSION_TASK,
+                        utterance,
+                        &module_id,
+                        &version,
+                        &installed_at,
+                    )
+                });
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![
+                        ("module_id", serde_json::json!(outcome.module_id)),
+                        ("version", serde_json::json!(outcome.version)),
+                        // `null` when nothing was there before, the version when
+                        // something was. An upgrade and a first install are
+                        // different events and the caller that conflates them
+                        // reports the wrong one to whoever asked.
+                        ("replaced", serde_json::json!(outcome.replaced)),
+                        ("files", serde_json::json!(outcome.files.len())),
+                        ("granted", serde_json::json!(outcome.granted)),
+                    ],
+                ));
+            }
+            Err(error) => {
+                // Includes the refusal at the trusted path, which is the case
+                // that matters most here: `Camino-Confiable.md` is not weakened
+                // by this face, it is reported by it. A session that is not a
+                // terminal cannot confirm, and it is told so in the same shape
+                // as any other refusal rather than on stderr where a parser
+                // reading one stream would never see it.
+                face.say(thalyx_files::machine::refused_with(
+                    OP,
+                    "not_installed",
+                    "confirm_at_a_terminal",
+                    &error.to_string(),
+                    vec![
+                        ("module_id", serde_json::json!(candidate.module_id)),
+                        // Exactly what is true, and no more. This field first
+                        // said `wrote_anything: false`, which was checked by
+                        // driving it and was **wrong**: a refused install leaves
+                        // a `rejected` entry in the journal, which is the whole
+                        // point — a refusal at the trusted path that left no
+                        // trace would be a trusted path nobody could audit.
+                        // What is true is that no module landed.
+                        ("installed", serde_json::json!(false)),
+                    ],
+                ));
+            }
+        }
+        return;
+    }
+
+    match installed {
         Ok(outcome) => {
             println!();
             match &outcome.replaced {
@@ -687,18 +842,10 @@ fn install_module(store: &Store, name: &str, utterance: &str) {
             println!();
             println!("  not installed: {error}");
             println!();
-            println!("  Nothing was written. An install that stops before the commit");
-            println!("  leaves the machine exactly as it was.");
+            println!("  No module was installed. An install that stops before the");
+            println!("  commit puts nothing on disk — the journal does record that");
+            println!("  it was refused, which is what makes a refusal auditable.");
         }
-    }
-    println!();
-}
-
-/// What is granted, and to whom.
-fn show_permissions(store: &Store) {
-    println!();
-    if let Err(error) = crate::render::permissions(store) {
-        println!("  I could not read the permission registry: {error}");
     }
     println!();
 }
@@ -709,32 +856,87 @@ fn show_permissions(store: &Store) {
 /// back what Thalyx itself put on disk and touches nothing the human made,
 /// which is why it does not ask first. The destructive one is `restore`, it has
 /// its own name, and it is not a verb here.
-fn revert(store: &Store, utterance: &str) {
-    println!();
+fn revert(store: &Store, utterance: &str, face: crate::files::Face) {
+    const OP: &str = "rollback";
+
     let plan = match thalyx_core::rollback::plan(store, None) {
         Ok(plan) => plan,
         Err(error) => {
-            println!("  {error}");
-            println!();
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "nothing_to_undo",
+                    "cannot",
+                    &error.to_string(),
+                ));
+            } else {
+                println!();
+                println!("  {error}");
+                println!();
+            }
             return;
         }
     };
 
-    println!("  {}", plan.describe());
-    println!("  published by request {}", plan.request_id);
-    if plan.permissions_revoked > 0 {
-        println!(
-            "  {} permission(s) stop being effective",
-            plan.permissions_revoked
-        );
+    if !face.is_machine() {
+        println!();
+        println!("  {}", plan.describe());
+        println!("  published by request {}", plan.request_id);
+        if plan.permissions_revoked > 0 {
+            println!(
+                "  {} permission(s) stop being effective",
+                plan.permissions_revoked
+            );
+        }
+        if let Some(uid) = plan.uid_retired {
+            println!("  user {uid} is retired, and never handed to another module");
+        }
+        println!();
+        println!("  Nothing outside what Thalyx published is touched.");
     }
-    if let Some(uid) = plan.uid_retired {
-        println!("  user {uid} is retired, and never handed to another module");
-    }
-    println!();
-    println!("  Nothing outside what Thalyx published is touched.");
 
-    match thalyx_core::rollback::apply(store, &plan, &crate::new_request_id()) {
+    let undone = thalyx_core::rollback::apply(store, &plan, &crate::new_request_id());
+
+    if face.is_machine() {
+        match &undone {
+            Ok(()) => {
+                remembering(store, "The rollback", |memory| {
+                    thalyx_agent::recollection::record_utterance(memory, SESSION_TASK, utterance)
+                });
+                face.say(thalyx_files::machine::answer(
+                    OP,
+                    vec![
+                        ("undid", serde_json::json!(plan.describe())),
+                        ("request_id", serde_json::json!(plan.request_id)),
+                        (
+                            "permissions_revoked",
+                            serde_json::json!(plan.permissions_revoked),
+                        ),
+                        // `null` when no user was retired. A uid that is retired
+                        // is never handed to another module, which is the fact
+                        // that makes this undo different from deleting files.
+                        ("uid_retired", serde_json::json!(plan.uid_retired)),
+                        // The boundary of the whole verb, where a program reads
+                        // it: `revertir` takes back what Thalyx published and
+                        // touches nothing a person made. The destructive one has
+                        // its own name and is not a verb here.
+                        ("touched_user_data", serde_json::json!(false)),
+                    ],
+                ));
+            }
+            Err(error) => {
+                face.say(thalyx_files::machine::refused(
+                    OP,
+                    "not_undone",
+                    "read_the_error",
+                    &error.to_string(),
+                ));
+            }
+        }
+        return;
+    }
+
+    match undone {
         Ok(()) => {
             // Only what was asked, and nothing about the world. The install's
             // own record witnesses the `current` link this just removed, so the
@@ -771,7 +973,7 @@ fn revert(store: &Store, utterance: &str) {
 const SESSION_TASK: &str = "session";
 
 /// The word that makes running without enforcement a thing somebody typed.
-const UNCONFINED_WORD: &str = "sin-confinar";
+pub const UNCONFINED_WORD: &str = "sin-confinar";
 
 /// The profile a module gets when it is started from the prompt.
 ///
@@ -786,7 +988,7 @@ const UNCONFINED_WORD: &str = "sin-confinar";
 /// as far as the name. The one machine that could enforce was the image. See
 /// `thalyx_core::run` — the lookup now happens before that gate, so a name no
 /// profile has is a wrong name everywhere.
-const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
+pub const SESSION_PROFILE: &str = thalyx_sandbox::profile::MODULE_STANDARD;
 
 /// What the machine still knows, re-checked against the disk right now.
 ///
@@ -880,37 +1082,78 @@ fn remembering(
 /// written to prevent: reaching the degraded state by accident instead of
 /// deliberately. So the refusal is printed, the word that means it is named,
 /// and the human types it or does not.
-fn start_module(store: &Store, rest: &str) {
+fn start_module(store: &Store, rest: &str, face: crate::files::Face) {
     let (id, unconfined) = match rest.split_once(' ') {
         Some((id, tail)) => (id.trim(), tail.trim() == UNCONFINED_WORD),
         None => (rest, false),
     };
 
     if id.is_empty() {
-        println!();
-        println!("  Which one. `modulos` lists them.");
-        println!();
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                "run",
+                "nothing_asked",
+                "list_modules",
+                "which one — `correr <id>`",
+            ));
+        } else {
+            println!();
+            println!("  Which one. `modulos` lists them.");
+            println!();
+        }
         return;
     }
 
     if !store.is_installed(id) {
-        println!();
-        println!("  `{id}` is not installed. `modulos` lists what is.");
-        println!();
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused(
+                "run",
+                "not_installed",
+                "list_modules",
+                &format!("`{id}` is not installed"),
+            ));
+        } else {
+            println!();
+            println!("  `{id}` is not installed. `modulos` lists what is.");
+            println!();
+        }
         return;
     }
 
-    let Err(error) = crate::run::run(
-        store.root(),
-        id,
-        SESSION_PROFILE,
-        thalyx_core::run::DEFAULT_ENTRYPOINT,
-        Vec::new(),
+    let Err(error) = crate::run::run(crate::run::Asked {
+        root: store.root(),
+        module_id: id,
+        profile: SESSION_PROFILE,
+        entrypoint: thalyx_core::run::DEFAULT_ENTRYPOINT,
+        args: Vec::new(),
         unconfined,
-        crate::new_request_id(),
-    ) else {
+        request_id: crate::new_request_id(),
+        face,
+    }) else {
         return;
     };
+
+    if face.is_machine() {
+        // The known gap, as a remedy rather than as a paragraph. `run_unconfined`
+        // is a word a caller can act on, and it carries what it costs in the same
+        // object: the journal records that run as degraded, because it is.
+        let (word, remedy) = if unconfined {
+            ("did_not_run", "cannot")
+        } else {
+            ("cannot_enforce", "run_unconfined")
+        };
+        face.say(thalyx_files::machine::refused_with(
+            "run",
+            word,
+            remedy,
+            &error.to_string(),
+            vec![
+                ("module_id", serde_json::json!(id)),
+                ("degraded_if_forced", serde_json::json!(!unconfined)),
+            ],
+        ));
+        return;
+    }
 
     println!();
     println!("  {id} did not run: {error}");
@@ -973,7 +1216,7 @@ fn trouble_since(messages: &[thalyx_syscall::KernelMessage], seen: Option<u64>) 
 /// this would be hiding, which is the one thing this system is not allowed to
 /// do — so the prompt says, in its own words, that there is something to look
 /// at, and `nucleo` is where it is.
-struct KernelWatch {
+pub(crate) struct KernelWatch {
     seen: Option<u64>,
     /// Said once and then not again. A watcher that cannot read the kernel and
     /// announces it before every prompt has reinvented the problem it exists to
@@ -1107,6 +1350,13 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  includes hidden names and `ls -l` shows sizes.");
             println!("  `mkdir`, `touch`, `cp <de> <a>`, `mv <de> <a>` and");
             println!("  `rm <cosa>` change what is there. `*` and `?` work.");
+            println!("  `editar <archivo>` opens it on a screen — Ctrl-O writes,");
+            println!("  Ctrl-X leaves, Ctrl-U takes back the last change. A");
+            println!("  program says `editar <archivo> cambiar 12 <texto>`");
+            println!("  instead, because it cannot see a screen.");
+            println!("  `pantalla` puts the one screen back on the display. On");
+            println!("  this machine that is where boot landed and this text is");
+            println!("  what is behind it; `screen` is the same verb.");
             println!("  `ensayo <verbo> …` says what one of those would do");
             println!("  without doing any of it.");
             println!("  `structured on` makes every one of those answer in JSON");
@@ -1119,11 +1369,29 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  amount of looking through folders can answer. `buscar");
             println!("  <nombre>` says where a name is defined and everywhere it");
             println!("  is used, without the comments a search for text catches.");
+            println!("  `encontrar <patrón>` finds files by name anywhere below");
+            println!("  here and `contenido <texto>` finds the lines that say it —");
+            println!("  those two read the tree, so they answer about anything,");
+            println!("  and `buscar` reads the index, so it answers better where");
+            println!("  it can. Both take `en=<carpeta>`, and it goes first.");
+            println!("  `procesos` says what is running with its number, `memoria`");
+            println!("  how much is left, and `matar <numero>` asks one to stop —");
+            println!("  `matar <numero> forzar` does not ask. `ensayo matar` says");
+            println!("  which process that number is and sends nothing, which is");
+            println!("  worth doing, because this one cannot be taken back.");
             println!("  `disponibles` lists what can be installed, `instalar <id>`");
             println!("  installs one and shows what it asks for, `revertir` undoes it.");
             println!("  `modulos` lists what is installed, `correr <id>` runs one,");
+            println!("  and `ejecutar <ruta>` runs a program nobody signed —");
+            println!("  confined the same way, reaching nothing but its own");
+            println!("  folder and the system paths unless `leyendo <ruta>` or");
+            println!("  `escribiendo <ruta>` says otherwise, and always asking");
+            println!("  you first, because nobody vouched for it.");
             println!("  `discos` lists the disks I can see and `instalar-en <disco>`");
             println!("  puts this machine on one, so it stops needing this medium.");
+            println!("  `negar` makes the kernel guard binding and `observar`");
+            println!("  stops it denying — the second asks you first, because it");
+            println!("  takes the confinement off everything running right now.");
             println!("  `permisos` shows what is granted, `recuerdos` says what I");
             println!("  will still know after a restart, `estado` re-reads the");
             println!("  `intento empezar <etiqueta>` opens something that can be");
@@ -1140,12 +1408,17 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         Standing::AProgram { .. } => {
             println!("  `ls`, `cat <archivo>`, `cd <carpeta>`, `pwd`, `clear`,");
             println!("  `mkdir`, `touch`, `cp`, `mv`, `rm`, `structured on|off`,");
-            println!("  `ensayo <verbo> …`, `describe`,");
+            println!("  `editar <archivo> ver|poner|cambiar|borrar <línea> …`,");
+            println!("  `ensayo <verbo> …`, `describe`, `pantalla`/`screen`,");
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
-            println!("  `buscar <nombre>`, `historia`, `intento`, `cambios`,");
+            println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
+            println!("  `historia`, `intento`, `cambios`,");
+            println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
-            println!("  `permisos`, `revertir`, `recuerdos`, `estado`, `nucleo`,");
-            println!("  `discos`, `instalar-en <disco>`.");
+            println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
+            println!("  `permisos`, `negar`, `observar`, `revertir`, `recuerdos`,");
+            println!("  `estado`, `nucleo`,");
+            println!("  `discos`, `instalar-en <disco>`, `red`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
             println!("  because this machine is not mine to turn off.");
         }
@@ -1160,20 +1433,47 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         println!("  so and stop. `correr <id> {UNCONFINED_WORD}` runs it anyway.");
     }
     println!();
+    // Everything a typed line may change, in one place because there are now
+    // two places a line can be typed. The screen and the text session run the
+    // same verbs against the same state — where you are, which face answers,
+    // what the kernel has been saying — so leaving the screen and coming back
+    // does not put you somewhere else with a different mode on.
+    let mut session = Session {
+        store,
+        standing,
+        // Where the person is. Carried across lines because that is what makes
+        // a relative name mean anything — without it every verb would need the
+        // whole path typed out, which is the difference between a system
+        // somebody can work in and one they can only inspect.
+        here: crate::files::Where::start(),
+        // Which face the file verbs answer in. Human until something asks
+        // otherwise, because a person who has not asked for JSON must never be
+        // handed it — `vault/01-Filosofia/Filosofia-Fundacional.md` requires the
+        // human keep everything, and being unable to read the answers is not
+        // keeping it.
+        face: crate::files::Face::Human,
+        watch: KernelWatch::from_now(),
+    };
 
-    let mut watch = KernelWatch::from_now();
-
-    // Where the person is. Carried across lines because that is what makes a
-    // relative name mean anything — without it every verb would need the whole
-    // path typed out, which is the difference between a system somebody can work
-    // in and one they can only inspect.
-    let mut here = crate::files::Where::start();
-
-    // Which face the file verbs answer in. Human until something asks otherwise,
-    // because a person who has not asked for JSON must never be handed it —
-    // `vault/01-Filosofia/Filosofia-Fundacional.md` requires the human keep
-    // everything, and being unable to read the answers is not keeping it.
-    let mut face = crate::files::Face::Human;
+    // The screen, before the first prompt, on the machine that has one.
+    //
+    // Cesar, 2026-08-28: *«no quiero un comando para activar ui, quiero ya la
+    // ui, la que se ve al iniciar»*. A screen you have to ask for is a screen
+    // the person holding the machine has to be told about, and on a machine
+    // with no shell behind it there is nobody to tell them. So this is not a
+    // verb that starts the interface; the interface is what boot lands on, and
+    // the text session is what is behind it.
+    //
+    // Three conditions, and all three are read rather than assumed:
+    // [`wants_the_screen`] covers the two that are decisions — this process is
+    // the machine's own session, and nobody asked for text on the kernel
+    // command line — and `screen::show` covers the one that is a fact about the
+    // hardware. A display that cannot be drawn on comes back as an error and
+    // the text session below carries on, which is the whole reason the fallback
+    // is a return value and not a panic.
+    if wants_the_screen(&session.standing) && to_the_screen(&mut session) {
+        return Ok(());
+    }
 
     // Opened once and held: raw mode is a change to the terminal that outlives
     // this program, and every transition in and out is a chance to leave it
@@ -1184,7 +1484,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // Before the prompt and not after it, so the notice never lands on a
         // line the human is in the middle of typing — which is the whole defect
         // this exists to answer.
-        if let Some(notice) = watch.since_last_prompt() {
+        if let Some(notice) = session.watch.since_last_prompt() {
             println!("{notice}");
         }
         // The location is in the prompt rather than only in `donde`, because a
@@ -1208,12 +1508,12 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // The braces are the whole difference from the human prompt: which face
         // is on is otherwise invisible until something is typed, and a person
         // who cannot see the mode they are in cannot leave it.
-        let prompt = match face {
+        let prompt = match session.face {
             crate::files::Face::Machine if !terminal.on_a_terminal() => String::new(),
-            crate::files::Face::Machine => format!("  {{{}}} > ", here.briefly()),
-            crate::files::Face::Human => format!("  {} > ", here.briefly()),
+            crate::files::Face::Machine => format!("  {{{}}} > ", session.here.briefly()),
+            crate::files::Face::Human => format!("  {} > ", session.here.briefly()),
         };
-        let at = here.at().to_path_buf();
+        let at = session.here.at().to_path_buf();
         let line = match terminal.read_line(&prompt, |before| completions(&at, before))? {
             crate::term::Ended::Line(line) => line,
             // Ctrl-C throws the line away and gives a fresh prompt. It is not a
@@ -1222,274 +1522,597 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             crate::term::Ended::Closed => break,
         };
         let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
 
-        match line {
-            "" => continue,
-            "salir" | "exit" | "quit" => match &standing {
-                Standing::TheMachine => {
-                    println!();
-                    println!("  There is nowhere to go. Turning the machine off is");
-                    println!("  `apagar`; anything else keeps you here.");
-                    println!();
-                }
-                Standing::AProgram { under } => {
-                    println!("  Back to {under}.");
+        match session.act_on(line)? {
+            Flow::Stay => {}
+            Flow::Leave => break,
+            Flow::ToTheScreen => {
+                // Raw mode goes back before the screen takes the keyboard: two
+                // termios settings on one descriptor, and the one put back last
+                // wins. Dropping it here means the screen's own is the only one
+                // in force, and re-opening it after means the text session gets
+                // a terminal it configured rather than one the screen left
+                // behind.
+                drop(terminal);
+                let finished = to_the_screen(&mut session);
+                terminal = crate::term::Terminal::open();
+                if finished {
                     break;
                 }
-            },
-            "estado" | "status" => {
-                let readings = gather(store);
-                if face == crate::files::Face::Machine {
-                    println!("{}", state_object(&readings));
-                } else {
-                    for reading in &readings {
-                        println!(
-                            "{} {:<12} {}",
-                            reading.mark(),
-                            reading.subject,
-                            reading.text()
-                        );
-                    }
-                }
-            }
-            "apagar" | "poweroff" => {
-                power_off(&standing);
-            }
-            "modules" | "modulos" | "módulos" => {
-                list_modules(store);
-            }
-            "disponibles" | "available" | "repo" => {
-                list_available(store);
-            }
-            "permisos" | "permissions" => {
-                show_permissions(store);
-            }
-            "revertir" | "rollback" => {
-                revert(store, line);
-            }
-            "recuerdos" | "recordar" | "memory" | "recall" => {
-                if face == crate::files::Face::Machine {
-                    let _ = crate::agent::recall_object(store, SESSION_TASK);
-                } else {
-                    show_memory(store);
-                }
-            }
-            _ if line.starts_with("instalar ") || line.starts_with("install ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_module(store, rest, line);
-            }
-            "instalar" | "install" => {
-                println!();
-                println!("  Which one. `disponibles` lists what the repository holds.");
-                println!();
-            }
-            "discos" | "disks" => {
-                list_disks();
-            }
-            // ─────────────────────────────────────────── files, layer 1 of the decree
-            //
-            // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
-            // work without the agent. These four are the smallest set that makes
-            // the rest of it possible — a person who cannot see what is there
-            // cannot copy, move or delete it either.
-            "clear" | "limpiar" | "cls" => {
-                crate::files::clear();
-            }
-            // The verb the objective decree was waiting on: everything below
-            // already returns facts, and this is what lets something ask for
-            // them instead of for sentences about them.
-            _ if starts_any(line, &["structured ", "estructurado "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::structured(&mut face, rest);
-            }
-            "structured" | "estructurado" => {
-                crate::files::structured(&mut face, "");
-            }
-            // A1: the machine reading itself out loud, so that something that
-            // arrived knowing nothing about Thalyx can ask instead of guessing.
-            _ if starts_any(line, &["describe ", "describir "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::catalogue::describe(face, rest);
-            }
-            "describe" | "describir" => {
-                crate::catalogue::describe(face, "");
-            }
-            // C1: the semantic index, reachable by something that is not
-            // Thalyx's own CLI for the first time.
-            _ if starts_any(line, &["indexar ", "index "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::build(store.root(), &here, rest, face)?;
-            }
-            "indexar" | "index" => {
-                crate::index::build(store.root(), &here, "", face)?;
-            }
-            _ if starts_any(line, &["depende ", "depends "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::edges(store.root(), &here, rest, false, face)?;
-            }
-            "depende" | "depends" => {
-                crate::index::edges(store.root(), &here, "", false, face)?;
-            }
-            _ if starts_any(line, &["usan ", "dependents "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::edges(store.root(), &here, rest, true, face)?;
-            }
-            "usan" | "dependents" => {
-                crate::index::edges(store.root(), &here, "", true, face)?;
-            }
-            // C2: a symbol, not a line. The question `grep` answers with two
-            // hundred matches of which one is the definition.
-            _ if starts_any(line, &["buscar ", "symbol "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::index::symbol(store.root(), &here, rest, face)?;
-            }
-            "buscar" | "symbol" => {
-                crate::index::symbol(store.root(), &here, "", face)?;
-            }
-            // F2: what this machine did, said by the machine rather than
-            // reconstructed from a conversation that ended.
-            _ if starts_any(line, &["historia ", "history "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::history::show(store, rest, face)?;
-            }
-            "historia" | "history" => {
-                crate::history::show(store, "", face)?;
-            }
-            // D2: begin something, and be able to take all of it back.
-            _ if starts_any(line, &["intento ", "attempt "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::attempt::run(store, &here, rest, face, &crate::new_request_id())?;
-            }
-            // B3: what the kernel has seen change, and who did it.
-            _ if starts_any(line, &["cambios ", "changes "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::changes::show(rest, face)?;
-            }
-            "cambios" | "changes" => {
-                crate::changes::show("", face)?;
-            }
-            "intento" | "attempt" => {
-                crate::attempt::run(store, &here, "", face, &crate::new_request_id())?;
-            }
-            // D1: what a verb would do, without doing any of it.
-            _ if starts_any(line, &["ensayo ", "rehearse "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::rehearse(&here, rest, face)?;
-            }
-            "ensayo" | "rehearse" => {
-                crate::files::rehearse(&here, "", face)?;
-            }
-            "pwd" | "donde" | "dónde" | "where" => {
-                crate::files::where_am_i(&here, face);
-            }
-            _ if starts_any(line, &["cd ", "ir ", "go "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::go(&mut here, rest, face);
-            }
-            // Unlike `instalar` and `correr`, the bare verb is not a question:
-            // `ir` with nothing after it means home, which is somewhere a person
-            // always wants to be able to get back to in one word.
-            "cd" | "ir" | "go" => {
-                crate::files::go(&mut here, "", face);
-            }
-            _ if starts_any(line, &["ls ", "ver ", "look "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::look(&here, rest, face);
-            }
-            "ls" | "ver" | "look" => {
-                crate::files::look(&here, "", face);
-            }
-            _ if starts_any(line, &["cat ", "leer ", "read "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::read(&here, rest, face);
-            }
-            _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, true, face)?;
-            }
-            _ if starts_any(line, &["touch ", "crear "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::make(&here, rest, false, face)?;
-            }
-            _ if starts_any(line, &["cp ", "copiar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, false, face)?;
-            }
-            _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::transfer(&here, rest, true, face)?;
-            }
-            _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                crate::files::erase(&here, rest, face)?;
-            }
-            "cat" | "leer" | "read" => {
-                crate::files::read(&here, "", face);
-            }
-            // The bare forms, and they are here because a test that drove the
-            // prompt found they were missing. Every arm above matches on a
-            // **trailing space**, so `rm` typed alone was not a verb at all and
-            // fell through to "I have no model loaded" — the same defect Cesar
-            // hit with `clear` on the first real session, still alive in five
-            // verbs. A common command answering with a speech about something
-            // else is exactly how a system reads as unfinished.
-            //
-            // Each one lands on its own "which one" rather than on a shared
-            // message, because `cp` needs two names and `rm` needs one, and a
-            // hint that does not say which is a hint nobody can act on.
-            "mkdir" | "crear-carpeta" | "nueva-carpeta" => {
-                crate::files::make(&here, "", true, face)?;
-            }
-            "touch" | "crear" => {
-                crate::files::make(&here, "", false, face)?;
-            }
-            "cp" | "copiar" => {
-                crate::files::transfer(&here, "", false, face)?;
-            }
-            "mv" | "mover" | "renombrar" => {
-                crate::files::transfer(&here, "", true, face)?;
-            }
-            "rm" | "borrar" | "eliminar" => {
-                crate::files::erase(&here, "", face)?;
-            }
-            _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                install_onto(rest);
-            }
-            "instalar-en" | "install-onto" => {
-                println!();
-                println!("  Which disk. `discos` lists them.");
-                println!();
-            }
-            "nucleo" | "núcleo" | "kernel" | "dmesg" => {
-                show_kernel(false);
-            }
-            "nucleo todo" | "núcleo todo" | "kernel all" => {
-                show_kernel(true);
-            }
-            "nucleo lento" | "núcleo lento" | "kernel slow" => {
-                show_slowest();
-            }
-            _ if line.starts_with("correr ") || line.starts_with("run ") => {
-                let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-                start_module(store, rest);
-            }
-            "correr" | "run" => {
-                println!();
-                println!("  Which one. `modulos` lists them.");
-                println!();
-            }
-            _ => {
-                println!();
-                println!("  I have no model loaded, so I can only act on what the rules");
-                println!("  already understand. `thalyx agent plan \"{line}\"` shows what");
-                println!("  I would make of that, and says who understood it.");
-                println!();
             }
         }
     }
 
     Ok(())
+}
+
+/// Put the screen on the display, and say — in whichever face is on — what came
+/// of it.
+///
+/// `true` means the session is over, which only ever happens where there is
+/// somewhere to go: on the machine `salir` refuses, so the screen's only way out
+/// is back to the text session below it.
+///
+/// The refusal is the reason this is one function and not two call sites. A
+/// program that typed `pantalla` has been promised `no_display` or
+/// `not_a_terminal` by `describe`, and it must get that object whether it asked
+/// at the first prompt or the fiftieth.
+fn to_the_screen(session: &mut Session<'_>) -> bool {
+    match crate::screen::show(session) {
+        Ok(crate::screen::Left::ForTheTextSession) => {
+            if session.face.is_machine() {
+                session.face.say(thalyx_files::machine::answer(
+                    "screen",
+                    vec![
+                        ("drawn", serde_json::json!(true)),
+                        ("left_for", serde_json::json!("session")),
+                    ],
+                ));
+            }
+            false
+        }
+        Ok(crate::screen::Left::Finished) => true,
+        Err(refusal) => {
+            if session.face.is_machine() {
+                session.face.say(thalyx_files::machine::refused(
+                    "screen",
+                    refusal.code,
+                    "session",
+                    &refusal.why,
+                ));
+            } else {
+                // Said on the console that is still a console, because the screen
+                // never took it. A machine that comes up in text with no
+                // explanation looks broken; one that says why looks like a
+                // machine that checked.
+                println!();
+                println!("  The screen did not come up, so this is the text session:");
+                println!("  {refusal}");
+                println!();
+            }
+            false
+        }
+    }
+}
+
+/// Whether this process should come up on the display rather than in text.
+///
+/// Two facts, and neither of them is «is there a framebuffer» — that one is the
+/// display's to answer, and it is answered by trying.
+///
+/// **This process is the machine's own session.** `thalyx session` typed into a
+/// terminal on Fedora is a program somebody started, and a program that grabbed
+/// the framebuffer out from under the display server holding it would be doing
+/// the opposite of what was asked. The screen is still one word away there.
+///
+/// **Nobody asked for text.** `thalyx.pantalla=no` on the kernel command line
+/// brings the machine up in the text session, and it exists because the failure
+/// this change can cause is a machine that boots to a black rectangle. Without
+/// a way to say «not this time» from the boot entry, the only way back from that
+/// would be another medium — which is not a recovery, it is a reinstall.
+fn wants_the_screen(standing: &Standing) -> bool {
+    matches!(standing, Standing::TheMachine) && !text_was_asked_for()
+}
+
+/// The kernel command line's word for «come up in text».
+const TEXT_PARAMETER: &str = "thalyx.pantalla=";
+
+/// Whether the boot entry asked for the text session.
+///
+/// Anything other than `no` is not an answer to this question and is ignored,
+/// which is deliberate: a typo must not be the difference between a machine that
+/// comes up and one that does not, and the value that has to be exactly right is
+/// the one that turns the screen **off**, never the one that leaves it on.
+fn text_was_asked_for() -> bool {
+    let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") else {
+        // Rule 10: unreadable is not «it said no». Failing to read the command
+        // line is not permission to override what the machine was told, and the
+        // default is the screen.
+        return false;
+    };
+    said_no_to_the_screen(&cmdline)
+}
+
+/// The command line read apart from where it is read, so it can be tested.
+fn said_no_to_the_screen(cmdline: &str) -> bool {
+    cmdline
+        .split_ascii_whitespace()
+        .filter_map(|word| word.strip_prefix(TEXT_PARAMETER))
+        .any(|value| value == "no" || value == "texto" || value == "text")
+}
+
+/// What a typed line did to where the session stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flow {
+    /// Keep taking lines.
+    Stay,
+    /// The caller asked to leave, and there is somewhere to leave to.
+    Leave,
+    /// Go to the display. From the text session that means entering the screen;
+    /// from the screen it means the person is already there and is told so.
+    ToTheScreen,
+}
+
+/// Everything a typed line reads and may change.
+///
+/// One struct because there are two places a line can be typed — the screen and
+/// the text session — and the alternative is each of them keeping its own copy
+/// of where you are and which face answers. Two copies of that is a person who
+/// pressed Escape and found themselves in a different directory.
+pub(crate) struct Session<'a> {
+    pub store: &'a Store,
+    pub standing: Standing,
+    pub here: crate::files::Where,
+    pub face: crate::files::Face,
+    pub watch: KernelWatch,
+}
+
+impl<'a> Session<'a> {
+    /// A session that has just opened, standing wherever this process is.
+    ///
+    /// For `thalyx screen` typed at a shell, which enters the display without
+    /// the text session ever having run. It reads its standing the same way the
+    /// session does — from who this process's parent is — so the screen it opens
+    /// says the same thing about this machine that the banner would have.
+    pub(crate) fn opening(store: &'a Store) -> Self {
+        Self {
+            store,
+            standing: standing(),
+            here: crate::files::Where::start(),
+            face: crate::files::Face::Human,
+            watch: KernelWatch::from_now(),
+        }
+    }
+
+    /// Run one line and say what it did to the session.
+    pub(crate) fn act_on(&mut self, line: &str) -> Result<Flow, Box<dyn std::error::Error>> {
+        dispatch(
+            self.store,
+            &self.standing,
+            &mut self.here,
+            &mut self.face,
+            line,
+        )
+    }
+}
+
+/// Every verb, in one place, for whichever face is asking.
+///
+/// Lifted out of the session loop on 2026-08-28 so that the screen could run the
+/// same verbs instead of growing a second set of them. The parameters are the
+/// four things an arm can read or change and nothing else — which is what made
+/// the lift safe: the loop's other locals, the terminal and the kernel watch,
+/// are never touched by an arm.
+fn dispatch(
+    store: &Store,
+    standing: &Standing,
+    here: &mut crate::files::Where,
+    answering_in: &mut crate::files::Face,
+    line: &str,
+) -> Result<Flow, Box<dyn std::error::Error>> {
+    let mut face = *answering_in;
+    let mut flow = Flow::Stay;
+
+    match line {
+        "" => {}
+        // The way back to the display. On the machine the screen is where
+        // boot already landed, so this is what Escape undoes; on a machine
+        // whose display was not there at boot, or in a session somebody
+        // started from a shell, it is the way in.
+        "pantalla" | "screen" => {
+            flow = Flow::ToTheScreen;
+        }
+        "salir" | "exit" | "quit" => match &standing {
+            Standing::TheMachine => {
+                if face.is_machine() {
+                    face.say(thalyx_files::machine::refused(
+                        "leave",
+                        "nowhere_to_go",
+                        "power_off",
+                        "there is nowhere to go; `apagar` turns the machine off",
+                    ));
+                } else {
+                    println!();
+                    println!("  There is nowhere to go. Turning the machine off is");
+                    println!("  `apagar`; anything else keeps you here.");
+                    println!();
+                }
+            }
+            Standing::AProgram { under } => {
+                // Said *before* the stream ends, which is the whole point of
+                // this one: a caller that got a closed pipe with nothing in
+                // it cannot tell a session that left from one that crashed.
+                if face.is_machine() {
+                    face.say(thalyx_files::machine::answer(
+                        "leave",
+                        vec![
+                            ("left", serde_json::json!(true)),
+                            ("to", serde_json::json!(under)),
+                        ],
+                    ));
+                } else {
+                    println!("  Back to {under}.");
+                }
+                flow = Flow::Leave;
+            }
+        },
+        "estado" | "status" => {
+            let readings = gather(store);
+            if face == crate::files::Face::Machine {
+                println!("{}", state_object(&readings));
+            } else {
+                for reading in &readings {
+                    println!(
+                        "{} {:<12} {}",
+                        reading.mark(),
+                        reading.subject,
+                        reading.text()
+                    );
+                }
+            }
+        }
+        "apagar" | "poweroff" => {
+            power_off(standing, face);
+        }
+        _ if starts_any(line, &["modulos ", "módulos ", "modules "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::modules::installed(store, rest, face)?;
+        }
+        "modules" | "modulos" | "módulos" => {
+            crate::modules::installed(store, "", face)?;
+        }
+        _ if starts_any(line, &["disponibles ", "available ", "repo "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::modules::available(store, rest, face)?;
+        }
+        "disponibles" | "available" | "repo" => {
+            crate::modules::available(store, "", face)?;
+        }
+        "permisos" | "permissions" => {
+            crate::modules::permissions(store, face)?;
+        }
+        // The two directions of the kernel guard. `permisos` says what is
+        // granted; these two decide whether any of it is real.
+        "negar" | "deny" => {
+            crate::guard::set(
+                &thalyx_permd::KernelStore::default_map(),
+                thalyx_permd::Mode::Enforcing,
+                face,
+                false,
+            )?;
+        }
+        "observar" | "observe" => {
+            crate::guard::set(
+                &thalyx_permd::KernelStore::default_map(),
+                thalyx_permd::Mode::Observing,
+                face,
+                false,
+            )?;
+        }
+        "revertir" | "rollback" => {
+            revert(store, line, face);
+        }
+        "recuerdos" | "recordar" | "memory" | "recall" => {
+            if face == crate::files::Face::Machine {
+                let _ = crate::agent::recall_object(store, SESSION_TASK);
+            } else {
+                show_memory(store);
+            }
+        }
+        _ if line.starts_with("instalar ") || line.starts_with("install ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            install_module(store, rest, line, face);
+        }
+        "instalar" | "install" => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    "install",
+                    "nothing_asked",
+                    "list_available",
+                    "which one — `instalar <id>`",
+                ));
+            } else {
+                println!();
+                println!("  Which one. `disponibles` lists what the repository holds.");
+                println!();
+            }
+        }
+        "discos" | "disks" => {
+            list_disks(face);
+        }
+        // Point 8, and the one listing verb whose things cannot be acted on.
+        // See `crate::net`: the closing sentence is the verb.
+        "red" | "network" => {
+            crate::net::interfaces(face)?;
+        }
+        // ─────────────────────────────────────────── files, layer 1 of the decree
+        //
+        // `Principio-Doble-Ruta.md`, non-negotiable, first layer: plain file
+        // work without the agent. These four are the smallest set that makes
+        // the rest of it possible — a person who cannot see what is there
+        // cannot copy, move or delete it either.
+        "clear" | "limpiar" | "cls" => {
+            crate::files::clear(face);
+        }
+        // The verb the objective decree was waiting on: everything below
+        // already returns facts, and this is what lets something ask for
+        // them instead of for sentences about them.
+        _ if starts_any(line, &["structured ", "estructurado "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::structured(&mut face, rest);
+        }
+        "structured" | "estructurado" => {
+            crate::files::structured(&mut face, "");
+        }
+        // A1: the machine reading itself out loud, so that something that
+        // arrived knowing nothing about Thalyx can ask instead of guessing.
+        _ if starts_any(line, &["describe ", "describir "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::catalogue::describe(face, rest);
+        }
+        "describe" | "describir" => {
+            crate::catalogue::describe(face, "");
+        }
+        // C1: the semantic index, reachable by something that is not
+        // Thalyx's own CLI for the first time.
+        _ if starts_any(line, &["indexar ", "index "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::build(store.root(), here, rest, face)?;
+        }
+        "indexar" | "index" => {
+            crate::index::build(store.root(), here, "", face)?;
+        }
+        _ if starts_any(line, &["depende ", "depends "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::edges(store.root(), here, rest, false, face)?;
+        }
+        "depende" | "depends" => {
+            crate::index::edges(store.root(), here, "", false, face)?;
+        }
+        _ if starts_any(line, &["usan ", "dependents "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::edges(store.root(), here, rest, true, face)?;
+        }
+        "usan" | "dependents" => {
+            crate::index::edges(store.root(), here, "", true, face)?;
+        }
+        // C2: a symbol, not a line. The question `grep` answers with two
+        // hundred matches of which one is the definition.
+        _ if starts_any(line, &["buscar ", "symbol "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::index::symbol(store.root(), here, rest, face)?;
+        }
+        "buscar" | "symbol" => {
+            crate::index::symbol(store.root(), here, "", face)?;
+        }
+        // F2: what this machine did, said by the machine rather than
+        // reconstructed from a conversation that ended.
+        _ if starts_any(line, &["historia ", "history "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::history::show(store, rest, face)?;
+        }
+        "historia" | "history" => {
+            crate::history::show(store, "", face)?;
+        }
+        // D2: begin something, and be able to take all of it back.
+        _ if starts_any(line, &["intento ", "attempt "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::attempt::run(store, here, rest, face, &crate::new_request_id())?;
+        }
+        // B3: what the kernel has seen change, and who did it.
+        _ if starts_any(line, &["cambios ", "changes "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::changes::show(rest, face)?;
+        }
+        "cambios" | "changes" => {
+            crate::changes::show("", face)?;
+        }
+        "intento" | "attempt" => {
+            crate::attempt::run(store, here, "", face, &crate::new_request_id())?;
+        }
+        // Point 5 of the usable terminal. Two shapes of the same verb: with
+        // a subverb it addresses lines and answers, without one it opens a
+        // screen — which is the only way one verb can serve a person and a
+        // program without either of them losing something.
+        _ if starts_any(line, &["editar ", "edit "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::edit::run(here, rest, face)?;
+        }
+        "editar" | "edit" => {
+            crate::edit::run(here, "", face)?;
+        }
+        // Point 6. Two verbs and not one, because `buscar` already answers a
+        // third question and a caller that has to work out which of three a
+        // single verb answered pays the ambiguity cost on every call.
+        _ if starts_any(line, &["encontrar ", "find "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::search::by_name(here, rest, face)?;
+        }
+        "encontrar" | "find" => {
+            crate::search::by_name(here, "", face)?;
+        }
+        _ if starts_any(line, &["contenido ", "grep "]) => {
+            // Not trimmed on the right: the text is the rest of the line
+            // verbatim, and a search for `fn main ` with a trailing space is
+            // a search a person can mean. Only the left side is trimmed,
+            // which is the split's own separator.
+            let rest = line
+                .split_once(' ')
+                .map(|(_, r)| r.trim_start())
+                .unwrap_or("");
+            crate::search::in_contents(here, rest, face)?;
+        }
+        "contenido" | "grep" => {
+            crate::search::in_contents(here, "", face)?;
+        }
+        // Point 7, over /proc. `matar` goes through a pidfd, so the signal
+        // reaches the process the number named at the moment it was read
+        // and never one that inherited the number since.
+        _ if starts_any(line, &["procesos ", "ps "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::proc::running(rest, face)?;
+        }
+        "procesos" | "ps" => {
+            crate::proc::running("", face)?;
+        }
+        "memoria" | "free" => {
+            crate::proc::memory(face)?;
+        }
+        _ if starts_any(line, &["matar ", "stop ", "kill "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::proc::stop(rest, face)?;
+        }
+        "matar" | "stop" | "kill" => {
+            crate::proc::stop("", face)?;
+        }
+        // D1: what a verb would do, without doing any of it.
+        _ if starts_any(line, &["ensayo ", "rehearse "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::rehearse(here, store, rest, face)?;
+        }
+        "ensayo" | "rehearse" => {
+            crate::files::rehearse(here, store, "", face)?;
+        }
+        "pwd" | "donde" | "dónde" | "where" => {
+            crate::files::where_am_i(here, face);
+        }
+        _ if starts_any(line, &["cd ", "ir ", "go "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::go(here, rest, face);
+        }
+        // Unlike `instalar` and `correr`, the bare verb is not a question:
+        // `ir` with nothing after it means home, which is somewhere a person
+        // always wants to be able to get back to in one word.
+        "cd" | "ir" | "go" => {
+            crate::files::go(here, "", face);
+        }
+        _ if starts_any(line, &["ls ", "ver ", "look "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::look(here, rest, face);
+        }
+        "ls" | "ver" | "look" => {
+            crate::files::look(here, "", face);
+        }
+        _ if starts_any(line, &["cat ", "leer ", "read "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::read(here, rest, face);
+        }
+        _ if starts_any(line, &["mkdir ", "crear-carpeta ", "nueva-carpeta "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::make(here, rest, true, face)?;
+        }
+        _ if starts_any(line, &["touch ", "crear "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::make(here, rest, false, face)?;
+        }
+        _ if starts_any(line, &["cp ", "copiar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::transfer(here, rest, false, face)?;
+        }
+        _ if starts_any(line, &["mv ", "mover ", "renombrar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::transfer(here, rest, true, face)?;
+        }
+        _ if starts_any(line, &["rm ", "borrar ", "eliminar "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::files::erase(here, rest, face)?;
+        }
+        "cat" | "leer" | "read" => {
+            crate::files::read(here, "", face);
+        }
+        // The bare forms, and they are here because a test that drove the
+        // prompt found they were missing. Every arm above matches on a
+        // **trailing space**, so `rm` typed alone was not a verb at all and
+        // fell through to "I have no model loaded" — the same defect Cesar
+        // hit with `clear` on the first real session, still alive in five
+        // verbs. A common command answering with a speech about something
+        // else is exactly how a system reads as unfinished.
+        //
+        // Each one lands on its own "which one" rather than on a shared
+        // message, because `cp` needs two names and `rm` needs one, and a
+        // hint that does not say which is a hint nobody can act on.
+        "mkdir" | "crear-carpeta" | "nueva-carpeta" => {
+            crate::files::make(here, "", true, face)?;
+        }
+        "touch" | "crear" => {
+            crate::files::make(here, "", false, face)?;
+        }
+        "cp" | "copiar" => {
+            crate::files::transfer(here, "", false, face)?;
+        }
+        "mv" | "mover" | "renombrar" => {
+            crate::files::transfer(here, "", true, face)?;
+        }
+        "rm" | "borrar" | "eliminar" => {
+            crate::files::erase(here, "", face)?;
+        }
+        _ if line.starts_with("instalar-en ") || line.starts_with("install-onto ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            install_onto(rest, face, false);
+        }
+        "instalar-en" | "install-onto" => {
+            println!();
+            println!("  Which disk. `discos` lists them.");
+            println!();
+        }
+        "nucleo" | "núcleo" | "kernel" | "dmesg" => {
+            show_kernel(false, face);
+        }
+        "nucleo todo" | "núcleo todo" | "kernel all" => {
+            show_kernel(true, face);
+        }
+        "nucleo lento" | "núcleo lento" | "kernel slow" => {
+            show_slowest(face);
+        }
+        // Before `correr`'s arms and deliberately its own verb: a program
+        // nobody signed never reaches the one that only takes modules.
+        _ if starts_any(line, &["ejecutar ", "execute "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::foreign::execute(store, rest, face)?;
+        }
+        "ejecutar" | "execute" => {
+            crate::foreign::execute(store, "", face)?;
+        }
+        _ if line.starts_with("correr ") || line.starts_with("run ") => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            start_module(store, rest, face);
+        }
+        "correr" | "run" => {
+            start_module(store, "", face);
+        }
+        _ => {
+            println!();
+            println!("  I have no model loaded, so I can only act on what the rules");
+            println!("  already understand. `thalyx agent plan \"{line}\"` shows what");
+            println!("  I would make of that, and says who understood it.");
+            println!();
+        }
+    }
+    *answering_in = face;
+    Ok(flow)
 }
 
 // ─────────────────────────────────────────── installing this machine onto a disk
@@ -1527,7 +2150,7 @@ fn verbs() -> Vec<String> {
 /// The first word is a verb and everything after it is a path, which is the
 /// whole rule. Offering file names where a verb belongs would put `Documentos`
 /// at the start of a line, where nothing can run it.
-fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
+pub(crate) fn completions(here: &std::path::Path, before: &str) -> Vec<String> {
     if !before.contains(' ') {
         return verbs();
     }
@@ -1622,7 +2245,7 @@ fn whats_on(path: &std::path::Path) -> String {
 /// Whole disks only. Installing writes a partition table, so a partition is not a
 /// thing that can be installed onto — offering one would produce a table written
 /// inside a partition, which is legal, invisible, and boots nothing.
-fn list_disks() {
+fn list_disks(face: crate::files::Face) {
     let disks = thalyx_install::partitions::every();
     let whole: Vec<&std::path::PathBuf> = disks
         .iter()
@@ -1644,6 +2267,50 @@ fn list_disks() {
             thalyx_install::partitions::of(device).is_ok()
         })
         .collect();
+
+    if face.is_machine() {
+        let rows: Vec<serde_json::Value> = whole
+            .iter()
+            .map(|device| {
+                // Three states again, and here they are three *per disk*: a size
+                // that read, a size that did not, and a partition table that did
+                // not. `null` is the answer for the second and third, and it is
+                // never a zero — a caller that read `0 GiB` would believe it had
+                // found an empty disk.
+                let size = std::fs::File::open(device)
+                    .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
+                    .ok();
+                let parts = thalyx_install::partitions::of(device).ok();
+                serde_json::json!({
+                    "device": device.display().to_string(),
+                    "bytes": size,
+                    "partitions": parts.as_ref().map(|parts| {
+                        parts
+                            .iter()
+                            .map(|(number, path)| serde_json::json!({
+                                "number": number,
+                                "device": path.display().to_string(),
+                                "holds": whats_on(path),
+                            }))
+                            .collect::<Vec<_>>()
+                    }),
+                })
+            })
+            .collect();
+
+        face.say(thalyx_files::machine::answer(
+            "disks",
+            vec![
+                ("disks", serde_json::json!(rows)),
+                ("count", serde_json::json!(whole.len())),
+                // The sentence the human face ends on, where a program reads it.
+                // Everything on a named disk is lost, and that is the one fact
+                // about this list that a caller must not have to infer.
+                ("destructive_verb", serde_json::json!("instalar-en")),
+            ],
+        ));
+        return;
+    }
 
     println!();
     if whole.is_empty() {
@@ -1677,6 +2344,17 @@ fn list_disks() {
     println!();
 }
 
+/// `ensayo instalar-en <disco>` — everything the real verb works out, and none
+/// of what it does.
+///
+/// Its own entry point rather than a flag on the verb, because the caller is
+/// `ensayo` and the verb it names is somebody else's. What it runs is the same
+/// code path: there is no second implementation to drift, which for the one
+/// irreversible verb in the system is not a nicety.
+pub fn foresee_install_onto(disk: &str, face: crate::files::Face) {
+    install_onto(disk, face, true);
+}
+
 /// Put this machine onto a disk, so it stops needing the medium it booted from.
 ///
 /// The kernel comes off the medium this machine started from, found by looking for a
@@ -1685,20 +2363,65 @@ fn list_disks() {
 /// what happened the day it asked for the file alone. Nothing is mounted to do it:
 /// the bytes are read the same way they were written, so this needs no vfat in the
 /// kernel.
-fn install_onto(disk: &str) {
+fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
     use std::io::{IsTerminal, Write};
+
+    // The op is the one the caller typed, not the one this function is called.
+    // `describe` promises `rehearse` for `ensayo`, and a refusal that came back
+    // under `install_onto` would be an answer to a verb nobody used — which, on
+    // this verb, is an answer that reads like the real thing failed.
+    let op: &str = if rehearsing {
+        "rehearse"
+    } else {
+        "install_onto"
+    };
 
     let disk = std::path::PathBuf::from(disk);
 
-    println!();
+    // One place every refusal in this verb goes through, because there are
+    // eleven of them and the one that forgets to answer is the one a program
+    // waits on forever. Each carries `wrote`, which is the only question that
+    // matters after this verb declines: this is the one verb whose damage
+    // cannot be undone, so *whether it got as far as writing* is not something
+    // a caller may be left to infer from how far the sentences got.
+    let refuse = |word: &str, remedy: &str, message: &str, wrote: bool| {
+        if face.is_machine() {
+            face.say(thalyx_files::machine::refused_with(
+                op,
+                word,
+                remedy,
+                message,
+                vec![
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    ("wrote", serde_json::json!(wrote)),
+                ],
+            ));
+        } else {
+            println!();
+            for line in message.lines() {
+                println!("  {line}");
+            }
+            println!();
+        }
+    };
+
+    if !face.is_machine() {
+        println!();
+    }
     let sectors = match std::fs::File::open(&disk)
         .and_then(|mut file| std::io::Seek::seek(&mut file, std::io::SeekFrom::End(0)))
     {
         Ok(bytes) => bytes / thalyx_install::gpt::SECTOR,
         Err(error) => {
-            println!("  I cannot open {}: {error}", disk.display());
-            println!("  `discos` lists what I can see.");
-            println!();
+            refuse(
+                "unopenable",
+                "list_disks",
+                &format!(
+                    "I cannot open {}: {error}\n`discos` lists what I can see.",
+                    disk.display()
+                ),
+                false,
+            );
             return;
         }
     };
@@ -1706,8 +2429,7 @@ fn install_onto(disk: &str) {
     let plan = match thalyx_install::Plan::of(&disk, sectors) {
         Ok(plan) => plan,
         Err(error) => {
-            println!("  {error}");
-            println!();
+            refuse("no_plan", "read_the_error", &error.to_string(), false);
             return;
         }
     };
@@ -1716,85 +2438,154 @@ fn install_onto(disk: &str) {
     // machine that asked for confirmation, got it, wiped the disk and only then
     // discovered it had no kernel to write would have destroyed the disk for nothing
     // — and this is the one verb where that is unrecoverable.
+    //
+    // That ordering is also what makes `ensayo instalar-en` possible at all:
+    // everything above the confirmation is a question, and everything below it
+    // is an act. A rehearsal is this same path stopping at the line.
     let found = match thalyx_install::medium::find(Some(&disk)) {
         Ok(found) => found,
         Err(error) => {
-            println!("  I cannot find the medium I started from, so I have no kernel");
-            println!(
-                "  to install. Nothing has been written to {}.",
-                disk.display()
+            refuse(
+                "no_kernel",
+                "cannot",
+                &format!(
+                    "I cannot find the medium I started from, so I have no kernel\nto install. Nothing has been written to {}.\n{error}",
+                    disk.display()
+                ),
+                false,
             );
-            println!();
-            for line in error.to_string().lines() {
-                println!("  {line}");
-            }
-            println!();
             return;
         }
     };
 
     let mib = |sectors: u64| sectors * thalyx_install::gpt::SECTOR / (1024 * 1024);
-    println!("  About to install Thalyx onto {}.", disk.display());
-    println!();
-    println!(
-        "  the kernel comes from {} — {} bytes",
-        found.device.display(),
-        found.kernel_bytes
-    );
-    println!();
-    println!("  it will become:");
-    println!(
-        "    1  {:>8} MiB  the boot partition, holding that kernel",
-        mib(plan.esp_sectors())
-    );
-    println!(
-        "    2  {:>8} MiB  the store: system, modules, user",
-        mib(plan.store_sectors())
-    );
-    println!();
+    if !face.is_machine() {
+        println!("  About to install Thalyx onto {}.", disk.display());
+        println!();
+        println!(
+            "  the kernel comes from {} — {} bytes",
+            found.device.display(),
+            found.kernel_bytes
+        );
+        println!();
+        println!("  it will become:");
+        println!(
+            "    1  {:>8} MiB  the boot partition, holding that kernel",
+            mib(plan.esp_sectors())
+        );
+        println!(
+            "    2  {:>8} MiB  the store: system, modules, user",
+            mib(plan.store_sectors())
+        );
+        println!();
 
-    // What is there now, named before the question rather than after it. `thalyx
-    // install` on the host has always done this and the session's verb did not,
-    // which mattered the day `discos` ran on a machine with another operating
-    // system on it: the list said `btrfs "fedora"` and the confirmation said only
-    // "everything will be gone", leaving the human to carry the mapping from a
-    // device name to a system in their head. Read off the disk, so it describes
-    // the disk being destroyed and not the one that was listed a minute ago.
-    match thalyx_install::partitions::of(&disk) {
-        Ok(existing) if !existing.is_empty() => {
-            println!("  it has {} partition(s) on it now:", existing.len());
-            for (number, path) in &existing {
-                println!("    {number}  {}", whats_on(path));
+        // What is there now, named before the question rather than after it. `thalyx
+        // install` on the host has always done this and the session's verb did not,
+        // which mattered the day `discos` ran on a machine with another operating
+        // system on it: the list said `btrfs "fedora"` and the confirmation said only
+        // "everything will be gone", leaving the human to carry the mapping from a
+        // device name to a system in their head. Read off the disk, so it describes
+        // the disk being destroyed and not the one that was listed a minute ago.
+        match thalyx_install::partitions::of(&disk) {
+            Ok(existing) if !existing.is_empty() => {
+                println!("  it has {} partition(s) on it now:", existing.len());
+                for (number, path) in &existing {
+                    println!("    {number}  {}", whats_on(path));
+                }
+                println!();
             }
-            println!();
+            Ok(_) => {
+                println!("  it has no partitions on it now.");
+                println!();
+            }
+            // Rule 10 again, and it matters most here: not being able to look is not
+            // the same as there being nothing to lose, and the difference decides
+            // whether somebody should go and check before answering.
+            Err(error) => {
+                println!("  I could not read what is on it: {error}");
+                println!("  That is not the same as it being empty.");
+                println!();
+            }
         }
-        Ok(_) => {
-            println!("  it has no partitions on it now.");
-            println!();
-        }
-        // Rule 10 again, and it matters most here: not being able to look is not
-        // the same as there being nothing to lose, and the difference decides
-        // whether somebody should go and check before answering.
-        Err(error) => {
-            println!("  I could not read what is on it: {error}");
-            println!("  That is not the same as it being empty.");
-            println!();
-        }
-    }
 
-    println!(
-        "  Everything on {} will be gone. This cannot be undone.",
-        disk.display()
-    );
-    println!();
+        println!(
+            "  Everything on {} will be gone. This cannot be undone.",
+            disk.display()
+        );
+        println!();
+    }
 
     // The same confirmation `thalyx install` uses on the host, and for the same
     // reason: this is the most destructive thing Thalyx can be asked to do, the
     // argument is one word, and a `y` confirms a sentence the human stopped reading.
+    //
+    // **The structured face does not get a cheaper way past this.** It reports the
+    // refusal instead of a paragraph, which is the only difference: what a program
+    // driving a real terminal can do here is exactly what a person can, and what a
+    // program on a pipe can do is nothing. Widening it would make the one
+    // irreversible verb in the system reachable by whatever was on stdin.
+    //
+    // A rehearsal stops here, one line before the question. Everything it wanted
+    // to know has been worked out and nothing has been done.
+    if rehearsing {
+        if face.is_machine() {
+            face.say(thalyx_files::machine::answer(
+                "rehearse",
+                vec![
+                    ("verb", serde_json::json!("install_onto")),
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    (
+                        "kernel_from",
+                        serde_json::json!(found.device.display().to_string()),
+                    ),
+                    ("kernel_bytes", serde_json::json!(found.kernel_bytes)),
+                    ("boot_mib", serde_json::json!(mib(plan.esp_sectors()))),
+                    ("store_mib", serde_json::json!(mib(plan.store_sectors()))),
+                    // What is on it now, read off the disk rather than off the
+                    // listing from a minute ago — and `null` when it could not
+                    // be read, which is not the same as nothing to lose and is
+                    // the difference that decides whether somebody should go and
+                    // check before answering.
+                    (
+                        "holds_now",
+                        serde_json::json!(thalyx_install::partitions::of(&disk).ok().map(
+                            |existing| {
+                                existing
+                                    .iter()
+                                    .map(|(number, path)| {
+                                        serde_json::json!({
+                                            "number": number,
+                                            "holds": whats_on(path),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
+                        )),
+                    ),
+                    // The whole reason this rehearsal exists, said where a
+                    // program reads it.
+                    ("would_destroy_everything_on_it", serde_json::json!(true)),
+                    ("would_write", serde_json::json!(false)),
+                ],
+            ));
+        } else {
+            println!(
+                "  Nothing has been done. `instalar-en {}` is the real one,",
+                disk.display()
+            );
+            println!("  and it asks for the disk's path typed out before it writes.");
+            println!();
+        }
+        return;
+    }
+
     if !std::io::stdin().is_terminal() {
-        println!("  There is no terminal to confirm on, so I will not do this.");
-        println!("  Silence is not consent.");
-        println!();
+        refuse(
+            "no_terminal",
+            "confirm_at_a_terminal",
+            "There is no terminal to confirm on, so I will not do this.\nSilence is not consent.",
+            false,
+        );
         return;
     }
     print!("  Type the disk's path to confirm: ");
@@ -1804,12 +2595,17 @@ fn install_onto(disk: &str) {
         .flatten()
         .unwrap_or_default();
     if answer.trim() != disk.display().to_string() {
-        println!();
-        println!("  That is not {}. Nothing was written.", disk.display());
-        println!();
+        refuse(
+            "not_confirmed",
+            "type_the_disk_path",
+            &format!("That is not {}. Nothing was written.", disk.display()),
+            false,
+        );
         return;
     }
-    println!();
+    if !face.is_machine() {
+        println!();
+    }
 
     // Onto the tmpfs, because that is the only writable place on this machine and
     // because the kernel must not touch the disk being installed onto before the
@@ -1818,35 +2614,54 @@ fn install_onto(disk: &str) {
     if let Some(parent) = staged.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        println!("  I could not make {}: {error}", parent.display());
-        println!();
+        refuse(
+            "no_workspace",
+            "cannot",
+            &format!("I could not make {}: {error}", parent.display()),
+            false,
+        );
         return;
     }
 
     let mut volume = match thalyx_install::medium::Volume::open(&found.device) {
         Ok(Some(volume)) => volume,
         Ok(None) => {
-            println!(
-                "  {} stopped being readable between finding it and",
-                found.device.display()
+            refuse(
+                "medium_vanished",
+                "cannot",
+                &format!(
+                    "{} stopped being readable between finding it and\nreading it. Nothing was written.",
+                    found.device.display()
+                ),
+                false,
             );
-            println!("  reading it. Nothing was written.");
-            println!();
             return;
         }
         Err(error) => {
-            println!("  I could not read {}: {error}", found.device.display());
-            println!();
+            refuse(
+                "medium_unreadable",
+                "cannot",
+                &format!("I could not read {}: {error}", found.device.display()),
+                false,
+            );
             return;
         }
     };
     if let Err(error) = volume.extract_boot_file(&staged) {
-        println!("  I could not take the kernel off the medium: {error}");
-        println!("  Nothing was written to {}.", disk.display());
-        println!();
+        refuse(
+            "no_kernel",
+            "cannot",
+            &format!(
+                "I could not take the kernel off the medium: {error}\nNothing was written to {}.",
+                disk.display()
+            ),
+            false,
+        );
         return;
     }
-    println!("  ok  kernel       taken off {}", found.device.display());
+    if !face.is_machine() {
+        println!("  ok  kernel       taken off {}", found.device.display());
+    }
 
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1859,6 +2674,49 @@ fn install_onto(disk: &str) {
         std::path::Path::new(INSTALL_WORKSPACE),
         seconds,
     ) {
+        Ok(installed) if face.is_machine() => {
+            face.say(thalyx_files::machine::answer(
+                op,
+                vec![
+                    ("disk", serde_json::json!(disk.display().to_string())),
+                    (
+                        "boot",
+                        serde_json::json!(installed.esp.display().to_string()),
+                    ),
+                    (
+                        "store",
+                        serde_json::json!(installed.store.display().to_string()),
+                    ),
+                    ("label", serde_json::json!(installed.filesystem.label)),
+                    (
+                        "subvolumes",
+                        serde_json::json!(
+                            installed
+                                .subvolumes
+                                .mounted
+                                .iter()
+                                .map(|(name, why)| serde_json::json!({
+                                    "name": name,
+                                    // `null` is mounted. The reason is the whole
+                                    // answer when it is not, and a boolean here
+                                    // would throw away the only thing that says
+                                    // what to do about it.
+                                    "refused": why,
+                                }))
+                                .collect::<Vec<_>>()
+                        ),
+                    ),
+                    // Whether that disk is a Thalyx machine now, which is the
+                    // question the verb was asked. A half-written disk boots and
+                    // reports no store, so `true` here and `finished: false` are
+                    // very different mornings.
+                    (
+                        "finished",
+                        serde_json::json!(installed.subvolumes.is_a_store()),
+                    ),
+                ],
+            ));
+        }
         Ok(installed) => {
             println!(
                 "  ok  boot         {} — the kernel, at the one path a firmware looks for",
@@ -1890,16 +2748,20 @@ fn install_onto(disk: &str) {
             println!();
         }
         Err(error) => {
-            println!();
-            println!("  The install did not finish: {error}");
-            println!();
-            println!(
-                "  Whatever was on {} before is gone either way — the",
-                disk.display()
+            // The one refusal in this verb that carries `wrote: true`, and it is
+            // the reason the field exists. The partition table goes down first,
+            // so a failure here has already destroyed what was there — a caller
+            // that read this the same as the ten refusals above would tell
+            // somebody their disk was untouched.
+            refuse(
+                "did_not_finish",
+                "run_it_again",
+                &format!(
+                    "The install did not finish: {error}\nWhatever was on {} before is gone either way — the\npartition table is written first. Running this again is safe\nand is the way to finish it.",
+                    disk.display()
+                ),
+                true,
             );
-            println!("  partition table is written first. Running this again is safe");
-            println!("  and is the way to finish it.");
-            println!();
         }
     }
 }
@@ -1913,6 +2775,47 @@ const INSTALL_WORKSPACE: &str = "/run/thalyx/install";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_boot_entry_can_ask_for_text_and_only_that_exact_word_turns_the_screen_off() {
+        // The escape hatch from a machine that comes up black, so the thing it
+        // must never do is fire by accident. Every line below that is *not* the
+        // request leaves the screen on, including the ones that look like it:
+        // a boot entry a person half-edited must not be the difference between
+        // a machine that draws and one that does not.
+        let real = "BOOT_IMAGE=/thalyx console=tty0 thalyx.disco=/dev/sda2";
+        assert!(!said_no_to_the_screen(real));
+        assert!(!said_no_to_the_screen(""));
+        assert!(!said_no_to_the_screen("thalyx.pantalla=si"));
+        assert!(!said_no_to_the_screen("thalyx.pantalla="));
+        assert!(!said_no_to_the_screen("thalyx.pantalla"));
+        // Not a prefix match, and not a substring one: a parameter that merely
+        // contains the word is a different parameter.
+        assert!(!said_no_to_the_screen("otra.thalyx.pantalla=no"));
+        assert!(!said_no_to_the_screen("thalyx.pantalla=nostromo"));
+
+        for asked in [
+            "thalyx.pantalla=no",
+            "thalyx.pantalla=texto",
+            "thalyx.pantalla=text",
+        ] {
+            assert!(
+                said_no_to_the_screen(&format!("{real} {asked}")),
+                "{asked} did not turn the screen off"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_somebody_started_from_a_shell_does_not_take_the_display() {
+        // The screen at boot is for the machine's own session. `thalyx session`
+        // typed into a terminal on Fedora is a program somebody started, and a
+        // program that grabbed the framebuffer out from under the display server
+        // holding it would be taking a machine over rather than being one.
+        assert!(!wants_the_screen(&Standing::AProgram {
+            under: "bash".to_string()
+        }));
+    }
 
     /// One record, shaped like the kernel's own.
     fn said(sequence: u64, priority: u8) -> thalyx_syscall::KernelMessage {

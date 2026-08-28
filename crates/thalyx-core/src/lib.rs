@@ -13,6 +13,7 @@ pub mod attempt;
 pub mod bundle;
 pub mod commit;
 pub mod fault;
+pub mod foreign;
 pub mod install;
 pub mod keystore;
 pub mod permissions;
@@ -29,8 +30,9 @@ pub mod test_support;
 pub mod trusted_path;
 pub mod uids;
 
+pub use foreign::{ForeignOutcome, ForeignRequest, run_foreign};
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
-pub use run::{RunOutcome, RunRequest, run};
+pub use run::{RunForeseen, RunOutcome, RunRequest, foresee_run, run};
 pub use store::Store;
 
 /// The permissions a module actually holds right now.
@@ -71,6 +73,23 @@ pub fn effective_permissions(
 
 /// The runtime version that a manifest's `requires.thalyx` is matched against.
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The trailing clause naming what was granted, or nothing at all when nothing
+/// was.
+///
+/// Written out rather than left as `{n} thing(s)`, which at zero produced
+/// «none of the 0 thing(s) this was granted would be enforced» — a sentence
+/// that is ungrammatical and, worse, beside the point. With no map loaded what
+/// is missing is every decision about what the program may touch, not the ones
+/// the human happened to name. Cesar read that sentence on 2026-08-25 and it
+/// was the first thing `ejecutar` ever said to him.
+fn also_granted(count: usize, noun: &str) -> String {
+    match count {
+        0 => String::new(),
+        1 => format!(" — the one {noun} included"),
+        n => format!(" — the {n} {noun}s included"),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -215,14 +234,76 @@ pub enum CoreError {
     ConfirmationDenied,
 
     #[error(
-        "refusing to run `{module_id}`: the kernel policy map is not loaded, so none of its \
-         {permissions} permission(s) would be enforced.\n  \
-         Load it with `make -C lsm load`, or pass --unconfined to run it anyway and have the \
-         journal say so."
+        "refusing to run `{module_id}`: the kernel policy map is not loaded, so nothing in the \
+         kernel would decide what it may touch{}.\n  \
+         Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine), \
+         or pass --unconfined to run it anyway and have the journal say so.",
+        also_granted(*permissions, "recorded permission")
     )]
     NothingCanEnforce {
         module_id: String,
         permissions: usize,
+    },
+
+    /// A path the human named that this will not execute, and why.
+    ///
+    /// One variant with a reason rather than four variants, because the caller
+    /// does the same thing with all of them — says it back — and the human's
+    /// next move depends on the reason and not on the discriminant.
+    #[error("`{path}` is not something I can run: {reason}")]
+    NotExecutable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
+    /// The foreign half of `NothingCanEnforce`, and deliberately not the same
+    /// variant.
+    ///
+    /// The module message ends by offering `--unconfined`. There is no such
+    /// mode for a program nobody signed — see
+    /// `vault/02-Arquitectura/Programas-Ajenos.md` — so pointing at one would
+    /// be telling the human to do something that does not exist.
+    #[error(
+        "refusing to run `{program}`: the kernel policy map is not loaded, so nothing in the \
+         kernel would decide what it may touch{}.\n  \
+         Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine). \
+         Nobody signed this program, so there is no unconfined mode to fall back to.",
+        also_granted(*grants, "path you granted")
+    )]
+    NothingCanEnforceForeign {
+        program: std::path::PathBuf,
+        grants: usize,
+    },
+
+    /// Attached, and logging what it would have denied instead of denying it.
+    ///
+    /// A separate refusal from the one above because it is a separate mistake
+    /// with a separate fix — `negar`, not attaching the kernel side —
+    /// and because for three weeks nothing on this side could tell the two
+    /// apart. `is_available()` answers "does the map open"; every caller read
+    /// that as "the kernel is enforcing". `make -C lsm load` lands in observe
+    /// mode on purpose, so the machine most likely to be running a guest was
+    /// the one that would have enforced nothing.
+    #[error(
+        "refusing to run `{program}`: the kernel side is attached but only observing, so every \
+         denial would be written to the log and none of them applied.\n  \
+         Make it binding with `negar` — or `thalyx enforce mode enforcing`, outside a session. \
+         Nobody signed this program, so there is no unconfined mode to fall back to."
+    )]
+    ObservingNotEnforcing { program: std::path::PathBuf },
+
+    /// Rule 9, and rule 10: the mode could not be read, which is not the same
+    /// as its being off, and neither of them is a reason to start a program
+    /// nobody signed.
+    #[error(
+        "refusing to run `{program}`: the kernel side is attached, but whether it is enforcing \
+         or only observing could not be read — {reason}.\n  \
+         `make -C lsm status` says which it is. A program nobody signed does not run on an \
+         answer nobody got."
+    )]
+    EnforcementModeUnreadable {
+        program: std::path::PathBuf,
+        reason: String,
     },
 
     #[error(

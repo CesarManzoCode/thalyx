@@ -302,8 +302,8 @@ arriba describe un sistema en el que hoy **Claude Code no arrancaría**.
 
 | | Qué falta |
 |---|---|
-| **G1** | Ejecutar procesos: lanzar, esperar, matar, ver la salida |
-| **G2** | Un runtime en el que un agente ajeno pueda correr |
+| **G1** | ~~Ejecutar procesos: **lanzar** y **esperar**~~ — **construido el 2026-08-25 como `ejecutar`**, ver [[Programas-Ajenos]]. *Matar* y *ver qué corre* existían desde el 2026-08-23 ([[Procesos]]); lo que faltaba era lanzar algo que nadie firmó, y la decisión que lo destrabó fue **no tocar la firma**: dos verbos, y un invitado nunca se vuelve módulo. Se confina igual, sin modo degradado, y ve sólo lo que se nombró |
+| **G2** | Un runtime en el que un agente ajeno pueda correr. Con forma concreta desde el 2026-08-23: **la imagen no tiene libc** y el agente lo pide con el enlazador antes que nada |
 | **G3** | Red |
 | **G4** | Control de versiones, o la razón escrita de por qué no hace falta |
 
@@ -356,7 +356,7 @@ derecha está decidido**; es el catálogo, no un plan.
 
 | | Punto | Estado |
 |---|---|---|
-| A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 29 verbos |
+| A1 | Catálogo de verbos legible por máquina | **Hecho** — `describe`, 40 verbos, y desde el 2026-08-23 el `op` que promete se comprueba corriendo el verbo |
 | A2 | El error nombra su remedio | **Hecho** — `remedy` como palabra estable |
 | A3 | El estado de la máquina en un objeto | **Hecho** — `estado`, con los tres estados de la regla 10 |
 | B1 | Respuestas acotadas con total y cursor | **Hecho** — `limite=` y `cursor=`, en `ls`, `depende`, `usan`, `buscar`, `historia`, `cambios` |
@@ -365,15 +365,31 @@ derecha está decidido**; es el catálogo, no un plan.
 | C1 | Índice semántico expuesto | **Hecho** — `indexar`, `depende`, `usan` |
 | C2 | Búsqueda por símbolos | **Hecho** — `buscar`, con la definición y los usos separados, sin comentarios ni cadenas |
 | C3 | Vigencia en toda respuesta | **Hecho donde hay caché**: cada respuesta del índice trae `fresh` |
-| D1 | Ensayo en todo verbo que cambia | **Hecho para los verbos de archivos** — `ensayo`; los otros cinco dicen que no pueden |
+| D1 | Ensayo en todo verbo que cambia | **Hecho** — archivos, `matar`, `ejecutar`, `instalar`, `revertir`, `instalar-en`, `apagar`, y desde el 2026-08-26 **`correr`**, que era el que decía que no podía: lo destrabó que Thalyx aprendiera a leer el modo del kernel el 25. El ensayo **es el código de la corrida**, parado un renglón antes de que el programa exista. y `editar`, cerrado el mismo día: es el camino de `editar` con el guardado quitado. **La lista de verbos que cambian y no se pueden ensayar está vacía** |
 | D2 | El intento con nombre | **Hecho** — `intento empezar/confirmar/abandonar`; la política probada aquí, el Btrfs en la etapa 26 |
 | D3 | Cada acción dice cómo se deshace | **Hecho** — `undo`, y `null` donde no hay vuelta |
-| E1 | El agente ajeno como tarea con concesión | **Bloqueado por G1 y G2**, no por dificultad: no hay a qué darle la concesión |
+| E1 | El agente ajeno como tarea con concesión | **Ya no lo bloquea G1**, que está construido desde el 2026-08-25: hay a qué darle la concesión. Lo que le falta es que expire y que sobreviva a la corrida, más G2 dentro de la imagen |
 | E2 | Pedir permiso en caliente | Fuera de la v1 de la API por decreto |
 | E3 | Procedencia de lo que hizo el agente | Construido para contratos, sin extender |
 | F1 | Memoria persistente accesible | **Hecho** — `recuerdos`, con las tres listas separadas |
 | F2 | Journal legible desde afuera | **Hecho** — `historia`, el más nuevo primero, con lo que no cubre dicho en un campo |
-| G1–G4 | El piso | No construido, y es lo que bloquea la vara |
+| G1–G4 | El piso | **G1 construido el 2026-08-25** ([[Programas-Ajenos]]); quedan G2, G3 y G4. El filtro de llamadas dejó de estar en la lista el 2026-08-24: 41 de 41 |
+
+**Y desde el 2026-08-24 hay una segunda fila que no estaba en el catálogo:
+el modelo puede proponer los cuarenta y dos `op` del catálogo, y la lista de
+palabras que la gramática no le da está vacía.** Decreto de Cesar del
+2026-08-24. La línea dejó de estar en lo que el modelo puede **decir** y pasó a
+estar en lo que la máquina **hace** sin un humano en una terminal diciendo que
+sí: `agent do` sigue llevando a cabo instalaciones y nada más, y todo lo demás
+pasa por el verbo con la confirmación que ese verbo ya pide. Ver
+[[Punto-Actual]] para lo que costó — la abstención se quedó sin forma de
+decirse, y un plan que no es contrato no llegaba a `origins.validate()`.
+
+**Y desde el 2026-08-23 hay una fila que no estaba en el catálogo y decide si
+cualquiera de las de arriba sirve: los cuarenta y tres verbos contestan por
+estructura, y la lista de excepciones está vacía.** Catorce puntos hechos no
+servían de nada mientras los seis verbos de módulos —el ciclo entero de lo que
+Thalyx existe para hacer— sólo hablaran en prosa.
 
 **Lo que esa tabla decía el 2026-08-09 y ya no dice:** que seis de los
 diecinueve puntos existían y no eran alcanzables. Ninguno queda así.
@@ -424,6 +440,121 @@ mezcla se resolvió a favor de no construir nada.
 ---
 
 ## Revisiones
+
+### 2026-08-23 — El ensayo llegó a los que cambian la máquina, y salió gratis
+
+Segunda entrega del sprint. `D1` decía *«hecho para los verbos de archivos; los
+otros cinco dicen que no pueden»*, y al mirarlos resultó que **cuatro de los
+cinco ya tenían escrita la mitad que averigua**, separada de la que actúa:
+
+- `revertir` tiene `plan` aparte de `apply` desde que se escribió;
+- `instalar` resuelve un candidato y lee su manifiesto antes de preguntar nada;
+- `instalar-en` calcula la distribución entera, encuentra el kernel y lee qué hay
+  en el disco **antes** de la confirmación — y eso se hizo el 2026-08-07 por otra
+  razón: para que un borrado ya confirmado no descubriera después que no había
+  kernel que escribir. **Esa decisión es la que hace posible este ensayo**, y
+  nadie la tomó pensando en él;
+- `apagar` no tiene nada que calcular y sí tiene algo que decir, que es lo único
+  que importa en el verbo donde una persona se entera perdiéndolo.
+
+O sea que el ensayo no fue construir una segunda implementación de nada: fue
+**parar en la línea que ya estaba dibujada**. Para el único verbo irreversible
+del sistema, que no haya una segunda implementación que se pueda desalinear no
+es un detalle.
+
+`correr` es el que queda y se queda honesto: qué podría hacer un módulo al
+correr es una pregunta del lado del kernel, y contestarla desde el manifiesto
+describiría una corrida que la máquina quizá no puede dar.
+
+**Lo que la prueba tuvo que aprender:** un `cannot` estaba tapando dos hechos
+distintos —*este verbo no tiene ensayo* y *aquí no hay nada que deshacer*—. El
+primero manda al que preguntó a otro lado para siempre; el segundo deja de ser
+cierto en cuanto se instale algo.
+
+### 2026-08-23 — Los nueve verbos que no tenían segunda cara, y ya no queda ninguno
+
+Cesar leyó la lista de pendientes y contestó que **íbamos innecesariamente
+lento**: *«todo esto es horizontal, nada es realmente complejo, son cosas
+sencillas pero son muchísimas, porque no hacemos un sprint para eliminar todo el
+horizonte barato?»*. Tenía razón y ésta es la primera entrega de ese sprint.
+
+Los verbos sin cara eran nueve, más tres que se creían sin nada que contestar.
+Ninguno era difícil; lo que los mantuvo así es que **el catálogo de esta nota
+trata de superficie nueva**, y éstos son anteriores al decreto de las dos caras.
+Nadie volvió por los viejos.
+
+**Lo que costaba, dicho bien**: `disponibles`, `instalar`, `modulos`, `correr`,
+`permisos` y `revertir` son el ciclo completo de lo único que Thalyx existe para
+dejar hacer. Un programa que no los lee no puede saber si lo que va a instalar ya
+está instalado, ni qué hay en el repositorio, ni qué concedió la vez pasada.
+Catorce de diecinueve puntos hechos y el ciclo entero en prosa.
+
+Ahora el ciclo se corre entero por la cara estructurada — buscar, instalar,
+listar, correr, deshacer, listar — y quedó capturado en una sola sesión por
+tubería.
+
+**Tres cosas que construirlo enseñó y esta nota no anticipaba:**
+
+1. **El camino confiable no se debilita, se reporta.** `Camino-Confiable` queda
+   intacto: sin terminal no hay confirmación y no hay instalación, y
+   `instalar-en` sigue pidiendo la ruta del disco tecleada. Lo único que cambia
+   es que la negativa vuelve como objeto en vez de una línea en `stderr`, donde
+   un parser que lee un solo flujo no la veía nunca.
+2. **Una afirmación falsa salió de correrlo, no de leerlo.** El primer campo de
+   la negativa decía `wrote_anything: false`, y el journal **sí** guarda una
+   entrada `rejected` — que es justamente el punto, porque una negativa del
+   camino confiable que no dejara rastro sería un camino confiable que nadie
+   puede auditar. La cara humana llevaba el mismo exceso en prosa.
+3. **«No tiene nada que contestar» era el último sitio donde quedaba silencio.**
+   `limpiar`, `salir` y `apagar` contestan, y las tres razones son distintas: no
+   hay pantalla del otro lado, un pipe cerrado sin nada adentro es exactamente lo
+   que parece un cierre inesperado, y `apagar` no regresa cuando funciona.
+
+Lo que lo sostiene: la prueba del catálogo **afirma que la lista de verbos sólo
+prosa está vacía**, y la etapa 22 pasó de catorce verbos manejados a veintiuno.
+
+### 2026-08-23 — `describe` prometía prosa donde había un objeto
+
+`red` nació con sus dos caras y quedó declarado `answers: None` en el catálogo,
+así que **A1 estaba mintiendo sobre A1**. No es un detalle de datos: la
+declaración es lo que un programa lee *antes* de llamar, y un verbo declarado
+sólo-prosa es un verbo que no se llama. La lista de hardware de red existía y
+era inalcanzable para lo único para lo que se expuso.
+
+Lo que se corrigió, y lo que enseña, está en [[Estrategia-de-Pruebas]]: una
+afirmación que un sistema hace sobre sí mismo se comprueba corriéndolo, no
+leyendo los dos lados del código, porque el catálogo y el despacho son dos
+archivos y cada uno concuerda consigo mismo. La etapa 22 ahora corre los catorce
+verbos que aquí se pueden correr sin argumentos y compara el cable contra la
+promesa, en las dos direcciones.
+
+**Los que siguen sin segunda cara, y ahora la lista es exacta**: `disponibles`,
+`instalar`, `modulos`, `correr`, `permisos`, `revertir`, `nucleo`, `discos`,
+`instalar-en`, más `limpiar`, `salir` y `apagar`, que no tienen qué contestar.
+Los seis primeros son los verbos de módulos, y son el pendiente que
+[[Tareas-Pendientes]] nombra en el punto 4c.
+
+### 2026-08-23 — Dos verbos que este catálogo no pidió, y por qué eso está bien
+
+`encontrar` y `contenido` no son puntos de este catálogo: salen del punto 6 de
+la terminal usable de [[Tareas-Pendientes]], que es la capa 1 de
+[[Principio-Doble-Ruta]] y no la superficie del agente. Se anotan aquí de todas
+formas porque **quedan expuestos en la cara estructurada**, con los mismos seis
+campos de ventana que todo lo demás, y porque tocan C2 de frente.
+
+La relación con C2 hay que decirla, porque un agente que la ignore paga los
+cinco costos: `buscar` sigue siendo la mejor respuesta donde aplica —cinco
+lenguajes, sobre un árbol indexado— y `contenido` es la que aplica en todo lo
+demás. La regla de desempate no cambia: quien pueda usar el índice, que use el
+índice; `contenido` es lo que había que construir para que *no poder* dejara de
+significar *no hay respuesta*. Ver [[Busqueda]].
+
+Y una consecuencia para este documento: **estar fuera del catálogo tampoco
+prohíbe construir nada.** Lo que el catálogo decide es qué se construye *para el
+LLM* y con qué criterio; un verbo que una persona necesita se construye porque
+una persona lo necesita, y entonces nace con sus dos caras como todo lo demás.
+
+
 
 ### 2026-08-10 — El costo de equivocarse incluye la respuesta que nunca llega
 Lo que construir enseñó y el decreto no anticipaba.

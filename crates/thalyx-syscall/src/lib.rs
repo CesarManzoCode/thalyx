@@ -290,6 +290,50 @@ impl RawMode {
         }
         Some(Self { fd, saved })
     }
+
+    /// The same, and with the kernel's signal keys turned off as well.
+    ///
+    /// **Only the screen uses this, and the reason is the opposite of the one
+    /// that keeps `ISIG` on above.** At a text prompt, Ctrl-C sending `SIGINT`
+    /// is the escape hatch: the process dies and the person gets their machine
+    /// back. With the console in [`GraphicsMode`] that same escape hatch is the
+    /// trap — the process dies before `Drop` can put the console back, and what
+    /// the person gets back is a black screen on a machine that is running
+    /// fine, with no second terminal to fix it from.
+    ///
+    /// So the screen takes the signal keys itself and treats Ctrl-C as
+    /// [`crate`]'s caller sees fit — which is to leave, restoring the console on
+    /// the way out. The hatch is the same size; it just goes through `Drop`.
+    pub fn enter_without_signals(terminal: std::os::fd::BorrowedFd<'_>) -> Option<Self> {
+        let guard = Self::enter(terminal)?;
+
+        // SAFETY: `guard.fd` was a terminal a moment ago, when `enter` read and
+        // wrote its `termios` through it. Reading it again writes one `termios`
+        // through a pointer to a live local.
+        #[allow(unsafe_code)]
+        let mut raw = unsafe {
+            let mut raw: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(guard.fd, &raw mut raw) != 0 {
+                return None;
+            }
+            raw
+        };
+        // IXON as well as ISIG: Ctrl-S with flow control on freezes the terminal,
+        // and a frozen terminal in graphics mode looks exactly like a crash.
+        raw.c_lflag &= !libc::ISIG;
+        raw.c_iflag &= !libc::IXON;
+
+        // SAFETY: `raw` is a live, fully initialised `termios` read from the
+        // kernel and modified in two flags.
+        #[allow(unsafe_code)]
+        let applied = unsafe { libc::tcsetattr(guard.fd, libc::TCSANOW, &raw const raw) };
+        if applied != 0 {
+            return None;
+        }
+        // `guard` still carries the `termios` from before any of this, so
+        // dropping it restores what the terminal had at the start.
+        Some(guard)
+    }
 }
 
 impl Drop for RawMode {
@@ -903,6 +947,114 @@ pub enum RebootCommand {
     Restart = libc::RB_AUTOBOOT,
 }
 
+/// A handle on a *process*, not on a number.
+///
+/// A pid is not an identity. Between reading `/proc/4711` and signalling 4711,
+/// that process can exit and the kernel can hand the number to something else —
+/// on a busy machine minutes of work can pass in that window. Every tool that
+/// takes a pid on the command line has this hole and lives with it.
+///
+/// A pidfd closes it. The handle refers to the process itself, so a signal sent
+/// through it either reaches the process it was opened for or fails with
+/// `ESRCH`, and there is no third outcome where it reaches a stranger. That
+/// difference is the whole reason `matar` goes through here rather than through
+/// `kill(2)`.
+#[derive(Debug)]
+pub struct ProcessHandle {
+    fd: std::os::fd::OwnedFd,
+    pid: i32,
+}
+
+impl ProcessHandle {
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+}
+
+/// Take a handle on a living process.
+///
+/// `ESRCH` means it is not there — which after a `procesos` listing means it
+/// exited in between, and is a different fact from "no such process ever".
+/// Reported as it comes so the caller can tell a person which one happened.
+pub fn open_process(pid: i32) -> io::Result<ProcessHandle> {
+    // SAFETY: `pidfd_open` takes a pid and a flag word and touches no memory of
+    // ours. There is no libc wrapper on every target this builds for, so it
+    // goes through `syscall(2)`.
+    #[allow(unsafe_code)]
+    let raw = unsafe { libc::syscall(SYS_PIDFD_OPEN, pid as libc::c_long, 0 as libc::c_long) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the kernel just returned this descriptor and nothing else holds
+    // it, so taking ownership here is the only claim on it.
+    #[allow(unsafe_code)]
+    let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw as i32) };
+    Ok(ProcessHandle { fd, pid })
+}
+
+/// Ask a process to stop, or make it.
+///
+/// Through the handle, so it cannot land on a recycled pid. `siginfo` is passed
+/// as null, which tells the kernel to build the same `siginfo` an ordinary
+/// `kill(2)` would — deliberately not a hand-built one, because a caller that
+/// forged `si_code` would be lying to the receiving process about who signalled
+/// it.
+pub fn signal_process(handle: &ProcessHandle, signal: Signal) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor is owned and open for the length of the call, and
+    // the two null pointers are the documented way to ask for the default
+    // `siginfo` and no flags.
+    #[allow(unsafe_code)]
+    let outcome = unsafe {
+        libc::syscall(
+            SYS_PIDFD_SEND_SIGNAL,
+            handle.fd.as_raw_fd() as libc::c_long,
+            signal as libc::c_long,
+            std::ptr::null::<libc::c_void>(),
+            0 as libc::c_long,
+        )
+    };
+    if outcome < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The two signals `matar` sends, and nothing else.
+///
+/// Not an integer, so no caller can send signal 9 believing it sent 15. The
+/// distinction is the whole decision a person makes when they type `forzar`:
+/// one lets a program save its work and the other does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Signal {
+    /// Asked to stop. A program can catch this, write what it was holding, and
+    /// exit — which is why it is the default and `forzar` is a word somebody
+    /// has to type.
+    Terminate = libc::SIGTERM,
+    /// Made to stop. Cannot be caught, so nothing gets written on the way out.
+    Kill = libc::SIGKILL,
+}
+
+/// `syscall(2)` by number, because glibc grew wrappers for these later than the
+/// kernels this has to run on and there is no reason to depend on which.
+#[cfg(target_arch = "x86_64")]
+const SYS_PIDFD_OPEN: libc::c_long = 434;
+#[cfg(target_arch = "aarch64")]
+const SYS_PIDFD_OPEN: libc::c_long = 434;
+#[cfg(target_arch = "x86_64")]
+const SYS_PIDFD_SEND_SIGNAL: libc::c_long = 424;
+#[cfg(target_arch = "aarch64")]
+const SYS_PIDFD_SEND_SIGNAL: libc::c_long = 424;
+
+/// Clock ticks in a second, which is what `/proc/<pid>/stat` counts time in.
+pub fn clock_ticks() -> u64 {
+    // SAFETY: as above.
+    #[allow(unsafe_code)]
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 { ticks as u64 } else { 100 }
+}
+
 /// Reap one exited child, if any has exited.
 ///
 /// PID 1 inherits every orphan on the system, and an init that does not reap
@@ -1054,6 +1206,56 @@ pub fn place_on(from: std::os::fd::RawFd, onto: std::os::fd::RawFd) -> io::Resul
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// A second name for a descriptor, on whatever number the kernel has free.
+///
+/// The saving half of a redirection: [`place_on`] destroys what was on a
+/// number, so the only way back is to have taken a copy of it first. A caller
+/// that redirects without this leaves the process with no stdout at all, which
+/// on the machine's own session means a screen that never says anything again.
+pub fn duplicate(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    // SAFETY: one integer in, one out, no memory touched. `F_DUPFD_CLOEXEC`
+    // rather than plain `dup` because a saved copy of stdout has no business
+    // reaching a module across `exec` — see `clear_cloexec` for the one
+    // descriptor that does.
+    #[allow(unsafe_code)]
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `copy` is a descriptor the kernel just created and nothing else
+    // owns, so making it an `OwnedFd` gives it exactly one owner.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) })
+}
+
+/// A file that exists only in memory, with no name and no filesystem under it.
+///
+/// For catching what a verb prints while the screen holds the display. A
+/// temporary file would need somewhere to put it, and the image mounts no
+/// `/tmp` — `vault/02-Arquitectura/Arranque-y-Init.md`'s list is `/proc`,
+/// `/sys`, `/dev`, `/run` and the three under `/sys`. Anonymous memory needs
+/// none of them, cannot collide with another session's file, and is gone when
+/// the descriptor closes even if the process is killed mid-verb.
+pub fn memory_file(name: &str) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    let label = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with a NUL in it"))?;
+    // SAFETY: the pointer is to a NUL-terminated string that outlives the call,
+    // which is the only requirement `memfd_create` places on it. The flag is
+    // the documented close-on-exec one.
+    #[allow(unsafe_code)]
+    let fd = unsafe { libc::memfd_create(label.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor from the kernel with no other owner.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
 /// The channel Thalyx left open, from inside a module.
@@ -1313,6 +1515,79 @@ pub fn is_a_terminal(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     #[allow(unsafe_code)]
     let answer = unsafe { libc::isatty(fd.as_raw_fd()) };
     answer == 1
+}
+
+/// Tell a terminal how big it is.
+///
+/// A pty the kernel has just made has **no window size** — `TIOCGWINSZ` on it
+/// answers zero rows — and a full-screen program that asks correctly refuses to
+/// draw on it. That is the right refusal and it made `thalyx dev pty` unable to
+/// exercise the editor at all: rule 5 again, the instrument includes the
+/// harness, and a pty with no window is not the terminal the harness exists to
+/// supply.
+///
+/// So whoever makes a pty says how big it is. This is not a fallback inside
+/// [`terminal_size`] — a program guessing its own screen size is the failure
+/// that one refuses to commit.
+pub fn set_terminal_size(
+    fd: std::os::fd::BorrowedFd<'_>,
+    rows: u16,
+    columns: u16,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        // The pixel dimensions. Zero is what every terminal emulator reports for
+        // these unless it is drawing graphics, and nothing here reads them.
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `TIOCSWINSZ` reads one `winsize` through the pointer, which is to
+    // a live, fully initialised local. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let set = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// How many rows and columns the terminal has, or `None` if it will not say.
+///
+/// `None` rather than a default, and that is the decision worth writing down.
+/// Assuming 80x24 when the kernel declines is how a full-screen editor draws
+/// twenty-four rows onto a screen with ten and leaves fourteen rows of a file on
+/// a screen that scrolled them away — the person sees a mangled file and
+/// concludes the editor corrupted it. A caller that gets `None` must decide what
+/// to do about it in the open, which is rule 10: this is a failure to *read* the
+/// size, and it is not a size.
+///
+/// A pipe has no window, so this answering `None` down a pipe is correct and
+/// not a fallback.
+pub fn terminal_size(fd: std::os::fd::BorrowedFd<'_>) -> Option<(u16, u16)> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `TIOCGWINSZ` writes one `winsize` through the pointer, which is to
+    // a live local zeroed first so a driver that fills only part of it cannot
+    // leave the rest reading as stack garbage. `fd` is borrowed for the call.
+    #[allow(unsafe_code)]
+    let size = unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) != 0 {
+            return None;
+        }
+        size
+    };
+    // A terminal that reports zero of either is one that does not know, and it
+    // does happen — a serial console before anything has asked it. Zero rows is
+    // not a small screen, it is no answer, and treating it as one divides the
+    // editor's arithmetic by nothing.
+    if size.ws_row == 0 || size.ws_col == 0 {
+        return None;
+    }
+    Some((size.ws_row, size.ws_col))
 }
 
 // ────────────────────────────────────────────── what the kernel has been saying
@@ -2263,6 +2538,10 @@ pub fn map_shared(
 /// begins one page into the producer mapping — so a wrong answer here does not
 /// produce a smaller mapping, it produces one that reads the position where the
 /// data should be.
+///
+/// `/proc/<pid>/statm` counts in pages too, so `procesos` reads this as well.
+/// It is 16384 on some aarch64 kernels, and a memory figure four times too
+/// small is worse than none — it is one somebody would act on.
 pub fn page_size() -> usize {
     // SAFETY: `sysconf` reads a kernel-provided constant and touches no memory
     // this side owns. It returns -1 only for an unknown name, which
@@ -2330,5 +2609,229 @@ mod bpf_tests {
         let name = kernel_name("thalyx_policy");
         assert_eq!(&name[..13], b"thalyx_policy");
         assert!(name[13..].iter().all(|b| *b == 0));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The display.
+//
+// `vault/02-Arquitectura/La-Pantalla.md`. Everything that decides how the screen
+// *looks* is in `thalyx-screen`, which is pure and testable with no display at
+// all. What is here is only what needs a device: asking the kernel how this
+// framebuffer is shaped, mapping it, and taking the text console out of the way.
+// ---------------------------------------------------------------------------
+
+/// `FBIOGET_VSCREENINFO`, from `include/uapi/linux/fb.h`: `0x4600`.
+///
+/// Spelled out for the same reason as [`BLKRRPART`]: `_IOR` is a C macro and
+/// this workspace has no C.
+const FBIOGET_VSCREENINFO: u64 = 0x4600;
+/// `FBIOGET_FSCREENINFO`: `0x4602`.
+const FBIOGET_FSCREENINFO: u64 = 0x4602;
+
+/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`.
+const KDGETMODE: u64 = 0x4B3B;
+const KDSETMODE: u64 = 0x4B3A;
+/// `KD_TEXT` is 0 and `KD_GRAPHICS` is 1.
+const KD_TEXT: libc::c_long = 0;
+const KD_GRAPHICS: libc::c_long = 1;
+
+/// How this display is shaped, as the kernel describes it.
+///
+/// Every field is read rather than assumed. The one that costs the most when
+/// guessed is `line_length`: a framebuffer commonly pads each row, and writing
+/// `width * bytes` per row instead slides every row left by the padding, which
+/// shears the whole picture diagonally and reads as a drawing bug rather than
+/// as one ignored field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub bits_per_pixel: u32,
+    /// `(offset, length)` in bits, from `struct fb_bitfield`.
+    pub red: (u32, u32),
+    pub green: (u32, u32),
+    pub blue: (u32, u32),
+    /// Bytes from the start of one row to the start of the next.
+    pub line_length: usize,
+    /// How many bytes the mapping has.
+    pub buffer_len: usize,
+}
+
+/// `struct fb_var_screeninfo` is 160 bytes on every architecture Thalyx
+/// targets: it is all `__u32`, so there is no padding to differ.
+const FB_VAR_SCREENINFO: usize = 160;
+/// `struct fb_fix_screeninfo` is 80 bytes on 64-bit, where the two `unsigned
+/// long` members are eight wide and force alignment.
+const FB_FIX_SCREENINFO: usize = 80;
+
+/// Ask the display how it is shaped.
+pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeometry> {
+    use std::os::fd::AsRawFd;
+
+    let word = |bytes: &[u8], at: usize| -> u32 {
+        u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    };
+
+    let mut var = [0u8; FB_VAR_SCREENINFO];
+    // SAFETY: the buffer is exactly the size the ioctl writes, it is a live
+    // local, and the descriptor is borrowed for the call.
+    #[allow(unsafe_code)]
+    let read_var = unsafe {
+        libc::ioctl(
+            framebuffer.as_raw_fd(),
+            FBIOGET_VSCREENINFO as libc::c_ulong,
+            var.as_mut_ptr(),
+        )
+    };
+    if read_var != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut fix = [0u8; FB_FIX_SCREENINFO];
+    // SAFETY: as above, with the size this second ioctl writes.
+    #[allow(unsafe_code)]
+    let read_fix = unsafe {
+        libc::ioctl(
+            framebuffer.as_raw_fd(),
+            FBIOGET_FSCREENINFO as libc::c_ulong,
+            fix.as_mut_ptr(),
+        )
+    };
+    if read_fix != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Offsets into `fb_var_screeninfo`: xres, yres, then four more `__u32`
+    // before `bits_per_pixel`, then the four `fb_bitfield`s of three `__u32`
+    // each. Written as arithmetic on named steps rather than as bare numbers,
+    // so that a field added upstream is a visible edit rather than a silent
+    // shift.
+    let bitfield = |which: usize| -> (u32, u32) {
+        let base = 32 + which * 12;
+        (word(&var, base), word(&var, base + 4))
+    };
+
+    // Offsets into `fb_fix_screeninfo`: `char id[16]`, then `unsigned long
+    // smem_start` aligned to 8, then `__u32 smem_len`. `line_length` sits at 48
+    // after three `__u16`s and their padding.
+    let geometry = DisplayGeometry {
+        width: word(&var, 0),
+        height: word(&var, 4),
+        bits_per_pixel: word(&var, 24),
+        red: bitfield(0),
+        green: bitfield(1),
+        blue: bitfield(2),
+        line_length: word(&fix, 48) as usize,
+        buffer_len: word(&fix, 24) as usize,
+    };
+
+    // Rule 9: a display that answers nonsense is refused rather than mapped.
+    // A zero here is not a small screen, it is a struct read at the wrong
+    // offset, and mapping zero bytes then writing into it is the version of
+    // this bug that takes the machine down instead of printing a sentence.
+    if geometry.width == 0
+        || geometry.height == 0
+        || geometry.line_length == 0
+        || geometry.buffer_len == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "this display reports {}x{} with a {}-byte row and a {}-byte buffer, \
+                 which is not a display",
+                geometry.width, geometry.height, geometry.line_length, geometry.buffer_len
+            ),
+        ));
+    }
+
+    Ok(geometry)
+}
+
+impl Mapped {
+    /// The mapped bytes, to write into.
+    ///
+    /// **Only the framebuffer uses this.** Everything else that maps something
+    /// here is reading what the kernel wrote — a ring buffer, a map — and the
+    /// narrow [`Mapped::write_first_u64`] exists so that those callers cannot
+    /// write anywhere else by accident. A display is the one mapping whose
+    /// whole purpose is to be overwritten.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: `address` and `length` come from a successful `mmap` of
+        // exactly that length, and the mapping lives as long as `self` because
+        // `Drop` is what unmaps it. `&mut self` is what makes this the only
+        // live view of those bytes on this side; the device on the other side
+        // is a display, which reads them and does not write them back.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::slice::from_raw_parts_mut(self.address.cast::<u8>(), self.length)
+        }
+    }
+}
+
+/// The console put into graphics mode for as long as this value lives.
+///
+/// ## Why this is a guard and not two calls
+///
+/// It is the same failure as [`RawMode`], one step worse. A console left in
+/// graphics mode draws nothing at all: no shell, no kernel message, no login —
+/// **a black screen on a machine that is running fine.** On the image there is
+/// no second terminal to recover from, so a session that exits without
+/// restoring the mode has bricked the display until the machine is power
+/// cycled.
+///
+/// So the restore rides on `Drop`, which runs on the ordinary path and while a
+/// panic unwinds. It cannot cover a `SIGKILL`, and nothing can.
+///
+/// ## What this buys besides the pixels
+///
+/// The kernel stops drawing the text console over the frame — which is also
+/// what stops `printk` from landing on top of the screen. The 2026-08-07 boot
+/// where a repeating USB error wrote over the prompt every few seconds cannot
+/// happen here: in graphics mode those messages go to the log and not to the
+/// glass. They are still readable with `nucleo`.
+pub struct GraphicsMode {
+    fd: std::os::fd::RawFd,
+    saved: libc::c_long,
+}
+
+impl GraphicsMode {
+    /// Take the console out of the way, or say why it could not be taken.
+    ///
+    /// The previous mode is read rather than assumed to be `KD_TEXT`, so that
+    /// restoring puts back what was there. Assuming would be right today and
+    /// wrong the first time something else has already claimed the console.
+    pub fn enter(console: BorrowedFd<'_>) -> io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let fd = console.as_raw_fd();
+
+        let mut saved: libc::c_long = KD_TEXT;
+        // SAFETY: `KDGETMODE` writes one `long` through the pointer, which is to
+        // a live local. The descriptor is borrowed for the call.
+        #[allow(unsafe_code)]
+        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::c_ulong, &raw mut saved) };
+        if read != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: `KDSETMODE` takes its argument by value, not by pointer.
+        #[allow(unsafe_code)]
+        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::c_ulong, KD_GRAPHICS) };
+        if set != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd, saved })
+    }
+}
+
+impl Drop for GraphicsMode {
+    fn drop(&mut self) {
+        // SAFETY: putting back the mode this guard read from the kernel, on a
+        // descriptor that was valid when the guard was made and which the guard
+        // does not outlive.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::ioctl(self.fd, KDSETMODE as libc::c_ulong, self.saved);
+        }
     }
 }

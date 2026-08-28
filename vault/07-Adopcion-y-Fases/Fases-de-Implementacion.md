@@ -46,6 +46,21 @@ tags: [fases, roadmap, implementacion]
 
 ## Revisiones
 
+### 2026-08-27 — La pantalla vuelve, porque la razón para posponerla se venció
+**Antes:** la interfaz de la Fase 1 es sólo CLI, y la GUI queda pospuesta.
+**Ahora:** existe [[La-Pantalla]], decretada por Cesar el 2026-08-27, y se
+construye.
+**Motivo:** el aplazamiento del 2026-08-01 se justificó en que la GUI *«no
+participa del caso canónico ni de las demostraciones, y posponerla no obliga a
+reescribir nada»*. Era cierto y era una razón **condicionada a que la Fase 1 no
+estuviera terminada**. La Fase 1 cerró el 2026-08-07 y el aplazamiento siguió
+vivo veinte días por inercia, que es exactamente cómo un decreto se vuelve una
+historia sobre una versión anterior del proyecto. Palabras de Cesar al
+reabrirlo: *«actualmente estamos haciendo cosas a ciegas […] no basta con
+comandos de terminal para verlo, necesito tenerlo de verdad y usarlo de
+verdad»*.
+
+
 ### 2026-08-01 — Se elimina la palabra "capa" del título de la Fase 1
 **Antes:** la fase se titulaba "Capa sobre Linux (userspace)", en contradicción directa con [[Decision-Capa-vs-SO-Nuevo]], que decreta que Thalyx no puede ser una capa.
 **Ahora:** "Núcleo de Thalyx sobre base Alpine".

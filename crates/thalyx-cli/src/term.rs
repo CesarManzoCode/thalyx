@@ -80,6 +80,66 @@ pub fn read_answer() -> std::io::Result<Option<String>> {
 }
 
 /// How the line ended.
+/// Hand over whatever this reader has buffered and has not decoded yet.
+///
+/// The screen reads `stdin` itself rather than through this file, so there are
+/// two readers of one descriptor and exactly one of them may hold bytes. Bytes
+/// already out of the kernel are invisible to the other reader: a person who
+/// typed `pantalla` and then began the next word before the display came up
+/// would lose those keystrokes with no sign that anything had happened. Same
+/// defect, same shape, as the one `read_key` exists to avoid — one buffer, and
+/// it moves with whoever is reading.
+pub fn take_pending() -> Vec<u8> {
+    std::mem::take(&mut *PENDING.lock().expect("the input buffer"))
+}
+
+/// Take them back when the screen hands the keyboard over.
+///
+/// Put in **front** of anything this reader has: what the screen was holding was
+/// typed first, and reordering a person's keystrokes is worse than dropping
+/// them, because the line that arrives looks deliberate.
+pub fn give_pending(bytes: &[u8]) {
+    let mut buffer = PENDING.lock().expect("the input buffer");
+    let mut merged = bytes.to_vec();
+    merged.extend_from_slice(&buffer);
+    *buffer = merged;
+}
+
+/// Read one key, taking what is already buffered before asking the kernel.
+///
+/// The editor's loop, and it goes through `PENDING` for the same reason every
+/// other reader in this file does: bytes already out of the kernel and sitting
+/// in memory are invisible to anything that reads `stdin` directly, and the
+/// reader that misses them waits forever. A screen editor makes that worse than
+/// it was for the line editor — a paste arrives as one `read` of two hundred
+/// bytes, and a second reader would swallow all but the first key.
+///
+/// `None` means the input ended.
+pub fn read_key() -> std::io::Result<Option<Key>> {
+    let mut buffer = [0u8; 1024];
+    loop {
+        {
+            let pending = PENDING.lock().expect("the input buffer");
+            if let Some((key, used)) = thalyx_term::decode(&pending) {
+                drop(pending);
+                PENDING.lock().expect("the input buffer").drain(..used);
+                return Ok(Some(key));
+            }
+        }
+        // Nothing decodable yet. That is not the same as nothing there: a lone
+        // escape byte is a *prefix*, and reading more is the only way to find
+        // out whether it was an arrow key or somebody pressing Escape.
+        let read = std::io::stdin().read(&mut buffer)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        PENDING
+            .lock()
+            .expect("the input buffer")
+            .extend_from_slice(&buffer[..read]);
+    }
+}
+
 pub enum Ended {
     /// Run this.
     Line(String),
@@ -197,6 +257,11 @@ impl Terminal {
                         }
                     }
                     Key::Tab => self.finish(&mut line, prompt, &complete_with)?,
+                    // Named rather than left to a catch-all. A screenful at a
+                    // time and the editor's control keys mean nothing on a
+                    // single line, and the arm says so where somebody looking
+                    // for "why does Page Up do nothing here" will find it.
+                    Key::PageUp | Key::PageDown | Key::Ctrl(_) => {}
                     Key::Ignored => {}
                 }
 

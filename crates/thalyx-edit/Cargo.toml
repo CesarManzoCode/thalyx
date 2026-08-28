@@ -1,0 +1,15 @@
+[package]
+name = "thalyx-edit"
+version = "0.1.0"
+edition = "2024"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+thalyx-term = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

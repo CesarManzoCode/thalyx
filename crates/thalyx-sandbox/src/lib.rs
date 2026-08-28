@@ -102,6 +102,26 @@ pub enum SandboxError {
     )]
     JoinNotEffective { cgroup: PathBuf, pid: u32 },
 
+    /// Told apart from the write that puts a process in, and this is the whole
+    /// reason the variant exists.
+    ///
+    /// Both used to report `I/O error at <cgroup>/cgroup.procs`, and on
+    /// 2026-08-25 that one sentence was the only evidence of a failure whose
+    /// two candidate causes needed opposite fixes. The write happens while the
+    /// task is still outside; the read happens after it is in, and is
+    /// therefore the first thing the cgroup's own policy is ever asked about.
+    #[error(
+        "`{cgroup}` could not be read back after joining it: {source}\n  \
+         The write that puts a process in happens from outside the cgroup and \
+         this read happens from inside, so a denial here is the new policy \
+         answering, not a permission on the directory."
+    )]
+    MembershipUnreadable {
+        cgroup: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "entrypoint `{0}` points outside the module tree.\n  \
          It would run with the module's permissions without being the module's code."
@@ -311,6 +331,13 @@ impl<'a> Confinement<'a> {
             permissions,
             now_ns,
             jit_lifetime_ns,
+            // Read of what this program can see, always. Not a grant — see
+            // `CONFINED_FLOOR`. Given to the policy and never to the profile,
+            // which is the distinction that matters: the permissions below
+            // also decide what `RootFs` bind-mounts, and a floor expressed as
+            // a permission on `/` would mount the host's whole filesystem into
+            // the sandbox.
+            thalyx_permd::CONFINED_FLOOR,
         ) {
             Ok(policy) => policy,
             Err(error) => {

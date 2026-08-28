@@ -69,7 +69,7 @@ pub enum ContractError {
 
 pub type Result<T> = std::result::Result<T, ContractError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     InstallModule,
@@ -78,15 +78,24 @@ pub enum Operation {
     BuildGraph,
 }
 
-impl std::fmt::Display for Operation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+impl Operation {
+    /// The spelling it has on the wire, borrowed rather than allocated.
+    ///
+    /// Same strings `Display` prints, and `Display` is written in terms of this
+    /// so the two cannot come apart.
+    pub const fn name(self) -> &'static str {
+        match self {
             Operation::InstallModule => "install_module",
             Operation::RemoveModule => "remove_module",
             Operation::DeleteFiles => "delete_files",
             Operation::BuildGraph => "build_graph",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 

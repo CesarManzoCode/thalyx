@@ -300,14 +300,19 @@ pub fn install(
     // works on every machine until it does not.
     drop(disk);
 
-    let made = partitions::appear(device, 2, 10)?;
-    let (esp, store) = (made[0].clone(), made[1].clone());
+    // Handed over open, and held open for the rest of the install. Closing the
+    // whole-disk handle above makes the kernel re-examine the disk on its own, some
+    // unknowable number of milliseconds later, and that second rescan deletes every
+    // partition before making it again — a node opened inside that window fails with
+    // `ENXIO` for a name that is right there in `/dev`. The kernel will not drop the
+    // partitions of a disk while one of them is open, so holding these is what makes
+    // the window not exist. Installing over a disk that already had partitions is
+    // where this showed: on 2026-08-23 it got as far as `opening /dev/loop0p1: No
+    // such device or address`.
+    let mut made = partitions::appear(device, 2, 10)?.into_iter();
+    let (esp, mut boot_partition) = made.next().expect("appear returned two");
+    let (store, store_partition) = made.next().expect("appear returned two");
 
-    let mut boot_partition = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&esp)
-        .map_err(io("opening", &esp))?;
     let esp_sectors = size_of(&esp, &mut boot_partition)? / gpt::SECTOR;
     // The kernel's number and not the plan's. They agree, and if they ever do not,
     // the one that decides where a reader looks is the kernel's — a filesystem
@@ -323,6 +328,11 @@ pub fn install(
         seconds,
     )?;
     let subvolumes = thalyx_btrfs::subvolume::create(&store, workspace, &thalyx_btrfs::DECREED)?;
+    // Only now. Written where it is dropped rather than left to the end of the
+    // function, because the reason it exists is *when* it stops existing: nothing in
+    // this handle is ever read or written, and a later reader who cannot see that
+    // would delete it as unused.
+    drop(store_partition);
 
     Ok(Installed {
         device: device.to_path_buf(),

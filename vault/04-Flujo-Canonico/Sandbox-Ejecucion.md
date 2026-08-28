@@ -200,6 +200,44 @@ Esa exposición se compensa con los tests de nivel 2 de la [[Estrategia-de-Prueb
 
 ## Revisiones
 
+### 2026-08-25 — `sched_setattr` queda denegada: una capacidad con dos puertas y un filtro que sólo ve una
+**Antes:** el filtro aprendió el 2026-08-24 a mirar el argumento de
+`sched_setscheduler`, y con eso el decreto se daba por cumplido: un módulo
+acomoda sus propios hilos y no puede tomar la máquina.
+
+**Ahora:** queda escrito que la misma capacidad tiene una segunda puerta,
+`sched_setattr`, y que **está cerrada a propósito**.
+
+**Motivo:** `sched_setattr` pone la política igual que `sched_setscheduler`,
+pero la recibe dentro de una estructura, detrás de un puntero. Un filtro de
+seccomp compara registros y **no puede seguir un puntero**, así que no existe
+guardia por argumento que la vigile: o se permite entera —y con ella
+`SCHED_FIFO`, que es quedarse un procesador contra la máquina— o se deniega
+entera. Cesar decidió el 2026-08-25 denegarla.
+
+**El costo, que es real y está medido, no supuesto:** un programa que ponga
+política ordinaria *sólo* por esa puerta no puede hacerlo bajo Thalyx.
+util-linux 2.41 es uno: agregó `supports_custom_slice`, y desde ahí
+`chrt --other` y `chrt --batch` pasan por `sched_setattr` en vez de por
+`sched_setscheduler`. Hasta 2.40 pasaban por la vieja. Ningún runtime medido
+depende de esa puerta: la traza de [[Que-Necesita-Un-Agente-Ajeno]] muestra al
+agente ajeno arrancando con `sched_setscheduler` y con nada más.
+
+**Lo único que podría mirar detrás del puntero** es `SECCOMP_RET_USER_NOTIF`, un
+proceso supervisor que lee la estructura de la memoria del módulo mientras la
+llamada está detenida. Es un componente nuevo, vivo durante toda la ejecución
+del módulo, con su propia superficie y su propia carrera entre comprobar y usar.
+Queda anotado en [[Tareas-Pendientes]] como lo que es —una opción, no un
+pendiente— y no se construyó.
+
+**Y una consecuencia para el arnés:** `chrt --other` dejó de servir para
+preguntarle a un módulo si puede acomodar sus hilos, porque en 2.41 la respuesta
+no depende del filtro sino de la versión de util-linux. `dev/verify.sh` y la
+prueba del workspace preguntan con `chrt --idle`, que ninguna versión manda por
+la puerta cerrada, y `--other` se sigue corriendo como **reporte** —nunca como
+veredicto— para que el costo de arriba se vea en la máquina donde se paga.
+
+
 ### 2026-08-02 — Se implementa `module_standard` y se introduce `unsafe` contenido
 **Antes:** el perfil estaba decretado y no construido; el aislamiento era `thalyx-lsm` y nada más.
 **Ahora:** namespaces, seccomp y límites de cgroup, verificados contra el kernel real.

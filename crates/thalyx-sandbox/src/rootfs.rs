@@ -238,11 +238,31 @@ impl RootFs {
         Ok(Path::new(MODULE_ROOT).join(relative))
     }
 
-    /// Build the root and pivot into it.
+    /// Build the root, without entering it.
+    ///
+    /// Split from [`Self::pivot_into`] on 2026-08-26, and the split is the
+    /// whole point rather than tidiness: **everything that writes is on this
+    /// side of the line.** Creating a mount point for a file — `/dev/null` and
+    /// the four device nodes beside it — is `open(O_WRONLY|O_CREAT)`, and
+    /// writing a child's `uid_map` for a remapped bind is another. Both are
+    /// Thalyx's own setup work, and both used to happen after the launcher had
+    /// already joined the module's cgroup, where `lsm/file_open` reads the
+    /// module's policy and answers `-EPERM` to a write the module never asked
+    /// for and could not have been granted.
+    ///
+    /// It is the same failure `CONFINED_FLOOR` was written for on 2026-08-25 —
+    /// the launcher denied its own work — and the floor only covered reads. The
+    /// answer is not a wider floor: `FS_WRITE` in the floor would hand every
+    /// module and every guest write access to everything it can see, which is
+    /// exactly the claim §36 of `verify.sh` exists to check. The answer is that
+    /// Thalyx's setup does not run under the module's policy at all.
+    ///
+    /// So the caller joins the cgroup **between** this and `pivot_into`: after
+    /// every write, before anything of the module's own. See `launch::init`.
     ///
     /// Runs inside the module's mount namespace, before the seccomp filter, and
     /// before anything of the module's own has executed.
-    pub fn pivot(&self) -> Result<()> {
+    pub fn assemble(&self) -> Result<()> {
         let assembly = Path::new(ASSEMBLY);
         create_dir(assembly)?;
 
@@ -312,6 +332,17 @@ impl RootFs {
             }
         }
 
+        Ok(())
+    }
+
+    /// Enter the root that [`Self::assemble`] built, and detach the host tree.
+    ///
+    /// Nothing here opens a file: `pivot_root`, `chdir`, `umount2` and `rmdir`
+    /// are not `lsm/file_open`, which is what makes it safe to run this after
+    /// the launcher has taken on the module's identity. That is not an
+    /// incidental property — it is the reason the split falls exactly here.
+    pub fn pivot_into(&self) -> Result<()> {
+        let assembly = Path::new(ASSEMBLY);
         let old_root = assembly.join(OLD_ROOT.trim_start_matches('/'));
         thalyx_syscall::pivot_root(assembly, &old_root).map_err(|source| {
             SandboxError::MountFailed {

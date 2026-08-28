@@ -21,16 +21,43 @@
 //! the process that unshared.
 //!
 //! ```text
-//! enter   join cgroup, verify membership, unshare namespaces, spawn init
+//! enter   check the cgroup, unshare namespaces, spawn init
 //!   └─ init   (PID 1 of the new namespace)
-//!             mount /proc, set hostname, install seccomp, exec the module
+//!             assemble the root, JOIN THE CGROUP, pivot into it,
+//!             mount /proc, set hostname, drop to the module's user,
+//!             install seccomp, exec the module
 //! ```
 //!
-//! Splitting it costs nothing that matters. The cgroup is inherited across
-//! `fork`, so `init` is in it from its first instruction; the namespaces are
-//! inherited too. What `init` adds is everything that can only be done from
-//! inside — a `/proc` that reflects the new PID namespace, and a seccomp
-//! filter that must not constrain the setup work `enter` still had to do.
+//! Splitting it costs nothing that matters. The namespaces are inherited across
+//! `fork`. What `init` adds is everything that can only be done from inside — a
+//! `/proc` that reflects the new PID namespace, and a seccomp filter that must
+//! not constrain the setup work that comes before it.
+//!
+//! ## Why the join is where it is
+//!
+//! The cgroup is the identity every kernel policy is keyed on, so joining it is
+//! the moment the process starts being governed by the module's permissions.
+//! Until 2026-08-26 it was the *first* thing `enter` did, and the consequence
+//! was that Thalyx's own confinement work ran under the module's policy: making
+//! the mount point for `/dev/null` is `open(O_WRONLY|O_CREAT)`, `lsm/file_open`
+//! asked for `FS_WRITE`, and a module that was granted nothing to write got
+//! `-EPERM` for a file it never named. Nothing could be launched on an
+//! enforcing kernel at all.
+//!
+//! So the join moved to the one place that satisfies both halves: after every
+//! write Thalyx has to do, and before anything of the module's own exists. The
+//! ordering above is load-bearing, not incidental — `pivot_root`, `chdir`,
+//! `umount2`, `rmdir`, `sethostname`, `setuid` and `seccomp` open no files, and
+//! the two reads that remain (`cgroup.procs` and the module's own binary at
+//! `execve`) are what `permd::CONFINED_FLOOR` exists to allow.
+//!
+//! One consequence, small and worth being able to find: the profile's `memory`
+//! and `pids` limits are properties of the cgroup, so they now begin to apply
+//! at the join rather than at the first instruction of `enter`. What runs
+//! outside them is Thalyx assembling a root — five empty mount points and a
+//! `uid_map` — and the module's own tmpfs writes are all on the far side, so
+//! nothing a module does escapes its limits. Thalyx's helpers no longer spend
+//! the module's pid budget, which is the more honest accounting anyway.
 //!
 //! ## Failure is always closed
 //!
@@ -194,20 +221,12 @@ pub fn run_stage(stage: &Stage) -> std::result::Result<u8, SandboxError> {
 fn enter(spec: &LaunchSpec, args: &[OsString]) -> std::result::Result<u8, SandboxError> {
     let profile = crate::profile::resolve(&spec.profile)?;
     let namespaces = spec.namespaces;
-    let cgroup = Cgroup::attach(&spec.cgroup)?;
 
-    let pid = std::process::id();
-    cgroup.join(pid)?;
-
-    // Read it back rather than trusting that a successful write means
-    // membership. This is the check that catches a target that was never a
-    // cgroup at all — every earlier step would have reported success.
-    if !cgroup.contains(pid)? {
-        return Err(SandboxError::JoinNotEffective {
-            cgroup: spec.cgroup.clone(),
-            pid,
-        });
-    }
+    // Checked here and joined in `init`. Attaching only reads — it is the
+    // `cgroup.controllers` stat that refuses an ordinary directory — so this
+    // costs nothing and fails before a child exists, which is a better place
+    // to find out that the cgroup was never one.
+    Cgroup::attach(&spec.cgroup)?;
 
     if namespaces.any() {
         thalyx_syscall::unshare(namespaces.flags()).map_err(|source| {
@@ -292,14 +311,79 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
         };
     }
 
-    // The root filesystem, before anything else that depends on paths.
+    // Build the root, but do not enter it yet.
+    //
+    // Every write Thalyx does on the module's behalf is in here: the mount
+    // points for `/dev/null` and the four device nodes beside it, and the
+    // `uid_map` of the helper that makes a remapped bind. All of it happens
+    // before the join below, and that ordering is the fix for the whole class.
+    // See `RootFs::assemble`.
+    if let Some(rootfs) = &spec.rootfs
+        && let Err(error) = rootfs.assemble()
+    {
+        return error;
+    }
+
+    // The cgroup, and with it the identity every kernel policy is keyed on.
+    //
+    // Here and not in `enter`, which is where it used to be. The launcher used
+    // to take on the module's policy first and do its setup afterwards, so the
+    // LSM answered `-EPERM` to Thalyx creating a mount point — a write the
+    // module never asked for, could not have been granted, and which the
+    // confinement itself requires. `verify.sh` came back with twelve `FAILED`
+    // reading `I/O error at /run/thalyx/sandbox/dev/null: Operation not
+    // permitted`, all of them this.
+    //
+    // Nothing of the module's runs any earlier because of this. `execve` is
+    // still the last line of this function, and everything between here and it
+    // — the pivot, `/proc`, the hostname, the user, the filter — is Thalyx's.
+    // The moment before the join was always meant to belong to Thalyx; it is
+    // now long enough to include the work Thalyx actually has to do.
+    let cgroup = match Cgroup::attach(&spec.cgroup) {
+        Ok(cgroup) => cgroup,
+        Err(error) => return error,
+    };
+    // `std::process::id()` is **1** here, and that is correct rather than a
+    // bug waiting to happen. `enter` already unshared `CLONE_NEWPID`, so this
+    // process is PID 1 of its own namespace, and the kernel resolves a pid
+    // written into `cgroup.procs` in the namespace of the task doing the
+    // writing (`cgroup_procs_write_start` → `find_task_by_vpid`). It reads back
+    // through the same translation, which is why `contains` below agrees.
+    //
+    // Under the old ordering this was a host pid, because the join happened
+    // before the unshare. Both work; they work for different reasons, and the
+    // one that looks wrong is the one in front of you.
+    let pid = std::process::id();
+    if let Err(error) = cgroup.join(pid) {
+        return error;
+    }
+
+    // Read it back rather than trusting that a successful write means
+    // membership. This is the check that catches a target that was never a
+    // cgroup at all — every earlier step would have reported success.
+    //
+    // It is also the read `CONFINED_FLOOR` was written for on 2026-08-25: the
+    // process is inside the cgroup now, and this is a file open.
+    match cgroup.contains(pid) {
+        Ok(true) => {}
+        Ok(false) => {
+            return SandboxError::JoinNotEffective {
+                cgroup: spec.cgroup.clone(),
+                pid,
+            };
+        }
+        Err(error) => return error,
+    }
+
+    // And now enter the root. Nothing below opens a file for writing, which is
+    // what makes it safe on this side of the join.
     //
     // After this the host tree is gone: the module can only reach its own
     // files, the read-only system paths it needs to start, and exactly what it
     // was granted.
     let mut program = spec.program.clone();
     if let Some(rootfs) = &spec.rootfs {
-        if let Err(error) = rootfs.pivot() {
+        if let Err(error) = rootfs.pivot_into() {
             return error;
         }
         match rootfs.program_inside(&spec.program) {

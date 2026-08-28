@@ -52,6 +52,25 @@ pub enum DevCommand {
         list: Option<PathBuf>,
     },
 
+    /// Write a frame of the screen to a PNG, without needing a display
+    ///
+    /// The screen composes into memory, so it can be looked at anywhere. This
+    /// is the same path the display uses: what comes out is what gets drawn.
+    Screen {
+        /// Where to write the image
+        out: PathBuf,
+        /// `trabajando` or `confirmando`
+        #[arg(long, default_value = "trabajando")]
+        sample: String,
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+        /// Answer with one JSON object instead of a sentence
+        #[arg(long)]
+        structured: bool,
+    },
+
     /// Drive the agent with a model that misbehaves on purpose.
     ///
     /// This exists because of rule 4. Until `llama.cpp` is wired in there is no
@@ -116,6 +135,23 @@ pub fn run(command: DevCommand) -> Fallible {
             foreign,
             behaviour,
         } => agent_probe(&utterance, &foreign, &behaviour),
+        DevCommand::Screen {
+            out,
+            sample,
+            width,
+            height,
+            structured,
+        } => crate::screen::to_png(
+            &out,
+            width,
+            height,
+            &sample,
+            if structured {
+                crate::files::Face::Machine
+            } else {
+                crate::files::Face::Human
+            },
+        ),
         DevCommand::Pty { argv } => pty(&argv),
     }
 }
@@ -138,6 +174,18 @@ fn pty(argv: &[std::ffi::OsString]) -> Fallible {
     let (program, arguments) = argv.split_first().ok_or("no command to run")?;
 
     let terminal = thalyx_syscall::open_pty()?;
+
+    // A pty the kernel has just made reports zero rows, and a full-screen
+    // program that asks honestly refuses to draw on a screen of no size — so
+    // without this the editor could not be exercised through the harness at
+    // all, and the half of it that a person sees would have no test that ran it.
+    //
+    // 24x80 because that is what a terminal has meant since the VT100 and what
+    // the image's serial console actually is. Fixed rather than copied from
+    // whatever terminal happens to be running the suite: a test whose screen
+    // size depends on the window somebody left open is a test that passes on one
+    // machine and not the next.
+    thalyx_syscall::set_terminal_size(terminal.follower.as_fd(), 24, 80)?;
 
     let mut command = std::process::Command::new(program);
     command.args(arguments);
@@ -249,9 +297,15 @@ fn agent_probe(utterance: &str, foreign: &[String], behaviour: &str) -> Fallible
         caller,
     ) {
         Ok(plan) => {
-            println!("A CONTRACT WAS PRODUCED — the model got through.");
-            println!("{}", plan.contract.to_json());
-            Err("the probe produced a contract".into())
+            // A verb plan counts as getting through exactly as a contract
+            // does. The probe asks whether a hostile model reading a hostile
+            // page can make Thalyx act, and `read /etc/shadow` is acting.
+            println!("A PLAN WAS PRODUCED — the model got through.");
+            match plan.contract() {
+                Some(contract) => println!("{}", contract.to_json()),
+                None => println!("verb: {} {}", plan.operation(), plan.targets().join(" ")),
+            }
+            Err("the probe produced a plan".into())
         }
         Err(error) => {
             println!("refused: {error}");
