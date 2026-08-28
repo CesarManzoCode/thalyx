@@ -138,8 +138,8 @@ pub enum Named {
     SaidNothingAtAll,
     /// Emitted a well-formed proposal whose target list was **empty**.
     ///
-    /// This is not silence. It is the sentence `prompt.rs` teaches — *if
-    /// nothing here names a module, leave targets empty* — and the one
+    /// This is not silence. It is the sentence `prompt.rs` teaches — now
+    /// *answer with the operation nothing and an empty list of targets* — and the one
     /// `grammar.rs` widened the target rule to make expressible. It reaches the
     /// agent as [`crate::AgentError::NothingToDo`]. It is, in other words, the
     /// behaviour six bench runs reported as zero out of forty-six.
