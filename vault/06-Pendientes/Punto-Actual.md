@@ -14,9 +14,38 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Cuatro fallas de `verify.sh`, y catorce etapas que ya no se esperan unas a otras — 2026-08-29
+> ## El único `FAILED` de la corrida real: una prueba que medía `rmdir` — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La corrida de Fedora sobre `cffb4f8` quedó en **202 PROVEN, 13 NOT PROVEN, 1
+> FAILED**. El único fallo era
+> `restoring_makes_a_writable_copy_and_deleting_takes_it_away_again`, de
+> `crates/thalyx-snapshot/tests/natively.rs`, y **no era de Thalyx**: la copia
+> escribible era un subvolumen de verdad —el `BTRFS_IOC_SUBVOL_GETFLAGS` de tres
+> renglones antes ya lo había dicho, y ese ioctl contesta `EINVAL` en cualquier
+> cosa que no sea la raíz de uno—. Lo que estaba mal era la premisa de la
+> comprobación: decía que `remove_dir_all` no puede llevarse un subvolumen, y
+> desde Linux 4.18 (`a79a464d5675`) `rmdir(2)` sí se lleva uno **vacío**. La
+> prueba medía la política de `rmdir` del kernel, no el objeto — la misma forma
+> que `chrt --other` midiendo util-linux.
+>
+> En su lugar la prueba le pregunta a `stat(2)`, que es una fuente distinta de la
+> que usa el código: la raíz de todo subvolumen es el inodo 256
+> (`BTRFS_FIRST_FREE_OBJECTID`) y tiene su propio dispositivo anónimo, que es el
+> par que mira `libbtrfsutil`. Con el control negativo al lado —un directorio
+> ordinario en el mismo directorio, que tiene que fallar las dos mitades— y la
+> segunda opinión de `btrfs subvolume show` donde haya btrfs-progs. La regla
+> quedó escrita en [[Estrategia-de-Pruebas]].
+>
+> **Lo que falta comprobar:** este contenedor no tiene Btrfs, así que la prueba
+> aquí sólo dice `NOT PROVEN`. La corrección se ejerce en la máquina de Cesar:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+
+> ## Cuatro fallas de `verify.sh`, y catorce etapas que ya no se esperan unas a otras — 2026-08-29
 >
 > ### Las cuatro fallas, y ninguna era de Thalyx
 >

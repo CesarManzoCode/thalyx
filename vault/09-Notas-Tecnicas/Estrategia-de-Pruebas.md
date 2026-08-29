@@ -5306,3 +5306,58 @@ subproceso tiene que darle **el entorno completo que necesita para llegar a lo
 que se le está preguntando**, incluso lo que no va a usar. Si no, mide el PATH de
 quien corrió el arnés; y el arnés se corre bajo `sudo`, que es otro PATH que el
 del autor.
+
+---
+
+## Regla derivada: que otra herramienta falle no es una propiedad del objeto — 2026-08-29
+
+La corrida real de Fedora sobre `cffb4f8` dejó un solo `FAILED`, en
+`crates/thalyx-snapshot/tests/natively.rs`:
+
+```
+an ordinary recursive remove took the subvolume away, so this test is not about
+a subvolume
+```
+
+La copia escribible que hace `restore` **sí era un subvolumen**, y no hace falta
+creerle a nadie para saberlo: tres renglones antes, en la misma prueba,
+`flags(&copy)` había llamado a `BTRFS_IOC_SUBVOL_GETFLAGS` y el kernel había
+contestado — ese ioctl responde `EINVAL` en todo inodo que no sea la raíz de un
+subvolumen, así que la prueba nunca habría llegado a la línea que reventó si el
+objeto hubiera sido un directorio ordinario.
+
+Lo que estaba mal era la premisa. La comprobación decía *si esto fuera un
+subvolumen, `remove_dir_all` no podría llevárselo*, y eso dejó de ser cierto en
+Linux 4.18: el commit `a79a464d5675` («btrfs: Allow rmdir(2) to delete an empty
+subvolume») hace que `rmdir(2)` se lleve un subvolumen **vacío** como a cualquier
+otro directorio. `remove_dir_all` desenlaza `notes.txt`, el subvolumen se queda
+vacío, y el `rmdir` final funciona. En la máquina de Cesar —kernel 7.0— eso pasa
+siempre; en este contenedor no hay Btrfs, así que la prueba se saltaba y la
+premisa nunca se ejerció.
+
+Es la misma forma que `chrt --other` midiendo la versión de util-linux: la
+comprobación no medía el objeto, medía **la política de `rmdir` del kernel que la
+corría**. Y como la premisa era «esto falla», el día que el kernel dejó de fallar
+la prueba acusó al objeto.
+
+**La regla:** *que otra herramienta se niegue* no es una propiedad de la cosa que
+se está midiendo, es una propiedad de esa herramienta en esa versión. Cuando la
+afirmación es «esto es un X», hay que preguntárselo a una fuente que hable de X —
+y que no sea la misma que usa el código bajo prueba, o se estaría graduando una
+respuesta contra sí misma.
+
+Lo que reemplazó a la comprobación es `stat(2)`: en Btrfs la raíz de todo
+subvolumen es el inodo `BTRFS_FIRST_FREE_OBJECTID` (256), y el kernel le da a
+cada subvolumen su propio dispositivo anónimo, así que su `st_dev` no es el del
+directorio que lo contiene. Es el par que mira `btrfs_util_is_subvolume` de
+`libbtrfsutil`, no un invento de aquí, y no pasa por el ioctl que usa
+`Native::is_subvolume`. Con su control negativo al lado —un directorio ordinario
+hecho en ese mismo directorio, que tiene que fallar las dos mitades— y la segunda
+opinión de `btrfs subvolume show` donde haya btrfs-progs.
+
+Y de paso, la misma frase falsa estaba en el doc de `BTRFS_IOC_SNAP_DESTROY`
+(«un subvolumen no es un directorio y `rmdir` no se lo lleva»). La razón real por
+la que ese ioctl es necesario es más angosta y sigue siendo cierta: se lleva un
+subvolumen **poblado** de una sola operación, donde `std::fs` tendría que
+caminarlo desenlazando archivo por archivo y no podría con un subvolumen anidado
+adentro.
