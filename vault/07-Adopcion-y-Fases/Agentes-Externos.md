@@ -214,6 +214,22 @@ El brazo A encontró un dependiente que el brazo B **no**: `attempt.rs`, que usa
 contesta *quién nombra este símbolo*, no *a quién le afecta transitivamente*.
 Es un límite real del índice y queda escrito acá antes que en ningún otro lado.
 
+## Revisión — 2026-08-29: el brazo A de todas las corridas de abajo no estaba anclado
+
+**Léase antes que los números de esta sección y de la siguiente.** Una revisión
+posterior encontró que el brazo A trabajaba en `~/thalyx` y no en la copia de
+`--project`: `--out` valía por omisión `$ROOT/target/bench-external-agent`, la
+copia del brazo A se hacía en `$OUT/a`, y `$ROOT` es el checkout donde vive el
+script — así que `claude` arrancaba dentro del clon de trabajo, con el
+`CLAUDE.md` de este proyecto entre sus ancestros. El mecanismo es idéntico desde
+el primer commit del arnés, así que **están afectadas todas**: la corrida
+histórica, lectura #1, lectura #2, edición simple y REVERSIBLE #1.
+
+Los números se conservan como observación. Como comparación controlada ya no
+valen. El detalle entero —qué se degrada, qué sigue valiendo, y los cuatro
+controles que ahora corren antes de gastar un centavo— está en
+[[Evidencia-de-Agentes]].
+
 ## Las tres corridas reales, y la tarea que faltaba — 2026-08-28
 
 Tres comparaciones con Claude Code de verdad, la misma tarea y el mismo modelo

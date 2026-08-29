@@ -410,6 +410,31 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       hilo de la sesión, no un programa más en el disco. Lo que eso desbloquea es
       la primera medición del proyecto sin esperar a G2. Ver [[Agentes-Externos]].
 
+- [ ] **Repetir REVERSIBLE con el arnés anclado.** Todas las corridas anteriores
+      tienen el brazo A no anclado a `--project` (ver [[Evidencia-de-Agentes]]),
+      así que ninguna es hoy una comparación controlada. El arnés ya no permite
+      esa corrida: el brazo A se escenifica fuera del checkout, el brazo B se
+      prueba vivo antes de gastar nada, las entradas de los dos brazos se
+      comparan de entrada, y una llamada fuera del espacio de trabajo deja la
+      corrida `INVALID`. **Es de Cesar** porque gasta su dinero y su hardware.
+      Dos órdenes:
+
+      ```sh
+      make -C image agent PROJECT=/tmp/bench-thalyx
+
+      dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+          --project /tmp/bench-thalyx \
+          --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+          --workspace /tmp/thalyx-bench-arm-a \
+          --out target/bench-external-agent-3
+      ```
+
+- [ ] **Leer con `--scope-check` los `--out` de las corridas viejas que
+      sobrevivan.** Cuesta cero y contesta, corrida por corrida, si el brazo A
+      además de arrancar en `~/thalyx` *salió* de su copia — que es lo único que
+      hoy está sin observar. `dev/bench-summary.py --scope-check <dir> --arm A`.
+      Sólo puede hacerlo Cesar: los directorios están en su máquina.
+
 - [ ] **Correr la comparación de verdad.** `dev/bench-external-agent.sh` existe y
       corrió una vez: 8 turnos con `Read`/`grep` contra 7 con las herramientas de
       Thalyx, sobre la misma tarea y el mismo modelo. **Una corrida de una tarea

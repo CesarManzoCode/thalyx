@@ -94,6 +94,29 @@ WORKSPACE_WRITERS = {
     "mcp__thalyx__thalyx_file",
 }
 
+# Tools that cannot do anything *but* read. Named one by one, and the list is
+# short on purpose: membership here is a claim that no argument to this tool can
+# change a byte, and a tool nobody has checked belongs in neither list.
+#
+# **The reason this list exists at all is the 2026-08-29 forensics.** A `Bash`
+# call whose command was `git checkout -- <file>` was printed by the forensic
+# table as `write=False`. Nothing in the code claimed that meant "proven not to
+# have written" — but `False` is what a reader reads, and a restore performed
+# with the shell is precisely the call that most needed to be visible.
+PROVEN_READERS = (
+    FILE_READERS
+    | TEXT_SEARCHERS
+    | INDEX_QUESTIONS
+    | {
+        "Glob",
+        "LS",
+        "mcp__thalyx__thalyx_state",
+        "mcp__thalyx__thalyx_list",
+        "mcp__thalyx__thalyx_index",
+        "mcp__thalyx__thalyx_changed",
+    }
+)
+
 
 # ── what a tree is, for the purpose of "put it back exactly" ─────────────────
 #
@@ -438,19 +461,295 @@ def files_touched(before_text, after_text):
     return touched
 
 
-def is_a_write(name, given):
-    """Whether this one call changed the workspace, as far as the stream shows.
+def mutation_class(name, given):
+    """What this one call did to the workspace, as far as the stream can say.
 
-    `thalyx_edit` is the reason this is a function and not a set membership: its
-    `show` action returns numbered lines and writes nothing, so counting it as a
-    mutation would credit arm B with edits it did not make — an error in the
-    flattering direction, which is the one that must not happen.
+    Three answers and not two, which is the whole of the 2026-08-29 repair:
+
+        "writes"    this call can do nothing else. `Edit`, `Write`, and the
+                    Thalyx tools whose whole purpose is to change a file.
+        "reads"     this call can do nothing else. `Read`, `Grep`, `Glob`, the
+                    index questions, `thalyx_edit` with `action: "show"`.
+        "unknown"   **the stream cannot tell.** `Bash` above all, and any tool
+                    nobody has put in one of the two lists above.
+
+    ## Why a third answer, and why `Bash` is not "reads"
+
+    The forensic table of the failed run printed, for a call whose command was
+    `git checkout -- <path>`:
+
+        Bash  write=False
+
+    That is a shell command which *restores files* — the single most important
+    mutation in the whole `reversible` task — reported with the same word the
+    table uses for a `Grep`. No line of code claimed `False` meant "proven not
+    to have written"; it did not have to. A two-valued field has no way to say
+    "I do not know", so the answer it gives for the thing it cannot see is the
+    answer it gives for the thing it checked.
+
+    **A tool name is a statement of intent, never evidence of an effect.** So
+    intent and effect are separated: this function classifies the *call*, and
+    the filesystem witness — the walks this harness takes on either side of the
+    run, which no name can talk its way past — is the authority on whether a
+    different state ever existed. `unknown` is counted, reported, and it makes
+    a witness that saw nothing come back `not_proven` instead of `false`.
+
+    Deciding it any other way would need a shell parser that recognised every
+    mutating command in every language `Bash` can reach — `sed -i`, `>`, `git
+    checkout`, `install`, `mv`, a python one-liner, `make`. That parser cannot
+    be written correctly, and one that is nearly correct is worse than none:
+    it would answer `False` with confidence for whatever it had not thought of,
+    which is exactly the failure this is repairing.
     """
-    if name not in WORKSPACE_WRITERS:
-        return False
-    if name == "mcp__thalyx__thalyx_edit":
-        return (given or {}).get("action") != "show"
-    return True
+    if name in WORKSPACE_WRITERS:
+        # `thalyx_edit` is the reason this is a function and not a set
+        # membership: its `show` action returns numbered lines and writes
+        # nothing, so counting it as a mutation would credit arm B with edits it
+        # did not make — an error in the flattering direction.
+        if name == "mcp__thalyx__thalyx_edit" and (given or {}).get("action") == "show":
+            return "reads"
+        return "writes"
+    if name in PROVEN_READERS:
+        return "reads"
+    return "unknown"
+
+
+def is_a_write(name, given):
+    """Whether this call is one that can only have written.
+
+    Kept as its own name because "counts as a mutation" and "is not known to
+    have read" are different questions and the counters need the first. It is
+    **not** the negation of anything: `is_a_write` coming back false says only
+    that this call is not a certain write, and `mutation_class` is what says
+    which of the two other things it is.
+    """
+    return mutation_class(name, given) == "writes"
+
+
+# ── where a call was pointed, and whether that is inside the experiment ──────
+#
+# The 2026-08-29 run was not a comparison, and the reason was one line of shell.
+# `--out` defaults to `$ROOT/target/bench-external-agent`, `$ROOT` is the
+# checkout `dev/bench-external-agent.sh` lives in, and arm A's copy is made at
+# `$OUT/a`. So the agent was started, physically, **inside Cesar's own working
+# clone of this project** — and Claude Code collects `CLAUDE.md` from every
+# ancestor of its working directory. Arm A therefore began the task holding this
+# repository's own instructions, which open with "read this before anything
+# else" and name `vault/06-Pendientes/Punto-Actual.md`, and it worked in
+# `~/thalyx` because the context it had been handed was about `~/thalyx`.
+#
+# Anchoring is two halves and it needs both. The first is physical and lives in
+# the harness: stage arm A's workspace where nothing above it belongs to
+# anything, and refuse to start if an ancestor carries a `CLAUDE.md`, a
+# `.claude/`, a `.mcp.json` or a `.git`. The second is this file: read back, out
+# of the stream the run already wrote, **every path any call named**, and say
+# whether any of them left the workspace. Telling the model where to work is not
+# a control. Checking afterwards where it worked is.
+#
+# The same classification runs live as a `PreToolUse` hook (`--scope-guard`), so
+# a call that would leave the workspace is refused rather than merely counted.
+# One implementation, two callers — the mistake this project keeps making is
+# two implementations that agree until they do not.
+
+# Roots that hold programs and kernel interfaces and never project data. A path
+# under one of these is outside the workspace and is *not* a breach: `/usr/bin/git`
+# is how a shell command names the shell command. Reported under its own key, so
+# the allowance is on the record rather than out of sight — the same discipline
+# as the machinery boundary above.
+NOT_PROJECT_DATA = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/proc/", "/sys/", "/dev/")
+
+# Where in a tool's input a path lives, when the tool has a schema rather than a
+# command line. Everything else is caught by the sweep for values that look like
+# absolute paths, which is why this list not being exhaustive is safe.
+PATH_FIELDS = ("file_path", "path", "notebook_path", "file", "dir", "directory",
+               "cwd", "target", "source", "destination")
+
+
+def _unquote(token):
+    for quote in ("'", '"'):
+        if len(token) >= 2 and token.startswith(quote) and token.endswith(quote):
+            return token[1:-1]
+    return token.strip("'\"")
+
+
+def paths_named(name, given):
+    """Every path this one call pointed at, as the call itself spelled it.
+
+    Two sources, because tools come in two shapes. A tool with a schema names
+    its paths in named fields; `Bash` names them inside one string, and the only
+    honest thing to do with that string is to look at every token in it. Both
+    over-collect on purpose: a token that turns out not to be a path resolves to
+    somewhere inside the workspace and is dropped by the classification, whereas
+    a path this never looked at is a path nobody checked.
+
+    `cd` is picked out by name and not by shape. It is the call that moved arm A
+    into `~/thalyx`, its argument is very often relative, and a relative
+    argument is exactly the one a sweep for `/`-leading tokens cannot see.
+    """
+    found = []
+    given = given if isinstance(given, dict) else {}
+
+    for field in PATH_FIELDS:
+        value = given.get(field)
+        if isinstance(value, str) and value.strip():
+            found.append((field, value.strip()))
+        elif isinstance(value, list):
+            found.extend((field, one.strip()) for one in value
+                         if isinstance(one, str) and one.strip())
+
+    # Anything else in the input that is spelled like an absolute path or a home
+    # reference. A tool added later with a field nobody listed above is covered
+    # by this and not by a guess about its schema.
+    for key, value in given.items():
+        if key in PATH_FIELDS or not isinstance(value, str):
+            continue
+        text = value.strip()
+        if key != "command" and (text.startswith("/") or text.startswith("~")):
+            found.append((key, text))
+
+    command = given.get("command")
+    if isinstance(command, str):
+        # Shell punctuation becomes whitespace so that `cd /a&&ls` is two words.
+        broken = command
+        for punctuation in ("&&", "||", ";", "|", "\n", "(", ")", "{", "}", "<", ">"):
+            broken = broken.replace(punctuation, " ")
+        words = [_unquote(word) for word in broken.split()]
+        # A `cd`'s argument is reported once, as a `cd`. Without this the sweep
+        # below sees the same absolute path again and the summary reports two
+        # breaches where the command made one.
+        spoken_for = set()
+        for n, word in enumerate(words):
+            if word in ("cd", "pushd", "chdir") and n + 1 < len(words):
+                spoken_for.add(n + 1)
+        for n, word in enumerate(words):
+            if word in ("cd", "pushd", "chdir") and n + 1 < len(words):
+                # Named as its own kind: a `cd` is not an operation on a file,
+                # it is the thing that decides what every later path means.
+                found.append(("cd", words[n + 1]))
+            elif n in spoken_for:
+                continue
+            elif word.startswith("/") or word.startswith("~") or word.startswith("$HOME"):
+                found.append(("command", word))
+            elif word.startswith("../") or word == "..":
+                found.append(("command", word))
+    return found
+
+
+def where_it_points(raw, workspace, home=None):
+    """Which of four places a path a call named is in.
+
+        "inside"            below the workspace, or relative and staying there
+        "outside"           somewhere else entirely: this is the breach
+        "not_project_data"  a program or a kernel interface — `/usr/bin/git`
+        "unreadable"        a path this could not resolve at all
+
+    A relative path is resolved against the workspace, which is only sound
+    because the harness asserts, from the run's own `system init` event, that
+    the agent's working directory *is* the workspace. Without that assertion
+    this function would be assuming the very thing that went wrong.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "unreadable"
+    if text.startswith("~"):
+        if home:
+            text = str(home) + text[1:]
+        else:
+            # A home reference on a host whose home nobody recorded. It cannot
+            # be resolved and it cannot be waved through: rule 9, the cautious
+            # answer.
+            return "outside"
+    if text.startswith("$HOME"):
+        if not home:
+            return "outside"
+        text = str(home) + text[len("$HOME"):]
+    if "$" in text:
+        # A path built out of a variable this cannot expand. Not a breach on its
+        # own — reported as what it is, so it can be looked at.
+        return "unreadable"
+
+    workspace = os.path.normpath(str(workspace))
+    if text.startswith("/"):
+        resolved = os.path.normpath(text)
+    else:
+        resolved = os.path.normpath(os.path.join(workspace, text))
+
+    if resolved == workspace or resolved.startswith(workspace + os.sep):
+        return "inside"
+    if any(resolved.startswith(root) or resolved + "/" == root for root in NOT_PROJECT_DATA):
+        return "not_project_data"
+    return "outside"
+
+
+def scope_report(path, workspace, home=None, repository=None):
+    """Where the agent actually was, and everywhere its calls actually pointed.
+
+    Reads only the stream the run already wrote, so it costs nothing and can be
+    pointed at a run that is long over — which is how the failed run of
+    2026-08-29 can be graded for this without being paid for again.
+
+    `cwd_reported` comes from Claude Code's own `system init` event, which
+    carries the working directory the process started in. That is the field that
+    would have said, in the first line of the first stream, that arm A was not
+    where `--project` put it.
+    """
+    report = {"workspace": str(workspace)}
+    outside, unreadable, allowed = [], [], 0
+
+    for event in events(path):
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            if isinstance(event.get("cwd"), str):
+                report["cwd_reported"] = event["cwd"]
+            continue
+        if event.get("type") != "assistant":
+            continue
+        for block in event.get("message", {}).get("content", []) or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name") or "<unnamed>"
+            for field, raw in paths_named(name, block.get("input")):
+                verdict = where_it_points(raw, workspace, home)
+                if verdict == "inside":
+                    continue
+                if verdict == "not_project_data":
+                    allowed += 1
+                    continue
+                entry = {"tool": name, "field": field, "path": raw}
+                (unreadable if verdict == "unreadable" else outside).append(entry)
+
+    if "cwd_reported" in report:
+        report["cwd_is_the_workspace"] = (
+            os.path.normpath(report["cwd_reported"]) == os.path.normpath(str(workspace))
+        )
+    report["paths_outside_the_workspace"] = outside[:40]
+    report["paths_outside_the_workspace_count"] = len(outside)
+    report["paths_this_could_not_resolve"] = unreadable[:40]
+    report["paths_under_program_roots"] = allowed
+    if repository:
+        # The specific breach that happened, named as itself: the original
+        # checkout the harness was launched from. A run that touched *that* is
+        # not a run that wandered, it is a run measuring the wrong tree.
+        where = os.path.normpath(str(repository))
+        report["paths_in_the_original_checkout"] = [
+            entry for entry in outside
+            if os.path.normpath(os.path.join(str(workspace), entry["path"])) == where
+            or entry["path"].startswith(where)
+        ][:40]
+
+    intact = not outside
+    if "cwd_is_the_workspace" in report:
+        intact = intact and report["cwd_is_the_workspace"]
+        report["scope"] = "INTACT" if intact else "VIOLATED"
+    else:
+        # No `init` event: an older stream, or one that was cut off before the
+        # CLI said where it was. The paths can still be judged; where the agent
+        # started cannot, and that is NOT PROVEN rather than either answer.
+        report["scope"] = "VIOLATED" if outside else "not_proven"
+        report["scope_because"] = (
+            "the stream carries no `system init` event, so nothing in it says which "
+            "directory the agent started in"
+        )
+    return report
 
 
 def events(path):
@@ -467,6 +766,166 @@ def events(path):
             yield json.loads(line)
         except json.JSONDecodeError:
             continue
+
+
+def scope_guard(hook, workspace, home=None):
+    """Should this one call, about to be made, be allowed to happen?
+
+    The live half of `scope_report`, wired as a `PreToolUse` hook so a call that
+    would leave the workspace is **refused** rather than counted afterwards.
+    Same classification, same function, one implementation — a guard that
+    reasoned about paths its own summary would not is two instruments that agree
+    until the day they matter.
+
+    Returns `(allowed, why)`. The caller turns that into a hook exit code: this
+    knows about paths and nothing about Claude Code's protocol.
+
+    ## Why refusing is a control and not a handicap
+
+    Arm B cannot reach outside its workspace at all. Its tools take paths
+    relative to a workspace root inside the machine, and Thalyx refuses a path
+    that resolves out of it — that is the boundary the whole experiment is about.
+    Arm A, on an ordinary Linux copy with an ordinary shell, could reach the
+    entire host, and on 2026-08-29 it did. Confining arm A to the same tree is
+    what makes the two columns answer the same question. It costs arm A nothing
+    it needs: everything the task asks about is in the tree it was given.
+    """
+    name = hook.get("tool_name") or ""
+    given = hook.get("tool_input")
+    for field, raw in paths_named(name, given):
+        verdict = where_it_points(raw, workspace, home)
+        if verdict == "outside":
+            return False, (
+                f"`{raw}` is outside this run's workspace ({workspace}). Everything "
+                f"this task is about is inside it; work there, with paths relative to "
+                f"it. This is the benchmark's boundary, not the model's."
+            )
+    return True, ""
+
+
+def _commit(root):
+    """What commit a tree is of, when it is a checkout and `git` is here.
+
+    Absent rather than empty when it is neither, and never invented: rule 10. A
+    `+dirty` suffix because a working tree with uncommitted changes is not the
+    commit it claims to be, and two arms staged from it at different moments are
+    not necessarily the same tree.
+    """
+    import subprocess  # only where a stamp is written, never on the reading path
+
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=20)
+        if head.returncode != 0:
+            return None
+        state = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = head.stdout.strip()
+    return commit + ("+dirty" if state.stdout.strip() else "")
+
+
+def project_top_level(root):
+    """The names at the root of a project, with the machinery pruned.
+
+    What the preflight compares against the machine's own `list .`, and the
+    cheapest evidence there is that the copy on the store is the copy that was
+    handed to `--project`. It is not a hash — nothing on this host can hash a
+    tree inside a live Btrfs image — and it does not pretend to be: it is the
+    check that catches the failure that actually happens, which is a store left
+    over from another project or from a `project-stage` nobody re-ran.
+    """
+    return sorted(
+        entry.name for entry in pathlib.Path(root).iterdir()
+        if not _outside(entry.name)
+    )
+
+
+def preflight_verdict(report, project=None):
+    """Whether arm B is ready to be paid for, decided outside the probe.
+
+    The probe (`thalyx-mcp --preflight`) talks to the machine; this decides what
+    its answer means. They are apart on purpose: the decision can then be tested
+    against a dead machine, a machine holding the wrong project and a healthy
+    one, all three for free and none of them needing a VM — which is the only
+    way this check itself gets checked in a container with no KVM.
+    """
+    verdict = {"ready": False, "because": []}
+    if not isinstance(report, dict):
+        verdict["because"].append("the probe printed nothing this could read")
+        return verdict
+
+    verdict["thalyx"] = report.get("thalyx")
+    verdict["workspace"] = report.get("workspace")
+    verdict["tools_offered"] = report.get("tools_offered")
+
+    if report.get("ready") is not True:
+        said = report.get("because") or ["the probe did not say it was ready"]
+        verdict["because"].extend(said if isinstance(said, list) else [str(said)])
+
+    if project is not None:
+        here = project_top_level(project)
+        there = sorted(name for name in (report.get("top_level") or []) if not _outside(name))
+        verdict["project_top_level"] = here
+        verdict["machine_top_level"] = there
+        if not there:
+            verdict["because"].append("the machine's workspace root listed nothing")
+        elif here != there:
+            missing = sorted(set(here) - set(there))
+            extra = sorted(set(there) - set(here))
+            verdict["because"].append(
+                "the machine is holding a different tree from --project: "
+                f"missing {missing or 'nothing'}, unexpected {extra or 'nothing'}. "
+                "The store was staged from another project, or `project-stage` was "
+                "never re-run"
+            )
+        else:
+            verdict["top_level_matches"] = True
+
+    verdict["ready"] = not verdict["because"]
+    return verdict
+
+
+def parity_verdict(provenance):
+    """Whether the two arms were given the same thing to work on.
+
+    Four facts, and the claim is only that they are **comparable** — never that
+    the trees are byte-identical, which nothing on this host can check while the
+    store is inside a live image. What it does check is every way they have
+    actually diverged: a different source commit, a different input digest, a
+    different exclusion list, or an arm whose provenance nobody wrote down.
+    """
+    verdict = {"comparable": False, "because": []}
+    arms = (provenance or {}).get("arms") or {}
+    a, b = arms.get("A"), arms.get("B")
+    verdict["source_commit"] = (provenance or {}).get("source_commit")
+    verdict["exclusions"] = (provenance or {}).get("exclusions")
+
+    for name, side in (("A", a), ("B", b)):
+        if not side:
+            verdict["because"].append(f"arm {name} has no provenance recorded")
+    if verdict["because"]:
+        return verdict
+
+    verdict["input_manifest"] = {"A": a.get("input_manifest"), "B": b.get("input_manifest")}
+    verdict["imported_from"] = {"A": a.get("imported_from"), "B": b.get("imported_from")}
+    verdict["effective_cwd"] = {"A": a.get("effective_cwd"), "B": b.get("effective_cwd")}
+
+    if not a.get("input_manifest") or not b.get("input_manifest"):
+        verdict["because"].append("one of the arms has no input manifest digest")
+    elif a["input_manifest"] != b["input_manifest"]:
+        verdict["because"].append(
+            "the two arms were given different trees: arm A's copy and the tree "
+            "arm B was imported from do not hash the same"
+        )
+    if a.get("imported_from") != b.get("imported_from"):
+        verdict["because"].append(
+            f"the arms were staged from different places: arm A from "
+            f"{a.get('imported_from')!r}, arm B from {b.get('imported_from')!r}"
+        )
+    verdict["comparable"] = not verdict["because"]
+    return verdict
 
 
 def text_length(content):
@@ -523,6 +982,8 @@ def read_stream(path, marker=None):
     sent = 0
     results_seen = 0
     writes = 0
+    unknown = 0
+    unknown_tools = {}
     naming = 0
     # Pass one collects the calls; the results that decide them arrive in later
     # events, so nothing about success can be settled inside the loop.
@@ -560,9 +1021,15 @@ def read_stream(path, marker=None):
                     calls_per_message[said] = calls_per_message.get(said, 0) + 1
                 serialised = json.dumps(given)
                 sent += len(serialised)
-                if is_a_write(name, given):
+                how = mutation_class(name, given)
+                if how == "writes":
                     writes += 1
                     written.append(block.get("id"))
+                elif how == "unknown":
+                    # Not `not a write`. A call whose effect the stream cannot
+                    # see is its own fact and it is kept as one.
+                    unknown += 1
+                    unknown_tools[name] = unknown_tools.get(name, 0) + 1
                 if marker and marker in serialised:
                     naming += 1
                     made.append((block.get("id"), name, given))
@@ -638,6 +1105,13 @@ def read_stream(path, marker=None):
         # happened" is what made a run with six `Edit`s and a failure in each
         # of them indistinguishable from a run that did the work.
         row["mutating_tool_calls"] = writes
+        # The count that keeps `mutating_tool_calls` honest. Zero certain writes
+        # and eleven `Bash` calls is not a run that wrote nothing; it is a run
+        # nobody can say that about from the stream, and the difference has to
+        # be on the face of the summary rather than in a comment.
+        row["calls_of_unknown_mutation"] = unknown
+        if unknown_tools:
+            row["tools_of_unknown_mutation"] = dict(sorted(unknown_tools.items()))
         confirmed = sum(1 for where in written if where in answered_ids and where not in failed_ids)
         row["mutating_tool_calls_confirmed"] = confirmed
         row["mutating_tool_calls_that_failed"] = sum(1 for where in written if where in failed_ids)
@@ -649,10 +1123,18 @@ def read_stream(path, marker=None):
         # agent that never wrote one.
         if marker:
             row["tool_calls_naming_the_new_name"] = naming
-            confirmed = wrong = read_only = unanswered = 0
+            confirmed = wrong = read_only = unclear = unclear_ok = unanswered = 0
             for where, name, given in made:
-                if not is_a_write(name, given):
+                how = mutation_class(name, given)
+                if how == "reads":
                     read_only += 1
+                elif how == "unknown":
+                    # A `Bash` that named the new name. It is not a read and it
+                    # is not a proven write: `grep WidgetRenamed` and
+                    # `sed -i s/Widget/WidgetRenamed/` are the same tool name.
+                    unclear += 1
+                    if where in answered_ids and where not in failed_ids:
+                        unclear_ok += 1
                 elif where in failed_ids:
                     wrong += 1
                 elif where in answered_ids:
@@ -662,6 +1144,13 @@ def read_stream(path, marker=None):
             row["mutations_naming_the_new_name"] = confirmed
             row["failed_calls_naming_the_new_name"] = wrong
             row["read_only_calls_naming_the_new_name"] = read_only
+            row["unknown_calls_naming_the_new_name"] = unclear
+            # The half of that which the tool answered without an error, which
+            # is the only half the shell case can be built out of. Counted here
+            # rather than subtracted later: the old arithmetic —
+            # `named - failed - unanswered` — quietly included read-only calls,
+            # and a `Grep` for the new name is not a rename.
+            row["answered_unknown_calls_naming_the_new_name"] = unclear_ok
             # Counted apart from the failures because it is a different fact: a
             # call the stream never carried an answer for. It is not evidence
             # of a mutation and it is not evidence of a failure either.
@@ -885,21 +1374,36 @@ def reversible_verdict(row, marker_given, graded):
                 + ". The mtimes are the one an agent can put back, so this is the "
                   "ordinary shape of a change that was made and then undone."
             )
-    if witness is None:
+    unknown_calls = row.get("calls_of_unknown_mutation", 0)
+    if witness is False and unknown_calls:
+        # The rule the failed run is named after. Every witness saw nothing, and
+        # the stream carries calls whose effect no witness can see — a `Bash`
+        # that may have been `ls` and may have been `git checkout -- .`. Saying
+        # `false` there would be the summary asserting, from a tool name, that
+        # nothing was written. It does not know that, so it says so.
+        witness = None
+        verdict["intermediate_state"] = "not_proven"
+        verdict["intermediate_state_because"] = (
+            f"{NO_WITNESS}. And it cannot be called a run that wrote nothing either: "
+            f"{unknown_calls} call(s) in this stream are of tools whose effect the "
+            f"stream cannot see"
+        )
+    elif witness is None:
         verdict["intermediate_state"] = "not_proven"
         verdict["intermediate_state_because"] = NO_WITNESS
     else:
         verdict["intermediate_state"] = witness
+    if unknown_calls:
+        verdict["calls_of_unknown_mutation"] = unknown_calls
 
     # ── the new name, which is what makes it *this* task's change ──
     if marker_given and "mutations_naming_the_new_name" in row:
         by_a_mutating_tool = row["mutations_naming_the_new_name"] > 0
-        # The shell case. `answered` is every call that named the new name and
-        # did not come back an error; on its own that is a `Grep`, which is why
-        # it only counts alongside a filesystem that moved.
-        answered = (row.get("tool_calls_naming_the_new_name", 0)
-                    - row.get("failed_calls_naming_the_new_name", 0)
-                    - row.get("unanswered_calls_naming_the_new_name", 0))
+        # The shell case: a call whose effect the stream cannot see — a `Bash` —
+        # that named the new name and that the tool answered without an error.
+        # On its own that is equally a `grep WidgetRenamed`, which is why it
+        # only counts alongside a filesystem that moved.
+        answered = row.get("answered_unknown_calls_naming_the_new_name", 0)
         by_the_shell = answered > 0 and seen.get("the filesystem, by mtime") is True
         verdict["mutation_attempted"] = by_a_mutating_tool or by_the_shell
         verdict["really_changed"] = verdict["mutation_attempted"] and witness is True
@@ -931,7 +1435,7 @@ def reversible_verdict(row, marker_given, graded):
     return verdict
 
 
-def arm(out, name, expectations, marker=None, task=""):
+def arm(out, name, expectations, marker=None, task="", provenance=None):
     row = {"arm": name}
 
     stream = out / f"arm{name}.ndjson"
@@ -961,6 +1465,20 @@ def arm(out, name, expectations, marker=None, task=""):
                 row[field] = answer["usage"][field]
     else:
         return None
+
+    # ── where this arm actually worked ──
+    #
+    # Read out of the stream the run already wrote, so a run that is over can be
+    # graded for it without being paid for again — which is precisely what the
+    # run of 2026-08-29 needs.
+    side = ((provenance or {}).get("arms") or {}).get(name) or {}
+    workspace = side.get("effective_cwd")
+    if workspace and stream.exists() and stream.stat().st_size:
+        row["scope"] = scope_report(
+            stream, workspace,
+            home=(provenance or {}).get("home"),
+            repository=(provenance or {}).get("repository"),
+        )
 
     metrics = out / f"arm{name}.metrics.json"
     if metrics.exists():
@@ -1081,7 +1599,15 @@ def forensics(path, marker=None):
     rows = []
     for where, name, given in calls:
         serialised = json.dumps(given)
-        if not is_a_write(name, given) and not (marker and marker in serialised):
+        # Named `did` and not `how`, because `how` is the result state four
+        # lines down and the two shadowed each other into one wrong column.
+        did = mutation_class(name, given)
+        # `reads` is the only class that can be left out, because it is the only
+        # one this file claims to know about. A call of unknown effect is
+        # printed whether or not it mentions the new name — it is the row that
+        # was missing on 2026-08-29, when a `git checkout -- <path>` scrolled
+        # past as `write=False`.
+        if did == "reads" and not (marker and marker in serialised):
             continue
         answer = results.get(where)
         if answer is None:
@@ -1095,7 +1621,10 @@ def forensics(path, marker=None):
             said = text_of(answer.get("content"))
         rows.append({
             "tool": name,
-            "a_write": is_a_write(name, given),
+            # Three values, spelled out. There is deliberately no boolean here:
+            # a reader who sees `False` reads "it did not write", and for `Bash`
+            # that sentence is not one this file is entitled to.
+            "mutation": did,
             "names_the_new_name": bool(marker and marker in serialised),
             "result": how,
             "asked": serialised[:200],
@@ -1309,11 +1838,202 @@ def self_test():
     trouble += counting_self_test(sample)
     trouble += manifest_self_test()
     trouble += verdict_self_test()
+    trouble += anchoring_self_test(sample)
     trouble += regrade_self_test(sample)
 
     print()
     print("  PROVEN" if not trouble else f"  {trouble} FAILED")
     return 1 if trouble else 0
+
+
+def anchoring_self_test(sample):
+    """That an arm which worked somewhere else cannot be graded as if it had not.
+
+    Every case here is the run of 2026-08-29 taken apart. That run was given
+    `--project /tmp/bench-thalyx` and arm A ran `cd /home/cesarmanzocode/thalyx`,
+    and nothing in the harness or the summary noticed, because nothing in either
+    of them ever asked. These are the questions that were not being asked.
+
+    The streams are built out of the captured session's own `system init` and
+    `assistant` envelopes — rule 6 again: the format comes from Claude Code, and
+    only the contents come from this file.
+    """
+    trouble = 0
+
+    def ok(about, got, want):
+        nonlocal trouble
+        if got == want:
+            print(f"  ok      {about}: {got!r}")
+        else:
+            print(f"  FAILED  {about}: expected {want!r}, got {got!r}")
+            trouble += 1
+
+    init = envelope = None
+    for event in events(sample):
+        if event.get("type") == "system" and event.get("subtype") == "init" and init is None:
+            init = event
+        elif event.get("type") == "assistant" and envelope is None:
+            for block in event.get("message", {}).get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    envelope = event
+                    break
+    if init is None or envelope is None:
+        print("  FAILED  the captured session has no init event or no tool call, so the "
+              "anchoring test has no real envelope to build on")
+        return 1
+
+    with tempfile.TemporaryDirectory() as work:
+        work = pathlib.Path(work)
+        home = work / "home"
+        repository = home / "thalyx"
+        workspace = work / "bench" / "a"
+        for where in (home, repository, workspace):
+            where.mkdir(parents=True, exist_ok=True)
+
+        def stream(name, cwd, calls):
+            path = work / name
+            with path.open("w") as into:
+                said = copy.deepcopy(init)
+                said["cwd"] = str(cwd)
+                into.write(json.dumps(said) + "\n")
+                for tool, given in calls:
+                    event = copy.deepcopy(envelope)
+                    for block in event["message"]["content"]:
+                        if block.get("type") == "tool_use":
+                            block["name"] = tool
+                            block["input"] = given
+                    into.write(json.dumps(event) + "\n")
+            return path
+
+        # ── 1. the working directory ──
+        #
+        # The first line of the first stream says where the agent started. On
+        # 2026-08-29 nothing read it.
+        good = stream("good.ndjson", workspace, [
+            ("Read", {"file_path": "src/a.rs"}),
+            ("Grep", {"pattern": "Widget", "path": "crates"}),
+            ("Bash", {"command": "/usr/bin/git checkout -- src/a.rs"}),
+        ])
+        report = scope_report(good, workspace, home=home, repository=repository)
+        ok("an arm that started in its workspace and stayed there", report["scope"], "INTACT")
+        ok("and `/usr/bin/git` is a program, not a path out of the project",
+           report["paths_under_program_roots"], 1)
+
+        strayed = stream("strayed.ndjson", repository, [("Read", {"file_path": "src/a.rs"})])
+        report = scope_report(strayed, workspace, home=home, repository=repository)
+        ok("an arm that started in the original checkout is VIOLATED",
+           report["scope"], "VIOLATED")
+        ok("and the summary can say where it actually started",
+           report["cwd_is_the_workspace"], False)
+
+        # ── 2. an absolute path out of the project ──
+        #
+        # Literally the call the forensics found: `cd /home/…/thalyx`. The `cd`
+        # is picked out by name because its argument is what decides where every
+        # later relative path lands.
+        wandered = stream("wandered.ndjson", workspace, [
+            ("Bash", {"command": f"cd {repository} && grep -rn Widget crates/"}),
+        ])
+        report = scope_report(wandered, workspace, home=home, repository=repository)
+        ok("a `cd` into the original checkout is a violation",
+           report["scope"], "VIOLATED")
+        ok("and it is named as the original checkout and not as a stray path",
+           len(report["paths_in_the_original_checkout"]), 1)
+
+        reading = stream("reading.ndjson", workspace, [
+            ("Read", {"file_path": f"{repository}/vault/06-Pendientes/Punto-Actual.md"}),
+        ])
+        ok("an absolute read out of the workspace is a violation",
+           scope_report(reading, workspace, home=home)["scope"], "VIOLATED")
+
+        climbing = stream("climbing.ndjson", workspace, [
+            ("Bash", {"command": "cd ../.. && ls"}),
+        ])
+        ok("and so is climbing out of it with a relative path",
+           scope_report(climbing, workspace, home=home)["scope"], "VIOLATED")
+
+        tilde = stream("tilde.ndjson", workspace, [("Read", {"file_path": "~/thalyx/CLAUDE.md"})])
+        ok("a path spelled with a `~` is resolved rather than waved through",
+           scope_report(tilde, workspace, home=home)["scope"], "VIOLATED")
+
+        # The control, without which a guard that refused everything would look
+        # exactly like a guard that works.
+        ordinary = stream("ordinary.ndjson", workspace, [
+            ("Edit", {"file_path": str(workspace / "src" / "a.rs"),
+                      "old_string": "Widget", "new_string": "WidgetRenamed"}),
+            ("Bash", {"command": "cd crates/thalyx-cli && ls -la"}),
+            ("Glob", {"pattern": "**/*.rs"}),
+        ])
+        ok("ordinary work inside the workspace, named absolutely or relatively, is not "
+           "a violation", scope_report(ordinary, workspace, home=home)["scope"], "INTACT")
+
+        # ── 3. the same rule, live ──
+        for about, call, want in (
+            ("the guard refuses a `cd` out of the workspace",
+             {"tool_name": "Bash", "tool_input": {"command": f"cd {repository}"}}, False),
+            ("the guard refuses a read of the original checkout",
+             {"tool_name": "Read", "tool_input": {"file_path": f"{repository}/CLAUDE.md"}}, False),
+            ("the guard allows an edit inside the workspace",
+             {"tool_name": "Edit", "tool_input": {"file_path": "src/a.rs"}}, True),
+            ("the guard allows a shell command that names a program",
+             {"tool_name": "Bash", "tool_input": {"command": "/usr/bin/git status"}}, True),
+        ):
+            ok(about, scope_guard(call, workspace, home)[0], want)
+
+        # ── 4. arm B, before arm A is paid for ──
+        (workspace / "Cargo.toml").write_text("[workspace]\n")
+        (workspace / "crates").mkdir(exist_ok=True)
+        (workspace / "target").mkdir(exist_ok=True)   # machinery: pruned on both sides
+
+        dead = preflight_verdict(None, workspace)
+        ok("a probe that printed nothing is not a machine to pay for", dead["ready"], False)
+
+        silent = preflight_verdict({"ready": False, "because": [
+            "the socket at /tmp/agent.sock is there and the machine never said hello"
+        ]}, workspace)
+        ok("a socket with nothing behind it is not READY", silent["ready"], False)
+
+        stale = preflight_verdict({
+            "ready": True, "thalyx": "0.1.0", "workspace": "/workspace",
+            "tools_offered": 11, "top_level": ["README.md", "src"],
+        }, workspace)
+        ok("a machine holding a different tree is not READY", stale["ready"], False)
+
+        alive = preflight_verdict({
+            "ready": True, "thalyx": "0.1.0", "workspace": "/workspace",
+            "tools_offered": 11, "top_level": ["Cargo.toml", "crates", "target"],
+        }, workspace)
+        ok("a machine that answered and is holding this project is READY",
+           alive["ready"], True)
+
+        # ── 5. the two arms were given the same thing ──
+        same = {
+            "source_commit": "abc123", "exclusions": list(OUTSIDE_THE_WORKSPACE),
+            "arms": {
+                "A": {"input_manifest": "d34d", "imported_from": "/tmp/bench-thalyx",
+                      "effective_cwd": str(workspace)},
+                "B": {"input_manifest": "d34d", "imported_from": "/tmp/bench-thalyx",
+                      "effective_cwd": "/workspace"},
+            },
+        }
+        ok("two arms staged from the same tree are comparable",
+           parity_verdict(same)["comparable"], True)
+
+        different = copy.deepcopy(same)
+        different["arms"]["B"]["input_manifest"] = "beef"
+        ok("two arms whose input trees hash differently are not",
+           parity_verdict(different)["comparable"], False)
+
+        elsewhere = copy.deepcopy(same)
+        elsewhere["arms"]["B"]["imported_from"] = "/tmp/some-other-project"
+        ok("nor are two arms staged from different places",
+           parity_verdict(elsewhere)["comparable"], False)
+
+        missing = {"source_commit": "abc123", "arms": {"A": same["arms"]["A"]}}
+        ok("nor is a run where one arm's provenance was never written down",
+           parity_verdict(missing)["comparable"], False)
+
+    return trouble
 
 
 def regrade_self_test(sample):
@@ -1533,6 +2253,71 @@ def counting_self_test(sample):
                 print(f"  FAILED  {about}: expected {want!r}, counted {got!r}")
                 trouble += 1
 
+        # ── the shell, which is neither a write nor a proven read ──
+        #
+        # The regression the 2026-08-29 forensics is owed. Two `Bash` calls that
+        # a shell parser would have to be perfect to tell apart, and the claim
+        # is that this file does not try: both come back `unknown`, both are
+        # printed by the forensic table, and neither is ever credited as having
+        # been proven not to write.
+        #
+        # `git checkout -- <path>` is the one that was printed as `write=False`.
+        # It restores a file — the single most consequential mutation in the
+        # whole `reversible` task — and it arrived wearing the same word the
+        # table uses for a `Grep`.
+        path = pathlib.Path(work) / "shell.ndjson"
+        stream(path, [
+            ("Bash", {"command": "git checkout -- src/a.rs"}),
+            ("Bash", {"command": "rg --files-with-matches Widget"}),
+            ("Grep", {"pattern": "Widget"}),
+        ])
+        row = read_stream(path, "WidgetRenamed")
+        rows = forensics(path, "WidgetRenamed")
+        classed = {entry["asked"]: entry["mutation"] for entry in rows}
+        for about, got, want in (
+            ("a mutating shell command is not counted as a certain write",
+             row.get("mutating_tool_calls"), 0),
+            ("both shell calls are counted as calls nobody can classify",
+             row.get("calls_of_unknown_mutation"), 2),
+            ("and they are named, so the summary says which tool it cannot see through",
+             row.get("tools_of_unknown_mutation"), {"Bash": 2}),
+            ("`git checkout -- …` is `unknown` and never `write=False`",
+             classed.get('{"command": "git checkout -- src/a.rs"}'), "unknown"),
+            ("a genuinely read-only shell command is `unknown` too, because the "
+             "name is all the stream has",
+             classed.get('{"command": "rg --files-with-matches Widget"}'), "unknown"),
+            ("a tool that can only read is left out of the forensic table",
+             len(rows), 2),
+        ):
+            if got == want:
+                print(f"  ok      {about}: {got!r}")
+            else:
+                print(f"  FAILED  {about}: expected {want!r}, got {got!r}")
+                trouble += 1
+
+        # The claim stated the other way round, because it is the one that
+        # actually matters: **no** row of that table says a `Bash` did not
+        # write. A future edit that reintroduces a boolean fails here.
+        if all(entry["mutation"] != "reads" for entry in rows if entry["tool"] == "Bash"):
+            print("  ok      no shell call in the forensic table is credited as a read")
+        else:
+            print(f"  FAILED  a shell call was credited as a proven read: {rows!r}")
+            trouble += 1
+
+        # And the run-level consequence, which is where a `write=False` does its
+        # damage: a run of nothing but shell, with every witness reporting
+        # nothing, is `not_proven` and not `false`.
+        shell_only = dict(row)
+        shell_only.update({"files_touched_on_disk": 0, "is_error": False,
+                           "tree_unchanged": True, "task_success": True})
+        seen_as = reversible_verdict(shell_only, True, True).get("intermediate_state")
+        if seen_as == "not_proven":
+            print("  ok      a run of nothing but shell, with the mtimes put back, is "
+                  "NOT PROVEN rather than proven innocent")
+        else:
+            print(f"  FAILED  a shell-only run was graded {seen_as!r}, not 'not_proven'")
+            trouble += 1
+
         # Arm B's shape, and the one that matters: `thalyx_edit` with `show` is
         # a read. Counting it as a write would credit arm B with edits it never
         # made, which is the direction this comparison must not be wrong in.
@@ -1666,6 +2451,12 @@ def verdict_self_test():
             "read_only_calls_naming_the_new_name": 0, "mutating_tool_calls": 6,
             "mutating_tool_calls_confirmed": 6, "mutating_tool_calls_that_failed": 0,
             "mutating_tool_calls_never_answered": 0,
+            # Zero, and present. An arm that made no call of unknown effect is a
+            # different fact from one nobody counted them for, and the witness
+            # rule below turns on exactly that difference.
+            "calls_of_unknown_mutation": 0,
+            "unknown_calls_naming_the_new_name": 0,
+            "answered_unknown_calls_naming_the_new_name": 0,
             "files_touched_on_disk": 6, "is_error": False,
             "tree_unchanged": True, "task_success": True}
 
@@ -1736,15 +2527,44 @@ def verdict_self_test():
         # the filesystem moved. Arm A is allowed to win that way.
         ("renamed with the shell, where the stream cannot see a write",
          like(mutations_naming_the_new_name=0, mutating_tool_calls=0,
-              mutating_tool_calls_confirmed=0),
+              mutating_tool_calls_confirmed=0, calls_of_unknown_mutation=6,
+              unknown_calls_naming_the_new_name=6,
+              answered_unknown_calls_naming_the_new_name=6),
          {"passed": True, "mutation_attempted": True}),
 
         # And its control, one field apart: the same shell calls with nothing
-        # touched on disk is a `grep`, and must not pass.
+        # touched on disk is a `grep`, and must not pass. It must not *fail*
+        # for the wrong reason either — see the case under it.
         ("used the shell only to look",
          like(mutations_naming_the_new_name=0, mutating_tool_calls=0,
-              mutating_tool_calls_confirmed=0, files_touched_on_disk=0),
-         {"passed": False, "really_changed": False}),
+              mutating_tool_calls_confirmed=0, calls_of_unknown_mutation=6,
+              unknown_calls_naming_the_new_name=6,
+              answered_unknown_calls_naming_the_new_name=6,
+              files_touched_on_disk=0),
+         {"passed": None, "really_changed": False}),
+
+        # ── the 2026-08-29 forensics, as a verdict ──
+        #
+        # A run whose only calls were `Bash`, whose mtimes came back where they
+        # started, and which therefore has no witness that saw anything. The
+        # old verdict called that `intermediate_state: false` — *proven not to
+        # have written* — on the strength of a tool name. It is not proven; it
+        # is `git checkout -- .` and `ls` wearing the same word.
+        ("only ran the shell, and every witness saw nothing",
+         like(mutations_naming_the_new_name=0, tool_calls_naming_the_new_name=0,
+              mutating_tool_calls=0, mutating_tool_calls_confirmed=0,
+              calls_of_unknown_mutation=4, files_touched_on_disk=0),
+         {"passed": None, "intermediate_state": "not_proven"}),
+
+        # The control beside it, which is what keeps that from being a rule that
+        # makes every negative unprovable: a run whose calls are all tools that
+        # can only read really did not write, and says so.
+        ("only read, with no call of unknown effect in the stream",
+         like(mutations_naming_the_new_name=0, tool_calls_naming_the_new_name=0,
+              read_only_calls_naming_the_new_name=3,
+              mutating_tool_calls=0, mutating_tool_calls_confirmed=0,
+              calls_of_unknown_mutation=0, files_touched_on_disk=0),
+         {"passed": False, "intermediate_state": False}),
     ]
 
     # ── the witness, and the run it cost ────────────────────────────────────
@@ -2184,11 +3004,215 @@ def main():
         help="print every mutating call in each arm's stream with the tool's own "
              "answer to it, and stop",
     )
+    parser.add_argument(
+        "--scope-guard",
+        action="store_true",
+        help="read one Claude Code PreToolUse hook payload on stdin and exit 2 if "
+             "the call it describes would operate outside --workspace",
+    )
+    parser.add_argument("--workspace", type=pathlib.Path,
+                        help="the one tree a run is allowed to touch")
+    parser.add_argument("--repository", type=pathlib.Path,
+                        help="the checkout this harness itself lives in, so a call that "
+                             "reached it is named as that and not as a stray path")
+    parser.add_argument("--home", type=pathlib.Path,
+                        help="what `~` means on this host, so a path spelled with one "
+                             "can be resolved instead of refused")
+    parser.add_argument("--breach-file", type=pathlib.Path,
+                        help="append one JSON line per refused call, so the harness can "
+                             "see afterwards that there was one")
+    parser.add_argument(
+        "--preflight-verdict", type=pathlib.Path, metavar="REPORT",
+        help="decide, from `thalyx-mcp --preflight`'s JSON, whether arm B is ready to "
+             "be paid for; exit non-zero if it is not",
+    )
+    parser.add_argument("--project", type=pathlib.Path,
+                        help="the tree --preflight-verdict compares the machine against")
+    parser.add_argument(
+        "--import-stamp", type=pathlib.Path, metavar="DIR",
+        help="print, as JSON, what a tree is at the moment it is imported: where it "
+             "came from, its commit, the exclusions, and the digest of its manifest",
+    )
+    parser.add_argument("--exclusions", action="store_true",
+                        help="print the machinery roots this file sets aside, as JSON")
+    parser.add_argument(
+        "--provenance", type=pathlib.Path, metavar="FILE",
+        help="write the record of what each arm was given, before either arm runs",
+    )
+    parser.add_argument(
+        "--scope-check", type=pathlib.Path, metavar="OUT",
+        help="say where one arm actually worked, from its own stream, and exit "
+             "non-zero unless it stayed inside the workspace it was given",
+    )
+    parser.add_argument("--arm", default="A", help="which arm --scope-check is about")
+    parser.add_argument(
+        "--check-parity", type=pathlib.Path, metavar="PROVENANCE",
+        help="exit non-zero unless the two arms were given comparable inputs",
+    )
+    parser.add_argument("--import-mark", type=pathlib.Path,
+                        help="the stamp `image/Makefile project-stage` wrote when it "
+                             "imported the project into the machine, which is arm B's "
+                             "half of that record")
     parser.add_argument("--self-test", action="store_true")
     given = parser.parse_args()
 
+    if given.exclusions:
+        print(json.dumps(list(OUTSIDE_THE_WORKSPACE)))
+        sys.exit(0)
+
+    if given.provenance is not None:
+        # What both arms were given, written down before either of them runs,
+        # by the one program that knows what a tree is.
+        #
+        # Not so a report can quote it: so the summary can **refuse**. A
+        # comparison whose two arms were staged from different trees is not a
+        # comparison, and until 2026-08-29 nothing here could have told the
+        # difference — arm B's baseline was a hash of `--project` taken on the
+        # assumption that the store carried the same project, an assumption
+        # written in a comment and checked nowhere.
+        record = {
+            "task": given.task, "symbol": given.symbol, "marker": given.marker,
+            "model": given.model, "max_turns": given.turns,
+            "project": str(given.project.resolve()) if given.project else None,
+            # The checkout this harness lives in, named so that a call which
+            # reached it is reported as what it is and not as a stray path.
+            "repository": str(given.repository.resolve()) if given.repository else None,
+            "home": os.path.expanduser("~"),
+            "exclusions": list(OUTSIDE_THE_WORKSPACE),
+            "arms": {},
+        }
+
+        if given.workspace and given.workspace.is_dir():
+            side = {
+                "imported_from": str(given.project.resolve()) if given.project else None,
+                "input_manifest": manifest_digest(given.workspace),
+                "exclusions": list(OUTSIDE_THE_WORKSPACE),
+                "source_commit": _commit(given.workspace),
+                "effective_cwd": str(given.workspace.resolve()),
+                "staged_by": "dev/bench-external-agent.sh, tar from --project",
+            }
+            record["arms"]["A"] = side
+
+        if given.import_mark and given.import_mark.exists():
+            # Arm B's half, and it is **read** rather than computed: nothing on
+            # this host can hash a tree inside a live Btrfs image, so the only
+            # honest evidence is the stamp the importer wrote at import time.
+            try:
+                side = json.loads(given.import_mark.read_text())
+            except (OSError, json.JSONDecodeError) as why:
+                side = {"unreadable": f"{given.import_mark}: {why}"}
+            side["effective_cwd"] = side.get("workspace")
+            side["staged_by"] = "image/Makefile project-stage"
+            record["arms"]["B"] = side
+
+        record["source_commit"] = (record["arms"].get("A") or {}).get("source_commit")
+        given.provenance.write_text(json.dumps(record, indent=2))
+        print(json.dumps(record, indent=2))
+        sys.exit(0)
+
+    if given.scope_check is not None:
+        # The same report the summary carries, asked early enough to matter.
+        # Between arm A and arm B is the only moment at which knowing arm A
+        # strayed still saves the price of arm B.
+        out = given.scope_check
+        try:
+            record = json.loads((out / "provenance.json").read_text())
+        except (OSError, json.JSONDecodeError) as why:
+            print(f"  no provenance, so where the arm worked cannot be judged: {why}",
+                  file=sys.stderr)
+            sys.exit(1)
+        side = ((record.get("arms") or {}).get(given.arm)) or {}
+        workspace = side.get("effective_cwd")
+        stream = out / f"arm{given.arm}.ndjson"
+        if not workspace or not stream.exists() or not stream.stat().st_size:
+            print(f"  nothing to judge: arm {given.arm} has no stream or no workspace on "
+                  f"record", file=sys.stderr)
+            sys.exit(1)
+        report = scope_report(stream, workspace, home=record.get("home"),
+                              repository=record.get("repository"))
+        breach = out / f"arm{given.arm}.breach.jsonl"
+        if breach.exists() and breach.stat().st_size:
+            # The live guard's own record, kept beside the stream's. Two
+            # instruments looking at the same thing: rule 5 says that is the
+            # point, and a disagreement between them is worth more than either.
+            report["calls_the_guard_refused"] = [
+                json.loads(line) for line in breach.read_text().splitlines() if line.strip()
+            ][:40]
+        print(json.dumps(report, indent=2))
+        sys.exit(0 if report["scope"] == "INTACT" else 1)
+
+    if given.check_parity is not None:
+        try:
+            record = json.loads(given.check_parity.read_text())
+        except (OSError, json.JSONDecodeError) as why:
+            print(f"  no provenance to check: {why}", file=sys.stderr)
+            sys.exit(1)
+        verdict = parity_verdict(record)
+        print(json.dumps(verdict, indent=2))
+        sys.exit(0 if verdict["comparable"] else 1)
+
+    if given.import_stamp is not None:
+        # Written by whoever is doing the importing, at the moment of the
+        # import, and never worked out afterwards by the thing that wants the
+        # answer. `image/Makefile`'s `project-stage` writes one for arm B and
+        # `bench-external-agent.sh` writes one for arm A, both through this, so
+        # the two stamps are comparable because they are the same program.
+        where = given.import_stamp
+        if not where.is_dir():
+            print(f"  not a directory: {where}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({
+            "imported_from": str(where.resolve()),
+            "input_manifest": manifest_digest(where),
+            "exclusions": list(OUTSIDE_THE_WORKSPACE),
+            "source_commit": _commit(where),
+            "workspace": str(given.workspace) if given.workspace else None,
+        }, indent=2))
+        sys.exit(0)
+
     if given.self_test:
         sys.exit(self_test())
+
+    # ── the live guard ──
+    #
+    # Exit 0 lets the call through, exit 2 is Claude Code's "blocked, and this
+    # is why" — the stderr goes to the model. Anything else would be a hook that
+    # failed, which the CLI treats as a warning and lets the call proceed, so
+    # every path through here ends in one of those two.
+    if given.scope_guard:
+        if not given.workspace:
+            parser.error("--scope-guard needs --workspace")
+        try:
+            hook = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            # Rule 9. A payload this could not read is not a call it may wave
+            # through: it is a guard that has stopped working, and the run it
+            # was guarding must not continue as though it had not.
+            print("the scope guard could not read its own hook payload", file=sys.stderr)
+            sys.exit(2)
+        allowed, why = scope_guard(hook, given.workspace, given.home)
+        if allowed:
+            sys.exit(0)
+        if given.breach_file:
+            with given.breach_file.open("a") as into:
+                into.write(json.dumps({
+                    "tool": hook.get("tool_name"),
+                    "input": hook.get("tool_input"),
+                    "why": why,
+                }) + "\n")
+        print(why, file=sys.stderr)
+        sys.exit(2)
+
+    # ── arm B, before anything is paid for ──
+    if given.preflight_verdict is not None:
+        try:
+            report = json.loads(given.preflight_verdict.read_text())
+        except (OSError, json.JSONDecodeError) as why:
+            report = None
+            print(f"  the preflight probe left nothing readable: {why}", file=sys.stderr)
+        verdict = preflight_verdict(report, given.project)
+        print(json.dumps(verdict, indent=2))
+        sys.exit(0 if verdict["ready"] else 1)
 
     for where, what in ((given.manifest, manifest_digest),
                         (given.manifest_lines, manifest),
@@ -2220,10 +3244,13 @@ def main():
                 continue
             rows = forensics(stream, given.marker or None)
             if not rows:
-                print("  no call in this stream could have changed anything, and none "
-                      "named the new name")
+                print("  every call in this stream is of a tool that can only read, and "
+                      "none named the new name")
+            elif not any(entry["mutation"] == "writes" for entry in rows):
+                print("  nothing here is a certain write. `mutation=unknown` means the "
+                      "stream cannot say — it is not `did not write`")
             for n, entry in enumerate(rows, 1):
-                print(f"  {n:>3}  {entry['tool']}  write={entry['a_write']}  "
+                print(f"  {n:>3}  {entry['tool']}  mutation={entry['mutation']}  "
                       f"names_new={entry['names_the_new_name']}  -> {entry['result']}")
                 print(f"       asked:    {entry['asked']}")
                 print(f"       answered: {entry['answered']}")
@@ -2240,8 +3267,21 @@ def main():
             if line.strip() and not line.startswith("#")
         ]
 
-    arms = [row for row in (arm(given.out, "A", expectations, given.marker, given.task),
-                            arm(given.out, "B", expectations, given.marker, given.task)) if row]
+    # Written by the harness before either arm ran, and read here rather than
+    # re-derived: what the two arms were given, where each of them was put, and
+    # which commit it all came from. A summary that worked this out for itself
+    # afterwards would be the harness grading its own homework.
+    provenance = None
+    where = given.out / "provenance.json"
+    if where.exists() and where.stat().st_size:
+        try:
+            provenance = json.loads(where.read_text())
+        except json.JSONDecodeError:
+            provenance = {"unreadable": str(where)}
+
+    arms = [row for row in (
+        arm(given.out, "A", expectations, given.marker, given.task, provenance),
+        arm(given.out, "B", expectations, given.marker, given.task, provenance)) if row]
     summary = {
         "task": given.task,
         "symbol": given.symbol,
@@ -2255,6 +3295,11 @@ def main():
                    "`machinery_set_aside` rather than hidden",
         },
         "graded_against": expectations or None,
+        "provenance": provenance,
+        # Absent rather than invented when the harness wrote no provenance: a
+        # run whose inputs nobody recorded is a run nobody can say the arms of
+        # were comparable, and that is not the same as saying they were not.
+        "workspace_parity": parity_verdict(provenance) if provenance else None,
         "arms": arms,
         "note": "One run of one task. This is a harness, not a result.",
     }
@@ -2340,6 +3385,37 @@ def main():
         print(f"\n  NOT PROVEN  arm {', arm '.join(unwitnessed)}: {NO_WITNESS}", file=sys.stderr)
         if given.require_mutation_witness:
             trouble = 1
+
+    # ── and the two that are never optional ──
+    #
+    # These have no `--require-…` switch and that is deliberate. The others
+    # guard claims a run can honestly fail to have measured; these two say the
+    # run was not the experiment it says it was, and a comparison between an arm
+    # that worked somewhere else and an arm that worked where it was put is not
+    # a comparison anybody should be able to opt into.
+    strayed = [row["arm"] for row in summary["arms"]
+               if row.get("scope", {}).get("scope") == "VIOLATED"]
+    if strayed:
+        for row in summary["arms"]:
+            scope = row.get("scope") or {}
+            if scope.get("scope") != "VIOLATED":
+                continue
+            print(f"\n  INVALID  arm {row['arm']} operated outside its workspace "
+                  f"({scope.get('workspace')})", file=sys.stderr)
+            if scope.get("cwd_is_the_workspace") is False:
+                print(f"           it started in {scope.get('cwd_reported')!r}",
+                      file=sys.stderr)
+            for entry in scope.get("paths_outside_the_workspace", [])[:10]:
+                print(f"           {entry['tool']} {entry['field']}={entry['path']!r}",
+                      file=sys.stderr)
+        trouble = 1
+
+    parity = summary.get("workspace_parity")
+    if parity and not parity.get("comparable"):
+        print("\n  INVALID  the two arms were not given comparable inputs:", file=sys.stderr)
+        for why in parity.get("because", []):
+            print(f"           {why}", file=sys.stderr)
+        trouble = 1
 
     if trouble:
         sys.exit(1)

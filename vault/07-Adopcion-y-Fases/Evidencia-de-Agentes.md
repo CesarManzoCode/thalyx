@@ -196,13 +196,119 @@ Primero se mide la tarea que sí ejercita la frontera reversible.
 
 ---
 
+## AVISO — 2026-08-29, revisión posterior: el brazo A no trabajaba en `--project`
+
+**Esto se aplica a todas las corridas de abajo, sin excepción, y hay que leerlo
+antes que cualquier número de esta nota.**
+
+Una revisión de la forense de REVERSIBLE #1 encontró al brazo A ejecutando
+comandos como
+
+```
+cd /home/cesarmanzocode/thalyx
+```
+
+cuando el arnés había recibido `--project /tmp/bench-thalyx`. La causa está en
+una sola línea de `dev/bench-external-agent.sh`, y estuvo ahí **desde el primer
+commit del arnés**: `--out` vale por omisión `$ROOT/target/bench-external-agent`,
+`$ROOT` es el checkout donde vive el script, y la copia del brazo A se hacía en
+`$OUT/a`. Es decir, `claude` se arrancaba **físicamente dentro del clon de
+trabajo de Cesar**, y Claude Code recoge el `CLAUDE.md` de cada ancestro de su
+directorio de trabajo — el de este proyecto, que empieza con «lee esto antes que
+nada» y nombra `vault/06-Pendientes/Punto-Actual.md`. El brazo A empezaba la
+tarea con instrucciones sobre `~/thalyx` en el contexto, y se fue a trabajar a
+`~/thalyx`.
+
+**Qué se degrada y qué no.** Los datos de abajo **no se borran** — la regla 5 de
+esta nota dice que borrar un resultado observado es la otra manera de mentir.
+Lo que se degrada es su **fuerza**:
+
+| lo que sigue valiendo | lo que ya no |
+|---|---|
+| observación / diagnóstico: el brazo A hizo *algo* y costó *eso* | **comparación controlada** entre dos brazos |
+| el brazo B, que sí estaba confinado a su copia dentro de la máquina | que los dos brazos vieran el mismo árbol |
+| que el arnés corre de punta a punta | cualquier porcentaje leído como «Thalyx cuesta −X %» |
+
+Los porcentajes de abajo son de un brazo A cuyo árbol de trabajo, contexto y
+directorio efectivo no están probados. **No son un resultado de esta comparación
+y no deben citarse como tal.**
+
+### Qué corridas están afectadas
+
+`git log` del arnés dice que el escenificado del brazo A —`rm -rf "$OUT/a"`,
+`tar` desde `$PROJECT`, `run_arm A "$OUT/a"`— es **idéntico desde `a6feb32`**,
+el commit que trajo el arnés. Así que:
+
+| corrida | mecanismo afectado | qué se puede afirmar hoy |
+|---|---|---|
+| corrida histórica | **sí** | mismo arnés, misma línea |
+| READ #1 | **sí** | mismo arnés, misma línea |
+| READ #2 | **sí** | mismo arnés, misma línea |
+| CHANGE #1 | **sí** | mismo arnés, misma línea |
+| REVERSIBLE #1 | **sí, y observado** | es la única donde la forense lo *muestra* |
+
+La distinción importa y no se debe suavizar en ninguna dirección:
+
+- **El mecanismo estaba en todas.** El brazo A de todas ellas arrancó dentro de
+  `~/thalyx`, con el `CLAUDE.md` de este repositorio en su contexto. Eso es un
+  hecho sobre el arnés, no una sospecha.
+- **Que además *saliera* de su copia sólo está observado en REVERSIBLE #1**, que
+  es la única cuya forense se leyó con esa pregunta en la mano. De las otras no
+  se afirma ni que sí ni que no: **nadie ha mirado**, que es distinto de que no
+  haya pasado.
+
+Y se puede mirar, gratis, sin correr ningún agente: los streams de esas corridas
+están en sus directorios `--out`, y
+
+```sh
+dev/bench-summary.py --scope-check <dir-de-la-corrida> --arm A
+```
+
+lee de cada stream el `system init` —que trae el directorio en que arrancó— y
+cada ruta de cada llamada, y dice `INTACT` o `VIOLATED`. Mientras eso no se
+corra sobre cada `--out` que sobreviva, las cuatro filas de arriba se quedan
+como están: mecanismo afectado, salida no observada.
+
+### Qué se cambió para que no pueda repetirse
+
+Está descrito entero en la cabecera de `dev/bench-external-agent.sh`. En corto,
+y en el orden en que corre, todo **antes** de llamar a Claude:
+
+1. **el brazo B se prueba vivo** (`thalyx-mcp --preflight`) contra el canal real
+   —el hello, un `where` y un `list .` comparado con `--project`—, porque la
+   corrida del 2026-08-29 pagó el brazo A entero y después el B dio `0s` y cero
+   eventos, con el único control siendo `[ -S "$SOCKET" ]`, que pregunta si
+   existe un *archivo*;
+2. **los dos brazos se comparan de entrada**: la copia del brazo A y el sello
+   que `project-stage` escribió al importar el proyecto se resumen con el mismo
+   programa, y `provenance.json` guarda commit de origen, manifiesto lógico de
+   entrada, exclusiones y directorio efectivo de cada brazo;
+3. **el brazo A se ancla**: su copia se escenifica **fuera de este checkout**,
+   se revisa cada ancestro por `CLAUDE.md`, `.claude/`, `.mcp.json` o `.git`, el
+   proceso arranca físicamente adentro, y un hook `PreToolUse` rechaza cualquier
+   llamada que nombre una ruta de afuera;
+4. **se comprueba después que se quedó ahí**, leyendo del stream el `system
+   init` y todas las rutas de todas las llamadas. Una sola llamada afuera deja
+   la corrida `INVALID`, y se comprueba **entre los dos brazos**, que es el
+   último momento en que saberlo cuesta menos que el brazo B.
+
+Los cuatro están aparte a propósito: los tres primeros son cosas que se pueden
+hacer verdaderas; el cuarto es el único que es **evidencia**, porque no necesita
+que ninguno de los otros haya funcionado.
+
+---
+
 ## El estado de la evidencia, en cuatro renglones
+
+> **Léase con el aviso de arriba.** Las cuatro filas describen lo que se
+> observó; ninguna de ellas es hoy una comparación controlada, porque el brazo A
+> de todas ellas no estaba anclado a `--project`.
 
 | clase de trabajo | qué se observó |
 |---|---|
-| **comprensión / navegación semántica** | dos observaciones, las dos favorecen claramente a Thalyx |
-| **edición simple de un archivo** | una observación: empate en costo, peor en tiempo |
-| **edición multiarchivo reversible** | una observación válida y **mixta**: correcto en los dos brazos, Thalyx más barato y más lento; provocó `sustituir` |
+| **comprensión / navegación semántica** | dos observaciones, las dos favorecen claramente a Thalyx — **brazo A no anclado** |
+| **edición simple de un archivo** | una observación: empate en costo, peor en tiempo — **brazo A no anclado** |
+| **edición multiarchivo reversible** | una observación **mixta** con veredicto válido bajo el grader de entonces: correcto en los dos brazos, Thalyx más barato y más lento; provocó `sustituir` — **brazo A no anclado, y observado saliéndose** |
 | **bug real de desarrollo (dogfooding)** | **todavía no medido**; el protocolo está más abajo |
 
 Y lo que hay que decir junto a esa tabla, con todas las letras:
@@ -217,7 +323,26 @@ Y lo que hay que decir junto a esa tabla, con todas las letras:
 
 ---
 
-## Banco reversible: CORRIDO, REGRADADO, VÁLIDO
+## Banco reversible: CORRIDO, REGRADADO — y después DEGRADADO a observación
+
+> **REVERSIBLE #1 ya no es una comparación controlada.** El veredicto `VALID`
+> que se lee abajo lo dio el grader de ese día, y era honesto con lo que ese
+> grader sabía: que los dos brazos cambiaron de verdad, contestaron bien y
+> devolvieron el árbol. Lo que ese grader no preguntaba —y por eso no lo dijo—
+> es **dónde** trabajó el brazo A. Preguntado después, la forense contestó
+> `cd /home/cesarmanzocode/thalyx`.
+>
+> Todo lo que sigue se conserva como **observación y diagnóstico**, con sus
+> números tal como se imprimieron. Ninguno de ellos es un resultado de la
+> comparación que esta nota existe para hacer. Ver el aviso del 2026-08-29 más
+> arriba.
+>
+> Y hay una cosa más que ese grader no podía decir, encontrada en la misma
+> revisión: llamaba `write=False` a un `Bash` cuyo comando era
+> `git checkout -- <archivo>`. Contar mutaciones a partir del nombre de la
+> herramienta es contar intenciones, no efectos; hoy hay tres clases —`writes`,
+> `reads`, `unknown`— y el testigo del sistema de archivos es la autoridad.
+> Ninguna de las cuentas de abajo se recalculó con eso.
 
 **Se corrió el 2026-08-29, el instrumento estaba mal, se arregló el instrumento
 y la corrida se volvió a leer sin gastar nada.** El resultado bruto decía
@@ -465,14 +590,33 @@ lo honesto que se puede hacer hoy.
 
 **LO QUE TODAVÍA NO SE PUEDE AFIRMAR.** Que esto mejore el banco. Nadie lo ha
 medido. La próxima corrida de `--task reversible` es **la prueba de esa
-hipótesis**, no su confirmación, y el arnés queda **congelado** exactamente como
-está: no se adapta la prueba al producto. Repetirla es una sola orden:
+hipótesis**, no su confirmación, y el arnés queda **congelado** en lo que mide:
+no se adapta la prueba al producto. Lo único que cambió desde entonces son los
+controles que deciden si la corrida vale —anclaje del brazo A, preflight del
+brazo B, paridad de entradas—, que no tocan ni el prompt ni las métricas.
+
+**La repetición limpia, en dos órdenes.** La primera importa el proyecto en la
+máquina y la arranca; la segunda corre el banco. `--project` es obligatorio y es
+lo que los dos brazos reciben:
 
 ```sh
+make -C image agent PROJECT=/tmp/bench-thalyx
+
 dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+    --project /tmp/bench-thalyx \
     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
-    --out target/bench-external-agent-2
+    --workspace /tmp/thalyx-bench-arm-a \
+    --out target/bench-external-agent-3
 ```
+
+`--workspace` está escrito aunque sea el valor por omisión, porque es
+exactamente lo que salió mal: **la copia del brazo A no puede vivir dentro de
+este checkout.** Si se omite, vale `$TMPDIR/thalyx-bench-arm-a`; si se apunta a
+algún lugar con un `CLAUDE.md`, un `.claude/`, un `.mcp.json` o un `.git`
+encima, la corrida se niega a arrancar y dice cuál de ellos encontró.
+
+Si el brazo B no está vivo, o los dos brazos no vienen del mismo árbol, la
+corrida se detiene **antes de llamar a Claude en ningún brazo** y no gasta nada.
 
 Si el tiempo de pared no se mueve, la hipótesis estaba equivocada y la operación
 se queda de todos modos —una llamada donde había dieciséis es correcta aunque no
