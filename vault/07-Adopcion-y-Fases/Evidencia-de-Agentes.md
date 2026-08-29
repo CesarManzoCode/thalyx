@@ -840,7 +840,17 @@ encauzar peticiones por el puente y una máquina que sirva verbos en paralelo:
 es un cambio de protocolo, no una optimización local, y no compraría nada en
 esta traza.
 
-### `attempt abandon`, que sigue costando dos llamadas y se queda así
+### `attempt abandon`, que costaba dos llamadas — REVISADO el 2026-08-29
+
+> **Esta sección se conserva como estaba y queda revisada por
+> REVERSIBLE #4/#5/#6, más abajo.** Lo que sigue siendo cierto: la confirmación
+> protege trabajo ajeno y es una propiedad real. Lo que resultó falso: que eso
+> obligara a dos llamadas. Ahora hay una forma de decir que sí **en una sola
+> llamada y más fuerte** —nombrar el intento y declarar lo que cuesta— que se
+> niega justamente cuando hay trabajo de otra persona en el árbol, que es el
+> caso que esta sección quería proteger y el que `confirm: true` a ciegas nunca
+> protegió. El camino viejo sigue intacto.
+
 
 La traza gasta dos: `abandon`, «needs confirmation», `abandon confirm=true`. Se
 revisó si esa confirmación es una propiedad de seguridad real o UX humana
@@ -868,6 +878,115 @@ El `find` que sigue al abandon **no se toca**: es el agente comprobando por su
 cuenta que el árbol volvió, que es el último paso de la tarea. Ahorrárselo
 haciendo que Thalyx afirme su propio éxito es exactamente lo que la regla 2 de
 [[Estrategia-de-Pruebas]] prohíbe.
+
+---
+
+## REVERSIBLE #4, #5 y #6 — tres corridas de la misma forma, y dónde se va el trabajo
+
+Tres corridas reales con **todo igual**: tarea `reversible`, símbolo
+`UidRegistry`, corpus `ad79db5+dirty`, modelo sonnet, el mismo Thalyx de esta
+serie.
+
+### De dónde salen estos números, que no es lo mismo que las secciones de arriba
+
+**Los porcentajes vienen de los `summary.json` de las tres corridas. Las
+secuencias de llamadas fueron transcritas por Cesar desde `--forensics`, y la
+sesión que escribió esta sección no leyó los `armB.ndjson`**: los artefactos
+viven en `target/`, que está en `.gitignore`, y el contenedor donde se
+implementó era un clon limpio. Es una diferencia de calidad de evidencia y se
+deja escrita, porque la regla 5 de [[Estrategia-de-Pruebas]] es exactamente
+sobre esto: lo que se leyó de segunda mano se nombra como leído de segunda mano.
+Lo que sí se comprobó de primera mano —contra el código, en el repositorio— es
+*por qué* cada llamada de esas secuencias existe.
+
+### Lo replicado, que es lo importante
+
+`sustituir-lote` funciona, y las tres corridas lo dicen igual:
+
+- **1 sola edición mutante** en B4, B5 y B6;
+- **0 lecturas de archivo** en las tres;
+- **restore byte a byte PROVEN** en las tres, después del export.
+
+Ésa era la hipótesis abierta al final de REVERSIBLE #2 y ya no lo está.
+
+### B contra A, corrida por corrida
+
+| | costo | reloj | API | output | bytes enviados | mutaciones |
+|---|---|---|---|---|---|---|
+| RUN 4 | −25.6 % | −35.1 % | −41.6 % | −45.6 % | −56.6 % | 1 vs 6 |
+| RUN 5 | **+40.6 %** | −7.6 % | −24.8 % | −29.0 % | −39.4 % | 1 |
+| RUN 6 | **+68.8 %** | −16.4 % | −36.9 % | −44.7 % | −23.8 % | 1 |
+
+Leído como corresponde, sin promediar:
+
+- Thalyx ganó **reloj en 3/3**, **tiempo de API en 3/3** y **output en 3/3**.
+- Thalyx **no** ganó costo de forma consistente: lo ganó en una de tres.
+- En 5 y 6 el `cache-read` de B supera con mucho el de A.
+
+La lectura que importa: **el cuello ya no es la edición.** Es el número de
+rondas. Cada ronda nueva vuelve a arrastrar contexto, y por eso B puede mandar
+menos bytes y costar más.
+
+### Las secuencias
+
+```text
+RUN 4, B                    RUN 5 y RUN 6, B (idénticas)
+1 ToolSearch                1 ToolSearch  → selección fallida
+2 attempt begin             2 ToolSearch  → búsqueda
+3 edit substitute           3 attempt begin
+4 find (nombre nuevo)       4 edit substitute
+5 attempt abandon           5 attempt abandon
+6 attempt abandon confirm   6 attempt abandon confirm
+7 find (nombre nuevo)
+```
+
+```text
+RUN 5, A: 4 llamadas de Bash
+RUN 6, A: 2 llamadas de Bash
+          — una hace y observa la operación
+          — otra restaura con git checkout y verifica
+```
+
+### Dónde se va el trabajo, con los mecanismos separados
+
+Runs 5 y 6 son la forma replicada: B gasta 6 llamadas y A gasta 2. Esas 4
+llamadas de diferencia se reparten así, y la repartición es el resultado de esta
+sección:
+
+| mecanismo | llamadas | qué es |
+|---|---|---|
+| **A — descubrimiento** | 2 | `ToolSearch` dos veces, y la primera es una *selección fallida*: el agente pidió herramientas por nombre y las nombró mal |
+| **B — protocolo de intento** | 2 | `begin` como viaje propio, y `abandon` repetido |
+| **C — composición de Bash** | **0** | B no localizó nada y no verificó nada en esas dos corridas, así que no hubo nada que componer |
+
+**C queda descartado por la evidencia misma.** La ventaja de Bash es real y está
+en la traza de A —una llamada que localiza, muta y verifica; otra que restaura y
+verifica— pero en las corridas replicadas **no le costó a Thalyx ninguna
+llamada**. Aparece sólo en RUN 4, como dos `find`, y los dos son verificación
+posterior del propio agente: uno después de editar y otro después de restaurar.
+Uno de tres, sin razón estructural.
+
+Por eso **no se construyó un verbo de lote genérico y no se metió shell.** No
+hay evidencia que lo justifique, y la regla de parada dice que un patrón que
+aparece una vez y no tiene razón estructural no se implementa.
+
+Y dos hechos de adyacencia, ambos 3/3, que son lo que sí justifica lo que se
+hizo:
+
+1. **`attempt begin` va seguido *inmediatamente* de la mutación**, sin ninguna
+   llamada en medio, en las tres. Son una sola intención que la superficie
+   cobraba dos veces.
+2. **`attempt abandon` va seguido *inmediatamente* de `abandon confirm=true`**,
+   sin ninguna llamada en medio, en las tres. El agente no miró nada entre las
+   dos: la segunda no traía autoridad que la primera no tuviera ya.
+
+### Y una parte del costo era de la descripción, no del protocolo
+
+Vale escribirlo porque corrige lo que decía la sección anterior de esta nota:
+`confirm: true` en la **primera** llamada **ya pasaba derecho** —la máquina
+nunca impuso las dos llamadas—. Lo que imponía las dos era la descripción de la
+herramienta, que enseñaba «repite con confirm true». Una de las dos llamadas se
+podía haber quitado cambiando una frase.
 
 ---
 

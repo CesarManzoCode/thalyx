@@ -5444,3 +5444,36 @@ porque los dos nombres eran una sola ruta. Al lado va
 nombre y por eso corre **también en el contenedor**, donde no hay Btrfs: la
 afirmación sobre la que descansa todo el archivo no debería ser demostrable sólo
 en la máquina donde ya todo lo demás lo es.
+
+## Regla derivada: un contador que sólo conoce una forma de decir que sí deja de contar cuando aparece la segunda — 2026-08-29
+
+**La regla.** Cuando se agrega una segunda manera de pedir la misma cosa, hay
+que ir a buscar a todos los que reconocían la primera. Un instrumento que
+reconoce una sola forma no falla ni avisa: sigue contando, y el número que
+publica se vuelve mentira exactamente el día en que la forma nueva se empieza a
+usar. Es la regla 5 —el instrumento es parte de lo que un cambio puede romper—
+en su versión más silenciosa, porque acá no hay error, hay un cero.
+
+**Dónde apareció.** `crates/thalyx-mcp/src/metrics.rs` contaba
+`attempts_abandoned` así:
+
+```rust
+Some("abandon") if arguments.get("confirm").and_then(Value::as_bool) == Some(true)
+```
+
+Cuando `abandonar` pasó a poder hacerse en una llamada —nombrando el intento y
+declarando lo que cuesta, sin ningún `confirm`—, ese `if` habría reportado
+**cero abandonos** para un agente que usara la forma nueva. Y `attempts_abandoned`
+no es decoración: es de las pocas cosas que dicen que el brazo B realmente
+ejerció la frontera reversible, que es lo que el banco entero existe para medir.
+Una corrida futura habría dicho «el agente nunca abandonó» sobre una corrida en
+la que abandonó.
+
+Quedó como una función con nombre, `consented`, que conoce las dos formas y
+nombra por qué existe, para que la tercera —si la hay— tenga un solo lugar donde
+agregarse.
+
+**Lo que la regla pide.** Al agregar una segunda forma de una operación,
+`grep` por el nombre de la primera fuera del código que la implementa. Lo que
+aparezca en métricas, en resúmenes, en el arnés del banco o en una prueba que
+cuenta, o entiende las dos formas o está midiendo otra cosa a partir de ahora.

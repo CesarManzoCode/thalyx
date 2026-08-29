@@ -7243,7 +7243,67 @@ else
 fi
 }
 
-parallel_stages stage_49 stage_50 stage_51 stage_52
+stage_53() {
+step "53. a reversible change is two round trips where it was four"
+
+# The claim REVERSIBLE #4/#5/#6 produced, and the next one down from stage 52's.
+#
+# Those three runs said `sustituir-lote` worked — one mutating edit, no file
+# reads, a byte-exact restore, three times out of three. And they said where the
+# work goes now: runs 5 and 6 are the same six calls, and four of them are
+# `attempt begin`, the edit, `abandon`, `abandon confirm`. In all three runs the
+# begin is immediately followed by the mutation and the abandon is immediately
+# followed by its echo, with **no call in between** either time — two pairs that
+# were one intention each.
+#
+# So two things are checked here, and neither is a benchmark result:
+#
+#   - the arithmetic, on the tool surface: those four calls are two;
+#   - the decision behind the second of them, which is the part that could be
+#     dangerous. Abandoning in one call is allowed only when the caller names
+#     the attempt on record and states what it costs, so a file somebody else
+#     wrote while the attempt was open stops it — where a blind `confirm: true`
+#     never did.
+#
+# Whether any of it moves an agent's cost or clock is answered by running the
+# benchmark, not here.
+if cargo test -p thalyx-mcp > "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-cli --bin thalyx attempt:: >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-cli --test an_attempt_can_be_taken_back \
+            >> "$WORK/round-trips.log" 2>&1; then
+    proven "opening an attempt and changing something is one round trip and two requests, abandoning is one call where it was two, and the one-call form refuses a claim that stopped matching the tree — which is work somebody else did"
+else
+    failed "the reversible round trips do not hold their own claims; see $WORK/round-trips.log"
+    excerpt "$WORK/round-trips.log" 25
+fi
+}
+
+stage_54() {
+step "54. what the bridge costs, with no model and no QEMU"
+
+# `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`: arm B's total wall clock
+# runs about six seconds over the API time the agent reports, fairly steadily,
+# and nothing in the benchmark says where that goes. This is the part of the
+# path that can be measured for free — thalyx-mcp over a UNIX socket into
+# `thalyx bridge serve`, the same code the machine runs with a virtio port where
+# this has a socket.
+#
+# Reported and not asserted. A threshold here would be a threshold about this
+# machine's load, which is rule 7 from the wrong side: there is no direction
+# ambient noise cannot reach on a number this small. What the stage is for is
+# that the number exists and keeps existing — a bridge that quietly grew a
+# per-call connect would show up here as milliseconds turning into tens of them.
+if bash "$ROOT/dev/bridge-cost.sh" --calls 60 > "$WORK/bridge-cost.log" 2>&1; then
+    proven "the adapter, the socket and the machine answer a question in well under a millisecond on this host, so the benchmark's missing seconds are not this path"
+    grep -E "questions to the machine|in the machine|in the adapter" "$WORK/bridge-cost.log" \
+        | sed 's/^/     /'
+else
+    unproven "the bridge could not be measured on this host; see $WORK/bridge-cost.log"
+    excerpt "$WORK/bridge-cost.log" 15
+fi
+}
+
+parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54
 
 # ------------------------------------------------- the machine, as it is left
 #

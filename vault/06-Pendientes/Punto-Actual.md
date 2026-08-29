@@ -14,9 +14,102 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El fixture de Btrfs, aislado de verdad: una arena por prueba — 2026-08-29
+> ## Menos rondas por tarea reversible: el intento se abre con la mutación y se abandona en una llamada — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Salió de las tres corridas reales del banco reversible —#4, #5 y #6, escritas
+> enteras en [[Evidencia-de-Agentes]]—. `sustituir-lote` quedó comprobado: **1
+> edición mutante, 0 lecturas de archivo y restore byte a byte en las tres**. Y
+> justo por eso el cuello se movió: ya no es la edición, es **el número de
+> rondas**, porque cada ronda vuelve a arrastrar contexto. Thalyx ganó reloj,
+> API y output en 3/3, y costo en 1/3.
+>
+> Las corridas 5 y 6 son idénticas: B gasta 6 llamadas donde Linux gasta 2. Esas
+> 4 de diferencia se repartieron en tres mecanismos, y **uno quedó descartado por
+> la evidencia**:
+>
+> - **descubrimiento de herramientas: 2 llamadas** —`ToolSearch` dos veces, y la
+>   primera es una *selección fallida*;
+> - **protocolo del intento: 2 llamadas** —`begin` como viaje propio, y `abandon`
+>   repetido;
+> - **composición de Bash: 0 llamadas.** En esas dos corridas B no localizó ni
+>   verificó nada, así que no hubo nada que componer. Por eso **no se hizo un
+>   verbo de lote genérico y no se metió shell**: no hay evidencia que lo pida.
+>
+> ### Lo que se construyó
+>
+> **1. El intento se abre en la misma llamada que la primera mutación.**
+> `thalyx_edit` y `thalyx_file` aceptan `attempt: "begin"`, y el adaptador manda
+> dos preguntas en un solo viaje —el snapshot primero, siempre—. Es la
+> composición que ese crate ya hacía para `thalyx_state`, que son tres. Si el
+> intento no se puede abrir, la mutación no ocurre: nada cambia.
+>
+> **2. Abandonar en una llamada, y más fuerte que antes.**
+>
+> ```
+> intento abandonar snapshot=<el que contestó empezar> delete=<N> revert=<M>
+> ```
+>
+> Procede sólo si el intento nombrado es el que está en el registro **y** los dos
+> números son exactamente lo que el árbol tiene en ese momento. La respuesta que
+> niega el permiso entrega esa línea ya armada, así que decir que sí cuesta una
+> llamada y nunca una adivinanza.
+>
+> Esto **no debilita** [[Camino-Confiable]]: lo aprieta. Si una persona escribió
+> en el árbol compartido mientras el intento estaba abierto, uno de esos dos
+> números se mueve, la declaración deja de coincidir y **no se destruye nada** —
+> que es justo el caso que la protección existía para cubrir y que `confirm:
+> true` a ciegas nunca cubrió. El camino viejo (`si`, `confirm: true`) sigue
+> intacto, palabra por palabra.
+>
+> **3. Las instrucciones nombran todas las herramientas.** La primera
+> `ToolSearch` de las corridas 5 y 6 fue una selección fallida: el agente pidió
+> herramientas por nombre y las nombró mal. Lo único que Thalyx controla ahí es
+> el texto que el modelo lee **antes** de buscar, así que ahora lleva la lista
+> exacta, generada de lo que la máquina ofrece de verdad.
+>
+> ### Lo que se midió, sin gastar API
+>
+> El puente, con `dev/bridge-cost.sh` —sin QEMU y sin modelo—:
+>
+> ```
+> en la máquina    0.40–0.55 ms por pregunta
+> en el adaptador  0.08–0.10 ms por pregunta
+> ```
+>
+> **Los ~6 s de diferencia entre reloj total y API no son el puente.** Ni con un
+> factor de cien por virtio darían seis segundos en nueve preguntas. No se forzó
+> ninguna optimización ahí. `thalyx-mcp --metrics` ahora escribe
+> `machine_requests` y `machine_seconds`, así que la próxima corrida real
+> contesta esto sobre sí misma sin costar nada.
+>
+> ### Lo que falta comprobar
+>
+> Las pruebas nuevas que corren acá son de decisión y de forma: la lógica de
+> consentimiento entera —siete pruebas, sin filesystem—, el conteo de viajes en
+> el adaptador, la frontera externa y las palabras llegando al verbo en un prompt
+> real. **Lo que este contenedor no puede correr es abandonar de verdad**, que
+> necesita Btrfs:
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y **la reducción de rondas frente a un agente real no está medida**: lo que
+> está probado es que 4 llamadas de esta superficie se vuelven 2. Que eso mueva
+> costo o reloj es hipótesis hasta que el banco se vuelva a correr.
+>
+> ### Una decisión que es de Cesar
+>
+> `confirm: true` a ciegas **sigue funcionando** en el canal del agente. Se dejó
+> a propósito: quitarlo haría obligatorio el camino fuerte, y es un decreto de
+> [[Camino-Confiable]], no una decisión de implementación. Está en
+> [[Tareas-Pendientes]].
+
+> ## El fixture de Btrfs, aislado de verdad: una arena por prueba — 2026-08-29
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Cesar corrió el control que cierra el diagnóstico anterior, en su Fedora, con
 > Btrfs de verdad:
