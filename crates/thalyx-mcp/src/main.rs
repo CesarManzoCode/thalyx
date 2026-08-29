@@ -290,7 +290,7 @@ fn handle(
                     "name": "thalyx",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
-                "instructions": instructions(machine),
+                "instructions": instructions(machine, offered),
             }))
         }
         "ping" => Ok(json!({})),
@@ -326,16 +326,34 @@ fn handle(
 ///
 /// Short on purpose. The tool descriptions carry the "when to use this", and a
 /// wall of prose here would be paid for on every single turn.
-fn instructions(machine: &Machine) -> String {
+///
+/// ## Why it names every tool
+///
+/// Because two of the three real runs in
+/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md` spent **two** calls
+/// finding this surface, and the first of the two was a failed selection: the
+/// agent asked for tools by name, named them wrong, and had to search again. A
+/// client that defers tool schemas makes one lookup unavoidable; what is not
+/// unavoidable is guessing at the names, and this is the only text the model has
+/// read by then.
+///
+/// So the list is generated from what this machine actually offers, never
+/// written out — a hand-kept copy would go stale exactly when a verb is missing
+/// from the hello, which is the one moment a wrong name costs the most.
+fn instructions(machine: &Machine, offered: &[&'static tools::Tool]) -> String {
     let greeting = machine.greeting();
+    let names: Vec<&str> = offered.iter().map(|tool| tool.name).collect();
     format!(
         "You are working inside a Thalyx machine, not on this host. The workspace is {} \
-         and nothing outside it can be reached. Thalyx answers with structured objects \
-         that carry an exact remedy when they refuse — read the `remedy` field rather \
-         than guessing. Prefer thalyx_symbol and thalyx_dependencies over reading or \
-         searching files, and open a thalyx_attempt before any multi-file change so it \
-         can be undone in one call.",
-        greeting.workspace
+         and nothing outside it can be reached. This machine's tools are exactly these, \
+         and there are no others: {}. Load them in one lookup — every one begins with \
+         `thalyx_`. Thalyx answers with structured objects that carry an exact remedy \
+         when they refuse — read the `remedy` field rather than guessing. Prefer \
+         thalyx_symbol and thalyx_dependencies over reading or searching files, and open \
+         the reversible boundary in the same call as your first change by passing \
+         `attempt: begin` to thalyx_edit or thalyx_file.",
+        greeting.workspace,
+        names.join(", ")
     )
 }
 
@@ -367,7 +385,14 @@ fn call(
 
     let mut answers = Vec::new();
     for (verb, given) in requests {
-        match machine.ask(verb, given) {
+        // Timed around the whole question, which is the only place on this side
+        // of the wire where the bridge's cost is separable from the model's
+        // thinking. `metrics::Metrics::machine_seconds` says what it can and
+        // cannot see.
+        let began = std::time::Instant::now();
+        let answered = machine.ask(verb, given);
+        metrics.asked(began.elapsed());
+        match answered {
             Ok(answer) => answers.push(answer),
             Err(Trouble::Refused {
                 word,

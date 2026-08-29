@@ -134,6 +134,75 @@ fn batch(arguments: &Value) -> Result<Vec<Operation>, String> {
     Ok(operations)
 }
 
+/// A mutation, with the attempt the caller asked to be opened around it.
+///
+/// **Two requests and one round trip**, which is the composition this crate
+/// exists to do — `thalyx_state` is three of them. It comes from the traces in
+/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`: in all three real runs
+/// `attempt begin` is followed *immediately* by the mutation, with no call in
+/// between, so the two were one intent that the surface charged twice for.
+///
+/// The order is the whole of it. The snapshot is taken before anything is
+/// written, and a refused request stops the rest — so a caller that asked for
+/// both and got `already_open` back has changed nothing at all. Nothing here
+/// reads an answer or decides what one means; the machine still owns every rule
+/// about whether an attempt may be opened.
+fn inside_a_new_attempt(arguments: &Value, mutation: Request) -> Result<Vec<Request>, String> {
+    let Some(asked) = optional(arguments, "attempt") else {
+        return Ok(vec![mutation]);
+    };
+    if asked != "begin" {
+        return Err(format!(
+            "`attempt` here is `begin`, which opens one around this change; it was \
+             `{asked}`. thalyx_attempt is what settles an attempt"
+        ));
+    }
+    Ok(vec![
+        (
+            "attempt",
+            vec![
+                "empezar".to_string(),
+                optional(arguments, "label").unwrap_or_else(|| "agent".into()),
+            ],
+        ),
+        mutation,
+    ])
+}
+
+/// The same schema, with the two properties that open a boundary around it.
+///
+/// Folded in here rather than written into each schema, because a surface where
+/// one mutation can do this and another cannot is a surface an agent has to
+/// remember exceptions about — and because two copies of a description are two
+/// things to keep in step.
+fn with_attempt(mut schema: Value) -> Value {
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        // Never reached: both callers pass an object schema, and the test
+        // `every_tool_says_when_to_use_it` asserts that of every tool. Handed
+        // back unchanged rather than panicking, because a tool list that cannot
+        // be built is a machine with no tools at all.
+        return schema;
+    };
+    properties.insert(
+        "attempt".to_string(),
+        json!({
+            "type": "string",
+            "enum": ["begin"],
+            "description": "Open a reversible attempt around this change, in this same \
+                            call. Use it on the first change of a task; thalyx_attempt \
+                            is what settles it afterwards."
+        }),
+    );
+    properties.insert(
+        "label".to_string(),
+        json!({
+            "type": "string",
+            "description": "What that attempt is about. Used with `attempt`."
+        }),
+    );
+    schema
+}
+
 /// A window flag, when the caller asked for one.
 fn limit(arguments: &Value) -> Option<String> {
     arguments
@@ -360,8 +429,14 @@ A reversible boundary around a task. `begin` takes a snapshot of the whole \
 workspace; `abandon` puts every file back exactly as it was, in one step and \
 whatever was changed in between; `commit` keeps the work and closes it. \
 Begin one before any multi-file or risky change, so that being wrong costs a \
-call instead of a reconstruction. `abandon` answers with what it would destroy \
-and does nothing the first time — repeat it with confirm true to go ahead.",
+call instead of a reconstruction — thalyx_edit and thalyx_file can open one \
+around their first change with `attempt: begin`, which saves a call. \
+`abandon` in one call: pass back the `snapshot` that `begin` answered with, \
+together with `delete` and `revert` — how many files you expect to be \
+deleted and reverted. It goes ahead only if those are exactly what the \
+workspace holds, so somebody else's work cannot be thrown away by a claim that \
+is out of date. Get them wrong, or leave them out, and it destroys nothing and \
+answers with the true cost and the exact line that would do it.",
         schema: || {
             json!({
                 "type": "object",
@@ -377,6 +452,21 @@ and does nothing the first time — repeat it with confirm true to go ahead.",
                     "confirm": {
                         "type": "boolean",
                         "description": "Required to actually abandon, having seen the cost."
+                    },
+                    "snapshot": {
+                        "type": "string",
+                        "description": "For abandon in one call: the `snapshot` this \
+                                        tool answered with when it began."
+                    },
+                    "delete": {
+                        "type": "integer",
+                        "description": "For abandon in one call: how many files you \
+                                        expect to lose — ones made since it began."
+                    },
+                    "revert": {
+                        "type": "integer",
+                        "description": "For abandon in one call: how many files you \
+                                        expect to go back to their older version."
                     }
                 },
                 "required": ["action"]
@@ -392,8 +482,29 @@ and does nothing the first time — repeat it with confirm true to go ahead.",
                 "commit" => vec!["confirmar".to_string()],
                 "abandon" => {
                     let mut given = vec!["abandonar".to_string()];
-                    if arguments.get("confirm").and_then(Value::as_bool) == Some(true) {
-                        given.push("si".to_string());
+                    match (
+                        optional(arguments, "snapshot"),
+                        arguments.get("delete").and_then(Value::as_u64),
+                        arguments.get("revert").and_then(Value::as_u64),
+                    ) {
+                        // All three or none of them. A half-stated claim is a
+                        // call the machine answers with the cost object, which
+                        // is what a caller that stated nothing gets anyway —
+                        // so there is nothing for this to decide.
+                        (Some(named), Some(delete), Some(revert)) => {
+                            given.push(format!("snapshot={named}"));
+                            given.push(format!("delete={delete}"));
+                            given.push(format!("revert={revert}"));
+                        }
+                        // And `si` is **not** added beside them. A caller that
+                        // said both would otherwise have its stale claim waved
+                        // through by the blind word, which is the one thing the
+                        // claim exists to stop.
+                        _ => {
+                            if arguments.get("confirm").and_then(Value::as_bool) == Some(true) {
+                                given.push("si".to_string());
+                            }
+                        }
                     }
                     given
                 }
@@ -434,9 +545,12 @@ first. The line actions are for surgical changes: `insert` puts text before a \
 line, `replace` swaps a line or a range (`3-7`), `delete` removes them, `show` \
 returns numbered lines; use \\n in the text for more than one line. Nothing is \
 written unless every part of the call passes — a file the text is not in \
-refuses the whole thing and changes nothing. Every answer carries its undo.",
+refuses the whole thing and changes nothing. Every answer carries its undo. \
+On the first change of a task pass `attempt: begin` here as well: it opens the \
+reversible boundary around this very call, so the change and the way back cost \
+one call and not two.",
         schema: || {
-            json!({
+            let schema = json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -493,7 +607,8 @@ refuses the whole thing and changes nothing. Every answer carries its undo.",
                     }
                 },
                 "required": ["action"]
-            })
+            });
+            with_attempt(schema)
         },
         calls: |arguments| {
             let action = text(arguments, "action")?;
@@ -528,7 +643,7 @@ refuses the whole thing and changes nothing. Every answer carries its undo.",
                     given.push(operation.new.clone());
                     given.extend(operation.paths.iter().cloned());
                 }
-                return Ok(vec![("edit", given)]);
+                return inside_a_new_attempt(arguments, ("edit", given));
             }
             if action == "substitute" {
                 let named = paths(arguments)?;
@@ -540,7 +655,7 @@ refuses the whole thing and changes nothing. Every answer carries its undo.",
                     text(arguments, "new")?,
                 ];
                 given.extend(rest.iter().cloned());
-                return Ok(vec![("edit", given)]);
+                return inside_a_new_attempt(arguments, ("edit", given));
             }
 
             let mut given = vec![text(arguments, "path")?, action];
@@ -558,7 +673,7 @@ refuses the whole thing and changes nothing. Every answer carries its undo.",
                         .replace('\t', r"\t"),
                 );
             }
-            Ok(vec![("edit", given)])
+            inside_a_new_attempt(arguments, ("edit", given))
         },
     },
     Tool {
@@ -567,9 +682,11 @@ refuses the whole thing and changes nothing. Every answer carries its undo.",
         description: "\
 Create, delete, move or copy a file or directory in the workspace. Every answer \
 says exactly what happened to each path and, where there is one, the call that \
-undoes it. For changing what is *inside* a file, use thalyx_edit.",
+undoes it. For changing what is *inside* a file, use thalyx_edit. On the first \
+change of a task pass `attempt: begin` here as well, which opens the reversible \
+boundary around this call instead of costing a call of its own.",
         schema: || {
-            json!({
+            with_attempt(json!({
                 "type": "object",
                 "properties": {
                     "action": {
@@ -580,11 +697,11 @@ undoes it. For changing what is *inside* a file, use thalyx_edit.",
                     "to": {"type": "string", "description": "The destination, for move and copy."}
                 },
                 "required": ["action", "path"]
-            })
+            }))
         },
         calls: |arguments| {
             let path = text(arguments, "path")?;
-            Ok(vec![match text(arguments, "action")?.as_str() {
+            let mutation: Request = match text(arguments, "action")?.as_str() {
                 "create" => ("make_file", vec![path]),
                 "create_directory" => ("make_directory", vec![path]),
                 "delete" => ("remove", vec![path]),
@@ -596,7 +713,8 @@ undoes it. For changing what is *inside* a file, use thalyx_edit.",
                          and was `{other}`"
                     ));
                 }
-            }])
+            };
+            inside_a_new_attempt(arguments, mutation)
         },
     },
 ];
@@ -916,6 +1034,195 @@ mod tests {
         assert!((edit.calls)(&one).is_ok());
         for call in &five {
             assert!((edit.calls)(call).is_ok());
+        }
+    }
+
+    /// How many times a caller has to speak to the machine for one reversible
+    /// change, counted off the tool surface itself.
+    ///
+    /// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`: runs 5 and 6 of the
+    /// reversible benchmark are the same six calls, and four of them are this
+    /// sequence. What is asserted below is the sequence, not a saving in
+    /// somebody's bill — that number cannot be known without running the
+    /// benchmark again, and a fixture that claimed one would be inventing it.
+    fn round_trips(calls: &[(&str, Value)]) -> usize {
+        for (name, arguments) in calls {
+            let tool = TOOLS
+                .iter()
+                .find(|tool| &tool.name == name)
+                .unwrap_or_else(|| panic!("`{name}` is not a tool"));
+            (tool.calls)(arguments)
+                .unwrap_or_else(|why| panic!("`{name}` refused its own fixture: {why}"));
+        }
+        calls.len()
+    }
+
+    #[test]
+    fn opening_an_attempt_and_changing_something_is_one_round_trip_and_two_requests() {
+        // The traces, as arithmetic. In all three runs `attempt begin` was
+        // followed immediately by the edit, with nothing in between: one intent
+        // the surface charged twice for.
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        let together = json!({
+            "attempt": "begin",
+            "label": "rename",
+            "action": "substitute",
+            "old": "SlotTable",
+            "new": "SlotTableRenamed",
+            "paths": ["core/src/slots.rs", "cli/src/render.rs"],
+        });
+        let requests = (edit.calls)(&together).expect("one call");
+
+        // Two questions for the machine, in the order that makes the change
+        // reversible: the snapshot is taken before a byte is written.
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "attempt");
+        assert_eq!(requests[0].1, vec!["empezar", "rename"]);
+        assert_eq!(requests[1].0, "edit");
+
+        // And the old shape still means what it meant, which is the control: a
+        // change that quietly opened an attempt around every edit would be a
+        // change nobody asked for.
+        let alone = json!({
+            "action": "substitute", "old": "a", "new": "b", "paths": ["x.rs"],
+        });
+        assert_eq!((edit.calls)(&alone).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_reversible_change_is_three_round_trips_where_it_was_five() {
+        // The whole B sequence of runs 5 and 6, minus the two spent finding the
+        // tools, before and after. Counted as calls made to this surface, which
+        // is the only unit this file can honestly measure.
+        let before = round_trips(&[
+            (
+                "thalyx_attempt",
+                json!({"action": "begin", "label": "rename"}),
+            ),
+            (
+                "thalyx_edit",
+                json!({
+                    "action": "substitute", "old": "SlotTable", "new": "SlotTableRenamed",
+                    "paths": ["core/src/slots.rs"],
+                }),
+            ),
+            ("thalyx_attempt", json!({"action": "abandon"})),
+            (
+                "thalyx_attempt",
+                json!({"action": "abandon", "confirm": true}),
+            ),
+        ]);
+        let after = round_trips(&[
+            (
+                "thalyx_edit",
+                json!({
+                    "attempt": "begin", "label": "rename",
+                    "action": "substitute", "old": "SlotTable", "new": "SlotTableRenamed",
+                    "paths": ["core/src/slots.rs"],
+                }),
+            ),
+            (
+                "thalyx_attempt",
+                json!({
+                    "action": "abandon",
+                    "attempt": "2026-08-29T11-04-02Z-rename",
+                    "delete": 0,
+                    "revert": 1,
+                }),
+            ),
+        ]);
+        assert_eq!((before, after), (4, 2), "{before} calls became {after}");
+    }
+
+    #[test]
+    fn abandoning_in_one_call_states_which_attempt_and_what_it_costs() {
+        let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
+        assert_eq!(
+            (attempt.calls)(&json!({
+                "action": "abandon",
+                "snapshot": "2026-08-29T11-04-02Z-rename",
+                "delete": 0,
+                "revert": 3,
+            }))
+            .unwrap(),
+            vec![(
+                "attempt",
+                vec![
+                    "abandonar".to_string(),
+                    "snapshot=2026-08-29T11-04-02Z-rename".to_string(),
+                    "delete=0".to_string(),
+                    "revert=3".to_string(),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_claim_and_a_blind_yes_together_send_the_claim_and_not_the_yes() {
+        // `si` beside a stale claim would have the machine wave the claim
+        // through on the blind word, which is the one thing the claim exists to
+        // stop. So the claim goes alone, and the machine checks it.
+        let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
+        let sent = (attempt.calls)(&json!({
+            "action": "abandon", "confirm": true,
+            "snapshot": "2026-08-29T11-04-02Z-rename", "delete": 0, "revert": 3,
+        }))
+        .unwrap();
+        assert!(!sent[0].1.iter().any(|word| word == "si"), "{sent:?}");
+    }
+
+    #[test]
+    fn a_half_stated_claim_falls_back_to_the_protocol_it_replaces() {
+        // Each of these is a caller that has not said what it accepts. None of
+        // them may become a one-call abandon here, and none of them is refused
+        // here either: the machine answers with the cost, which is what a
+        // caller that said nothing gets.
+        let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
+        for half in [
+            json!({"action": "abandon", "snapshot": "x", "delete": 0}),
+            json!({"action": "abandon", "snapshot": "x", "revert": 3}),
+            json!({"action": "abandon", "delete": 0, "revert": 3}),
+        ] {
+            let sent = (attempt.calls)(&half).expect("composed");
+            assert_eq!(sent[0].1, vec!["abandonar".to_string()], "{half}");
+        }
+    }
+
+    #[test]
+    fn a_mutation_may_open_a_boundary_and_may_not_settle_one() {
+        // The line this composition does not cross. Opening an attempt costs
+        // nothing and can be taken back; keeping or abandoning one is a decision
+        // about somebody's work, and it belongs to the verb that shows the cost.
+        for name in ["thalyx_edit", "thalyx_file"] {
+            let tool = TOOLS.iter().find(|t| t.name == name).unwrap();
+            let arguments = json!({
+                "attempt": "commit",
+                "action": if name == "thalyx_edit" { "substitute" } else { "create" },
+                "old": "a", "new": "b", "path": "x.rs",
+            });
+            assert!(
+                (tool.calls)(&arguments).is_err(),
+                "`{name}` composed an attempt it must not settle"
+            );
+        }
+    }
+
+    #[test]
+    fn every_mutating_tool_can_open_its_own_boundary_and_no_other_tool_pretends_to() {
+        // A surface where one mutation can do this and another cannot is a
+        // surface an agent has to remember exceptions about — and a reading tool
+        // that advertised it would be advertising something that does nothing.
+        for tool in TOOLS {
+            let offers = (tool.schema)()
+                .get("properties")
+                .and_then(Value::as_object)
+                .is_some_and(|properties| properties.contains_key("attempt"));
+            let mutates = matches!(tool.name, "thalyx_edit" | "thalyx_file");
+            assert_eq!(
+                offers, mutates,
+                "`{}` offers `attempt`: {offers}",
+                tool.name
+            );
         }
     }
 
