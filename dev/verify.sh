@@ -597,6 +597,13 @@ SUITE_ENV=(THALYX_REQUIRE_CGROUP_TESTS=1)
 # The requirement and the thing it requires, together. Setting one without the
 # other is what made this stage fail for a machine that could do everything.
 [ "$HAVE_BTRFS" = 1 ]       && SUITE_ENV+=(THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH")
+# The race the anchored session exists to lose: a component of the path becoming
+# a symlink somewhere else between the check and the open. Its escape assertion
+# is one-sided and always runs; what this demands is the **control** — that the
+# swapper thread actually raced — which is a fact about how busy the machine is
+# and not about the boundary. It is demanded here and nowhere else because this
+# is the machine that is supposed to be quiet while it answers.
+SUITE_ENV+=(THALYX_REQUIRE_RACE_TESTS=1)
 # Every Linux has kthreadd at pid 2, so this is very nearly unconditional — but
 # it is still read rather than assumed, because a container with a private pid
 # namespace can hide it and a demanded check that cannot be made is a failure

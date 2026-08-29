@@ -5167,3 +5167,41 @@ caso que falla, es la del caso que pasa.** Un caso positivo que llega al
 veredicto correcto por el camino equivocado se ve idéntico a uno que funciona;
 lo que los separa es afirmar también *qué vio* la comprobación, y no sólo qué
 contestó.
+
+---
+
+## Regla derivada: un control que mide la carga de la máquina no es un control — 2026-08-29
+
+`reading_through_a_component_being_swapped_never_leaves_the_workspace` falló una
+vez, en una corrida de todo el workspace que compartía cuatro núcleos con un
+`git push`, y pasó en las diez corridas de antes y de después. La afirmación de
+seguridad de esa prueba es **cero** escapes y es de un solo lado: se cumple sin
+importar cómo se agendaron los hilos. Sus dos controles no lo son:
+
+```rust
+assert!(refusals > 0, "…el swap nunca ocurrió y esto no midió nada");
+assert!(answers  > 0, "…una frontera que rechaza todo pasaría esto");
+```
+
+Miden que el hilo que hace el swap ganó al menos una carrera y perdió al menos
+una. Corriendo sola, la prueba deja un margen enorme —del orden de 2 600
+respuestas contra 1 400 rechazos de 4 000—, así que un cero no es una carrera
+apretada que se perdió: es un hilo que nunca se agendó.
+
+Y ahí está el daño. Un control que falla cuando la máquina está ocupada **reporta
+«la frontera se fugó» por un hecho sobre el promedio de carga**, que es el
+mensaje más engañoso que ese archivo puede dar. La prueba no encontró nada; no
+pudo buscar.
+
+**La regla:** una prueba que necesita que algo concurrente ocurra para medir lo
+que mide tiene dos afirmaciones distintas y no se pueden tratar igual. La de
+seguridad corre siempre y es dura. La de *haber podido medir* es un **skip que
+lo dice** —regla 3—, con una variable de entorno para ese requisito y nada más,
+que la convierte en falla en la máquina que sí está quieta. `verify.sh` pone
+`THALYX_REQUIRE_RACE_TESTS=1`; en un contenedor compartido, la prueba imprime
+`NOT PROVEN` y no miente en ninguna de las dos direcciones.
+
+Es la regla 7 —escoger el umbral del lado al que el ruido ambiental no llega—
+aplicada a la mitad de la prueba que sí lo tiene: la afirmación es inmune al
+ruido, el control no, y la diferencia se escribe en el código en vez de
+esperarse.
