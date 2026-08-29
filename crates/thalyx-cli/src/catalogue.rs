@@ -440,8 +440,9 @@ pub const VERBS: &[Verb] = &[
     Verb {
         id: "attempt",
         names: &["intento", "attempt"],
-        takes: &["empezar <label> | confirmar | abandonar [si]"],
-        flags: &["si", "yes"],
+        takes: &["empezar <label> | confirmar | \
+             abandonar [si | snapshot=<name> delete=<N> revert=<N>]"],
+        flags: &["si", "yes", "snapshot=", "delete=", "revert="],
         answers: Some("attempt"),
         // The one verb whose whole purpose is that what it wraps can be
         // undone — and it changes the machine itself: a snapshot is taken,
@@ -453,6 +454,8 @@ pub const VERBS: &[Verb] = &[
             "already_open",
             "none_open",
             "snapshot_gone",
+            "not_this_attempt",
+            "bad_argument",
             "unreadable",
             "unknown_argument",
         ],

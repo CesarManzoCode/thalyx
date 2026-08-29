@@ -301,7 +301,12 @@ pub const EXPOSED: &[Exposed] = &[
             ]),
             Slot::Text,
         ],
-        repeating: NOTHING_MORE,
+        // `MORE_TEXT` and not `NOTHING_MORE`, because abandoning in one call
+        // says three things — which attempt, and the two halves of what it
+        // costs — and the old shape had room for one. None of them is a path,
+        // and the verb itself refuses every word it does not know, so what is
+        // widened here is length and not authority.
+        repeating: MORE_TEXT,
         verbatim_from: QUOTED,
     },
     // ── what a verb would do, without doing any of it ─────────────────────
@@ -1242,6 +1247,35 @@ mod tests {
             .answer(&store, "power_off", &[])
             .expect_err("`apagar` is not reachable from outside");
         assert_eq!(refusal.word, "not_exposed");
+    }
+
+    #[test]
+    fn abandoning_in_one_call_reaches_the_verb_through_the_boundary() {
+        // The plumbing, and the reason this test exists rather than being
+        // assumed: the shape of `attempt` used to have room for one argument
+        // after the subverb, so the three words that make an abandon one call
+        // would have been refused here as `too_many_arguments` — by the
+        // boundary, in the machine, with the tool and the verb both correct and
+        // nothing in either of them able to say why.
+        let (_root, session) = workspace();
+        let shape = EXPOSED.iter().find(|e| e.verb == "attempt").unwrap();
+        check(
+            shape,
+            &[
+                "abandonar".into(),
+                "snapshot=2026-08-29T11-04-02Z-rename".into(),
+                "delete=0".into(),
+                "revert=3".into(),
+            ],
+            &session.here,
+            &session.real_workspace,
+        )
+        .expect("the one-call abandon is refused before the verb sees it");
+
+        // And the control, which is what makes the line above mean something: a
+        // widened shape must not have turned this verb into one that takes
+        // paths. `attempt` names no file, ever.
+        assert_eq!(refuse(&session, "/etc/passwd").word, "outside_workspace");
     }
 
     #[test]
