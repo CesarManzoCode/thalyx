@@ -470,6 +470,46 @@ fn a_batch_asking_for_more_substitutions_than_the_ceiling_is_refused_by_the_coun
 }
 
 #[test]
+fn the_ceiling_on_places_to_change_is_the_batch_and_not_each_operation_alone() {
+    // The one ceiling a batch can cross that none of its operations can, and the
+    // reason a batch has to be bounded as a whole: five patterns of five hundred
+    // places each is two and a half thousand changes asked for in one call, and
+    // every one of them is under the limit on its own.
+    //
+    // It is checked after the whole batch has been applied in memory and before
+    // anything is saved, so the refusal costs the caller a corrected call and
+    // not a reconstruction.
+    let tmp = tempfile::tempdir().unwrap();
+    let wide = tmp.path().join("wide.rs");
+    let mut body = String::new();
+    for n in 0..500 {
+        body.push_str(&format!("let a{n} = 1; let b{n} = 2; let c{n} = 3;                                 let d{n} = 4; let e{n} = 5;\n"));
+    }
+    std::fs::write(&wide, &body).unwrap();
+    let named = wide.display().to_string();
+
+    let mut line = format!("editar '{named}' sustituir-lote");
+    for (n, letter) in ["let a", "let b", "let c", "let d", "let e"]
+        .iter()
+        .enumerate()
+    {
+        line.push_str(&format!(" 1 '{letter}' 'const {n}x'"));
+        if n > 0 {
+            line.push_str(&format!(" '{named}'"));
+        }
+    }
+    let output = typed(tmp.path(), &["structured on", &line, "salir"]);
+    let said = one_answer(&output, "edit");
+    assert_eq!(said["ok"], false, "{said}");
+    assert_eq!(said["error"], "too_much", "{said}");
+    assert_eq!(said["asked"], 2500, "{said}");
+    assert_eq!(said["most"], 2000, "{said}");
+    assert_eq!(said["wrote"], false, "{said}");
+    // And nothing was written, which is what "before anything is saved" means.
+    assert_eq!(std::fs::read_to_string(&wide).unwrap(), body);
+}
+
+#[test]
 fn a_count_that_is_not_a_number_says_so_instead_of_being_read_as_a_file() {
     let tmp = tempfile::tempdir().unwrap();
     let files = a_tree_that_needs_five_patterns(tmp.path());
