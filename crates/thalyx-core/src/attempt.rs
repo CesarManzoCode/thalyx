@@ -372,18 +372,42 @@ pub fn abandon<V: Volumes>(
         Some(_) => {}
     }
 
-    // And the tree itself, re-read **here**, inside the lock, immediately
-    // before it is replaced.
+    // And the tree itself, re-read inside the lock and **as the last thing
+    // before it is replaced** — not here, but in the restore, with the writable
+    // copy already built and the exchange the only step left.
     //
     // Not against the plan's witness, which was taken outside the lock and is
     // therefore a statement about a moment that has already passed. What is
     // compared is the state the *caller* authorised destroying against the
-    // state the tree is in at the instant of destruction, with nothing able to
-    // run in between — which is the only place that comparison means anything.
-    // A check made before taking the lock would be the same shape of defect as
-    // the `canonicalize`-then-open sequence `crate::api` was rewritten to stop
-    // using: a comparison and an action with a moment between them.
-    if let Authorised::ByState(claimed) = authorised {
+    // state the tree is in at the instant of destruction, with as little as
+    // possible able to run in between — which is the only place that comparison
+    // means anything. A check made before taking the lock would be the same
+    // shape of defect as the `canonicalize`-then-open sequence `crate::api` was
+    // rewritten to stop using: a comparison and an action with a moment between
+    // them.
+    //
+    // ## What the window is, since it is not zero
+    //
+    // The walk is not instantaneous and the exchange is not part of it, so
+    // there is an interval — one walk of the tree, plus one `renameat2` — in
+    // which a write by somebody who does not take Thalyx's lock lands after the
+    // answer. Nothing short of freezing the filesystem closes that, and the
+    // honest statement of what is guaranteed is therefore two sentences and not
+    // one:
+    //
+    //   - a write that **completed before the check** is never lost: the
+    //     witness moved, the claim stops matching, and this refuses;
+    //   - a write that lands inside the window is **not destroyed**, only
+    //     displaced: the tree that was live is kept, and `replaced_kept_as`
+    //     names where. `Rollback-vs-Restore` requires that of every restore,
+    //     and it is what makes the residual race survivable rather than silent.
+    //
+    // Thalyx's own clients cannot be in that window at all — they queue on
+    // `Store::lock`, which this holds.
+    let last_look = || -> Result<()> {
+        let Authorised::ByState(claimed) = authorised else {
+            return Ok(());
+        };
         let now = thalyx_snapshot::witness(&attempt.subvolume);
         if !now.is_complete() {
             return Err(CoreError::Attempt(AttemptError::WorkspaceUnreadable {
@@ -396,10 +420,12 @@ pub fn abandon<V: Volumes>(
                 found: now.id,
             }));
         }
-    }
+        Ok(())
+    };
 
-    let restored =
-        crate::restore::apply_holding_the_lock(store, snapshots, plan, request_id, &lock)?;
+    let restored = crate::restore::apply_holding_the_lock(
+        store, snapshots, plan, request_id, &lock, &last_look,
+    )?;
 
     // Only now. An abandon that failed leaves the attempt open on purpose — a
     // caller told the attempt was settled would go on believing the tree was
@@ -451,7 +477,7 @@ mod tests {
         let store = Store::open(base.path().join("store")).expect("a store");
         let tree = base.path().join("work");
         Directories::make_subvolume(&tree).expect("a subvolume");
-        std::fs::write(tree.join("before.txt"), "one").expect("a file");
+        std::fs::write(tree.join("before.txt"), "what was there before").expect("a file");
         (base, store, tree)
     }
 
@@ -459,15 +485,19 @@ mod tests {
         Snapshots::of(Directories, tree)
     }
 
-    /// Write, and be sure the write is visible to a timestamp comparison.
+    /// Write, with nothing waiting for the clock.
     ///
-    /// The wait is the honest part. A filesystem's timestamp granularity is
-    /// coarser than two writes in a row from the same program, so a test that
-    /// wrote twice without waiting would be measuring the clock rather than the
-    /// witness — and would fail intermittently, which is the worst way for a
-    /// test to be wrong.
-    fn write_later(path: &Path, text: &str) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    /// There used to be a twenty-millisecond sleep here, and it was the defect
+    /// confessing: a witness made of timestamps cannot separate two writes
+    /// inside one filesystem tick, so the tests had to wait for a tick. **The
+    /// case that does not wait is the real one** — on Fedora, `dev/verify.sh`
+    /// stage 55 writes, takes the state, and writes again immediately, which is
+    /// what an agent and a person sharing a tree actually do.
+    ///
+    /// Since 2026-08-29 the witness covers what each file holds, so no wait is
+    /// needed and none is taken. Every write below is the same length as the
+    /// one before it, too, so `size` cannot be doing the work either.
+    fn write_now(path: &Path, text: &str) {
         std::fs::write(path, text).expect("the write");
     }
 
@@ -480,7 +510,7 @@ mod tests {
         let snapshots = snapshots_of(&tree);
         let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
 
-        write_later(&tree.join("before.txt"), "what the agent wrote");
+        write_now(&tree.join("before.txt"), "what the agent wrote!");
 
         let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
         abandon(
@@ -495,7 +525,7 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(tree.join("before.txt")).unwrap(),
-            "one",
+            "what was there before",
             "the rollback did not happen"
         );
         assert!(open(&store).unwrap().is_none(), "the attempt is still open");
@@ -511,12 +541,12 @@ mod tests {
         let snapshots = snapshots_of(&tree);
         let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
 
-        write_later(&tree.join("before.txt"), "what the agent wrote");
+        write_now(&tree.join("before.txt"), "what the agent wrote!");
         let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
         let state_the_agent_saw = plan.state.id.clone();
 
         // Somebody else, in the same file, while the attempt is open.
-        write_later(&tree.join("before.txt"), "what the person wrote");
+        write_now(&tree.join("before.txt"), "what the person wrote");
 
         let refused = abandon(
             &store,
@@ -553,10 +583,10 @@ mod tests {
         let snapshots = snapshots_of(&tree);
         begin(&store, &snapshots, "rename", "r1").expect("an attempt");
 
-        write_later(&tree.join("before.txt"), "what the agent wrote");
+        write_now(&tree.join("before.txt"), "what the agent wrote!");
         let (_, agents) = what_abandoning_costs(&store, &snapshots).expect("a plan");
 
-        write_later(&tree.join("before.txt"), "what the person wrote");
+        write_now(&tree.join("before.txt"), "what the person wrote");
         let (_, after) = what_abandoning_costs(&store, &snapshots).expect("a plan");
 
         assert_eq!(
@@ -574,6 +604,112 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_that_could_not_be_read_everywhere_authorises_nothing() {
+        // Rules 9 and 10 on the one path where nobody is asked twice. A file
+        // that can be stat'd and not read is a file nobody has compared, and a
+        // digest over the part that could be read is not an identity of
+        // anything. The refusal has its own word, because a caller told
+        // `workspace_moved` would go looking for somebody else's edit.
+        let (_base, store, tree) = a_machine();
+        if running_as_root() {
+            println!("NOT PROVEN: running as root, where a mode cannot make a file unreadable");
+            return;
+        }
+        let snapshots = snapshots_of(&tree);
+        let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+
+        write_now(&tree.join("before.txt"), "what the agent wrote!");
+        let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+        let stated = plan.state.id.clone();
+
+        // A hole appears after the plan was made. Whatever the caller states,
+        // there is now no exact identity of this tree.
+        std::fs::write(tree.join("locked.txt"), "unreadable from here on").expect("a file");
+        std::fs::set_permissions(
+            tree.join("locked.txt"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o000),
+        )
+        .expect("the mode");
+
+        let refused = abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByState(&stated),
+            "r2",
+        );
+
+        assert!(
+            matches!(
+                refused,
+                Err(CoreError::Attempt(AttemptError::WorkspaceUnreadable { .. }))
+            ),
+            "a tree with a hole in it authorised a destruction: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join("before.txt")).unwrap(),
+            "what the agent wrote!",
+            "the tree was replaced anyway"
+        );
+        assert!(open(&store).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_refused_rollback_leaves_nothing_half_built_beside_the_subvolume() {
+        // The restore is now built *before* the last look at the tree, so that
+        // as little as possible sits between the answer and the swap. That
+        // ordering has a cost of its own and this is it: when the look refuses,
+        // a writable copy of the snapshot already exists, and leaving it there
+        // would turn every refused rollback into a tree nobody asked for.
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+        let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+
+        write_now(&tree.join("before.txt"), "what the agent wrote!");
+        let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+        let stated = plan.state.id.clone();
+        write_now(&tree.join("before.txt"), "what the person wrote");
+
+        let refused = abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByState(&stated),
+            "r2",
+        );
+        assert!(refused.is_err());
+
+        let leftovers: Vec<String> = std::fs::read_dir(snapshots.directory())
+            .expect("the snapshot directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".restoring-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a refused rollback left {leftovers:?} beside the subvolume"
+        );
+    }
+
+    /// Whether a mode can still make a file unreadable to this process.
+    ///
+    /// No `unsafe` outside `thalyx-syscall`, and no dependency worth adding for
+    /// one number: the effective uid is in `/proc/self/status`.
+    fn running_as_root() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find(|line| line.starts_with("Uid:"))
+                    .map(|line| line.split_whitespace().nth(1) == Some("0"))
+            })
+            .unwrap_or(false)
+    }
+
+    #[test]
     fn a_human_who_said_yes_is_not_asked_for_a_digest() {
         // `Camino-Confiable`: a person was shown what would be lost and
         // answered about the tree in front of them. Requiring them to state a
@@ -583,7 +719,7 @@ mod tests {
         let (_base, store, tree) = a_machine();
         let snapshots = snapshots_of(&tree);
         let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
-        write_later(&tree.join("before.txt"), "changed");
+        write_now(&tree.join("before.txt"), "changed");
 
         let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
         abandon(
@@ -597,7 +733,7 @@ mod tests {
         .expect("a human's yes still settles an attempt");
         assert_eq!(
             std::fs::read_to_string(tree.join("before.txt")).unwrap(),
-            "one"
+            "what was there before"
         );
     }
 
@@ -900,7 +1036,7 @@ mod tests {
         // the report: *intenta esto y si sale mal deshazlo*.
         assert_eq!(
             std::fs::read_to_string(tree.join("before.txt")).unwrap(),
-            "one"
+            "what was there before"
         );
         assert!(
             !tree.join("new.txt").exists(),

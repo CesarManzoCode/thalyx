@@ -922,6 +922,36 @@ pub fn lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
     check(result)
 }
 
+/// Release a lock held on this descriptor's open file description.
+///
+/// ## Why closing the descriptor is not enough
+///
+/// `flock` attaches to the **open file description**, and a `fork` copies every
+/// descriptor a process has. So while a forked child is between the fork and
+/// its `exec`, it holds a second reference to that description — and a lock is
+/// released on close only when the *last* reference goes. Closing the parent's
+/// copy in that instant releases nothing, and the lock stays held for as long
+/// as the child takes to reach `exec`.
+///
+/// That is not a hypothetical. Thalyx spawns `btrfs` and `bpftool` while
+/// holding the store lock, and `cargo test` runs a whole crate's tests as
+/// threads in one process — which is how
+/// `store::tests::the_lock_is_released_when_it_goes_out_of_scope` fails on a
+/// machine with enough cores to overlap another test's `spawn` with this one's
+/// drop, and passes every time it runs alone.
+///
+/// `LOCK_UN` removes the lock from the description itself, so every copy of the
+/// descriptor stops holding it at once.
+pub fn unlock(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: as [`lock_exclusive`]; `LOCK_UN` only changes which operation is
+    // asked for.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_UN) };
+    check(result)
+}
+
 /// Take an exclusive lock only if nobody holds it. `Ok(false)` means somebody does.
 ///
 /// Exists for the diagnostic that answers "is another Thalyx running?" without

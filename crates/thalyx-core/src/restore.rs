@@ -126,7 +126,7 @@ pub fn apply<V: Volumes>(
     // committing into it halfway through would be published into a tree that
     // is about to be replaced, and would vanish with no record of why.
     let lock = store.lock()?;
-    apply_holding_the_lock(store, snapshots, plan, request_id, &lock)
+    apply_holding_the_lock(store, snapshots, plan, request_id, &lock, &|| Ok(()))
 }
 
 /// The same restore, for a caller that already holds the global lock.
@@ -141,12 +141,24 @@ pub fn apply<V: Volumes>(
 /// "check the attempt on record is still the one I planned against, restore,
 /// clear the record", and those three have to be one transition or two clients
 /// abandoning at once restore the same snapshot twice.
+/// The last question, asked with the swap already built and nothing else left
+/// to do.
+///
+/// A rollback authorised by a state has to compare that state against the tree
+/// at the instant of the destruction, and "instant" is only worth the word if
+/// almost nothing can happen after it. Passing the question in rather than
+/// asking it before the call is what lets the expensive half of a restore —
+/// opening the journal, writing the intent, making the writable copy of the
+/// snapshot — happen on the harmless side of it.
+pub(crate) type LastLook<'a> = &'a dyn Fn() -> Result<()>;
+
 pub(crate) fn apply_holding_the_lock<V: Volumes>(
     store: &Store,
     snapshots: &Snapshots<V>,
     plan: &Plan,
     request_id: &str,
     _lock: &crate::store::ContractLock,
+    before_the_swap: LastLook<'_>,
 ) -> Result<Restored> {
     let journal = Journal::open(store.journal_path())?;
 
@@ -177,7 +189,36 @@ pub(crate) fn apply_holding_the_lock<V: Volumes>(
         ],
     ))?;
 
-    match snapshots.restore(&plan.snapshot, &thalyx_journal::now()) {
+    // Built, and not committed. Nothing has moved yet: the writable copy sits
+    // beside the subvolume under a name nothing points at.
+    let prepared = match snapshots.prepare_restore(&plan.snapshot, &thalyx_journal::now()) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = journal.append(&entry(
+                Outcome::Rejected {
+                    reason: error.to_string(),
+                },
+                vec![format!("{} is unchanged", plan.subvolume.display())],
+            ));
+            return Err(CoreError::Snapshot(error));
+        }
+    };
+
+    // The last look at the live tree, with the swap already built. What it
+    // refuses, it refuses having destroyed nothing — the staging copy goes with
+    // the `Prepared`.
+    if let Err(refused) = before_the_swap() {
+        let _ = journal.append(&entry(
+            Outcome::Rejected {
+                reason: refused.to_string(),
+            },
+            vec![format!("{} is unchanged", plan.subvolume.display())],
+        ));
+        prepared.discard();
+        return Err(refused);
+    }
+
+    match prepared.commit() {
         Ok(restored) => {
             let mut notes = vec![format!(
                 "what was replaced is kept as {}",

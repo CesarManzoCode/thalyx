@@ -14,9 +14,71 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Una llamada, muchas operaciones: el runtime transaccional — 2026-08-29
+> ## Lo que Fedora encontró: el testigo, la unión, y el candado — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> La primera corrida del vertical nuevo en la máquina de Cesar. La etapa **56
+> pasó**: una petición corrió ocho operaciones internas, cambió cuatro cosas y
+> confirmó; la variante con validación fallida hizo rollback byte por byte y
+> conservó el diagnóstico. `hacer`/`thalyx_exec` existe de verdad sobre Btrfs.
+>
+> La etapa **55 falló**, y encontró tres cosas.
+>
+> ### 1. El rechazo nunca llegaba a decir `workspace_moved`
+>
+> **Ésta es la causa exacta de la etapa 55, y no era el testigo.** El rollback
+> caduco no destruyó nada: contestó `done: false` con una línea `confirm_with`
+> **nueva**. `consent`, en `thalyx-cli`, comparaba la declaración del llamador
+> contra el testigo con el que se había hecho el plan y devolvía el objeto de
+> costo si no coincidían — así que la llamada nunca llegaba a la comprobación
+> bajo el candado, que es la única que produce esa palabra.
+>
+> Un agente en un ciclo copia esa línea nueva y en la llamada siguiente sí pierde
+> el trabajo de la persona. Ahora `consent` no compara nada: nombrar el intento y
+> nombrar un estado **es** la autorización, y si es cierta se decide bajo el
+> candado. Las dos mitades estaban probadas y la unión no; la regla quedó en
+> [[Estrategia-de-Pruebas]].
+>
+> ### 2. Un testigo hecho de timestamps no es una identidad
+>
+> El propio `state_identity.rs` dormía veinte milisegundos entre dos escrituras
+> porque dos escrituras seguidas caben en un tic del sistema de archivos. **Esa
+> espera era el caso real**, no un detalle del arnés: el agente escribe, toma el
+> estado, y una persona escribe el mismo archivo, del mismo largo, enseguida.
+>
+> El testigo es ahora `w2` y cubre **lo que cada ruta contiene** —los bytes de un
+> archivo regular, el destino de un enlace, la especie de un fifo, que nunca se
+> abre—. Cuesta leer el árbol entero en cada comprobación y lo dice: `state_bytes`.
+> El contador de mutaciones del kernel se inspeccionó como la vía barata y **se
+> descartó**: su gancho de escritura es `lsm/file_permission` y una página sucia
+> de `mmap` no pasa por ahí, además de que exige `bpftool` y privilegio que dentro
+> de la imagen no existen. Todo escrito en [[Identidad-de-Estado]].
+>
+> No hay ningún `sleep` nuevo. La etapa 55 quedó **más** agresiva: mismo archivo,
+> mismo tamaño, por un descriptor abierto antes de tomar el estado, sin esperar
+> nada, más una columna de trabajo fuera del árbol que no debe invalidar nada.
+>
+> ### 3. La ventana entre comprobar y reemplazar, y el candado que no se soltaba
+>
+> La comprobación se hacía bajo el candado pero **antes** de que el restore se
+> preparara, así que entre la respuesta y el intercambio quedaban el diario y la
+> copia escribible del snapshot. Ahora `Snapshots::prepare_restore` arma todo y
+> `Prepared::commit` es sólo el `RENAME_EXCHANGE`; la última mirada va en medio.
+> La ventana que queda —un recorrido más un `renameat2`— no se niega: lo que cae
+> dentro no se destruye, se desplaza al árbol que el restore conserva.
+>
+> Y la única prueba que falló en la suite completa y nunca aislada,
+> `the_lock_is_released_when_it_goes_out_of_scope`: `flock` vive en la
+> descripción de archivo, `fork` copia todos los descriptores, y cerrar no suelta
+> un candado que un hijo a medio camino de su `exec` todavía referencia. Thalyx
+> lanza `btrfs` y `bpftool` **con el candado tomado**, así que era un defecto del
+> producto y no de la prueba. `ContractLock::drop` ahora hace `flock(LOCK_UN)`.
+>
+> ### Lo que sigue
+>
+> Correr `sudo ./dev/verify.sh` en Fedora. **El banco pagado de Claude no se
+> corrió y no debe correrse todavía.**
 >
 > Dos cosas, y la primera es un defecto sobre el que la segunda no se podía
 > construir.

@@ -5550,3 +5550,118 @@ Y el falso positivo es el fallo que importa: una comprobación que llama roto al
 código ordinario es una comprobación que alguien apaga, y después no protege
 nada. Por eso lo que se afirma es «cada `.rs` de este repositorio está
 balanceado», y no «este fixture está roto».
+
+## Regla derivada: una prueba de cada mitad no es una prueba de la unión — 2026-08-29
+
+**Dónde salió.** La etapa 55 de `verify.sh`, la primera vez que corrió en Fedora,
+sobre Btrfs real. No destruyó nada y aun así falló: el rechazo del rollback
+caduco no dijo `workspace_moved`, dijo `done: false` y devolvió una línea
+`confirm_with` nueva.
+
+Las dos mitades estaban probadas, y ambas pruebas eran correctas:
+
+- `thalyx_core::attempt::a_write_to_a_file_the_agent_had_already_written_stops_the_rollback`
+  llama a `abandon` **directamente** con `Authorised::ByState` y comprueba que
+  contesta `WorkspaceMoved`. Pasa.
+- `thalyx-cli`'s `consent` tenía siete casos escritos y todos pasaban.
+
+Lo que nunca estuvo probado es el camino entre las dos, y ahí estaba todo el
+defecto: `consent` comparaba la declaración del llamador contra el testigo del
+*plan* y contestaba con el objeto de costo cuando no coincidían, así que la
+llamada **nunca llegaba** a la comprobación bajo el candado. La única palabra que
+el mecanismo existe para decir era inalcanzable desde la cara que dice palabras.
+
+**La regla.** Cuando una decisión se toma en una capa y se ejecuta en otra, hay
+tres cosas que probar y no dos: lo que decide la primera, lo que hace la segunda,
+y **que la primera llegue a la segunda**. Las dos primeras se prueban solas y por
+eso se escriben; la tercera no se le ocurre a nadie, y es la que se rompe.
+
+La forma barata de cubrirla cuando la capa de abajo necesita hardware: extraer la
+traducción a una función con nombre —aquí `how_it_is_authorised`— y afirmar que
+la salida de la decisión es la entrada de la ejecución. No prueba el efecto, pero
+prueba la unión, que es lo que faltaba.
+
+Y la señal de que hace falta buscarla: **un rechazo que se lee como «volvé a
+intentar con esto»**. La respuesta traía una línea nueva lista para copiar. Un
+agente en un ciclo la copia, y en la llamada siguiente sí se pierde el trabajo de
+la persona. Que no se haya destruido nada en la primera llamada no hace que el
+defecto sea menor; hace que sea silencioso.
+
+## Regla derivada: un `sleep` en una prueba es el sujeto confesando de qué depende — 2026-08-29
+
+**Dónde salió.** `state_identity.rs` tenía un ayudante llamado `write_later` que
+dormía veinte milisegundos antes de cada escritura, con un comentario honesto:
+dos escrituras seguidas del mismo programa pueden caer dentro del mismo tic de
+reloj del sistema de archivos, así que sin la espera la prueba fallaría a veces.
+
+La espera hacía pasar la prueba y **escondía el caso real**. La etapa 55 en
+Fedora no duerme —el agente escribe, toma el estado, y un tercero escribe el
+mismo archivo enseguida—, que es exactamente lo que pasa cuando una persona y un
+agente comparten un árbol.
+
+**La regla.** Un `sleep` puesto para que algo se distinga no es un detalle del
+arnés: es una afirmación sobre el sujeto —«esto sólo distingue si pasa
+tiempo»— escrita en el único lugar donde nadie la lee como un defecto. Cuando
+aparezca uno, la pregunta no es cuánto dormir sino **si el sujeto es correcto sin
+dormir**, y si la respuesta es no, arreglar el sujeto.
+
+El corolario, que es lo que hizo falta aquí: la prueba sin espera tiene que
+*decir* cuál de los dos casos acaba de probar. Si la máquina resultó ser lenta y
+los timestamps sí se separaron, la aserción sigue siendo cierta y prueba menos —
+así que `metadata_alone_would_separate` mira si el caso difícil fue el que
+ocurrió, y lo imprime.
+
+## Regla derivada: un descriptor sobrevive a un `fork`, y por eso cerrarlo no suelta un candado — 2026-08-29
+
+**Dónde salió.** De las 103 suites del taller, la única que falló en la máquina de
+Cesar fue `store::tests::the_lock_is_released_when_it_goes_out_of_scope`. Aislada
+pasa siempre; en el contenedor de cuatro núcleos no falló en cuarenta corridas de
+la suite completa.
+
+`flock` pertenece a la **descripción de archivo abierta**, no al descriptor, y se
+suelta al cerrar sólo cuando se cierra el **último** descriptor que la referencia.
+`fork` copia todos. Así que un hijo que ya hizo `fork` y todavía no llegó a
+`exec` sostiene el candado del padre, y soltar el candado en el padre durante ese
+instante no suelta nada.
+
+En un proceso de `cargo test` las pruebas son hilos, y la prueba de al lado
+—`a_second_process_waits_for_the_first_to_finish_its_contract`— lanza un proceso
+hijo. Con núcleos suficientes para que ese `spawn` se solape con este `drop`, la
+prueba ve un candado que sobrevivió a su ámbito, que es exactamente lo que se
+llama y exactamente lo que no pasó.
+
+**No es sólo un artefacto de prueba**, y por eso el arreglo está en el candado y
+no en la prueba: Thalyx lanza `btrfs` y `bpftool` **con el candado del store
+tomado**, así que un `thalyx` real puede dejar el store cerrado después de haber
+terminado con él, y el siguiente se forma detrás de nadie. `ContractLock::drop`
+ahora hace `flock(LOCK_UN)`, que quita el candado de la descripción misma y lo
+ven todas las copias del descriptor a la vez.
+
+**La regla.** Cualquier recurso que viva en la *descripción* y no en el
+descriptor —candados `flock`, el offset, las banderas de estado— se suelta
+explícitamente, nunca cerrando. Y la forma de probarlo sin depender del reloj es
+`File::try_clone`, que es el mismo `dup` que hace un `fork` con el tiempo
+quitado: se toma el candado, se duplica, se cierra el original, y se afirma que
+sigue tomado. Esperar a que un hijo real esté a medio camino es medir la máquina.
+
+## Regla derivada: mover la comprobación cara del lado equivocado de la respuesta — 2026-08-29
+
+**Dónde salió.** La comprobación de estado de un rollback se hacía bajo el
+candado, que es correcto, y **antes** de que el restore empezara a prepararse.
+Entre la respuesta y el intercambio quedaban entonces: abrir el diario, escribir
+la intención, limpiar un nombre de staging viejo, y hacer la copia escribible del
+snapshot. En Btrfs eso son milisegundos, y un milisegundo alcanza para que el
+editor de otra persona guarde.
+
+**La regla.** «Comprobar justo antes de actuar» se cumple midiendo qué queda
+*después* de la comprobación, no dónde está escrita la línea. Si entre las dos
+hay trabajo, ese trabajo se mueve al otro lado y la comprobación se entrega como
+una pregunta al que va a actuar —aquí, `apply_holding_the_lock` recibe la última
+mirada y la hace con el intercambio ya armado—.
+
+Y lo que queda se nombra en vez de negarse. La ventana no es cero y nada que no
+congele el sistema de archivos la haría cero, así que lo garantizado son dos
+frases: una escritura que terminó antes de la comprobación nunca se pierde, y una
+que cae dentro de la ventana no se destruye sino que se desplaza al árbol que el
+restore conserva. Declarar «estado exacto» a secas, sabiendo que hay una carrera,
+sería la misma clase de mentira que un conteo.

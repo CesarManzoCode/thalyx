@@ -7321,18 +7321,49 @@ step "55. a rollback that names the wrong tree destroys nothing"
 # neither: one modified file before, one modified file after. The claim still
 # matched and their edit went back to the snapshot.
 #
+# ## What this stage found the first time it ran, 2026-08-29
+#
+# Nothing was destroyed and the answer was still wrong: the refusal did not say
+# `workspace_moved`, it said `done: false` and handed back a **fresh** line to
+# copy. The cause was not the witness, which separated the two trees correctly.
+# It was that `thalyx-cli`'s `consent` compared the caller's claim against the
+# plan's own witness and answered with the cost object when they differed — so
+# the call never reached the check under the lock, and the one word this whole
+# mechanism exists to say was unreachable from the face that says words. An
+# agent in a loop copies that fresh line, and *then* the person's work is gone.
+#
+# The core test that proves the refusal called `abandon` directly, and the only
+# thing that was ever broken was the path between the two. Rule 5: a test of
+# each half separately is not a test of the join.
+#
+# ## Why nothing here waits
+#
+# Because waiting is the defect. The witness was made of sizes and timestamps,
+# and two writes in a row can land inside one filesystem tick — so the unit
+# tests slept twenty milliseconds to be sure the clock had moved, which is a
+# test admitting its subject depends on the clock. **A state identity that needs
+# the clock to tick is not a state identity.** So the third party here writes
+# immediately, into the same file, with a line of exactly the same length: same
+# path, same inode, same size, and on a quiet enough machine the same `mtime`
+# and `ctime`. Nothing but the bytes is different.
+#
 # The columns, in the order they answer:
 #
 #   - the negative control. Agent edits `shared.txt`; the machine hands back the
-#     line that would abandon in one call; a third party then writes to **the
-#     same file**; the line is repeated. It must be refused, their bytes must
+#     line that would abandon in one call; a third party then writes **the same
+#     number of bytes to the same file, through a descriptor that was already
+#     open before the state was taken**, with no wait anywhere. The line is
+#     repeated. It must be refused **as `workspace_moved`**, their bytes must
 #     still be there, and the attempt must still be open — an abandon that did
 #     not happen must never be recorded as one.
 #   - the counts, printed beside it, to show they did not move. Without this the
 #     first column proves the protection works and not that it was needed.
-#   - the positive control. The same sequence with nobody else writing: one call,
-#     and the tree comes back. Without it a rule that refused everything would
-#     pass the first column and break the feature.
+#   - work outside the tree, which must not invalidate anything. A rule that
+#     refused whenever anything on the machine changed would pass every column
+#     above and make the feature unusable on a machine somebody is working on.
+#   - the positive control. The same sequence with nobody else writing in the
+#     tree: one call, and the tree comes back. Without it a rule that refused
+#     everything would pass the first column and break the feature.
 
 STATE_STORE="$WORK/state-store"
 STATE_TREE="$BTRFS_SCRATCH/.thalyx-verify-state"
@@ -7379,8 +7410,13 @@ else:
 ' "$1" "$2"
     }
 
-    printf 'original\n' > "$STATE_TREE/shared.txt"
+    printf 'original............\n' > "$STATE_TREE/shared.txt"
     state_run "intento empezar witness" > "$WORK/state-begin.log"
+
+    # Opened **before** the state is ever taken, and written through later. A
+    # mechanism that noticed the open would notice nothing here, and this is the
+    # long-lived editor that makes a counter untrustworthy, in one line of shell.
+    exec 9<> "$STATE_TREE/shared.txt"
 
     # The agent's own edit, then the line the machine hands back for undoing it.
     printf 'what the agent wrote\n' > "$STATE_TREE/shared.txt"
@@ -7389,11 +7425,16 @@ else:
     STALE_DELETE=$(attempt_field "$WORK/state-cost.log" would_delete)
     STALE_REVERT=$(attempt_field "$WORK/state-cost.log" would_revert)
 
-    # Somebody else, in the same file, while the attempt is open.
-    printf 'what the person wrote\n' > "$STATE_TREE/shared.txt"
+    # Somebody else, in the same file, while the attempt is open — same length,
+    # through the descriptor that was already open, and with nothing waiting for
+    # the clock. `what the human wrote` is exactly as long as `what the agent
+    # wrote`, so the file's size does not move either.
+    printf 'what the human wrote\n' >&9
+    exec 9>&-
     state_run "intento abandonar" > "$WORK/state-cost2.log"
     NOW_DELETE=$(attempt_field "$WORK/state-cost2.log" would_delete)
     NOW_REVERT=$(attempt_field "$WORK/state-cost2.log" would_revert)
+    SAME_SIZE=$(stat -c %s "$STATE_TREE/shared.txt" 2>/dev/null || echo unknown)
 
     state_run "$STALE_LINE" > "$WORK/state-stale.log"
     STALE_OK=$(attempt_field "$WORK/state-stale.log" ok)
@@ -7416,19 +7457,27 @@ else:
 ')
 
     # The positive control: the line the machine hands back *now*, with nobody
-    # writing in between, must undo it in one call.
+    # writing in the tree in between, must undo it in one call.
     state_run "intento abandonar" > "$WORK/state-cost3.log"
     FRESH_LINE=$(attempt_field "$WORK/state-cost3.log" confirm_with)
+
+    # And work outside the tree in between, which must change nothing. The
+    # identity is of *this* workspace: a rule that refused whenever anything on
+    # the machine moved would pass every column above and be unusable on a
+    # machine somebody is working on.
+    printf 'somebody else building, somewhere else\n' > "$WORK/outside-the-tree.txt"
+    mkdir -p "$WORK/outside-the-tree.d" && : > "$WORK/outside-the-tree.d/new"
+
     state_run "$FRESH_LINE" > "$WORK/state-fresh.log"
     FRESH_DONE=$(attempt_field "$WORK/state-fresh.log" abandoned)
     RESTORED=$(cat "$STATE_TREE/shared.txt" 2>/dev/null || echo unreadable)
 
     if [ "$STALE_OK" = "False" ] && [ "$STALE_WORD" = "workspace_moved" ] \
-       && [ "$SURVIVED" = "what the person wrote" ] && [ "$STILL_OPEN" = "True" ] \
+       && [ "$SURVIVED" = "what the human wrote" ] && [ "$STILL_OPEN" = "True" ] \
        && [ "$STALE_DELETE" = "$NOW_DELETE" ] && [ "$STALE_REVERT" = "$NOW_REVERT" ] \
-       && [ "$FRESH_DONE" = "True" ] && [ "$RESTORED" = "original" ]; then
-        proven "a rollback authorised against a tree somebody else had written in was refused and destroyed nothing — while the counts it used to be authorised by never moved (delete=$STALE_DELETE revert=$STALE_REVERT, both before and after) — and the same call against the tree as it stands undid it in one"
-    elif [ "$SURVIVED" != "what the person wrote" ]; then
+       && [ "$FRESH_DONE" = "True" ] && [ "$RESTORED" = "original............" ]; then
+        proven "a rollback authorised against a tree somebody else had written in — the same file, the same $SAME_SIZE bytes, through a descriptor already open, with nothing waiting for the clock — was refused as workspace_moved and destroyed nothing, while the counts it used to be authorised by never moved (delete=$STALE_DELETE revert=$STALE_REVERT, both before and after); work outside the tree changed nothing; and the same call against the tree as it stands undid it in one"
+    elif [ "$SURVIVED" != "what the human wrote" ]; then
         failed "a stale rollback destroyed somebody else's work: shared.txt is now '$SURVIVED'; see $WORK/state-stale.log"
         excerpt "$WORK/state-stale.log"
     elif [ "$STALE_DELETE" != "$NOW_DELETE" ] || [ "$STALE_REVERT" != "$NOW_REVERT" ]; then
