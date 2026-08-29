@@ -5665,3 +5665,63 @@ frases: una escritura que terminó antes de la comprobación nunca se pierde, y 
 que cae dentro de la ventana no se destruye sino que se desplaza al árbol que el
 restore conserva. Declarar «estado exacto» a secas, sabiendo que hay una carrera,
 sería la misma clase de mentira que un conteo.
+
+## Regla derivada: una ruta que no está no es una ruta que nadie pudo leer — 2026-08-29
+
+**Dónde salió.** El testigo de [[Conocimiento-con-Testigo]] recorre un conjunto
+de rutas nombradas, y una de las que nombra para una comprobación de Rust es
+`Cargo.lock`. Un espacio de trabajo que todavía no tiene candado hacía que
+`walkdir` devolviera un error por esa ruta, y ese error se contaba como
+*ilegible*. Un testigo con algo ilegible está **incompleto**, y un testigo
+incompleto no coincide con nada — ni consigo mismo, a propósito.
+
+Resultado: el cache de validación no acertó **ni una sola vez**, en silencio, y
+el compilador corrió siempre. Todos los veredictos eran correctos. Lo único que
+estaba mal era el costo, que es la única cosa que ese cache existe para bajar.
+
+**La regla.** Es la regla 10 leída al revés. «Una falla de lectura no es una
+falla de existencia» ya estaba escrita; su otra mitad no: **una falla de
+existencia no es una falla de lectura**. Un `ENOENT` sobre una ruta que el
+llamador nombró es información sobre el árbol —no hay candado— y pertenece al
+conjunto como una ausencia, no al conteo de lo que nadie pudo mirar.
+
+Y la manera de encontrarlo es la regla 13: la afirmación era que algo caro deja
+de pasar, así que la prueba **cuenta las veces que pasa**. `process_launches` es
+ese conteo. Una prueba escrita como «el veredicto fue `passed`» habría pasado
+todas las veces.
+
+## Regla derivada: una herramienta que se invoca dentro de la frontera escribe dentro de la frontera — 2026-08-29
+
+**Dónde salió.** Una prueba afirmaba que una petición que cambió dos archivos
+reporta dos, y reportó veintinueve. Los otros veintisiete eran `target/`:
+rust-analyzer corre `cargo metadata` y compila build scripts, y Cargo sin
+`CARGO_TARGET_DIR` construye **dentro del espacio de trabajo**.
+
+Dentro de `hacer` eso significa tres cosas, ninguna visible desde el veredicto:
+el snapshot contiene un árbol de compilación, la diferencia observada deja de ser
+una medida de lo que hizo el programa, y el rollback destruye el cache de
+compilación que abarata la comprobación siguiente.
+
+**La regla.** Antes de invocar una herramienta ajena dentro de una frontera
+transaccional, hay que preguntarle **dónde escribe** y decírselo. No basta con
+que la herramienta sea «de lectura»: `cargo metadata` es una consulta y aun así
+deja un `Cargo.lock` y un `target/`. Y lo que lo cachó no fue una revisión del
+código sino una prueba que contaba, otra vez: una escrita como «los dos archivos
+quedaron renombrados» pasa con las veintinueve.
+
+## Regla derivada: un solo recurso global por proceso mide al planificador — 2026-08-29
+
+**Dónde salió.** El proveedor semántico se guardaba en un solo espacio del
+proceso, porque arrancar rust-analyzer cuesta veinticinco segundos y la sesión es
+una. En el binario de pruebas la sesión no es una: `cargo test` corre las pruebas
+de un binario como hilos de **un** proceso, y dos pruebas sobre árboles distintos
+se desalojaban por turnos. La métrica que dice «un arranque por petición»
+quedaba midiendo el orden en que el planificador las despertó.
+
+**La regla.** Es la regla 11 en un lugar donde nadie había mirado: no es sólo el
+sistema de archivos y no son sólo los descriptores. **Cualquier recurso global
+con un solo espacio** —una conexión, un proceso auxiliar, un candado con nombre—
+es un recurso por el que las pruebas compiten, y una métrica sobre él es una
+medida del planificador. Se arregla dándole una llave: aquí, uno por árbol, con
+un tope y desalojo del más viejo, que es lo que una sesión real necesita de todos
+modos.

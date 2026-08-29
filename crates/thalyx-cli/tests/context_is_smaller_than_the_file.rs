@@ -89,20 +89,21 @@ fn a_crate() -> (tempfile::TempDir, PathBuf) {
     )
     .expect("a manifest");
 
-    // Padding that is real code, so that the file is genuinely long and the
-    // comparison below is against something an agent would really have read.
-    let mut lib = String::from("pub mod keystore;\n");
+    std::fs::write(work.join("src").join("lib.rs"), "pub mod keystore;\n").expect("a lib");
+
+    // The padding goes in the same file as the symbol, deliberately: the
+    // comparison this test makes is between the answer and **the file an agent
+    // would have opened to get it**, and padding somewhere else would make that
+    // comparison flattering rather than true.
+    let mut keystore = String::from(
+        "/// The one thing anybody is going to ask about.\npub struct Keystore {\n    pub opened: bool,\n}\n\nimpl Keystore {\n    pub fn unlock(&self) -> bool {\n        self.opened\n    }\n}\n",
+    );
     for n in 0..120 {
-        lib.push_str(&format!(
-            "/// Filler number {n}, which is what most of a real file is.\npub fn filler{n}() -> u32 {{\n    {n}\n}}\n\n"
+        keystore.push_str(&format!(
+            "\n/// Filler number {n}, which is what most of a real file is.\npub fn filler{n}() -> u32 {{\n    {n}\n}}\n"
         ));
     }
-    std::fs::write(work.join("src").join("lib.rs"), lib).expect("a lib");
-    std::fs::write(
-        work.join("src").join("keystore.rs"),
-        "/// The one thing anybody is going to ask about.\npub struct Keystore {\n    pub opened: bool,\n}\n\nimpl Keystore {\n    pub fn unlock(&self) -> bool {\n        self.opened\n    }\n}\n",
-    )
-    .expect("a keystore");
+    std::fs::write(work.join("src").join("keystore.rs"), keystore).expect("a keystore");
     (held, work)
 }
 
@@ -148,9 +149,15 @@ fn a_context_answer_is_a_fraction_of_the_file_it_describes() {
 
     // The comparison the whole verb exists for.
     let returned = answer["returned_bytes"].as_u64().expect("a byte count");
-    let whole = std::fs::read_to_string(work.join("src").join("lib.rs"))
+    let held = answer["held_bytes"].as_u64().expect("a byte count");
+    let whole = std::fs::metadata(work.join("src").join("keystore.rs"))
         .expect("the file an agent would have opened")
-        .len() as u64;
+        .len();
+    assert_eq!(
+        held, whole,
+        "what the answer says it is holding back has to be what it is actually \
+         holding back, or the measurement is decoration"
+    );
     assert!(
         returned * 10 < whole,
         "the answer was {returned} bytes and the file an agent would otherwise \
@@ -204,7 +211,7 @@ fn a_handle_fetches_the_exact_lines_and_nothing_around_them() {
     assert!(text.contains("pub struct Keystore"), "{text}");
     assert!(
         !text.contains("filler0"),
-        "the expansion reached into another file's contents: {text}"
+        "the expansion handed back more than the declaration it names: {text}"
     );
 
     // The second process knew what the first one issued, which is the point of
@@ -226,7 +233,7 @@ fn a_budget_that_is_named_is_a_budget_that_is_kept() {
         &[
             "structured on",
             &format!("cd {}", work.display()),
-            "contexto src/lib.rs presupuesto=300",
+            "contexto src/keystore.rs presupuesto=300",
             "salir",
         ],
     );
@@ -240,7 +247,7 @@ fn a_budget_that_is_named_is_a_budget_that_is_kept() {
     let omitted = answer["omitted_for_budget"].as_u64().expect("a count");
     assert!(
         shown >= 1 && omitted >= 1,
-        "a file with 121 declarations under a 300-byte budget should show some \
+        "a file with 122 declarations under a 300-byte budget should show some \
          and hold the rest: {answer}"
     );
     assert!(

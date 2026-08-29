@@ -115,7 +115,7 @@ const MOST_LIVE: usize = 4;
 /// the workspace. Inside `hacer` that means the snapshot contains a build tree,
 /// the rollback destroys the build cache, and a run that changed two files
 /// reports twenty-nine changes. Found by a test that asserted the count.
-fn build_directory(store_root: &Path, tree: &Path) -> PathBuf {
+pub fn build_directory(store_root: &Path, tree: &Path) -> PathBuf {
     let key = tree
         .to_string_lossy()
         .chars()
@@ -291,12 +291,19 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
 
     let (returned, used, omitted) = fit(&entries, budget);
 
-    // What the model did *not* have to read. The number this whole file exists
-    // to move: without it, "the answer is small" is a claim about a JSON blob
-    // rather than a measurement against the alternative.
-    let held: usize = entries
+    // What the model did *not* have to read: the whole of every file these
+    // entries live in, which is what an agent without this verb would have
+    // opened. The number this file exists to move, and without it "the answer
+    // is small" is a claim about a JSON blob rather than a measurement against
+    // the alternative.
+    //
+    // Deduplicated, because twenty entries out of one file are one file.
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let held: u64 = entries
         .iter()
-        .map(|entry| lines_of(&tree, &entry.file, entry.line, entry.through).len())
+        .filter(|entry| seen.insert(entry.file.as_str()))
+        .filter_map(|entry| std::fs::metadata(tree.join(&entry.file)).ok())
+        .map(|about| about.len())
         .sum();
 
     if face.is_machine() {
@@ -309,9 +316,10 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 ("omitted_for_budget", json!(omitted)),
                 ("budget_bytes", json!(budget)),
                 ("returned_bytes", json!(used)),
-                // Rule: no silent loss. Every byte not returned is reachable
-                // through a handle, and the answer says how many there are.
-                ("held_bytes", json!(held.saturating_sub(used))),
+                // Rule: no silent loss. What was not returned is reachable —
+                // by handle for a declaration, by `read` for a whole file —
+                // and the answer says how much of it there is.
+                ("held_bytes", json!(held)),
                 ("source", json!(source)),
                 ("fresh", json!(fresh)),
                 ("detail", json!(why)),

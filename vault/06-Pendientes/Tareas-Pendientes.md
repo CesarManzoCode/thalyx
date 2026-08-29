@@ -637,6 +637,32 @@ con el que se mide, en [[Evidencia-de-Agentes]].
       snapshot. Es un decreto de [[Camino-Confiable]], así que no se tocó. Sólo
       Cesar puede cambiarlo.
 
+## El hueco que dejó el proveedor semántico — 2026-08-29
+
+**rust-analyzer corre fuera del confinamiento.** Hoy es un proceso anfitrión que
+Thalyx lanza con el espacio de trabajo como raíz, no uno que `ejecutar` confina
+como confina a `cargo` en el check de Rust. Es un lector —nunca escribe, y cada
+ruta que nombra se ancla contra la frontera de la sesión antes de que Thalyx abra
+nada— pero eso es una propiedad del código de Thalyx, no del kernel.
+
+Lo que falta, en orden de lo que decide:
+
+1. **Decidir si el proveedor es un módulo.** Un rust-analyzer confinado con
+   `ejecutar` necesita leer el árbol, el toolchain y su propio directorio de
+   compilación, y necesita seguir vivo entre preguntas — que es lo contrario de
+   lo que `ejecutar` hace hoy, que lanza y espera. Un proceso confinado y
+   **residente** es una forma que esta máquina todavía no tiene; el motor de
+   inferencia tiene el mismo problema y lo resolvió de otra manera. Ver
+   [[Motor-de-Inferencia-como-Modulo]].
+2. **Qué pasa dentro de la imagen.** El decreto dice el kernel y un programa, y
+   rust-analyzer es un segundo programa. O se instala como módulo firmado, o la
+   cara de programación de Rust sólo existe cuando Thalyx corre sobre una máquina
+   que ya lo tiene. Las dos son respuestas legítimas y **es de Cesar**.
+
+Mientras tanto está dicho en voz alta en [[Semantica-Compilada]] y en el módulo,
+y `dev/verify.sh` etapa 57 y 58 dicen `NOT PROVEN` en una máquina sin él en lugar
+de callarse.
+
 ## Pendientes de decreto formal
 
 - [x] **Con qué se cierra la Fase 1** — resuelto el 2026-08-06: **una ISO independiente**, que puesta en una PC sin sistema operativo la deje corriendo Thalyx. Sustituye a la persona ajena y conserva lo que ella aportaba: es una condición que el proyecto no se puede declarar a sí mismo. Ver [[Criterio-de-Salida-Fase-1]].

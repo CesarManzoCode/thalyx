@@ -806,7 +806,7 @@ fn run_check(
         }
 
         Check::Program { program, arguments } => {
-            let outcome = run_confined(asked, program, arguments, &[], metrics);
+            let outcome = run_confined(asked, program, arguments, &[], &[], metrics);
             CheckRecord {
                 check: format!("program `{program}`"),
                 verdict: outcome.verdict,
@@ -846,6 +846,7 @@ fn run_confined(
     program: &str,
     arguments: &[String],
     also_readable: &[PathBuf],
+    also_writable: &[PathBuf],
     metrics: &mut Metrics,
 ) -> Ran {
     use thalyx_manifest::{Permission, PermissionKind};
@@ -881,6 +882,17 @@ fn run_confined(
             action: "read".to_string(),
             kind: PermissionKind::Session,
         });
+    }
+    // A place to build that is not the workspace. Both ways, because a build
+    // directory is written and then read back.
+    for extra in also_writable {
+        for action in ["read", "write"] {
+            grants.push(Permission {
+                resource: extra.display().to_string(),
+                action: action.to_string(),
+                kind: PermissionKind::Session,
+            });
+        }
     }
 
     metrics.process_launches += 1;
@@ -1042,11 +1054,19 @@ fn rust_check(
         };
     };
 
+    // Built outside the workspace, and it is not tidiness. A `target/` inside
+    // the tree is inside the snapshot: the boundary would copy a build tree,
+    // the difference would report thousands of changed files, and a rollback
+    // would throw away the build cache that makes the *next* check cheap. It is
+    // the same reason the provider tells rust-analyzer where to build.
+    let build_into = crate::semantic::build_directory(asked.store.root(), &asked.subvolume);
     let mut arguments = vec![
         subcommand.to_string(),
         // No network from inside the confinement, so a build that wanted to
         // fetch would fail as a network error and read as broken code.
         "--offline".to_string(),
+        "--target-dir".to_string(),
+        build_into.display().to_string(),
         "--manifest-path".to_string(),
         asked.subvolume.join("Cargo.toml").display().to_string(),
     ];
@@ -1064,11 +1084,15 @@ fn rust_check(
         readable.push(PathBuf::from(&home).join(".rustup"));
     }
 
+    // Made here rather than left to Cargo: the grant names a path, and a
+    // grant on a directory that does not exist yet is a grant on nothing.
+    let _ = std::fs::create_dir_all(&build_into);
     let outcome = run_confined(
         asked,
         &cargo.display().to_string(),
         &arguments,
         &readable,
+        std::slice::from_ref(&build_into),
         metrics,
     );
 
@@ -1128,8 +1152,27 @@ struct Remembered {
 /// would be a validation whose meaning depends on who started the session.
 fn find_cargo() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    // The **real** cargo of an installed toolchain first, before rustup's shim.
+    //
+    // `~/.cargo/bin/cargo` is a shim that re-executes `~/.cargo/bin/rustup`,
+    // and inside the confinement that is a second program the grants say
+    // nothing about — so the run is refused for naming `rustup`, which reads
+    // like a broken change and is a broken `PATH`. Rule 5, where the instrument
+    // is the installation layout.
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".cargo/bin/cargo"));
+        let toolchains = PathBuf::from(&home).join(".rustup").join("toolchains");
+        if let Ok(entries) = std::fs::read_dir(&toolchains) {
+            let mut found: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path().join("bin").join("cargo"))
+                .collect();
+            // Sorted, so that a machine with several toolchains picks the same
+            // one every time. A validation whose meaning depends on directory
+            // order is a validation nobody can reproduce.
+            found.sort();
+            candidates.extend(found);
+        }
+        candidates.push(PathBuf::from(&home).join(".cargo/bin/cargo"));
     }
     candidates.push(PathBuf::from("/usr/local/bin/cargo"));
     candidates.push(PathBuf::from("/usr/bin/cargo"));

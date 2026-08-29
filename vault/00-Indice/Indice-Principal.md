@@ -38,6 +38,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Decision-Licencia]] — GPLv3 en userspace, GPLv2 en kernel
 
 ### 2. Arquitectura general (cómo está construido)
+- [[Contexto-Progresivo]] — **una descripción en lugar del archivo**: `contexto`, el presupuesto explícito, y el detalle sólo cuando se pide
 - [[Superficie-para-el-LLM]] — **el catálogo entero** de lo que se puede crear o cambiar para que un LLM se mueva mejor aquí, y el criterio de cinco costos que decide si algo entra
 - [[La-Pantalla]] — **una sola pantalla que es Thalyx**: sin ventanas, sin escritorio, y la tipografía cargando procedencia
 - [[Arquitectura-Asimetrica]] — cara humana vs. cara IA
@@ -55,6 +56,8 @@ nota de esta bóveda que lo contradiga está equivocada.
 ### 3. Las primitivas (el diferencial técnico)
 - [[Primitivas-Base-Overview]] — mapa de las 4 primitivas
 - [[FS-en-Grafo]] · [[Permisos-JIT]] · [[Memoria-Persistente]] · [[Scheduler-Predictivo]]
+- [[Conocimiento-con-Testigo]] — lo que la máquina recuerda de un árbol, y las tres posturas que puede tener sobre ello
+- [[Semantica-Compilada]] — qué *es* un nombre, contestado por un compilador; y qué hay que volver a compilar, derivado del grafo de Cargo
 - [[Parser-Mecanico]] — el motor que produce el grafo
 
 ### 4. El flujo canónico (la pieza central de diseño)

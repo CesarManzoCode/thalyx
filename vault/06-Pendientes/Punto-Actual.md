@@ -14,6 +14,87 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+## La cara de programación: qué es un nombre, y qué hay que volver a compilar — 2026-08-29
+
+**Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+El sprint absorbió mecanismos que ya funcionan en otro lado y los puso bajo el
+modelo de estado, autoridad y transacción de Thalyx. Nada de esto se inventó
+aquí; lo que se construyó es la máquina que los junta.
+
+### Lo que hay ahora
+
+- **`thalyx-know`** — conocimiento persistente por árbol. Cada dato trae la
+  identidad del estado del que salió y se recuerda como `current`, `stale` o
+  `unknown`. **No hay forma de sacar el valor sin la postura.** El testigo es
+  sólo de contenido y acotado, así que un `intento abandonar` no vacía el cache y
+  un cambio en un paquete ajeno no invalida nada. [[Conocimiento-con-Testigo]].
+- **`thalyx-rust`** — el proveedor semántico. Cargo dice qué es el espacio de
+  trabajo; rust-analyzer dice qué *es* un nombre. Resuelve el caso que
+  `corpus/05-alias` lleva meses declarando imposible: `Keys` en `boot.rs` **es**
+  `Keystore`. [[Semantica-Compilada]].
+- **`contexto`** — una descripción en lugar del archivo. Doscientos bytes contra
+  diez mil, medido, con un asa que trae exactamente las líneas de esa declaración
+  cuando el modelo decide que las necesita. Presupuesto explícito y nada se
+  pierde en silencio. [[Contexto-Progresivo]].
+- **`renombrar-simbolo`** — cambia el nombre donde de veras se usa. La
+  importación que lo renombra tres archivos más allá sí; el comentario que lo
+  menciona y la cadena que lo contiene, no.
+- **`hacer` con el check `rust` de verdad** — compila los crates que el cambio
+  **alcanza**, del grafo de Cargo, y **no vuelve a compilar bytes que esta
+  máquina ya compiló** con este toolchain.
+
+### El vertical, que es el punto
+
+Una sola petición externa: resolver el símbolo, reescribir cada uso real,
+observar el árbol, derivar qué compilar, reutilizar lo que sigue valiendo,
+compilar lo que falta, confirmar o devolver todo — **sin una sola inferencia del
+modelo en medio**. La prueba lo afirma contando: `external_requests == 1`,
+`analyzer_starts == 1`, y su gemela con una validación que no puede pasar deja los
+dos archivos byte por byte como estaban con el diagnóstico intacto en el store.
+
+### Lo que encontró el camino
+
+Tres defectos, los tres cachados por pruebas que **cuentan** en lugar de mirar el
+veredicto, y los tres escritos en [[Estrategia-de-Pruebas]]:
+
+1. Una ruta que no está se contaba como ilegible, el testigo salía incompleto, y
+   el cache de validación no acertó ni una vez — en silencio, con todos los
+   veredictos correctos y el costo entero.
+2. rust-analyzer corre Cargo, y Cargo sin `CARGO_TARGET_DIR` construye **dentro
+   del espacio de trabajo**: el snapshot llevaba un árbol de compilación y el
+   rollback lo destruía.
+3. Un solo proveedor global por proceso hacía que dos pruebas se desalojaran por
+   turnos, y la métrica «un arranque por petición» quedaba midiendo al
+   planificador. Regla 11 donde nadie había mirado.
+
+### Lo que sólo la máquina de Cesar puede decir
+
+`dev/verify.sh` tiene dos etapas nuevas. La **57** no necesita Btrfs y ya pasa en
+el contenedor. La **58** es el vertical entero sobre un subvolumen de verdad, con
+el compilador corriendo confinado bajo un kernel que sí deniega, y con la tercera
+columna que ninguna otra máquina puede dar: la segunda petición sobre los mismos
+bytes **no arranca ningún compilador**.
+
+Antes de correrla:
+
+```
+rustup component add rust-analyzer
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+Sin rust-analyzer las dos etapas dicen `NOT PROVEN` y nombran el comando; no se
+callan y no fingen.
+
+### Lo que sigue siendo hipótesis
+
+Que todo esto haga que Claude o Codex hagan más trabajo correcto con menos
+esfuerzo de modelo. Está construido y probado pieza por pieza; **no está
+medido**. No se corrió ningún banco pagado en este sprint, a propósito: primero
+se construye el contendiente.
+
+---
+
 > ## Lo que Fedora encontró: el testigo, la unión, y el candado — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
