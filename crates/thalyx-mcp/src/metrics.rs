@@ -45,6 +45,21 @@ pub struct Metrics {
     attempts_begun: u64,
     attempts_committed: u64,
     attempts_abandoned: u64,
+    /// How many questions actually went to the machine, which is **not**
+    /// `calls`: one tool call can be several — `thalyx_state` is three, and a
+    /// change that opens its own attempt is two.
+    machine_requests: u64,
+    /// How long those questions spent between leaving this process and being
+    /// answered.
+    ///
+    /// The one number that separates the bridge from everything else, and it is
+    /// named for what it can honestly see: framing, the socket, the guest's
+    /// round trip and the verb's own work, all together. Splitting those four
+    /// needs an instrument inside the machine, and a field that claimed to have
+    /// split them from out here would be a guess wearing a measurement's name.
+    /// What is left — `wall_seconds` minus this — is this adapter's own cost
+    /// plus every second the model spent thinking.
+    machine_seconds: f64,
     /// Calls that changed the workspace and came back without an error.
     ///
     /// This is the only instrument on the whole comparison that can say arm B
@@ -59,6 +74,23 @@ pub struct Metrics {
     /// `edit show` returns numbered lines. Rule 9 — the flattering direction
     /// is the one this must never be wrong in.
     mutations: u64,
+}
+
+/// Whether an `abandon` call is the one that actually undoes something.
+///
+/// Two shapes say yes, and they are not interchangeable: the second call of the
+/// two-step protocol carries `confirm`, and the one-call form carries the
+/// attempt it is settling together with what abandoning it costs. A counter that
+/// knew only the first would report zero abandons for an agent using the second
+/// — which is the failure this function exists to make impossible to bring back
+/// quietly.
+fn consented(arguments: &Value) -> bool {
+    if arguments.get("confirm").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    ["snapshot", "delete", "revert"]
+        .iter()
+        .all(|named| arguments.get(named).is_some())
 }
 
 impl Metrics {
@@ -78,6 +110,8 @@ impl Metrics {
             attempts_begun: 0,
             attempts_committed: 0,
             attempts_abandoned: 0,
+            machine_requests: 0,
+            machine_seconds: 0.0,
             mutations: 0,
         }
     }
@@ -118,11 +152,15 @@ impl Metrics {
                 // Counted on the call that carried the confirmation, because
                 // the first `abandon` is a question and only the second undoes
                 // anything. Counting both would double every abandon.
-                Some("abandon")
-                    if arguments.get("confirm").and_then(Value::as_bool) == Some(true) =>
-                {
-                    self.attempts_abandoned += 1
-                }
+                // Counted on the call that carries the consent, whichever of
+                // the two shapes it is: the plain `abandon` before it is a
+                // question and undoes nothing, so counting that one too would
+                // double every abandon. When the one-call form arrived this
+                // read `confirm` alone — and would have quietly stopped
+                // counting abandons the moment agents started using the shape
+                // that needs no `confirm`. Rule 5: the instrument is part of
+                // what a change can break.
+                Some("abandon") if consented(arguments) => self.attempts_abandoned += 1,
                 _ => {}
             },
             _ => {}
@@ -130,9 +168,22 @@ impl Metrics {
         self.write();
     }
 
+    /// One question asked of the machine, and how long it took to answer.
+    ///
+    /// Recorded per request rather than per tool call, because a tool call is
+    /// not a unit of transport: `thalyx_state` is three questions and a change
+    /// that opens its own attempt is two, so a mean taken over calls would
+    /// describe nothing that exists.
+    pub fn asked(&mut self, took: std::time::Duration) {
+        self.machine_requests += 1;
+        self.machine_seconds += took.as_secs_f64();
+    }
+
     pub fn object(&self) -> Value {
         json!({
             "wall_seconds": self.began.elapsed().as_secs_f64(),
+            "machine_requests": self.machine_requests,
+            "machine_seconds": self.machine_seconds,
             "mcp_calls": self.calls,
             "tools_used": self.per_tool,
             "bytes_returned": self.bytes_returned,
