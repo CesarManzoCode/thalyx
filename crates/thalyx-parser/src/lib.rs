@@ -356,6 +356,272 @@ pub fn definitions(language: Language, source: &str) -> Vec<Definition> {
     found
 }
 
+/// Whether the file's brackets close, and where the first one that does not is.
+///
+/// `None` means every `(`, `[` and `{` that is really a bracket has a partner
+/// of the right kind in the right order, and every string and comment closes.
+///
+/// ## What this is, said exactly, because it would be easy to oversell
+///
+/// It is **not a compiler and not a parser.** It cannot tell you that a type is
+/// wrong, that a name does not exist, or that a `match` is missing an arm. What
+/// it can tell you is the failure a mechanical edit actually produces: a
+/// substitution that ate a brace, a replacement pasted one line too high, a
+/// deletion that took a closing paren with it. Those turn a file into something
+/// no compiler will accept, and they are exactly what an agent rewriting text
+/// by pattern does when a pattern is slightly wrong.
+///
+/// ## Why it has its own scan, when this file's whole argument is that it should not
+///
+/// [`scrub`] exists because three scans disagreed, and the rule since is one
+/// scan. This is the documented exception, and the exception was found by
+/// pointing this function at **this file** — rule 6, and it took one run.
+///
+/// The scrubber answers *what to ignore*, and for that it is allowed to be
+/// generous: meeting a lone `'` it blanks the rest of the line, because in Rust
+/// a lone `'` is a lifetime far more often than a string. That is right for
+/// counting identifiers and fatal for counting brackets — `pub fn name(self) ->
+/// &'static str {` arrives with its `{` blanked away, so the parser's own
+/// source reported as unbalanced at the first method it declares.
+///
+/// Balance needs *what to keep*, which is a different question and needs a
+/// lexer rather than a scrubber. So this one knows the constructs a bracket can
+/// hide in: line and block comments (nested, as Rust's are), double-quoted
+/// strings with escapes, raw strings, backtick strings, triple-quoted strings,
+/// and — the one that forced this — the difference between a Rust character
+/// literal and a lifetime.
+///
+/// What it does not model is interpolation inside a template literal: the
+/// contents of a JavaScript backtick string are skipped whole, `${…}` included,
+/// so a bracket that is unbalanced *inside* an interpolation is not found. Said
+/// here rather than discovered.
+pub fn unbalanced(language: Language, source: &str) -> Option<String> {
+    let characters: Vec<char> = source.chars().collect();
+    let (line_comment, has_block_comments) = comment_markers(language);
+    let has_raw_strings = matches!(language, Language::Rust);
+    let has_backticks = matches!(language, Language::Go | Language::JavaScript);
+    let has_triple_quotes = matches!(language, Language::Python);
+    let single_quotes_are_strings = matches!(language, Language::Python | Language::JavaScript);
+
+    let mut stack: Vec<(char, usize)> = Vec::new();
+    let mut at = 0usize;
+    let mut line = 1usize;
+
+    while at < characters.len() {
+        let character = characters[at];
+        if character == '\n' {
+            line += 1;
+            at += 1;
+            continue;
+        }
+
+        if marker_at(&characters, at, line_comment) {
+            while at < characters.len() && characters[at] != '\n' {
+                at += 1;
+            }
+            continue;
+        }
+
+        if has_block_comments && marker_at(&characters, at, "/*") {
+            // Counted rather than scanned for the first `*/`, because Rust's
+            // block comments nest and a scan for the first one would leave the
+            // rest of an outer comment being read as code.
+            let opened_at = line;
+            let mut depth = 0usize;
+            while at < characters.len() {
+                if marker_at(&characters, at, "/*") {
+                    depth += 1;
+                    at += 2;
+                    continue;
+                }
+                if marker_at(&characters, at, "*/") {
+                    depth -= 1;
+                    at += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                if characters[at] == '\n' {
+                    line += 1;
+                }
+                at += 1;
+            }
+            if depth > 0 {
+                return Some(format!("line {opened_at}: a block comment is never closed"));
+            }
+            continue;
+        }
+
+        // A raw string: `r"…"`, `r#"…"#`, `br##"…"##`. The hashes decide where
+        // it ends, which is the whole reason a raw string exists.
+        if has_raw_strings
+            && (character == 'r' || character == 'b')
+            && !at
+                .checked_sub(1)
+                .and_then(|before| characters.get(before))
+                .is_some_and(|before| before.is_alphanumeric() || *before == '_')
+            && let Some((after, hashes)) = raw_string_opens(&characters, at)
+        {
+            let opened_at = line;
+            let closing: String = std::iter::once('"')
+                .chain(std::iter::repeat_n('#', hashes))
+                .collect();
+            let mut scan = after;
+            while scan < characters.len() && !marker_at(&characters, scan, &closing) {
+                if characters[scan] == '\n' {
+                    line += 1;
+                }
+                scan += 1;
+            }
+            if scan >= characters.len() {
+                return Some(format!("line {opened_at}: a raw string is never closed"));
+            }
+            at = scan + closing.chars().count();
+            continue;
+        }
+
+        if has_triple_quotes && let Some(triple) = triple_quote_at(&characters, at) {
+            let opened_at = line;
+            let mut scan = at + 3;
+            while scan < characters.len() && !marker_at(&characters, scan, triple) {
+                if characters[scan] == '\n' {
+                    line += 1;
+                }
+                scan += 1;
+            }
+            if scan >= characters.len() {
+                return Some(format!(
+                    "line {opened_at}: a triple-quoted string is never closed"
+                ));
+            }
+            at = scan + 3;
+            continue;
+        }
+
+        if character == '"'
+            || (has_backticks && character == '`')
+            || (single_quotes_are_strings && character == '\'')
+        {
+            let opened_at = line;
+            let mut scan = at + 1;
+            loop {
+                match characters.get(scan) {
+                    None => return Some(format!("line {opened_at}: a string is never closed")),
+                    Some('\\') => scan += 2,
+                    Some(&found) if found == character => break,
+                    Some('\n') => {
+                        line += 1;
+                        scan += 1;
+                    }
+                    Some(_) => scan += 1,
+                }
+            }
+            at = scan + 1;
+            continue;
+        }
+
+        // **The construct that forced this function to have its own scan.**
+        // `'a'` is a character and `'a` is a lifetime, and telling them apart
+        // is one lookahead: a literal closes on its own quote, and after an
+        // escape it closes a few characters later. A lifetime is a name and a
+        // name holds no brackets, so a quote that opens one is simply stepped
+        // over — where blanking the rest of the line was the defect.
+        if character == '\'' {
+            at = match character_literal_ends(&characters, at) {
+                Some(end) => end + 1,
+                None => at + 1,
+            };
+            continue;
+        }
+
+        match character {
+            '(' | '[' | '{' => stack.push((character, line)),
+            ')' | ']' | '}' => {
+                let wanted = match character {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                match stack.pop() {
+                    Some((opened, _)) if opened == wanted => {}
+                    Some((opened, opened_at)) => {
+                        return Some(format!(
+                            "line {line}: `{character}` closes a `{opened}` opened on line \
+                             {opened_at}"
+                        ));
+                    }
+                    None => {
+                        return Some(format!(
+                            "line {line}: `{character}` closes something that was never opened"
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+
+    stack
+        .pop()
+        .map(|(opened, at)| format!("line {at}: `{opened}` is never closed"))
+}
+
+/// Whether the characters at `at` spell this marker.
+fn marker_at(characters: &[char], at: usize, needle: &str) -> bool {
+    needle
+        .chars()
+        .enumerate()
+        .all(|(offset, wanted)| characters.get(at + offset) == Some(&wanted))
+}
+
+/// Where a raw string's body starts and how many hashes close it.
+fn raw_string_opens(characters: &[char], at: usize) -> Option<(usize, usize)> {
+    let mut scan = at + 1;
+    if characters.get(at) == Some(&'b') {
+        // `b"…"` is a byte string and not a raw one; only `br…` continues here.
+        if characters.get(scan) != Some(&'r') {
+            return None;
+        }
+        scan += 1;
+    }
+    let mut hashes = 0usize;
+    while characters.get(scan) == Some(&'#') {
+        hashes += 1;
+        scan += 1;
+    }
+    (characters.get(scan) == Some(&'"')).then_some((scan + 1, hashes))
+}
+
+/// The three quotes that open a triple-quoted string, if they are there.
+fn triple_quote_at(characters: &[char], at: usize) -> Option<&'static str> {
+    ["\"\"\"", "'''"]
+        .into_iter()
+        .find(|triple| marker_at(characters, at, triple))
+}
+
+/// Where a character literal's closing quote is, or `None` for a lifetime.
+///
+/// The whole of the distinction, in one place so that both the reasoning and
+/// the test that exercises it have somewhere to point.
+fn character_literal_ends(characters: &[char], at: usize) -> Option<usize> {
+    match characters.get(at + 1) {
+        // `'\n'`, `'\\'`, `'\u{1F600}'` — the escape decides nothing about the
+        // length, so the closing quote is looked for rather than counted to.
+        Some('\\') => characters
+            .iter()
+            .skip(at + 2)
+            .take(12)
+            .position(|&found| found == '\'')
+            .map(|offset| at + 2 + offset),
+        // `'a'`. Anything else with a quote two along is a one-character
+        // literal; anything else at all is a lifetime.
+        Some(_) if characters.get(at + 2) == Some(&'\'') => Some(at + 2),
+        _ => None,
+    }
+}
+
 /// Every identifier the file mentions, outside comments and outside strings.
 ///
 /// This is the other half of C2 — *«llamada desde estos tres sitios»* — and the
@@ -1470,5 +1736,113 @@ mod harness;
         // input must always produce byte-identical output.
         let source = "use b::x;\nuse a::y;\nuse c::z;\n";
         assert_eq!(parse(Language::Rust, source), parse(Language::Rust, source));
+    }
+}
+
+#[cfg(test)]
+mod balance {
+    use super::*;
+
+    #[test]
+    fn ordinary_rust_is_balanced() {
+        // The control, and it is the important half: a check that reported
+        // every file as broken would pass every "it noticed" test below and be
+        // worse than having no check at all.
+        assert_eq!(
+            unbalanced(
+                Language::Rust,
+                "fn main() {\n    let a = [1, 2, 3];\n    println!(\"{a:?}\");\n}\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_brace_a_substitution_ate_is_found_and_located() {
+        // What a mechanical edit actually breaks.
+        let why = unbalanced(Language::Rust, "fn main() {\n    let a = 1;\n").expect("a report");
+        assert!(why.contains("line 1"), "{why}");
+        assert!(why.contains("never closed"), "{why}");
+    }
+
+    #[test]
+    fn a_bracket_closed_by_the_wrong_kind_is_found() {
+        let why = unbalanced(Language::Rust, "fn f() { let a = (1, 2]; }\n").expect("a report");
+        assert!(why.contains('('), "{why}");
+    }
+
+    #[test]
+    fn brackets_inside_strings_and_comments_are_not_brackets() {
+        // The reason this is built on the scrubber. Every one of these lines is
+        // ordinary code that a naive counter calls broken, and a check that is
+        // wrong about ordinary code is one nobody leaves switched on.
+        for source in [
+            "fn main() { println!(\"(\"); }\n",
+            "fn main() { /* } */ }\n",
+            "fn main() { // }\n}\n",
+            "fn main() { let s = \"unclosed { brace\"; }\n",
+        ] {
+            assert_eq!(unbalanced(Language::Rust, source), None, "{source}");
+        }
+    }
+
+    #[test]
+    fn every_rust_file_in_this_repository_is_balanced() {
+        // **Rule 6, and it earned its place on the first run.** A fixture only
+        // proves the checker agrees with whoever wrote the fixture; this is
+        // ninety thousand lines nobody wrote for it. The first version of
+        // `unbalanced` was built on the scrubber and passed every hand-written
+        // case above — and this test found, immediately, that `-> &'static str
+        // {` arrives from the scrubber with its brace blanked away, because a
+        // lone `'` makes it drop the rest of the line. That is what the lexer
+        // below the fixtures exists for.
+        //
+        // A false positive here is the failure that matters: a check that
+        // reports ordinary code as broken is one that gets switched off, and
+        // then it protects nothing.
+        let mut looked_at = 0usize;
+        let mut trouble = Vec::new();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("the workspace root")
+            .to_path_buf();
+        let mut waiting = vec![root.clone()];
+        while let Some(directory) = waiting.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // `target` holds generated sources from every dependency, which
+                // is neither this project's code nor a fair sample of it.
+                if path.is_dir() {
+                    if !matches!(entry.file_name().to_str(), Some("target" | ".git")) {
+                        waiting.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(source) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                looked_at += 1;
+                if let Some(why) = unbalanced(Language::Rust, &source) {
+                    trouble.push(format!("{}: {why}", path.display()));
+                }
+            }
+        }
+        assert!(
+            looked_at > 50,
+            "only {looked_at} files were read, so this proved nothing"
+        );
+        assert!(
+            trouble.is_empty(),
+            "{} of {looked_at} real files were called unbalanced:\n{}",
+            trouble.len(),
+            trouble.join("\n")
+        );
     }
 }
