@@ -1431,8 +1431,10 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  y devuelve un asa; `contexto expandir=<asa>` trae exactamente");
             println!("  las líneas de esa declaración. `contexto <archivo>.rs` hace el");
             println!("  mapa de un archivo. `presupuesto=N` limita la respuesta y dice");
-            println!("  cuánto no cupo. En Rust lo contesta un compilador de verdad,");
-            println!("  así que sigue un alias hasta lo que de veras nombra.");
+            println!("  cuánto no cupo, y `usos=N` pide los lugares donde se usa —");
+            println!("  el número de usos siempre viene. En Rust lo contesta un");
+            println!("  compilador de verdad, así que sigue un alias hasta lo que");
+            println!("  de veras nombra.");
             println!("  `renombrar-simbolo <nombre> <nuevo>` lo cambia en cada lugar");
             println!("  que de veras lo usa — no donde el texto coincide.");
             println!("  `procesos` says what is running with its number, `memoria`");
@@ -1477,7 +1479,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
-            println!("  `contexto <nombre|archivo> [presupuesto=N|expandir=asa]`,");
+            println!("  `contexto <nombre|archivo> [presupuesto=N|usos=N|expandir=asa]`,");
             println!("  `renombrar-simbolo <nombre> <nuevo>`,");
             println!("  `hacer <programa>`, `evidencia <id>`,");
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");

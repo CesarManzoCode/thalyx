@@ -67,6 +67,17 @@ La entrada más valiosa primero, y por reglas deterministas: coincidencia exacta
 luego cuántas veces se usa, luego el archivo. No hay ranking aprendido y no hace
 falta.
 
+## La lista de usos se pide, no se supone
+
+La respuesta trae **siempre** cuántas veces se usa el nombre, y trae **dónde**
+sólo con `usos=N`. Es deliberado en las dos direcciones: sobre un nombre común la
+lista *es* todo el presupuesto, y el número contesta las dos preguntas que a esa
+lista se le hacen casi siempre — «¿esto se usa?» y «¿esto se usa mucho?».
+
+Cuando se pide, los lugares salen de la misma respuesta resuelta, no del índice.
+Ésa es la diferencia que importa: la importación que renombra el símbolo aparece
+porque un compilador sabe que es un uso, no porque el texto coincida.
+
 ## Dos fuentes, y la respuesta siempre dice cuál
 
 `source: rust-analyzer` quiere decir que el nombre se **resolvió**.

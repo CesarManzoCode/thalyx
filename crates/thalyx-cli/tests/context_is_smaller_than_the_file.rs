@@ -317,3 +317,55 @@ fn a_handle_from_a_tree_that_moved_says_so_rather_than_lying() {
          caller the ability to say `this is what I knew, and it moved`"
     );
 }
+
+#[test]
+fn the_use_sites_are_asked_for_rather_than_assumed() {
+    if !analyzer_or_skip("that use sites come back when they are asked for") {
+        return;
+    }
+    let (held, work) = a_crate();
+
+    // The default: the count and nothing else. A symbol with two hundred uses
+    // would otherwise be the whole budget, and "is this used at all" and "is
+    // this used a lot" — which is most of what the list gets asked — are both
+    // answered by the number.
+    let quiet = piped(
+        held.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            "contexto Keystore",
+            "salir",
+        ],
+    );
+    let entry = answers(&quiet, "context")[0]["entries"][0].clone();
+    assert!(entry["uses"].as_u64().expect("a count") >= 1);
+    assert!(
+        entry["used_at"].is_null(),
+        "the list came back without being asked for: {entry}"
+    );
+
+    let asked = piped(
+        held.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            "contexto Keystore usos=10",
+            "salir",
+        ],
+    );
+    let entry = answers(&asked, "context")[0]["entries"][0].clone();
+    let sites = entry["used_at"].as_array().expect("the sites").clone();
+    assert!(!sites.is_empty(), "{entry}");
+    assert_eq!(
+        sites.len() as u64,
+        entry["uses"].as_u64().expect("a count").min(10),
+        "the list and the count have to be about the same thing: {entry}"
+    );
+    assert!(
+        sites
+            .iter()
+            .all(|site| site.as_str().is_some_and(|text| text.contains(".rs:"))),
+        "a use site is a file and a line: {sites:?}"
+    );
+}

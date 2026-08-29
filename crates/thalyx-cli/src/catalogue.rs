@@ -470,8 +470,15 @@ pub const VERBS: &[Verb] = &[
     Verb {
         id: "context",
         names: &["contexto", "context"],
-        takes: &["symbol|file", "presupuesto=N", "expandir=handle"],
-        flags: &["presupuesto=N", "budget=N", "expandir=…", "expand=…"],
+        takes: &["symbol|file", "presupuesto=N", "usos=N", "expandir=handle"],
+        flags: &[
+            "presupuesto=N",
+            "budget=N",
+            "usos=N",
+            "uses=N",
+            "expandir=…",
+            "expand=…",
+        ],
         answers: Some("context"),
         changes: false,
         errors: &["incomplete", "unreadable", "outside", "no_such_handle"],

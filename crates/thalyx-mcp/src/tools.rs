@@ -285,7 +285,9 @@ really names, which no text search can do. \
 Give it a symbol (`Store::lock`, `Keystore`), or a path ending in `.rs` for a \
 map of everything one file declares. \
 `budget` bounds the answer in bytes and the answer says how many entries did \
-not fit; nothing is lost, it is held. \
+not fit; nothing is lost, it is held. `uses` asks for that many use sites as \
+`file:line` — the answer always carries the count, and the list only when you \
+ask, because on a common name the list is the whole budget. \
 When you actually need the source, call this again with `expand` set to an \
 entry's handle and you get exactly the lines that declaration occupies — not \
 the file. \
@@ -305,6 +307,11 @@ the machine last looked. Believe them.",
                         "type": "integer",
                         "description": "Most bytes of entries to return. Defaults to 2000."
                     },
+                    "uses": {
+                        "type": "integer",
+                        "description": "Return this many use sites (`file:line`). \
+                                        Defaults to none; the count is always there."
+                    },
                     "expand": {
                         "type": "string",
                         "description": "A handle from a previous answer. Returns the exact \
@@ -322,6 +329,9 @@ the machine last looked. Believe them.",
             }
             if let Some(budget) = arguments.get("budget").and_then(Value::as_u64) {
                 given.push(format!("presupuesto={budget}"));
+            }
+            if let Some(uses) = arguments.get("uses").and_then(Value::as_u64) {
+                given.push(format!("usos={uses}"));
             }
             Ok(vec![("context", given)])
         },

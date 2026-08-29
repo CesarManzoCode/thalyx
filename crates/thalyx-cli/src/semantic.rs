@@ -59,6 +59,9 @@ pub const MOST_BUDGET: usize = 32_000;
 /// The most lines one expansion hands back.
 pub const MOST_LINES: usize = 400;
 
+/// The most use sites one entry may carry.
+pub const MOST_USES: usize = 200;
+
 /// The kind under which a handle's span is remembered.
 const KIND_SPAN: &str = "context.span";
 
@@ -194,6 +197,10 @@ struct Entry {
     through: u32,
     signature: Option<String>,
     uses: usize,
+    /// Where it is used, when the caller asked for them. Held back by default
+    /// because a symbol with two hundred uses would be the whole budget, and
+    /// the count alone answers most of the questions the list is asked for.
+    used_at: Vec<String>,
     source: &'static str,
 }
 
@@ -216,6 +223,9 @@ impl Entry {
             fields.insert("signature".into(), json!(signature));
         }
         fields.insert("uses".into(), json!(self.uses));
+        if !self.used_at.is_empty() {
+            fields.insert("used_at".into(), json!(self.used_at));
+        }
         fields.insert("source".into(), json!(self.source));
         Value::Object(fields)
     }
@@ -228,6 +238,7 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
     };
     let mut query = String::new();
     let mut budget = BUDGET;
+    let mut uses = 0usize;
     let mut expand: Option<String> = None;
     for word in &given {
         let text = word.as_str();
@@ -240,6 +251,23 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                         CONTEXT_OP,
                         "incomplete",
                         &format!("`{value}` is not a number of bytes"),
+                    );
+                    return Ok(());
+                }
+            }
+        } else if let Some(value) = option(text, &["usos", "uses"]) {
+            // The list the index verb gives whole. Here it is asked for,
+            // because on a name like `Store` it *is* the budget — and because
+            // the count answers "is this used anywhere" and "is this used a
+            // lot", which is most of what the list gets asked.
+            match value.parse::<usize>() {
+                Ok(asked) => uses = asked.min(MOST_USES),
+                Err(_) => {
+                    declined(
+                        face,
+                        CONTEXT_OP,
+                        "incomplete",
+                        &format!("`{value}` is not a number of use sites"),
                     );
                     return Ok(());
                 }
@@ -286,6 +314,7 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         store_root: store_root.to_path_buf(),
         tree: tree.clone(),
         query: query.clone(),
+        uses,
     };
     let (entries, source, fresh, why) = gather(&asked);
 
@@ -381,6 +410,9 @@ struct Asked {
     store_root: PathBuf,
     tree: PathBuf,
     query: String,
+    /// How many use sites to return with the entry. Zero — the default —
+    /// returns the count and nothing else.
+    uses: usize,
 }
 
 /// The entries for a query, from the compiler when there is one and from the
@@ -429,6 +461,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                     through: item.through,
                     signature: None,
                     uses: 0,
+                    used_at: Vec::new(),
                     source: "rust-analyzer",
                 })
                 .collect();
@@ -473,6 +506,12 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             through,
             signature: known.signature.clone(),
             uses: known.used.len(),
+            used_at: known
+                .used
+                .iter()
+                .take(asked.uses)
+                .map(|at| format!("{}:{}", at.path, at.line))
+                .collect(),
             source: "rust-analyzer",
         }];
         remember_spans(provider, &entries);
@@ -543,6 +582,12 @@ fn from_index(asked: &Asked) -> (Vec<Entry>, &'static str, String) {
             through: definition.line as u32,
             signature: None,
             uses,
+            used_at: found
+                .uses
+                .iter()
+                .take(asked.uses)
+                .map(|at| format!("{}:{}", at.path, at.line))
+                .collect(),
             source: "index",
         })
         .collect();
@@ -953,6 +998,7 @@ mod tests {
             through: lines,
             signature: Some(format!("pub fn {name}() -> Result<()>")),
             uses: 17,
+            used_at: Vec::new(),
             source: "rust-analyzer",
         }
     }
