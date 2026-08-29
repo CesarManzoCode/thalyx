@@ -4997,3 +4997,101 @@ vuelva a correr, ninguna nota puede decir que la operación lo mejora.** Lo que
 sí se puede escribir es lo que se observó, lo que se supone y lo que se
 construyó, separados y en ese orden. La corrida siguiente es la prueba de la
 hipótesis, no su confirmación.
+
+---
+
+## Regla derivada: un directorio de trabajo no es una frontera — 2026-08-29
+
+El arnés del banco recibió `--project /tmp/bench-thalyx` y el brazo A ejecutó
+`cd /home/cesarmanzocode/thalyx`. Nadie lo notó durante meses porque **nada lo
+preguntaba**: el arnés arrancaba `claude` con `cd "$cwd"` y consideraba el
+asunto resuelto.
+
+La causa es una sola línea y es de las que se leen sin verlas. `--out` valía por
+omisión `$ROOT/target/bench-external-agent`, `$ROOT` es el checkout donde vive el
+script, y la copia del brazo A se hacía en `$OUT/a`. O sea: **el espacio de
+trabajo del experimento vivía dentro del repositorio del experimentador.** Y
+Claude Code recoge el `CLAUDE.md` de cada ancestro de su directorio de trabajo,
+así que el agente empezó con las instrucciones de este proyecto —«lee esto antes
+que nada», y una ruta al vault— en el contexto, y se fue a trabajar al árbol del
+que hablaban esas instrucciones. Se comportó exactamente como se le pidió; lo
+que se le pidió no era lo que el arnés creía.
+
+**La regla:** poner un proceso en un directorio es una petición, no un
+confinamiento. Un confinamiento tiene cuatro partes y hacen falta las cuatro:
+
+1. **nada arriba** — se revisa cada ancestro del espacio de trabajo por
+   `CLAUDE.md`, `.claude/`, `.mcp.json` y `.git`, y se escenifica fuera del
+   checkout;
+2. **arrancar adentro** — el proceso empieza físicamente ahí;
+3. **negarse en vivo** — un hook rechaza cualquier llamada que nombre una ruta
+   de afuera;
+4. **comprobarlo después** — del stream propio de la corrida se leen el
+   directorio en que arrancó (`system init`) y todas las rutas de todas las
+   llamadas.
+
+Las cuatro están aparte a propósito, y la cuarta es la única que es **evidencia**:
+no necesita que ninguna de las otras tres haya funcionado. Las tres primeras se
+pueden romper en silencio —un hook que el CLI ignoró, un ancestro que apareció
+después—, y una defensa que falla en silencio es peor que ninguna. La regla
+general que eso instancia ya estaba escrita —«el arnés también es un instrumento
+y también miente»—; lo que faltaba es que **el control tiene que dejar rastro
+que se lea después, no sólo actuar antes**.
+
+## Regla derivada: el nombre de una herramienta es una intención, nunca un efecto — 2026-08-29
+
+En la misma revisión, la tabla forense imprimía, para una llamada cuyo comando
+era `git checkout -- <archivo>`:
+
+```
+Bash  write=False
+```
+
+Ninguna línea del código afirmaba que ese `False` significara «se demostró que
+no escribió». No hacía falta: **un campo de dos valores no tiene forma de decir
+"no sé"**, así que la respuesta que da para lo que no puede ver es la misma que
+da para lo que sí comprobó. Y lo que no podía ver era la mutación más
+consecuente de toda la tarea, que es restaurar archivos.
+
+La salida no es un parser de shell. Un parser que reconociera todo comando
+mutante —`sed -i`, `>`, `git checkout`, `install`, `mv`, un `python -c`, un
+`make`— no se puede escribir bien, y uno casi correcto es peor que ninguno:
+contestaría `False` con seguridad para lo que no se le ocurrió.
+
+La salida es separar dos preguntas que estaban en un solo campo:
+
+- **intención**, que se lee del nombre de la herramienta y tiene **tres**
+  respuestas: `writes`, `reads`, `unknown`;
+- **efecto**, del que la autoridad es el testigo del sistema de archivos, que
+  ningún nombre puede esquivar.
+
+Y el corolario que hace que la regla muerda: **un testigo que no vio nada, con
+llamadas de clase `unknown` en el stream, no es "no escribió" sino
+`not_proven`**. Con su control al lado —una corrida cuyas llamadas son todas de
+herramientas que sólo pueden leer sí puede decir que no escribió— porque si no,
+la regla convierte cualquier negativa en indemostrable, que es la otra manera de
+no medir nada.
+
+## Regla derivada: lo caro se comprueba antes de gastar lo caro — 2026-08-29
+
+La misma corrida pagó el brazo A entero y **después** el brazo B devolvió `0s` de
+reloj y cero eventos. El único control sobre el brazo B era
+
+```sh
+[ -S "$SOCKET" ]
+```
+
+que pregunta si existe un **archivo**. QEMU crea ese archivo en el instante en
+que arranca y lo mantiene abierto conteste o no conteste nadie adentro del
+huésped. Un socket presente es necesario y no se parece a suficiente.
+
+**La regla:** una condición necesaria comprobada no es la condición. Cuando la
+otra mitad de un experimento cuesta dinero, se comprueba **el canal real** —el
+hello, una petición mínima que tenga que contestar bien, y que el espacio de
+trabajo sea el que se importó— antes de gastar la primera mitad. La sonda tiene
+que ser de sólo lectura, porque una que escribiera habría cambiado el estado
+inicial del experimento que estaba despejando.
+
+Y el orden es parte de la regla: nada de lo que el brazo B necesita para estar
+vivo depende de que el brazo A haya corrido, así que no hay ninguna razón para
+enterarse en ese orden — y hay una razón cara para no hacerlo.

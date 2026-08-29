@@ -3,6 +3,7 @@
 #
 #   dev/bench-external-agent.sh --project <dir> [--socket <sock>]
 #                               [--task read|change|reversible]
+#                               [--workspace <dir>]
 #
 # `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. The whole of Thalyx rests on a
 # claim nobody has measured: that an operating system built around structured
@@ -140,6 +141,59 @@
 # `--forensics` prints every mutating call in each arm with the answer its tool
 # gave it — which is the table that says whether six `Edit` calls edited
 # anything.
+#
+# ## What that same run turned out not to have been, and it was worse
+#
+# A later reading of the forensics found arm A running commands like
+#
+#     cd /home/cesarmanzocode/thalyx
+#
+# while the harness had been given `--project /tmp/bench-thalyx`. The cause is
+# one default in this file: `--out` defaults to `$ROOT/target/bench-external-agent`,
+# `$ROOT` is the checkout this script lives in, and arm A's copy was made at
+# `$OUT/a`. So `claude` was started **inside Cesar's own working clone of
+# Thalyx**, and Claude Code collects `CLAUDE.md` from every ancestor of its
+# working directory — this project's, which opens "read this before anything
+# else" and names `vault/06-Pendientes/Punto-Actual.md`. Arm A began the task
+# holding instructions about `~/thalyx` and went and worked in `~/thalyx`.
+# **Passing a directory as the working directory is not a boundary**, and this
+# harness had nothing else.
+#
+# The same reading found two more:
+#
+#   - the forensic table printed a `Bash` whose command was `git checkout -- …`
+#     as `write=False`, because the classification was two-valued and a tool
+#     name is a statement of intent, never evidence of an effect;
+#   - arm B produced `0s wall, 0 stream events` **after** arm A had been paid
+#     for in full, because the only check on arm B was `[ -S "$SOCKET" ]` —
+#     which asks whether a file exists, and QEMU creates that file whether or
+#     not anything inside the guest ever answers.
+#
+# ## What is checked before a cent is spent, and in this order
+#
+#   1. **arm B is alive.** `thalyx-mcp --preflight` over the real channel: the
+#      hello, a `where`, and a `list .` whose entries are compared against
+#      `--project`. Both verbs are reads, so the probe cannot disturb the
+#      starting state it is clearing. Not READY stops the run *here*, with no
+#      agent called in either arm.
+#   2. **the two arms were given the same tree.** Arm A's copy and the stamp
+#      `image/Makefile`'s `project-stage` wrote when it imported the project are
+#      hashed by the same program, `bench-summary.py --import-stamp`, and
+#      `provenance.json` carries both plus the source commit, the exclusions and
+#      each arm's working directory. Different trees stop the run.
+#   3. **arm A is anchored.** Its workspace is staged outside this checkout
+#      (`--workspace`, default `$TMPDIR/thalyx-bench-arm-a`), every ancestor of
+#      it is checked for a `CLAUDE.md`, a `.claude/`, a `.mcp.json` or a `.git`,
+#      the process is started physically inside it, and a `PreToolUse` hook
+#      refuses any call naming a path outside it.
+#   4. **arm A stayed there.** Read back afterwards from the stream's own
+#      `system init` event and every path in every `tool_use` block. A stray
+#      call makes the run INVALID — and it is checked *between* the arms, which
+#      is the last moment at which knowing costs less than arm B does.
+#
+# The four are separate on purpose. The first three are things that can be made
+# true; the fourth is the only one that is *evidence*, because it needs nothing
+# to have worked.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -160,6 +214,26 @@ MARKER="${THALYX_BENCH_MARKER:-}"
 # Arm B's workspace after the run, exported off the store. See `restore_note`.
 RESTORED_B=""
 SELFTEST=""
+# Where arm A's copy of the project is staged, and it is **not** under `--out`.
+#
+# That default is the whole of the 2026-08-29 fault. `--out` defaults to
+# `$ROOT/target/bench-external-agent`, `$ROOT` is the checkout this script lives
+# in, and arm A's copy used to be made at `$OUT/a` — so `claude` was started
+# inside Cesar's own working clone of Thalyx. Claude Code collects `CLAUDE.md`
+# from every ancestor of its working directory, and this project's opens with
+# "read this before anything else"; the agent was handed instructions about
+# `~/thalyx` and went and worked in `~/thalyx`. It was given `--project
+# /tmp/bench-thalyx` the whole time.
+#
+# So the workspace is staged somewhere with nothing above it, `ancestry_check`
+# refuses to start if that is not true, and `--out` keeps only the artefacts —
+# streams, manifests, summaries — which no agent ever sees.
+WORKSPACE_A="${THALYX_BENCH_WORKSPACE:-${TMPDIR:-/tmp}/thalyx-bench-arm-a}"
+# Arm B's half of the provenance, written by `image/Makefile`'s `project-stage`
+# at the moment it copied the project onto the store. Read and never recomputed:
+# nothing on this host can hash a tree inside a live Btrfs image, so a stamp
+# written by the importer is the only honest evidence there is.
+IMPORT_MARK="${THALYX_BENCH_IMPORT_MARK:-$ROOT/image/build/agent-import.json}"
 # Read a run that is already over with today's grader, without running an agent.
 # Writes `summary-regraded.json` and never touches `summary.json`: the original
 # grader's output is the record of what was believed at the time, and a run whose
@@ -181,6 +255,7 @@ while [ $# -gt 0 ]; do
         --expect-file) EXPECT="$2"; shift 2 ;;
         --marker)  MARKER="$2";  shift 2 ;;
         --restored-b) RESTORED_B="$2"; shift 2 ;;
+        --workspace) WORKSPACE_A="$2"; shift 2 ;;
         --regrade) REGRADE=1; shift ;;
         --forensics) FORENSICS=1; shift ;;
         --self-test) SELFTEST=1; shift ;;
@@ -251,6 +326,106 @@ walk() {
     python3 "$ROOT/dev/bench-summary.py" --manifest-lines "$tree" > "$into.manifest"
     python3 "$ROOT/dev/bench-summary.py" --mtimes         "$tree" > "$into.mtimes"
     python3 "$ROOT/dev/bench-summary.py" --set-aside      "$tree" > "$into.setaside"
+}
+
+# ── where arm A is allowed to be, checked before anything is paid for ────────
+#
+# Telling a model "work in this directory" is not a control; it is a request.
+# What makes arm A's workspace *the* workspace is that there is nothing above it
+# saying otherwise, and that is what this checks, before `claude` is started.
+#
+# `CLAUDE.md` is the one that actually happened. Claude Code walks up from its
+# working directory collecting project memory, so a workspace staged inside a
+# checkout inherits that checkout's instructions — and the model then behaves
+# exactly as those instructions say, in the tree those instructions are about.
+# The same goes for `.claude/`, `.mcp.json` and a settings file. A `.git` above
+# the workspace is the same failure wearing another hat: `git checkout -- .` and
+# `git status`, which arm A is expressly allowed to use, would be about the
+# outer repository.
+ancestry_check() {
+    local where="$1" trouble=0 at
+    at="$(cd "$(dirname "$where")" && pwd)"
+    while :; do
+        for stray in CLAUDE.md CLAUDE.local.md .claude .mcp.json .git; do
+            if [ -e "$at/$stray" ]; then
+                say "$at/$stray is above the workspace, and Claude Code reads it"
+                trouble=$((trouble + 1))
+            fi
+        done
+        [ "$at" = / ] && break
+        at="$(dirname "$at")"
+    done
+    return "$trouble"
+}
+
+# ── is arm B alive, before a cent is spent on arm A ──────────────────────────
+#
+# The run of 2026-08-29 paid for arm A in full and then arm B came back `0s
+# wall, 0 stream events`. The only check between the money and that outcome was
+# `[ -S "$SOCKET" ]`, which asks whether a *file* exists — and QEMU creates that
+# file the instant it starts, whether or not anything inside the guest ever
+# answers. So: the real channel, the real adapter, two read-only verbs, and the
+# answer compared against `--project`. It costs nothing and it runs first.
+#
+# `THALYX_BENCH_PREFLIGHT_CMD` replaces the probe with something else, which is
+# how the self-test exercises a dead machine, a stale one and a healthy one in a
+# container that has no KVM. It is never used by a real run.
+# What each arm was given, and whether those two things are the same thing.
+#
+# Written before either arm runs and checked before either arm runs, because a
+# comparison between two different trees is not a comparison and finding that
+# out afterwards costs both arms.
+provenance_now() {
+    python3 "$ROOT/dev/bench-summary.py" --provenance "$OUT/provenance.json" \
+        --project "$PROJECT" --workspace "$WORKSPACE_A" --repository "$ROOT" \
+        --import-mark "$IMPORT_MARK" --task "$TASK" --symbol "$SYMBOL" \
+        --marker "$MARKER" --model "$MODEL" --turns "$TURNS" > /dev/null
+}
+
+parity_gate() {
+    # Only when both arms are in play. One arm is not a comparison and has
+    # nothing to be comparable to.
+    [[ "$ARMS" == *A* && "$ARMS" == *B* ]] || return 0
+    if ! python3 "$ROOT/dev/bench-summary.py" --check-parity "$OUT/provenance.json" \
+            > "$OUT/parity.json" 2>&1; then
+        say
+        say "the two arms were not given the same tree, so nothing was run:"
+        sed 's/^/    /' "$OUT/parity.json"
+        say
+        say "Re-import the project into the machine and try again:"
+        say
+        say "    make -C image agent PROJECT=$PROJECT"
+        exit 1
+    fi
+    say "the two arms were staged from the same tree"
+}
+
+preflight_b() {
+    local report="$OUT/preflight-b.json"
+    rm -f "$report" "$OUT/preflight-b.verdict.json"
+    say "arm B: asking the machine whether it is there (this costs nothing)"
+    if [ -n "${THALYX_BENCH_PREFLIGHT_CMD:-}" ]; then
+        # shellcheck disable=SC2086
+        $THALYX_BENCH_PREFLIGHT_CMD > "$report" 2> "$OUT/preflight-b.err" || true
+    elif [ ! -S "$SOCKET" ]; then
+        # A necessary condition, kept — and now no longer mistaken for a
+        # sufficient one. Written into the report rather than exiting here, so
+        # that a dead machine and an absent one come out of the same place.
+        printf '{"ready":false,"because":["there is no socket at %s — is the machine up? `make -C image run-agent`"]}\n' \
+            "$SOCKET" > "$report"
+    else
+        "$MCP" --connect "$SOCKET" --preflight \
+            --wait "${THALYX_BENCH_PREFLIGHT_WAIT:-20}" \
+            > "$report" 2> "$OUT/preflight-b.err" || true
+    fi
+    # `|| true`, and it is not laziness. The verdict *exits non-zero when the
+    # machine is not ready* — that is its whole job — and this file runs under
+    # `set -e`, so without it a dead arm B killed the script here, silently,
+    # before the block below could say why. The fifth entry in
+    # `Estrategia-de-Pruebas.md`: the instrument includes the harness, and the
+    # self-test that caught this was written before the code it caught.
+    python3 "$ROOT/dev/bench-summary.py" --preflight-verdict "$report" \
+        --project "$PROJECT" > "$OUT/preflight-b.verdict.json" 2>&1 || true
 }
 
 # ── the three prompts, which are one prompt ──────────────────────────────────
@@ -575,6 +750,215 @@ self_test() {
         trouble=$((trouble + 1))
     fi
 
+    # ── the anchoring of arm A, and the preflight of arm B ──
+    #
+    # Every case here is the run of 2026-08-29 taken apart. It was given
+    # `--project /tmp/bench-thalyx`, arm A ran `cd /home/cesarmanzocode/thalyx`,
+    # and then arm B produced nothing at all — and the harness had no question
+    # whose answer would have been any of that.
+    #
+    # No agent runs and no machine is needed: what is checked is this file's own
+    # decisions, with the probe replaced by a command that prints a canned
+    # answer. `bench-summary.py --self-test` checks the classification itself.
+
+    # The default workspace is not inside this checkout, which is the fault.
+    case "${TMPDIR:-/tmp}/thalyx-bench-arm-a" in
+        "$ROOT"/*) bad "the default workspace is inside $ROOT, which is the 2026-08-29 fault" ;;
+        *) ok "arm A's workspace defaults to somewhere outside this checkout" ;;
+    esac
+
+    local nest
+    nest=$(mktemp -d)
+    mkdir -p "$nest/clean/w" "$nest/repo/target/bench/w"
+    printf 'read this before anything else\n' > "$nest/repo/CLAUDE.md"
+    ancestry_check "$nest/clean/w" >/dev/null 2>&1 \
+        && ok "a workspace with nothing above it passes the ancestry check" \
+        || bad "a workspace with nothing above it was refused"
+    ancestry_check "$nest/repo/target/bench/w" >/dev/null 2>&1 \
+        && bad "a workspace under a checkout with a CLAUDE.md was allowed" \
+        || ok "a workspace under a CLAUDE.md is refused: that is what put arm A in ~/thalyx"
+    rm -f "$nest/repo/CLAUDE.md"; mkdir -p "$nest/repo/.git"
+    ancestry_check "$nest/repo/target/bench/w" >/dev/null 2>&1 \
+        && bad "a workspace inside another repository's .git range was allowed" \
+        || ok "a workspace under somebody else's .git is refused too"
+
+    # And that the run refuses rather than staging there. The project is real,
+    # the workspace is under a CLAUDE.md, and no agent may be started.
+    mkdir -p "$nest/project"; printf 'x\n' > "$nest/project/f.txt"
+    printf 'read this\n' > "$nest/repo/CLAUDE.md"
+    if THALYX_BENCH_WORKSPACE="$nest/repo/target/bench/w" "${BASH_SOURCE[0]}" \
+            --project "$nest/project" --symbol Widget --task reversible \
+            --arms A --out "$nest/out" > "$nest/log" 2>&1; then
+        bad "the harness staged arm A under a CLAUDE.md and ran it"
+    else
+        grep -q 'CLAUDE.md is above the workspace' "$nest/log" \
+            && ok "the run refuses, by name, before starting an agent anywhere" \
+            || bad "the run failed without saying the workspace's ancestry was why"
+    fi
+
+    # ── arm B, checked before arm A is paid for ──
+    #
+    # The probe is replaced, so a dead machine, a stale one and a healthy one
+    # can all be exercised in a container with no KVM. What is being checked is
+    # this file's ordering: that a machine which is not READY stops the run
+    # *before* `claude` is called for arm A.
+    mkdir -p "$nest/out2"
+    local dead='{"ready":false,"because":["the socket is there and the machine never said hello"]}'
+    if THALYX_BENCH_PREFLIGHT_CMD="printf %s $dead" \
+            THALYX_BENCH_WORKSPACE="$nest/clean/w" "${BASH_SOURCE[0]}" \
+            --project "$nest/project" --symbol Widget --task reversible \
+            --arms AB --out "$nest/out2" > "$nest/log2" 2>&1; then
+        bad "a machine that never said hello did not stop the run"
+    else
+        if grep -q 'arm B is NOT READY' "$nest/log2" && [ ! -s "$nest/out2/armA.ndjson" ]; then
+            ok "a dead arm B stops the run before arm A is run at all"
+        else
+            bad "a dead arm B was found out after arm A had already been paid for"
+        fi
+    fi
+
+    # The control, one field apart: a machine that answers and is holding this
+    # project gets past the preflight. Without it, a preflight that refused
+    # everything would look exactly like one that works.
+    local top alive
+    top=$(python3 -c "
+import json,sys,pathlib
+sys.path.insert(0, '$ROOT/dev')
+print(json.dumps(sorted(p.name for p in pathlib.Path('$nest/project').iterdir())))")
+    alive="{\"ready\":true,\"thalyx\":\"0.1.0\",\"workspace\":\"/home/project\",\"tools_offered\":11,\"top_level\":$top}"
+    printf '%s' "$alive" > "$nest/alive.json"
+    python3 "$ROOT/dev/bench-summary.py" --preflight-verdict "$nest/alive.json" \
+        --project "$nest/project" > "$nest/verdict.json" 2>&1 \
+        && ok "a machine that answered and holds this project is READY" \
+        || { bad "a healthy machine was refused"; cat "$nest/verdict.json"; }
+
+    # ── and the whole thing, end to end, with a stand-in for the agent ──
+    #
+    # No API call and no money: `claude` is replaced on the PATH by a script
+    # that prints a stream of the shape Claude Code prints. What is being
+    # checked is this file's behaviour around it — that a run whose agent
+    # wandered is stopped, said to be INVALID, and stopped *before* arm B.
+    #
+    # The stand-in models the property under test and nothing else, which is
+    # rule 8: it prints a `system init` with a working directory and one
+    # `tool_use` block, because those are the two things the anchoring check
+    # reads. A fake that also had to be an agent would be a different system.
+    local bin="$nest/bin"
+    mkdir -p "$bin" "$nest/out3" "$nest/clean/w3"
+    cat > "$bin/claude" <<'STANDIN'
+#!/usr/bin/env bash
+# Prints where it was started and one tool call, in Claude Code's own shapes.
+printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"stand-in"}\n' "$PWD"
+printf '%s\n' "$THALYX_SELFTEST_CALL"
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"duration_ms":1,"total_cost_usd":0.0,"result":"done"}\n'
+STANDIN
+    chmod +x "$bin/claude"
+
+    local wandering='{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cd '"$nest"'/repo && grep -rn Widget ."}}]}}'
+    local staying='{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"Widget"}}]}}'
+    local ready='{"ready":true,"thalyx":"0.1.0","workspace":"/home/project","tools_offered":11,"top_level":["f.txt"]}'
+
+    # Arm B's half of the provenance, written with the same program
+    # `project-stage` writes it with, so the parity gate below is passed for the
+    # reason a real import would pass it rather than because this handed it a
+    # match it made up.
+    python3 "$ROOT/dev/bench-summary.py" --import-stamp "$nest/project" \
+        --workspace /home/project > "$nest/import-good.json"
+
+    if PATH="$bin:$PATH" THALYX_SELFTEST_CALL="$wandering" \
+            THALYX_BENCH_PREFLIGHT_CMD="printf %s $ready" \
+            THALYX_BENCH_IMPORT_MARK="$nest/import-good.json" \
+            THALYX_BENCH_WORKSPACE="$nest/clean/w3" "${BASH_SOURCE[0]}" \
+            --project "$nest/project" --symbol Widget --task reversible \
+            --arms AB --out "$nest/out3" > "$nest/log3" 2>&1; then
+        bad "an arm A that worked in another tree was graded instead of refused"
+    else
+        if grep -q 'INVALID: arm A did not work in the copy it was given' "$nest/log3" \
+                && [ ! -s "$nest/out3/armB.ndjson" ]; then
+            ok "an arm A that reached outside its workspace is INVALID, and arm B is \
+never paid for"
+        else
+            bad "an arm A that reached outside its workspace was not caught before arm B"
+            sed 's/^/      /' "$nest/log3"
+        fi
+    fi
+
+    # And the other half of the same claim, which is a different fact: an agent
+    # whose *working directory* was not the workspace. Every path it named could
+    # be relative and innocent-looking and it would still have been reading
+    # somebody else's tree — which is exactly the shape of 2026-08-29. The
+    # stand-in is told to report a cwd it was not started in.
+    rm -rf "$nest/out3b"; mkdir -p "$nest/out3b"
+    cat > "$bin/claude-elsewhere" <<'STANDIN'
+#!/usr/bin/env bash
+printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"stand-in"}\n' \
+    "$THALYX_SELFTEST_CWD"
+printf '%s\n' "$THALYX_SELFTEST_CALL"
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"duration_ms":1,"total_cost_usd":0.0,"result":"done"}\n'
+STANDIN
+    chmod +x "$bin/claude-elsewhere"
+    cp "$bin/claude-elsewhere" "$bin/claude"
+    if PATH="$bin:$PATH" THALYX_SELFTEST_CALL="$staying" \
+            THALYX_SELFTEST_CWD="$nest/repo" \
+            THALYX_BENCH_PREFLIGHT_CMD="printf %s $ready" \
+            THALYX_BENCH_IMPORT_MARK="$nest/import-good.json" \
+            THALYX_BENCH_WORKSPACE="$nest/clean/w3" "${BASH_SOURCE[0]}" \
+            --project "$nest/project" --symbol Widget --task reversible \
+            --arms AB --out "$nest/out3b" > "$nest/log3b" 2>&1; then
+        bad "an arm A that started somewhere else was graded instead of refused"
+    else
+        if grep -q 'it started in' "$nest/log3b" && [ ! -s "$nest/out3b/armB.ndjson" ]; then
+            ok "an arm A whose working directory was not the workspace is INVALID, \
+even with every path it named relative and innocent"
+        else
+            bad "an arm A that started in another tree was not caught"
+            sed 's/^/      /' "$nest/log3b"
+        fi
+    fi
+    # Back to the honest stand-in for the control below.
+    cat > "$bin/claude" <<'STANDIN'
+#!/usr/bin/env bash
+printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"stand-in"}\n' "$PWD"
+printf '%s\n' "$THALYX_SELFTEST_CALL"
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"duration_ms":1,"total_cost_usd":0.0,"result":"done"}\n'
+STANDIN
+    chmod +x "$bin/claude"
+
+    # The control. Same stand-in, same everything, one tool call that stays put:
+    # the run must get past the anchoring check and go on to arm B. Without it a
+    # check that refused every run would look exactly like one that works.
+    rm -rf "$nest/out4"; mkdir -p "$nest/out4"
+    PATH="$bin:$PATH" THALYX_SELFTEST_CALL="$staying" \
+        THALYX_BENCH_PREFLIGHT_CMD="printf %s $ready" \
+        THALYX_BENCH_WORKSPACE="$nest/clean/w3" "${BASH_SOURCE[0]}" \
+        --project "$nest/project" --symbol Widget --task reversible \
+        --arms A --out "$nest/out4" > "$nest/log4" 2>&1 || true
+    grep -q 'arm A: stayed inside' "$nest/log4" \
+        && ok "an arm A that stayed inside its workspace is not refused" \
+        || { bad "an arm A that did nothing wrong was refused"; sed 's/^/      /' "$nest/log4"; }
+
+    # And that the two arms being staged from different trees stops the run
+    # before either of them is called. The import stamp is written by hand here
+    # because no machine is being staged: what is under test is the gate.
+    rm -rf "$nest/out5"; mkdir -p "$nest/out5"
+    printf '{"imported_from":"/tmp/some-other-project","input_manifest":"beef",\
+"workspace":"/home/other"}\n' > "$nest/import.json"
+    if PATH="$bin:$PATH" THALYX_SELFTEST_CALL="$staying" \
+            THALYX_BENCH_PREFLIGHT_CMD="printf %s $ready" \
+            THALYX_BENCH_IMPORT_MARK="$nest/import.json" \
+            THALYX_BENCH_WORKSPACE="$nest/clean/w3" "${BASH_SOURCE[0]}" \
+            --project "$nest/project" --symbol Widget --task reversible \
+            --arms AB --out "$nest/out5" > "$nest/log5" 2>&1; then
+        bad "two arms staged from different trees were compared anyway"
+    else
+        grep -q 'the two arms were not given the same tree' "$nest/log5" \
+            && ok "two arms staged from different trees stop the run before either is called" \
+            || { bad "different input trees did not stop the run for that reason"; \
+                 sed 's/^/      /' "$nest/log5"; }
+    fi
+
+    rm -rf "$nest"
+
     rm -rf "$work"
 
     printf '\n'
@@ -627,6 +1011,31 @@ fi
 
 mkdir -p "$OUT"
 
+# ── arm B is checked before arm A is paid for ────────────────────────────────
+#
+# Order matters and it is the whole point of this block being here rather than
+# beside arm B. The run of 2026-08-29 spent arm A in full and *then* discovered
+# that arm B was not there. Nothing about arm B's readiness depends on arm A
+# having run, so there is no reason to find out in that order — and every reason
+# not to.
+if [[ "$ARMS" == *B* ]]; then
+    preflight_b
+    if ! python3 -c "
+import json, sys
+print(json.load(open(sys.argv[1]))['ready'])" "$OUT/preflight-b.verdict.json" 2>/dev/null | grep -qx True; then
+        say
+        say "arm B is NOT READY, so nothing was run and nothing was paid for:"
+        sed 's/^/    /' "$OUT/preflight-b.verdict.json"
+        [ -s "$OUT/preflight-b.err" ] && sed 's/^/    /' "$OUT/preflight-b.err"
+        say
+        say "The machine comes up with:"
+        say
+        say "    make -C image agent PROJECT=$PROJECT"
+        exit 1
+    fi
+    say "arm B: READY"
+fi
+
 run_arm() {
     local arm="$1" cwd="$2"; shift 2
     local began ended
@@ -653,16 +1062,88 @@ run_arm() {
     say "arm $arm: $((ended - began))s wall, $(wc -l < "$OUT/arm$arm.ndjson") stream events"
 }
 
-# ── arm A: an ordinary Linux copy, ordinary tools ────────────────────────────
+# ── arm A: an ordinary Linux copy, ordinary tools, and nowhere else ──────────
+#
+# The copy is staged **outside this checkout**. Everything above the workspace
+# is checked first, the process is started physically inside it, a `PreToolUse`
+# hook refuses any call that names a path out of it, and afterwards the stream's
+# own `system init` event is read back to say where the agent actually was.
+# Four things, because the one that was there — passing the directory as the
+# working directory — is exactly what was there on 2026-08-29 and it was not
+# enough.
 if [[ "$ARMS" == *A* ]]; then
-    rm -rf "$OUT/a"
-    mkdir -p "$OUT/a"
-    tar -C "$PROJECT" --exclude=./target --exclude=./node_modules -cf - . | tar -C "$OUT/a" -xf -
-    walk "$OUT/a" "$OUT/armA.before"
-    run_arm A "$OUT/a" \
+    rm -rf "$WORKSPACE_A"
+    mkdir -p "$WORKSPACE_A"
+    if ! ancestry_check "$WORKSPACE_A"; then
+        say
+        say "arm A's workspace has project context above it, so an agent started there"
+        say "would be reading somebody else's instructions about somebody else's tree."
+        say "That is the fault of 2026-08-29. Stage it somewhere with nothing above it:"
+        say
+        say "    $0 --project $PROJECT --workspace /tmp/thalyx-bench-arm-a …"
+        exit 1
+    fi
+    tar -C "$PROJECT" --exclude=./target --exclude=./node_modules -cf - . \
+        | tar -C "$WORKSPACE_A" -xf -
+    walk "$WORKSPACE_A" "$OUT/armA.before"
+    provenance_now
+    parity_gate
+
+    # The guard, live. Exit 2 is Claude Code's "blocked, and this is why"; the
+    # classification is `bench-summary.py`'s, so the call refused during the run
+    # and the call reported after it are decided by one program rather than two
+    # that agree until they do not.
+    #
+    # **It is the second line of defence and never the first.** A hook is
+    # something the CLI has to honour, and a run in `-p` mode silently ignores a
+    # settings file it will not parse — so a harness that trusted this would be
+    # trusting a thing it cannot see fail. What decides the verdict is
+    # `--scope-check` below, read out of the stream the run itself wrote, which
+    # needs nothing to have worked. This exists so that a call which would leave
+    # the workspace is *stopped* as well as *counted*.
+    #
+    # No `matcher`, which is how a hook says every tool.
+    BREACH="$OUT/armA.breach.jsonl"
+    rm -f "$BREACH"
+    cat > "$OUT/armA.settings.json" <<JSON
+{"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+ "command": "python3 $ROOT/dev/bench-summary.py --scope-guard --workspace $WORKSPACE_A --home $HOME --breach-file $BREACH"}]}]}}
+JSON
+
+    run_arm A "$WORKSPACE_A" \
         --allowedTools "Read" "Edit" "Write" "Grep" "Glob" "Bash" \
+        --settings "$OUT/armA.settings.json" \
         --strict-mcp-config
-    walk "$OUT/a" "$OUT/armA.after"
+    walk "$WORKSPACE_A" "$OUT/armA.after"
+
+    # ── did arm A stay where it was put ──
+    #
+    # Here, and not only in the summary, because here is the last moment at
+    # which the answer still saves money: an arm A that worked in the wrong
+    # tree makes the comparison void, and arm B has not been paid for yet.
+    if ! python3 "$ROOT/dev/bench-summary.py" --scope-check "$OUT" --arm A \
+            > "$OUT/scope-A.json" 2> "$OUT/scope-A.err"; then
+        say
+        say "INVALID: arm A did not work in the copy it was given."
+        sed 's/^/    /' "$OUT/scope-A.err" 2>/dev/null || true
+        python3 - "$OUT/scope-A.json" <<'REPORT' || true
+import json, sys
+try:
+    report = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if report.get("cwd_is_the_workspace") is False:
+    print(f"    it started in {report.get('cwd_reported')!r}, not "
+          f"{report.get('workspace')!r}")
+for entry in report.get("paths_outside_the_workspace", [])[:10]:
+    print(f"    {entry['tool']} {entry['field']}={entry['path']!r}")
+REPORT
+        say
+        say "Nothing was run for arm B, so nothing more was spent. The full report is at"
+        say "$OUT/scope-A.json."
+        exit 1
+    fi
+    say "arm A: stayed inside $WORKSPACE_A"
 fi
 
 # ── arm B: the same bytes, inside a Thalyx machine ───────────────────────────
@@ -691,6 +1172,8 @@ JSON
     # An empty directory, so that nothing on this host is reachable even by
     # accident. Everything arm B can see is inside the machine.
     rm -rf "$OUT/b"; mkdir -p "$OUT/b"
+    ancestry_check "$OUT/b" || say "note: arm B's empty cwd has context above it; it has \
+no file tools, so nothing there is reachable — but the two arms' cwds are not alike"
     run_arm B "$OUT/b" \
         --mcp-config "$OUT/mcp.json" --strict-mcp-config \
         --allowedTools "mcp__thalyx" \
@@ -766,6 +1249,8 @@ if [ "$TASK" = reversible ] && [ ! -s "$OUT/armB.after" ]; then
     say "        --arms none --out $OUT --restored-b $OUT/b-export"
 fi
 
+say
+say "arm A worked in: $WORKSPACE_A"
 say
 say "One run is an anecdote. What this proves is that the comparison can be run."
 exit $SUMMARISED

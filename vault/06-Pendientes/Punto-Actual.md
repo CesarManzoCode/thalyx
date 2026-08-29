@@ -14,9 +14,89 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## El brazo A no estaba anclado a `--project`, y ahora no puede no estarlo — 2026-08-29
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó, y el
+> primero de ellos —REVERSIBLE #1— hay que leerlo con esto encima.
+>
+> Una revisión de la forense de REVERSIBLE #1 encontró al brazo A ejecutando
+> `cd /home/cesarmanzocode/thalyx` mientras el arnés tenía
+> `--project /tmp/bench-thalyx`. **La causa es una línea, y estuvo desde el
+> primer commit del arnés:** `--out` valía por omisión
+> `$ROOT/target/bench-external-agent`, la copia del brazo A se hacía en `$OUT/a`,
+> y `$ROOT` es el checkout donde vive el script. Así que `claude` arrancaba
+> dentro del clon de trabajo de Cesar, y Claude Code recoge el `CLAUDE.md` de
+> cada ancestro de su directorio de trabajo — el de este proyecto, que empieza
+> con «lee esto antes que nada». El agente recibió instrucciones sobre
+> `~/thalyx` y se fue a trabajar a `~/thalyx`.
+>
+> **Están afectadas todas las corridas anteriores** — la histórica, READ #1,
+> READ #2, CHANGE #1 y REVERSIBLE #1 — porque el mecanismo es idéntico en todas.
+> Que además *saliera* de su copia sólo está **observado** en REVERSIBLE #1, que
+> es la única cuya forense se leyó con esa pregunta. De las otras no se afirma ni
+> que sí ni que no: nadie ha mirado, y mirar es gratis
+> (`dev/bench-summary.py --scope-check <dir> --arm A` sobre cada `--out` que
+> sobreviva). Los datos se conservan; lo que se degradó es su fuerza, de
+> comparación controlada a observación. Está escrito entero en
+> [[Evidencia-de-Agentes]].
+>
+> **Los otros dos defectos de la misma revisión:**
+>
+> - la tabla forense imprimía `write=False` para un `Bash` cuyo comando era
+>   `git checkout -- <archivo>`. Un campo de dos valores no sabe decir «no sé»,
+>   así que le daba a lo que no podía ver la misma respuesta que a lo que sí
+>   comprobaba. Hoy hay tres clases —`writes`, `reads`, `unknown`—, `Bash` es
+>   siempre `unknown`, y un testigo que no vio nada con llamadas `unknown` en el
+>   stream contesta `not_proven` en vez de `false`;
+> - el brazo B devolvió `0s` y cero eventos **después** de haber pagado el brazo
+>   A entero, porque el único control era `[ -S "$SOCKET" ]`, que pregunta si
+>   existe un archivo. Hoy hay un preflight del canal real —hello, `where`,
+>   `list .` comparado con `--project`, todo de sólo lectura— que corre **antes**
+>   de llamar a Claude en cualquier brazo.
+>
+> **Lo que corre ahora antes de gastar un centavo**, en este orden: el brazo B se
+> prueba vivo; los dos brazos se comparan de entrada (`provenance.json`, con
+> commit de origen, manifiesto de entrada, exclusiones y directorio efectivo de
+> cada uno, y los dos resúmenes hechos por el mismo programa); el brazo A se
+> escenifica fuera del checkout, con cada ancestro revisado por `CLAUDE.md`,
+> `.claude/`, `.mcp.json` y `.git`, y un hook `PreToolUse` que rechaza cualquier
+> ruta de afuera; y después de correr se lee del stream el `system init` y todas
+> las rutas de todas las llamadas — una sola afuera deja la corrida `INVALID`, y
+> se comprueba **entre los dos brazos**, que es el último momento en que saberlo
+> cuesta menos que el brazo B.
+>
+> Nada de eso toca el prompt ni las métricas: el arnés sigue congelado en lo que
+> mide.
+>
+> **Las pruebas, todas gratis y todas en la etapa 50 de `verify.sh`:** el
+> `--self-test` del arnés arranca un sustituto de `claude` que imprime streams de
+> la forma real y comprueba que un brazo A que se sale es `INVALID` antes del
+> brazo B, que uno que arrancó en otro lado también, que uno que se quedó adentro
+> no se rechaza, que un brazo B muerto detiene la corrida antes del brazo A, que
+> uno vivo la deja seguir, y que dos brazos con árboles distintos la detienen
+> antes de llamar a nadie. El `--self-test` del parser comprueba la clasificación
+> de tres valores con `git checkout -- <archivo>` y con un `Bash` genuinamente de
+> sólo lectura, y que ninguno de los dos se acredita como lectura probada.
+>
+> **La repetición limpia, en dos órdenes:**
+>
+> ```sh
+> make -C image agent PROJECT=/tmp/bench-thalyx
+>
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --project /tmp/bench-thalyx \
+>     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+>     --workspace /tmp/thalyx-bench-arm-a \
+>     --out target/bench-external-agent-3
+> ```
+>
+> ---
+>
 > ## REVERSIBLE #1 salió válido y mixto, y la escritura ya no cuesta dieciséis llamadas — 2026-08-29
 >
-> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+> **Leer con el bloque de arriba.** Este resultado se conserva como observación:
+> su brazo A no estaba anclado a `--project`, así que no es una comparación
+> controlada.
 >
 > El banco reversible se regradó con el grader corregido, sobre los mismos
 > artefactos, sin correr ningún agente y sin gastar nada. **Los dos brazos salen

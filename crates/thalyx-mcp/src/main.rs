@@ -61,6 +61,22 @@ struct Cli {
     /// A VM that is still booting is the ordinary case, not an error.
     #[arg(long, default_value_t = 30)]
     wait: u64,
+
+    /// Ask the machine whether it is alive and what workspace it is holding,
+    /// print that as one JSON object, and exit without serving anything
+    ///
+    /// The benchmark's arm B is the expensive half and it is the half that can
+    /// be dead in a way a socket cannot show. On 2026-08-29 a paid run spent
+    /// arm A in full and then arm B produced `0s wall, 0 stream events`: the
+    /// socket was there, the machine behind it was not. `[ -S "$SOCKET" ]` is a
+    /// question about a file. This is a question about the machine, it costs
+    /// nothing, and it is the same code path the run itself uses — a probe
+    /// written against a mock would prove the mock.
+    ///
+    /// Read-only, on purpose and by construction: `where` and `list` are the
+    /// only verbs it asks, and neither can change the workspace it is checking.
+    #[arg(long)]
+    preflight: bool,
 }
 
 fn main() {
@@ -92,6 +108,12 @@ fn main() {
         offered.len(),
         tools::TOOLS.len()
     );
+
+    if cli.preflight {
+        let (report, ready) = preflight(&mut machine, &greeting, offered.len());
+        println!("{report}");
+        std::process::exit(i32::from(!ready));
+    }
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -147,6 +169,96 @@ fn usable(verbs: &[String]) -> Vec<&'static tools::Tool> {
             missing.is_empty()
         })
         .collect()
+}
+
+/// Is the machine behind the socket alive, and is it holding the project the
+/// experiment is about?
+///
+/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`. The 2026-08-29 run paid
+/// for arm A in full and then arm B came back `0s wall, 0 stream events`, and
+/// the only check standing between the money and that outcome was
+/// `[ -S "$SOCKET" ]` — which asks whether a *file* exists. QEMU creates that
+/// file the instant it starts and holds it open whether or not anything inside
+/// the guest ever answers. So the socket is necessary and it is nowhere near
+/// sufficient, and the difference cost a whole arm.
+///
+/// What this asks instead, over the real channel, with the real adapter, in
+/// under a second and for nothing:
+///
+///   1. **the hello**, which `Machine::connect` has already waited for and
+///      checked the protocol of — a machine that never says hello never gets
+///      here;
+///   2. **`where`**, the smallest round trip there is: a request goes down the
+///      wire and an answer with a matching id comes back up. A bridge that
+///      accepts and then says nothing fails here and not in the middle of a
+///      paid run;
+///   3. **`list .`**, whose entry names are the only free evidence this host
+///      can get that the workspace inside the machine is the project it was
+///      told to import. A stale store from last week answers every question
+///      correctly and answers them *about the wrong tree*.
+///
+/// Both verbs are reads. That is a requirement and not a coincidence: a probe
+/// that opened an attempt, or touched a file to see whether writing worked,
+/// would have changed the starting state of the very run it was clearing —
+/// and the `reversible` task's whole verdict is a comparison against that
+/// starting state.
+fn preflight(machine: &mut Machine, greeting: &machine::Greeting, offered: usize) -> (Value, bool) {
+    let mut report = json!({
+        "protocol": thalyx_bridge::PROTOCOL,
+        "thalyx": greeting.thalyx,
+        "workspace": greeting.workspace,
+        "verbs": greeting.verbs,
+        "tools_offered": offered,
+        "tools_total": tools::TOOLS.len(),
+    });
+
+    let mut trouble: Vec<String> = Vec::new();
+
+    // The hello named a workspace or it did not. A machine that booted without
+    // one answers `where` perfectly well and is not a machine this benchmark
+    // can compare anything against.
+    if greeting.workspace.trim().is_empty() {
+        trouble.push("the machine came up without a workspace".into());
+    }
+    if offered == 0 {
+        trouble.push("the machine offers no verb this adapter has a tool for".into());
+    }
+
+    match machine.ask("where", vec![]) {
+        Ok(answer) => report["where"] = answer,
+        Err(why) => trouble.push(format!("`where` did not answer: {why}")),
+    }
+
+    match machine.ask("list", vec![".".into()]) {
+        Ok(answer) => {
+            let names: Vec<Value> = answer
+                .get("entries")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.get("name").cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if names.is_empty() {
+                // An empty root is not a workspace with the project in it, and
+                // it is exactly what a store that was never staged looks like.
+                trouble.push("the workspace root is empty".into());
+            }
+            report["top_level"] = Value::Array(names);
+            report["list"] = answer;
+        }
+        Err(why) => trouble.push(format!("`list .` did not answer: {why}")),
+    }
+
+    let ready = trouble.is_empty();
+    report["ready"] = json!(ready);
+    // Always present, never only on failure: a caller that reads `because` to
+    // find out what went wrong should not have to tell an absent key from an
+    // empty one. Rule 10.
+    report["because"] = json!(trouble);
+    (report, ready)
 }
 
 /// Answer one JSON-RPC message, or `None` when it was a notification.

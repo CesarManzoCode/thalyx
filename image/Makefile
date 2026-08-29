@@ -160,6 +160,17 @@ PROJECTNAME := $(if $(PROJECT),$(notdir $(patsubst %/,%,$(PROJECT))))
 WORKSPACE   := $(if $(PROJECTNAME),/home/$(PROJECTNAME))
 AGENTSOCK   ?= $(BUILD)/agent.sock
 AGENTMARK   := $(BUILD)/agent-workspace
+# What was imported, recorded by the thing that imported it.
+#
+# `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`. The benchmark compares two
+# arms and it has no way, from the host, to hash the copy inside a live Btrfs
+# image — so the only honest evidence that arm B is working on the same tree arm
+# A got is a stamp written **at import time, by the importer**. Anything worked
+# out afterwards would be the harness assuring itself.
+#
+# Under `$(BUILD)`, which the benchmark's own boundary already calls machinery,
+# so writing it cannot move a restore verdict.
+AGENTIMPORT := $(BUILD)/agent-import.json
 
 # The first module. It is not in the image and must not be: the image carries
 # the kernel and one program. A module lives on the store, which is the whole
@@ -924,7 +935,7 @@ engine:
 # git in there and there is not meant to be yet); it is so that when the work
 # comes back out, `git diff` on the host has something to diff against.
 project-stage:
-	@rm -f $(AGENTMARK)
+	@rm -f $(AGENTMARK) $(AGENTIMPORT)
 	@test -n "$(PROJECT)" || exit 0; \
 	 test -d "$(PROJECT)" || { \
 	    echo "  PROJECT=$(PROJECT) is not a directory"; \
@@ -935,7 +946,10 @@ project-stage:
 	 tar -C "$(PROJECT)" --exclude=./target --exclude=./node_modules -cf - . \
 	   | tar -C "$(STAGE)/user/$(PROJECTNAME)" -xf -; \
 	 echo "$(PROJECTNAME)" > $(AGENTMARK); \
-	 echo "  workspace: $(WORKSPACE) — a copy of $(PROJECT), $$(du -sh "$(STAGE)/user/$(PROJECTNAME)" | cut -f1)"
+	 $(ROOT)/dev/bench-summary.py --import-stamp "$(PROJECT)" \
+	    --workspace "$(WORKSPACE)" > $(AGENTIMPORT); \
+	 echo "  workspace: $(WORKSPACE) — a copy of $(PROJECT), $$(du -sh "$(STAGE)/user/$(PROJECTNAME)" | cut -f1)"; \
+	 echo "  imported:  $(AGENTIMPORT)"
 
 engine-stage:
 	@$(ROOT)/dev/stage-engine.sh "$(STAGE)" "$(BUILD)" "$(THALYX)" "$(ENGINE)" "$(MODEL)" "$(ENGINE_ID)" "$(ENGINE_TIER)" "$(ENGINE_MODELS)" "$(ENGINE_RUN)"
