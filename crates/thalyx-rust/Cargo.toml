@@ -1,0 +1,24 @@
+[package]
+name = "thalyx-rust"
+description = "The Rust semantic provider: what Cargo and rust-analyzer already know, under Thalyx's freshness rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thalyx-know.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The control column. `Estrategia-de-Pruebas` rule 4: a claim that this provider
+# resolves an alias means nothing without the same question put to the scanner
+# that cannot, in the same test, over the same tree.
+thalyx-graph.workspace = true
+
+[lints]
+workspace = true

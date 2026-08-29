@@ -14,6 +14,8 @@ members = [
     "crates/thalyx-install",
     "crates/thalyx-sandbox",
     "crates/thalyx-graph",
+    "crates/thalyx-know",
+    "crates/thalyx-rust",
     "crates/thalyx-memory",
     "crates/thalyx-watch",
     "crates/thalyx-journal",
@@ -30,6 +32,11 @@ members = [
     "crates/thalyx-mcp",
     "modules/dev.thalyx.greeter",
 ]
+# Test trees, not code. `thalyx-rust` keeps real Cargo workspaces under
+# `tests/trees/` because rule 6 applies to a workspace as much as to a parser:
+# a fixture that is not a Cargo project proves the code matches somebody's idea
+# of one. Excluded so that Cargo never tries to make them members of this.
+exclude = ["crates/thalyx-rust/tests/trees"]
 
 [workspace.package]
 version = "0.1.0"
@@ -52,6 +59,8 @@ thalyx-bpf = { path = "crates/thalyx-bpf" }
 thalyx-btrfs = { path = "crates/thalyx-btrfs" }
 thalyx-install = { path = "crates/thalyx-install" }
 thalyx-graph = { path = "crates/thalyx-graph" }
+thalyx-know = { path = "crates/thalyx-know" }
+thalyx-rust = { path = "crates/thalyx-rust" }
 thalyx-memory = { path = "crates/thalyx-memory" }
 thalyx-watch = { path = "crates/thalyx-watch" }
 thalyx-journal = { path = "crates/thalyx-journal" }
