@@ -895,18 +895,44 @@ self_test() {
         && bad "a workspace inside another repository's .git range was allowed" \
         || ok "a workspace under somebody else's .git is refused too"
 
+    # A `claude` that must never be called, and says so if it is.
+    #
+    # The two checks below are the only ones in this file whose runs are
+    # supposed to stop *before* an agent, and until 2026-08-29 they were also
+    # the only ones with no stand-in on the PATH — so they leaned on a real
+    # `claude` being installed for the run to get as far as the refusal they
+    # were about. `dev/verify.sh` runs under `sudo`, root's PATH has no
+    # `claude`, and both of them failed on Cesar's machine with the harness
+    # saying `no claude on this host`: rule 5 exactly, the instrument answering
+    # a question nobody asked it.
+    #
+    # It also makes the claim direct rather than inferred. "Arm A was never
+    # paid for" was being read off an `armA.ndjson` that is empty for several
+    # reasons; this file exists only if something actually started an agent.
+    local nobin="$nest/nobin" started="$nest/agent-was-started"
+    mkdir -p "$nobin"
+    cat > "$nobin/claude" <<STANDIN
+#!/usr/bin/env bash
+printf 'called at %s\n' "\$PWD" >> "$started"
+STANDIN
+    chmod +x "$nobin/claude"
+
     # And that the run refuses rather than staging there. The project is real,
     # the workspace is under a CLAUDE.md, and no agent may be started.
     mkdir -p "$nest/project"; printf 'x\n' > "$nest/project/f.txt"
     printf 'read this\n' > "$nest/repo/CLAUDE.md"
-    if THALYX_BENCH_WORKSPACE="$nest/repo/target/bench/w" "${BASH_SOURCE[0]}" \
+    if PATH="$nobin:$PATH" THALYX_BENCH_WORKSPACE="$nest/repo/target/bench/w" \
+            "${BASH_SOURCE[0]}" \
             --project "$nest/project" --symbol Widget --task reversible \
             --arms A --out "$nest/out" > "$nest/log" 2>&1; then
         bad "the harness staged arm A under a CLAUDE.md and ran it"
     else
-        grep -q 'CLAUDE.md is above the workspace' "$nest/log" \
-            && ok "the run refuses, by name, before starting an agent anywhere" \
-            || bad "the run failed without saying the workspace's ancestry was why"
+        if grep -q 'CLAUDE.md is above the workspace' "$nest/log" && [ ! -e "$started" ]; then
+            ok "the run refuses, by name, before starting an agent anywhere"
+        else
+            bad "the run failed without saying the workspace's ancestry was why"
+            sed 's/^/      /' "$nest/log"
+        fi
     fi
 
     # ── arm B, checked before arm A is paid for ──
@@ -917,16 +943,18 @@ self_test() {
     # *before* `claude` is called for arm A.
     mkdir -p "$nest/out2"
     local dead='{"ready":false,"because":["the socket is there and the machine never said hello"]}'
-    if THALYX_BENCH_PREFLIGHT_CMD="printf %s $dead" \
+    if PATH="$nobin:$PATH" THALYX_BENCH_PREFLIGHT_CMD="printf %s $dead" \
             THALYX_BENCH_WORKSPACE="$nest/clean/w" "${BASH_SOURCE[0]}" \
             --project "$nest/project" --symbol Widget --task reversible \
             --arms AB --out "$nest/out2" > "$nest/log2" 2>&1; then
         bad "a machine that never said hello did not stop the run"
     else
-        if grep -q 'arm B is NOT READY' "$nest/log2" && [ ! -s "$nest/out2/armA.ndjson" ]; then
+        if grep -q 'arm B is NOT READY' "$nest/log2" && [ ! -e "$started" ] \
+                && [ ! -s "$nest/out2/armA.ndjson" ]; then
             ok "a dead arm B stops the run before arm A is run at all"
         else
             bad "a dead arm B was found out after arm A had already been paid for"
+            sed 's/^/      /' "$nest/log2"
         fi
     fi
 

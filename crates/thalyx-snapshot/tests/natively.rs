@@ -47,9 +47,14 @@ use thalyx_snapshot::{Native, Snapshots, Volumes, name_for};
 /// Made with the ioctl and not with `btrfs subvolume create`, which is not
 /// tidiness: this file has to be able to run on the machine it was written for,
 /// and that machine is the one with no btrfs-progs on it.
-fn scratch() -> Option<PathBuf> {
+fn scratch(label: &str) -> Option<PathBuf> {
     let base = PathBuf::from(std::env::var("THALYX_BTRFS_SCRATCH").ok()?);
-    let name = format!("thalyx-native-{}", std::process::id());
+    // The caller's label is in the name, and rule 11 is why: `cargo test` runs
+    // the four tests in this file as threads of **one** process, so a name made
+    // of the pid alone is one subvolume shared by all of them — and this
+    // function starts by deleting it. Each one would then be tearing down the
+    // tree the others were measuring.
+    let name = format!("thalyx-native-{label}-{}", std::process::id());
     let subvolume = base.join(&name);
 
     let _ = Native.delete(&subvolume);
@@ -99,7 +104,7 @@ fn clean(subvolume: &Path) {
 
 #[test]
 fn the_kernel_is_asked_whether_something_is_a_subvolume_and_no_binary_is_run() {
-    let Some(subvolume) = scratch() else {
+    let Some(subvolume) = scratch("is-subvolume") else {
         return unproven("the_kernel_is_asked_whether_something_is_a_subvolume");
     };
 
@@ -153,7 +158,7 @@ fn the_kernel_is_asked_whether_something_is_a_subvolume_and_no_binary_is_run() {
 
 #[test]
 fn a_native_snapshot_is_read_only_by_the_flag_the_kernel_reports() {
-    let Some(subvolume) = scratch() else {
+    let Some(subvolume) = scratch("read-only") else {
         return unproven("a_native_snapshot_is_read_only");
     };
 
@@ -192,7 +197,7 @@ fn a_native_snapshot_is_read_only_by_the_flag_the_kernel_reports() {
 
 #[test]
 fn restoring_makes_a_writable_copy_and_deleting_takes_it_away_again() {
-    let Some(subvolume) = scratch() else {
+    let Some(subvolume) = scratch("restoring") else {
         return unproven("restoring_makes_a_writable_copy");
     };
 
@@ -248,7 +253,7 @@ fn taking_a_snapshot_of_something_that_is_not_a_subvolume_refuses_rather_than_co
     // Btrfs filesystem a plain directory is snapshottable-looking in every way
     // except the one that matters, and a backend that quietly copied it would
     // hand back something `intento abandonar` could not put back atomically.
-    let Some(subvolume) = scratch() else {
+    let Some(subvolume) = scratch("not-a-subvolume") else {
         return unproven("taking_a_snapshot_of_something_that_is_not_a_subvolume");
     };
 

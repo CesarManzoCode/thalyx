@@ -5205,3 +5205,104 @@ Es la regla 7 —escoger el umbral del lado al que el ruido ambiental no llega�
 aplicada a la mitad de la prueba que sí lo tiene: la afirmación es inmune al
 ruido, el control no, y la diferencia se escribe en el código en vez de
 esperarse.
+
+---
+
+## Regla derivada: un nombre hecho de un pid es un nombre por proceso, no por prueba — 2026-08-29
+
+Dos pruebas de `an_attempt_can_be_taken_back.rs` fallaron en la máquina de
+Cesar, y ninguna de las dos fallas era sobre `intento`. El ayudante que les
+consigue dónde trabajar decía:
+
+```rust
+let subvolume = Path::new(&base).join(format!("thalyx-substitute-{}", std::process::id()));
+let _ = Command::new("btrfs").args(["subvolume", "delete"]).arg(&subvolume).output();
+let made = Command::new("btrfs").args(["subvolume", "create"]).arg(&subvolume).output().ok()?;
+```
+
+`cargo test` corre **todas las pruebas de un archivo como hilos de un mismo
+proceso**, así que `process::id()` es el mismo número para las dos: un solo
+nombre, un solo subvolumen, y una función que empieza **borrándolo**. La que
+llegaba segunda destruía el árbol que la primera estaba midiendo y después no
+podía crear lo que ya existía —y reportaba «no se pudo hacer un subvolumen
+Btrfs» en una máquina que sí puede. `THALYX_REQUIRE_BTRFS_TESTS=1` convertía eso
+en una falla de Thalyx.
+
+Es la regla 11 en un sitio donde nadie la había buscado. `THALYX_ROOT` aísla el
+almacén; un subvolumen de scratch no lo aísla nada, y el pid —que se siente
+único— es exactamente el discriminador que no distingue lo que hay que
+distinguir. Lo mismo estaba en `natively.rs`, donde **cuatro** pruebas se
+repartían un nombre.
+
+**La regla:** un recurso compartido que una prueba crea y borra se nombra por
+**la prueba**, no por el proceso. Un pid separa binarios de test, que ya estaban
+separados; no separa lo único que corre junto.
+
+---
+
+## Regla derivada: una expectativa que sólo corre en otra máquina es un fixture que nadie ejecutó — 2026-08-29
+
+Las mismas dos pruebas, una vez que cada una tuvo su subvolumen, seguían mal —y
+por escrito, desde el día en que se escribieron:
+
+- La de `sustituir` afirmaba `replacements == 4` sobre un fixture con **tres**
+  apariciones de `SlotTable`. Aritmética a mano, nunca corrida.
+- La de `sustituir-lote` armaba la línea nombrando el archivo una sola vez y
+  dejando que las operaciones 2 y 3 lo heredaran. La gramática no funciona así:
+  **sólo la primera operación toma prestado el archivo de antes del subverbo**,
+  y las demás listan los suyos. La máquina leía `'(SlotTable, usize)'` como el
+  nombre de un archivo y rechazaba el lote entero con `bad_batch`.
+
+Ninguna de las dos es sutil: cualquiera de las dos se cae en el primer segundo
+de la primera ejecución. Lo que las mantuvo vivas es que **este contenedor no
+tiene Btrfs**, así que las dos pruebas siempre se saltaron aquí, y en la única
+máquina donde corren la falla del subvolumen las detenía antes.
+
+Es la regla 6 —un fixture inventado prueba lo que yo entendí, no lo que la
+herramienta imprime— aplicada a la propia máquina: cuando una prueba no puede
+correr donde se escribe, sus números tienen que salir de **haberle preguntado al
+sistema en algún lado**. Los dos de arriba salieron de correr `editar … sustituir`
+y `editar … sustituir-lote` sobre un directorio común, sin `intento`, que es la
+mitad de la prueba que este contenedor sí puede hacer.
+
+**La regla:** una prueba que sólo corre en otra máquina se escribe partida —lo
+que se puede ejercer aquí se ejerce aquí, y lo que se manda a la otra máquina es
+sólo la parte que necesita esa máquina—, o sus constantes se sacan de una
+corrida y no de la cabeza. Un `NOT PROVEN` esconde tanto un hueco de la máquina
+como un error del autor, y los dos se ven igual hasta el día que alguien la corre.
+
+---
+
+## Regla derivada: un auto-test que se llama a sí mismo hereda el PATH de quien lo llamó — 2026-08-29
+
+`dev/bench-external-agent.sh --self-test` daba `PROVEN` en el contenedor y
+fallaba dos comprobaciones en la máquina de Cesar:
+
+```
+FAILED  the run failed without saying the workspace's ancestry was why
+FAILED  a dead arm B was found out after arm A had already been paid for
+```
+
+Las dos se corren volviendo a invocar el propio script con `--arms`, y el script
+—correctamente— se niega temprano si no hay `claude` en el PATH. `verify.sh`
+corre bajo `sudo`; el PATH de root no tiene `claude`. Así que las dos sub-corridas
+morían con `no claude on this host` **antes** de llegar a la negativa que era el
+objeto de la prueba, y el `grep` que buscaba esa negativa no la encontraba.
+
+Rule 5, otra vez, y con una marca reconocible: eran las **dos únicas**
+sub-invocaciones del archivo sin un sustituto de `claude` en el PATH, justamente
+porque son las dos que no deben llegar a llamarlo. No necesitarlo se convirtió en
+depender de él.
+
+El arreglo es el sustituto que las demás ya tenían, con una vuelta: este `claude`
+**escribe un archivo si alguien lo llama**. La afirmación era «no se arrancó
+ningún agente» y se estaba leyendo de un `armA.ndjson` vacío, que está vacío por
+varias razones; ahora hay un testigo que sólo existe si pasó lo que no debía
+pasar —y su control es que ese mismo sustituto, puesto en una corrida que sí
+llega al agente, escribe el archivo.
+
+**La regla:** una comprobación que ejecuta el programa bajo prueba en un
+subproceso tiene que darle **el entorno completo que necesita para llegar a lo
+que se le está preguntando**, incluso lo que no va a usar. Si no, mide el PATH de
+quien corrió el arnés; y el arnés se corre bajo `sudo`, que es otro PATH que el
+del autor.

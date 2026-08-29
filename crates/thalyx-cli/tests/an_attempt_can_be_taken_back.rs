@@ -238,9 +238,17 @@ fn rehearsing_it_sends_the_caller_to_the_verb_that_already_answers_that() {
 /// The same shape `thalyx-snapshot`'s tests use, and the same variable, so a
 /// machine that can prove one of them can prove both without being configured
 /// twice.
-fn btrfs_scratch() -> Option<std::path::PathBuf> {
+fn btrfs_scratch(label: &str) -> Option<std::path::PathBuf> {
     let base = std::env::var("THALYX_BTRFS_SCRATCH").ok()?;
-    let subvolume = Path::new(&base).join(format!("thalyx-substitute-{}", std::process::id()));
+    // The name carries the caller's label and not only the pid, and rule 11 is
+    // why: `cargo test` runs every test in this file as a **thread of one
+    // process**, so a name made of the pid alone is one name shared by all of
+    // them — and this helper starts by deleting it. On 2026-08-29 that turned
+    // one subvolume into two failures on Cesar's machine: whichever test got
+    // there second deleted the tree the first was working in and then could not
+    // create what was already there, so it reported "no Btrfs subvolume could
+    // be made" on a machine that has one.
+    let subvolume = Path::new(&base).join(format!("thalyx-{label}-{}", std::process::id()));
     let _ = std::process::Command::new("btrfs")
         .args(["subvolume", "delete"])
         .arg(&subvolume)
@@ -263,7 +271,7 @@ fn abandoning_an_attempt_takes_back_a_substitution_across_files_byte_for_byte() 
     //
     // `THALYX_REQUIRE_BTRFS_TESTS=1` turns the skip into a failure, which is
     // what `dev/verify.sh` sets on the machine that has one.
-    let Some(work) = btrfs_scratch() else {
+    let Some(work) = btrfs_scratch("substitute") else {
         assert!(
             std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
             "THALYX_REQUIRE_BTRFS_TESTS is set and no Btrfs subvolume could be made"
@@ -307,9 +315,18 @@ fn abandoning_an_attempt_takes_back_a_substitution_across_files_byte_for_byte() 
     // The baseline. Without it, a substitution that never happened and one that
     // was taken back leave the same tree, and this would pass on a machine
     // where the edit was refused.
+    //
+    // The counts are the fixture's own, read off a real answer: two `SlotTable`
+    // in `slots.rs`, one in `run.rs`. The `4` that stood here until 2026-08-29
+    // was arithmetic nobody had run — this test only runs where there is a
+    // Btrfs, so the first machine to reach the assertion was the one that
+    // reported it wrong. And `files` is here because *across files* is the
+    // claim the name makes: a substitution that only ever touched `slots.rs`
+    // gives back the same tree just as well.
     let edited = answer_to(&said, "edit");
     assert_eq!(edited["ok"], serde_json::json!(true), "{edited}");
-    assert_eq!(edited["replacements"], serde_json::json!(4));
+    assert_eq!(edited["files"], serde_json::json!(2), "{edited}");
+    assert_eq!(edited["replacements"], serde_json::json!(3), "{edited}");
 
     assert_eq!(
         (
@@ -336,7 +353,7 @@ fn abandoning_an_attempt_takes_back_a_whole_batch_and_not_only_its_last_operatio
     //
     // `THALYX_REQUIRE_BTRFS_TESTS=1` turns the skip into a failure, which is
     // what `dev/verify.sh` sets on the machine that has a Btrfs to do it on.
-    let Some(work) = btrfs_scratch() else {
+    let Some(work) = btrfs_scratch("substitute-batch") else {
         assert!(
             std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
             "THALYX_REQUIRE_BTRFS_TESTS is set and no Btrfs subvolume could be made"
@@ -374,11 +391,20 @@ fn abandoning_an_attempt_takes_back_a_whole_batch_and_not_only_its_last_operatio
             "structured on",
             &format!("cd {}", work.display()),
             "intento empezar rename",
+            // Only the **first** operation borrows the file named before the
+            // subverb; every one after it lists its own files in full. The line
+            // that stood here until 2026-08-29 named `one` once and let the
+            // second and third operations inherit it, so the machine read
+            // `'(SlotTable, usize)'` as operation 2's file name and refused the
+            // whole batch with `bad_batch`. Nobody saw it because the test
+            // never reached this line: it needs a Btrfs, and the machine that
+            // has one was failing to make the subvolume first.
             &format!(
-                "editar {} sustituir-lote 1 'pub struct SlotTable;' 'pub struct Table;' \
-                 1 'impl SlotTable {{' 'impl Table {{' 2 '(SlotTable, usize)' '(Table, usize)' {}",
-                one.display(),
-                two.display()
+                "editar {one} sustituir-lote 1 'pub struct SlotTable;' 'pub struct Table;' \
+                 1 'impl SlotTable {{' 'impl Table {{' {one} \
+                 2 '(SlotTable, usize)' '(Table, usize)' {one} {two}",
+                one = one.display(),
+                two = two.display()
             ),
             "intento abandonar si",
             "salir",
