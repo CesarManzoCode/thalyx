@@ -1183,10 +1183,31 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
 
 /// `hacer <programa>` — the verb, in whichever face is asking.
 pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: &str) -> Fallible {
-    let Some(given) = crate::words::asked(face, OP, rest) else {
-        return Ok(());
+    // A program is JSON, and JSON is made of double quotes — which is exactly
+    // what `words.rs` takes off a word. So a person typing `hacer {"steps":…}`
+    // at a prompt would have every quote in it eaten and be told the object is
+    // not an object, which is a true sentence about something Thalyx did to it.
+    //
+    // JSON delimits itself, so when the line already begins with `{` there is
+    // nothing to split and it is taken byte for byte. Anything else goes
+    // through the words, which is how the bridge sends one — `compose` puts
+    // every argument in single quotes, and inside those the double quotes are
+    // literal and come back whole.
+    let trimmed = rest.trim();
+    let read_as_words;
+    let text = if trimmed.starts_with('{') {
+        trimmed
+    } else {
+        let Some(given) = crate::words::asked(face, OP, rest) else {
+            return Ok(());
+        };
+        read_as_words = given;
+        read_as_words
+            .first()
+            .map(|word| word.as_str())
+            .unwrap_or("")
+            .trim()
     };
-    let text = given.first().map(|word| word.as_str()).unwrap_or("").trim();
     if text.is_empty() {
         declined(
             face,
@@ -1292,9 +1313,33 @@ pub fn evidence(store: &Store, rest: &str, face: Face) -> Fallible {
                     return Ok(());
                 }
             },
-            Some(_) => {}
+            // Refused rather than ignored. A caller that misspelled `paso=`
+            // and got the whole run back would read that as "this run has one
+            // step", which is a wrong belief about the evidence rather than a
+            // wrong call — and the same argument the abandon's parser makes for
+            // refusing a malformed count.
+            Some((other, _)) => {
+                say(
+                    face,
+                    OP,
+                    "unknown_argument",
+                    &format!("`{other}=` is not something this verb takes; it takes `paso=N`"),
+                );
+                return Ok(());
+            }
             None if id.is_none() => id = Some(word.to_string()),
-            None => {}
+            None => {
+                say(
+                    face,
+                    OP,
+                    "unknown_argument",
+                    &format!(
+                        "`{word}` is a second run to fetch, and this verb fetches one: \
+                         `evidencia <id> [paso=N]`"
+                    ),
+                );
+                return Ok(());
+            }
         }
     }
 

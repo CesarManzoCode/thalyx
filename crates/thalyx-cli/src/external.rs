@@ -331,7 +331,12 @@ pub const EXPOSED: &[Exposed] = &[
     Exposed {
         verb: "evidence",
         slots: &[Slot::Text],
-        repeating: MORE_OPTIONS,
+        // `Text` and not `Option`, even though what follows is `paso=N`. The
+        // option slot's list of known names belongs to the window flags, and
+        // adding a word to it would make `ls paso=3` a call this boundary
+        // waves through and `ls` silently ignores. `evidence` refuses every
+        // word it does not know, which is the check in the place that knows.
+        repeating: MORE_TEXT,
         verbatim_from: QUOTED,
     },
     // ── what a verb would do, without doing any of it ─────────────────────

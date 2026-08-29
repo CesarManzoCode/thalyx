@@ -5477,3 +5477,76 @@ agregarse.
 `grep` por el nombre de la primera fuera del código que la implementa. Lo que
 aparezca en métricas, en resúmenes, en el arnés del banco o en una prueba que
 cuenta, o entiende las dos formas o está midiendo otra cosa a partir de ahora.
+
+## Regla derivada: un resumen no es una identidad, y una prueba escrita sobre el resumen nunca ve la diferencia — 2026-08-29
+
+**Dónde salió.** El abandono en una llamada del 2026-08-28 se autorizaba con dos
+conteos: cuántos archivos esperaba perder el llamador y cuántos esperaba
+revertir. Tenía siete pruebas, todas verdes, y una de ellas se llamaba
+`an_edit_by_somebody_else_stops_it_too_even_though_nothing_would_be_deleted` —
+es decir, alguien ya había pensado en el caso peligroso.
+
+Y aun así el mecanismo era inseguro, porque la prueba estaba escrita **sobre el
+resumen**. Construía un `Difference` con `modified_total: 4` en vez de `3` para
+representar «alguien más editó un archivo», que es el caso donde el tercero toca
+un archivo **distinto**. El caso real —el tercero escribe en un archivo que el
+agente ya había editado— deja el conteo en `3` y no se puede expresar en el
+lenguaje del resumen. Una prueba escrita en los términos del resumen **no puede
+nombrar la diferencia que el resumen borra.**
+
+**La regla.** Cuando algo se autoriza con un valor derivado —un conteo, un total,
+una suma, un tamaño—, la prueba del caso peligroso tiene que construirse con
+**el estado**, no con el derivado. Si el caso peligroso no se puede escribir sin
+tocar el estado real, es porque el derivado no distingue esos dos estados, y eso
+es exactamente el defecto.
+
+El control que lo dice en voz alta y que ahora vive al lado del arreglo:
+
+```rust
+assert_eq!(
+    (antes.added_total, antes.modified_total),
+    (despues.added_total, despues.modified_total),
+    "los conteos se movieron, así que éste ya no es el caso que los engañaba"
+);
+assert_ne!(antes.state.id, despues.state.id);
+```
+
+La primera mitad es la parte incómoda: **afirma que el instrumento viejo no ve
+nada.** Sin ella, la segunda mitad prueba que el testigo funciona y no que hacía
+falta.
+
+## Regla derivada: la excepción a «un solo escaneo» se encuentra apuntando la función al archivo que la contiene — 2026-08-29
+
+**Dónde salió.** `thalyx-parser` tiene una regla escrita: había tres escaneos que
+no se ponían de acuerdo sobre los comentarios, cada desacuerdo produjo una
+respuesta equivocada, y desde entonces hay **un** escaneo, `scrub`.
+
+`unbalanced` —decir si una edición mecánica se comió una llave— se construyó
+sobre `scrub`, obedeciendo la regla. Pasó las cuatro pruebas escritas a mano:
+llaves dentro de cadenas, dentro de comentarios de línea, dentro de comentarios
+de bloque, una llave faltante localizada por renglón.
+
+Y falló contra su propio archivo, en el **primer** método que ese archivo
+declara:
+
+```
+line 81: `}` closes something that was never opened
+```
+
+Porque `scrub` contesta *qué ignorar*, y para eso puede permitirse ser generoso:
+ante un `'` suelto blanquea el resto del renglón, ya que en Rust eso es un
+lifetime mucho más seguido que una cadena. Correcto para contar identificadores,
+fatal para contar llaves: `pub fn name(self) -> &'static str {` llega sin su
+llave.
+
+**La regla.** «Un solo escaneo» es una regla sobre *la misma pregunta*. Cuando
+una función nueva necesita **qué conservar** y el escaneo existente contesta
+**qué ignorar**, son preguntas distintas y compartirlas es un defecto silencioso.
+La forma de descubrirlo no es razonar sobre ello: es apuntar la función nueva al
+corpus más grande y menos amable que haya a la mano, que aquí es el repositorio
+mismo — noventa mil renglones que nadie escribió para ella.
+
+Y el falso positivo es el fallo que importa: una comprobación que llama roto al
+código ordinario es una comprobación que alguien apaga, y después no protege
+nada. Por eso lo que se afirma es «cada `.rs` de este repositorio está
+balanceado», y no «este fixture está roto».

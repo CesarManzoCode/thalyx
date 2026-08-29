@@ -7261,17 +7261,22 @@ step "53. a reversible change is two round trips where it was four"
 #   - the arithmetic, on the tool surface: those four calls are two;
 #   - the decision behind the second of them, which is the part that could be
 #     dangerous. Abandoning in one call is allowed only when the caller names
-#     the attempt on record and states what it costs, so a file somebody else
-#     wrote while the attempt was open stops it — where a blind `confirm: true`
-#     never did.
+#     the attempt on record and **the exact state of the tree it is authorising
+#     the destruction of**, so any write by anybody while the attempt was open
+#     stops it — where a blind `confirm: true` never did, and where the counts
+#     that stood here for one day did not either. Stage 55 is that case on a
+#     filesystem where the rollback is real.
 #
 # Whether any of it moves an agent's cost or clock is answered by running the
 # benchmark, not here.
 if cargo test -p thalyx-mcp > "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-cli --bin thalyx attempt:: >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-cli --bin thalyx exec:: >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-snapshot --test state_identity >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-core attempt >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-cli --test an_attempt_can_be_taken_back \
             >> "$WORK/round-trips.log" 2>&1; then
-    proven "opening an attempt and changing something is one round trip and two requests, abandoning is one call where it was two, and the one-call form refuses a claim that stopped matching the tree — which is work somebody else did"
+    proven "opening an attempt and changing something is one round trip and two requests, abandoning is one call where it was two, a whole program is one call whatever it holds, and the one-call form refuses a state claim that stopped matching the tree — which is work somebody else did"
 else
     failed "the reversible round trips do not hold their own claims; see $WORK/round-trips.log"
     excerpt "$WORK/round-trips.log" 25
@@ -7303,7 +7308,283 @@ else
 fi
 }
 
-parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54
+stage_55() {
+step "55. a rollback that names the wrong tree destroys nothing"
+
+# **The defect this fixes, on the filesystem where a rollback is real.**
+#
+# The one-call abandon shipped on 2026-08-28 was authorised by a claim about the
+# counts — how many files the caller expected to lose and to revert. The
+# argument was that a person writing in the shared tree moves one of them.
+#
+# It does not. Somebody who edits a file the agent had *already* edited moves
+# neither: one modified file before, one modified file after. The claim still
+# matched and their edit went back to the snapshot.
+#
+# The columns, in the order they answer:
+#
+#   - the negative control. Agent edits `shared.txt`; the machine hands back the
+#     line that would abandon in one call; a third party then writes to **the
+#     same file**; the line is repeated. It must be refused, their bytes must
+#     still be there, and the attempt must still be open — an abandon that did
+#     not happen must never be recorded as one.
+#   - the counts, printed beside it, to show they did not move. Without this the
+#     first column proves the protection works and not that it was needed.
+#   - the positive control. The same sequence with nobody else writing: one call,
+#     and the tree comes back. Without it a rule that refused everything would
+#     pass the first column and break the feature.
+
+STATE_STORE="$WORK/state-store"
+STATE_TREE="$BTRFS_SCRATCH/.thalyx-verify-state"
+mkdir -p "$STATE_STORE"
+rm -rf "$STATE_TREE" 2>/dev/null || btrfs subvolume delete "$STATE_TREE" > /dev/null 2>&1 || true
+
+STATE_GAP=""
+if [ ! -x "$THALYX" ]; then
+    STATE_GAP="there is no thalyx binary, so the state witness could not be driven"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    STATE_GAP="there is nowhere on Btrfs here, so a rollback cannot be real and this proves nothing"
+elif ! btrfs subvolume create "$STATE_TREE" > "$WORK/state-subvol.log" 2>&1; then
+    STATE_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/state-subvol.log"
+fi
+
+if [ -n "$STATE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$STATE_GAP"; else unproven "$STATE_GAP"; fi
+else
+    state_run() {
+        printf '%s\n' "structured on" "cd $STATE_TREE" "$@" salir | \
+            THALYX_ROOT="$STATE_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+
+    # A field of the one `attempt` object in a log, parsed rather than grepped.
+    # `verify.sh` has already turned seven denials into seven vacuous passes by
+    # looking for a sentence a probe had stopped printing — rule 5, the tenth
+    # time. A parse fails loudly when the shape changes.
+    attempt_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "attempt":
+        print(value.get(sys.argv[2], "absent"))
+        break
+else:
+    print("none")
+' "$1" "$2"
+    }
+
+    printf 'original\n' > "$STATE_TREE/shared.txt"
+    state_run "intento empezar witness" > "$WORK/state-begin.log"
+
+    # The agent's own edit, then the line the machine hands back for undoing it.
+    printf 'what the agent wrote\n' > "$STATE_TREE/shared.txt"
+    state_run "intento abandonar" > "$WORK/state-cost.log"
+    STALE_LINE=$(attempt_field "$WORK/state-cost.log" confirm_with)
+    STALE_DELETE=$(attempt_field "$WORK/state-cost.log" would_delete)
+    STALE_REVERT=$(attempt_field "$WORK/state-cost.log" would_revert)
+
+    # Somebody else, in the same file, while the attempt is open.
+    printf 'what the person wrote\n' > "$STATE_TREE/shared.txt"
+    state_run "intento abandonar" > "$WORK/state-cost2.log"
+    NOW_DELETE=$(attempt_field "$WORK/state-cost2.log" would_delete)
+    NOW_REVERT=$(attempt_field "$WORK/state-cost2.log" would_revert)
+
+    state_run "$STALE_LINE" > "$WORK/state-stale.log"
+    STALE_OK=$(attempt_field "$WORK/state-stale.log" ok)
+    STALE_WORD=$(attempt_field "$WORK/state-stale.log" error)
+    SURVIVED=$(cat "$STATE_TREE/shared.txt" 2>/dev/null || echo unreadable)
+    STILL_OPEN=$(state_run "intento" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("{"):
+        try:
+            value = json.loads(line)
+        except Exception:
+            continue
+        if value.get("op") == "attempt":
+            print(value.get("open"))
+            break
+else:
+    print("none")
+')
+
+    # The positive control: the line the machine hands back *now*, with nobody
+    # writing in between, must undo it in one call.
+    state_run "intento abandonar" > "$WORK/state-cost3.log"
+    FRESH_LINE=$(attempt_field "$WORK/state-cost3.log" confirm_with)
+    state_run "$FRESH_LINE" > "$WORK/state-fresh.log"
+    FRESH_DONE=$(attempt_field "$WORK/state-fresh.log" abandoned)
+    RESTORED=$(cat "$STATE_TREE/shared.txt" 2>/dev/null || echo unreadable)
+
+    if [ "$STALE_OK" = "False" ] && [ "$STALE_WORD" = "workspace_moved" ] \
+       && [ "$SURVIVED" = "what the person wrote" ] && [ "$STILL_OPEN" = "True" ] \
+       && [ "$STALE_DELETE" = "$NOW_DELETE" ] && [ "$STALE_REVERT" = "$NOW_REVERT" ] \
+       && [ "$FRESH_DONE" = "True" ] && [ "$RESTORED" = "original" ]; then
+        proven "a rollback authorised against a tree somebody else had written in was refused and destroyed nothing — while the counts it used to be authorised by never moved (delete=$STALE_DELETE revert=$STALE_REVERT, both before and after) — and the same call against the tree as it stands undid it in one"
+    elif [ "$SURVIVED" != "what the person wrote" ]; then
+        failed "a stale rollback destroyed somebody else's work: shared.txt is now '$SURVIVED'; see $WORK/state-stale.log"
+        excerpt "$WORK/state-stale.log"
+    elif [ "$STALE_DELETE" != "$NOW_DELETE" ] || [ "$STALE_REVERT" != "$NOW_REVERT" ]; then
+        failed "the counts moved between the two states ($STALE_DELETE/$STALE_REVERT then $NOW_DELETE/$NOW_REVERT), so this is no longer the case that fooled them and the stage proves less than it says"
+    elif [ "$STALE_OK" != "False" ] || [ "$STALE_WORD" != "workspace_moved" ]; then
+        failed "the stale rollback answered ok=$STALE_OK error=$STALE_WORD instead of refusing as workspace_moved; see $WORK/state-stale.log"
+        excerpt "$WORK/state-stale.log"
+    elif [ "$STILL_OPEN" != "True" ]; then
+        failed "a rollback that did not happen closed the attempt anyway, so the caller believes the tree came back"
+    else
+        failed "the fresh one-call rollback did not undo it (abandoned=$FRESH_DONE, shared.txt='$RESTORED'); see $WORK/state-fresh.log"
+        excerpt "$WORK/state-fresh.log"
+    fi
+    rm -rf "$STATE_TREE" 2>/dev/null || btrfs subvolume delete "$STATE_TREE" > /dev/null 2>&1 || true
+fi
+}
+
+stage_56() {
+step "56. one call changes several files, checks the result, and keeps it or undoes it"
+
+# `vault/03-Primitivas/Ejecucion-Transaccional.md`, and the whole of what this
+# machine is now betting on: the operations an agent already knows it wants do
+# not each need a trip back to the model.
+#
+# The unit tests in `thalyx-cli::exec` cover the reasoning against a
+# directory-backed fake, which is this project's standing split — policy that
+# can only be exercised on Btrfs is policy that is never exercised. What only
+# this machine can establish is the half the fake cannot be: that the boundary
+# is a **real snapshot**, and that a rollback the runtime decided on by itself
+# really returns the tree.
+#
+# Two columns, and neither means anything without the other:
+#
+#   - a program that holds up: several files changed, the checks pass, it
+#     commits, and the changes are there afterwards.
+#   - a program that does not: the same shape with a check that fails, and the
+#     tree must be byte-for-byte what it was — with the diagnosis still
+#     readable, because the evidence lives in the store and not in the tree the
+#     rollback replaced.
+
+EXEC_STORE="$WORK/exec-store"
+EXEC_TREE="$BTRFS_SCRATCH/.thalyx-verify-exec"
+mkdir -p "$EXEC_STORE"
+rm -rf "$EXEC_TREE" 2>/dev/null || btrfs subvolume delete "$EXEC_TREE" > /dev/null 2>&1 || true
+
+EXEC_GAP=""
+if [ ! -x "$THALYX" ]; then
+    EXEC_GAP="there is no thalyx binary, so a program could not be run"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    EXEC_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif ! btrfs subvolume create "$EXEC_TREE" > "$WORK/exec-subvol.log" 2>&1; then
+    EXEC_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/exec-subvol.log"
+fi
+
+if [ -n "$EXEC_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$EXEC_GAP"; else unproven "$EXEC_GAP"; fi
+else
+    exec_run() {
+        printf '%s\n' "structured on" "cd $EXEC_TREE" "hacer $1" salir | \
+            THALYX_ROOT="$EXEC_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    exec_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "exec":
+        print(value.get(sys.argv[2], "absent"))
+        break
+else:
+    print("none")
+' "$1" "$2"
+    }
+
+    printf 'pub struct UidRegistry;\n' > "$EXEC_TREE/lib.rs"
+    printf 'use crate::UidRegistry;\n'  > "$EXEC_TREE/main.rs"
+
+    # The program that holds up. Two files renamed, a directory and a file made,
+    # then three checks — none of which costs a round trip to anybody.
+    # On one line, deliberately. The session reads a line at a time, so a
+    # program written across several would arrive as several commands — and the
+    # first of them would be a `hacer` with a program that does not close.
+    GOOD='{"label":"rename","steps":[{"verb":"edit","arguments":["lib.rs","sustituir-lote","2","UidRegistry","UserRegistry","main.rs"]},{"verb":"make_directory","arguments":["notes"]},{"verb":"make_file","arguments":["notes/why.md"]},{"verb":"grep","arguments":["UserRegistry"]}],"validate":[{"check":"text","text":"UidRegistry","expect":"none"},{"check":"text","text":"UserRegistry","expect":"some"},{"check":"parses"}]}'
+    exec_run "'$GOOD'" > "$WORK/exec-good.log"
+    GOOD_STATUS=$(exec_field "$WORK/exec-good.log" status)
+    GOOD_OPS=$(exec_field "$WORK/exec-good.log" machine_operations)
+    GOOD_EXTERNAL=$(exec_field "$WORK/exec-good.log" external_requests)
+    GOOD_LIB=$(cat "$EXEC_TREE/lib.rs" 2>/dev/null || echo unreadable)
+    GOOD_MAIN=$(cat "$EXEC_TREE/main.rs" 2>/dev/null || echo unreadable)
+
+    # The program that does not: a rename of one file where two hold the name.
+    printf 'pub struct UidRegistry;\n' > "$EXEC_TREE/lib.rs"
+    printf 'use crate::UidRegistry;\n'  > "$EXEC_TREE/main.rs"
+    BAD='{"label":"an incomplete rename","steps":[{"verb":"edit","arguments":["lib.rs","sustituir","UidRegistry","UserRegistry"]}],"validate":[{"check":"text","text":"UidRegistry","expect":"none"}]}'
+    exec_run "'$BAD'" > "$WORK/exec-bad.log"
+    BAD_STATUS=$(exec_field "$WORK/exec-bad.log" status)
+    BAD_ROLLED=$(exec_field "$WORK/exec-bad.log" rolled_back)
+    BAD_EVIDENCE=$(exec_field "$WORK/exec-bad.log" evidence)
+    BAD_LIB=$(cat "$EXEC_TREE/lib.rs" 2>/dev/null || echo unreadable)
+
+    # And the diagnosis survived the rollback, because it never lived in the
+    # tree the rollback replaced.
+    KEPT=$(printf '%s\n' "structured on" "evidencia $BAD_EVIDENCE" salir | \
+        THALYX_ROOT="$EXEC_STORE" "$THALYX" session 2>&1 | tr -d '\r' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("{"):
+        try:
+            value = json.loads(line)
+        except Exception:
+            continue
+        if value.get("op") == "evidence":
+            checks = value.get("checks") or [{}]
+            print(checks[0].get("verdict", "absent"))
+            break
+else:
+    print("none")
+')
+
+    if [ "$GOOD_STATUS" = "committed" ] \
+       && [ "$GOOD_LIB" = "pub struct UserRegistry;" ] \
+       && [ "$GOOD_MAIN" = "use crate::UserRegistry;" ] \
+       && [ -f "$EXEC_TREE/notes/why.md" ] \
+       && [ "$GOOD_EXTERNAL" = "1" ] && [ "$GOOD_OPS" -ge 8 ] \
+       && [ "$BAD_STATUS" = "rolled_back" ] && [ "$BAD_ROLLED" = "True" ] \
+       && [ "$BAD_LIB" = "pub struct UidRegistry;" ] \
+       && [ "$KEPT" = "failed" ]; then
+        proven "one request did $GOOD_OPS operations inside the machine, changed four things and committed; the same shape with a check that fails put a real Btrfs subvolume back byte for byte by itself, and the diagnosis survived the rollback"
+    elif [ "$GOOD_STATUS" != "committed" ]; then
+        failed "the program that should have committed answered '$GOOD_STATUS'; see $WORK/exec-good.log"
+        excerpt "$WORK/exec-good.log"
+    elif [ "$BAD_LIB" != "pub struct UidRegistry;" ]; then
+        failed "the failing program was not undone: lib.rs is '$BAD_LIB'; see $WORK/exec-bad.log"
+        excerpt "$WORK/exec-bad.log"
+    elif [ "$BAD_STATUS" != "rolled_back" ]; then
+        failed "a program whose check failed answered '$BAD_STATUS' instead of rolling back; see $WORK/exec-bad.log"
+        excerpt "$WORK/exec-bad.log"
+    elif [ "$KEPT" != "failed" ]; then
+        failed "the evidence of the rolled-back run says '$KEPT'; a rollback that erases its own diagnosis leaves nothing to act on"
+    else
+        failed "one request reported $GOOD_OPS operations and $GOOD_EXTERNAL external request(s), or the rename did not land (lib.rs='$GOOD_LIB' main.rs='$GOOD_MAIN'); see $WORK/exec-good.log"
+        excerpt "$WORK/exec-good.log"
+    fi
+    rm -rf "$EXEC_TREE" 2>/dev/null || btrfs subvolume delete "$EXEC_TREE" > /dev/null 2>&1 || true
+fi
+}
+
+
+parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56
 
 # ------------------------------------------------- the machine, as it is left
 #
