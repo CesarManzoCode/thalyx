@@ -427,8 +427,19 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       brazo B sin abrir un intento. Esa tercera no midió nada de lo que Thalyx
       apuesta: un archivo cambiado una vez no tiene nada que revertir.
 
-- [ ] **Correr `--task reversible`, que es la tarea que sí ejercita la frontera.**
-      Existe desde el 2026-08-28 y **no se ha corrido**. Renombrar un símbolo en
+- [x] **Correr `--task reversible`, que es la tarea que sí ejercita la frontera**
+      — **corrido el 2026-08-29, regradado el mismo día, los dos brazos
+      `VALID`.** Los dos modificaron de verdad, los dos contestaron bien, los dos
+      devolvieron el árbol. Thalyx: **−13.2 % de costo, +33.2 % de reloj**, 36
+      llamadas contra 16, 16 mutaciones contra 6, **0 archivos leídos contra 7**,
+      −27.4 % de bytes hacia el modelo y **+51 % de tokens de salida**. El primer
+      resultado mixto con veredicto válido del proyecto: la navegación semántica
+      volvió a ganar y la escritura perdió el reloj. La causa que el trace
+      señala —el brazo A reemplaza todas las apariciones de un archivo en una
+      llamada y el brazo B sólo sabía direccionar líneas— provocó `sustituir`, y
+      **que eso mueva el banco es una hipótesis sin medir**. Ver
+      [[Evidencia-de-Agentes]]. Descripción original:
+      Renombrar un símbolo en
       su definición y en todos sus dependientes, comprobar qué se tocó, y dejar
       el árbol exactamente como estaba. El primer símbolo recomendado es
       `UidRegistry` —17 menciones, 6 archivos, dos crates, ninguna aparición
@@ -536,6 +547,21 @@ con el que se mide, en [[Evidencia-de-Agentes]].
       y ninguno se construye antes de tener la medición que lo pida. **La
       decisión que ya se tomó, y que vale como precedente: después de CHANGE #1
       no se optimizó `thalyx_edit`.**
+      **Y el 2026-08-29 sí se optimizó, por el precedente y no contra él**:
+      REVERSIBLE #1 dio un resultado válido que nombró la causa —16 mutaciones
+      donde el otro brazo hizo 6—, así que hubo medición antes de la
+      construcción. Lo que se construyó es el **batching mecánico** de esa
+      lista, no la edición por símbolo: el índice de hoy no distingue el símbolo
+      del comentario, del homónimo ni de la cadena, y una API que lo llamara
+      «renombrado» sería una abstracción falsa. LSP/SCIP van debajo de la misma
+      API el día que existan, sin cambiarla.
+
+- [ ] **Volver a correr `--task reversible` con `sustituir` en el camino.** Es la
+      prueba de la hipótesis que provocó esa operación, y el arnés queda
+      **congelado**: mismo prompt, mismo símbolo, misma verdad conocida, mismo
+      grader. Adaptar la prueba al producto invalidaría las dos corridas.
+      Ninguna cifra de mejora puede escribirse en ninguna nota antes de eso.
+      Ver [[Evidencia-de-Agentes]].
 
 ## Pendientes de decreto formal
 

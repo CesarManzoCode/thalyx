@@ -14,9 +14,74 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El banco reversible se corrió, y el instrumento estaba mal — 2026-08-29
+> ## REVERSIBLE #1 salió válido y mixto, y la escritura ya no cuesta dieciséis llamadas — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El banco reversible se regradó con el grader corregido, sobre los mismos
+> artefactos, sin correr ningún agente y sin gastar nada. **Los dos brazos salen
+> `VALID`**: los dos modificaron de verdad, los dos contestaron bien, los dos
+> devolvieron el árbol. Es el primer resultado mixto con veredicto válido del
+> proyecto y hay que leerlo entero:
+>
+> | | brazo A (Linux) | brazo B (Thalyx) |
+> | --- | --- | --- |
+> | costo | $0.2597362 | $0.2255152 — **−13.2 %** |
+> | reloj | 47.909 s | 63.805 s — **+33.2 % peor** |
+> | llamadas | 16 | 36 |
+> | mutaciones | 6 | 16 |
+> | archivos leídos | 7 | **0** |
+> | bytes al modelo | 19 774 | 14 365 — −27.4 % |
+> | tokens de salida | 3 880 | 5 859 — **+51 %** |
+>
+> La navegación semántica volvió a ganar y la frontera reversible funcionó de
+> punta a punta. Lo que perdió es el reloj, y el trace dice por qué sin ningún
+> misterio: el editor del brazo A reemplaza todas las apariciones de un archivo
+> en **una** llamada, así que hizo una por archivo; el brazo B sólo sabía
+> direccionar líneas, así que hizo una por línea —56, 61, 166, 168…— y en cada
+> una tuvo que escribir el texto nuevo completo de la línea.
+>
+> **Lo que se construyó por eso, y es una operación y no una capa:**
+> `editar <archivo> sustituir <viejo> <nuevo> [más archivos…]`, expuesta al
+> agente como `thalyx_edit` con `action: "substitute"`. Una cadena exacta, en
+> todas partes, en todos los archivos nombrados, en una llamada. Precomprueba
+> todos los archivos antes de escribir un byte —un archivo que no contiene el
+> texto detiene la llamada entera con nada cambiado—, dice `wrote: false` en
+> cada rechazo, rechaza el mismo archivo nombrado dos veces por inodo, y
+> contesta con cuentas en vez de contenido.
+>
+> Y **es sustitución, no renombrado**. El índice de hoy no distingue el símbolo
+> del comentario, del homónimo, de la cadena ni del identificador más largo que
+> lo contiene, y llamarle «renombrado semántico» a una sustitución léxica sería
+> una abstracción falsa. LSP/SCIP van debajo de esta misma API el día que
+> existan.
+>
+> La regresión que lo sostiene no gasta un centavo —
+> `crates/thalyx-cli/tests/a_mechanical_rename_costs_one_call.rs`, dos crates,
+> 19 apariciones en 16 líneas de 6 archivos, el mismo renombrado hecho de las
+> dos maneras y los dos árboles comparados byte a byte:
+>
+> ```
+> línea por línea   16 llamadas   1523 bytes enviados   2956 de vuelta
+> sustitución        1 llamada     252 bytes enviados    742 de vuelta
+> ```
+>
+> **Lo que falta, y es de Cesar porque cuesta dinero:** volver a correr el banco
+> reversible **una vez**, con el arnés congelado, que es la prueba de la
+> hipótesis y no su confirmación. Nada dice todavía que esto mejore el banco:
+>
+> ```sh
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+>     --out target/bench-external-agent-2
+> ```
+>
+> El detalle entero está en [[Evidencia-de-Agentes]], sección «Lo que la corrida
+> encontró, y el cambio que provocó».
+
+> ## El banco reversible se corrió, y el instrumento estaba mal — 2026-08-29
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Cesar corrió `--task reversible` sobre `UidRegistry`. La corrida terminó, los
 > dos brazos contestaron bien, y el resumen los reprobó a los dos por razones

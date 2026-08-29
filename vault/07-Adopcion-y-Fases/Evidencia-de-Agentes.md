@@ -202,7 +202,7 @@ Primero se mide la tarea que sí ejercita la frontera reversible.
 |---|---|
 | **comprensión / navegación semántica** | dos observaciones, las dos favorecen claramente a Thalyx |
 | **edición simple de un archivo** | una observación: empate en costo, peor en tiempo |
-| **edición multiarchivo reversible** | **sin resultado**; el arnés está preparado |
+| **edición multiarchivo reversible** | una observación válida y **mixta**: correcto en los dos brazos, Thalyx más barato y más lento; provocó `sustituir` |
 | **bug real de desarrollo (dogfooding)** | **todavía no medido**; el protocolo está más abajo |
 
 Y lo que hay que decir junto a esa tabla, con todas las letras:
@@ -217,16 +217,19 @@ Y lo que hay que decir junto a esa tabla, con todas las letras:
 
 ---
 
-## Banco reversible: CORRIDO / PENDIENTE DE REGRADAR
+## Banco reversible: CORRIDO, REGRADADO, VÁLIDO
 
-**Se corrió el 2026-08-29 y el instrumento estaba mal.** El resultado bruto de
-esa corrida dice `reversible.passed: false` en los dos brazos, y **ese veredicto
-no vale**: dos de sus partes las decidió un defecto del grader y no el agente.
-La corrida no se ha vuelto a leer con el grader corregido —los artefactos están
-en la máquina de Cesar, no en el repositorio— así que hasta que se lea **no hay
-resultado válido, ni a favor ni en contra**. El incidente completo está abajo,
-en «El instrumento estaba mal», y la regla que sale de él en
-[[Estrategia-de-Pruebas]].
+**Se corrió el 2026-08-29, el instrumento estaba mal, se arregló el instrumento
+y la corrida se volvió a leer sin gastar nada.** El resultado bruto decía
+`reversible.passed: false` en los dos brazos y ese veredicto no valía: dos de
+sus partes las decidió un defecto del grader y no el agente. Con el grader
+corregido, sobre los mismos artefactos, **los dos brazos salen `VALID`** — los
+dos modificaron de verdad, los dos completaron bien, los dos devolvieron el
+árbol. Las cifras válidas están en «REVERSIBLE #1, regradado» más abajo.
+
+Lo de arriba se conserva entero, veredicto equivocado incluido, porque borrarlo
+sería esconder el incidente. El incidente completo está en «El instrumento
+estaba mal», y la regla que sale de él en [[Estrategia-de-Pruebas]].
 
 Existe desde el commit `cb05b05` (merge sobre `d5bee37`):
 
@@ -360,10 +363,12 @@ usuario y `--max-turns` acota viajes a la API, y se separan en cuanto el modelo
 pide dos herramientas en un mismo mensaje. Está explicado en
 [[Estrategia-de-Pruebas]] y fijado con `--self-test` contra la sesión capturada.
 
-### Lo que falta para cerrar REVERSIBLE #1
+### Cómo se cerró REVERSIBLE #1
 
-Una sola orden, en la máquina donde están los artefactos, sin agente y sin
-gastar nada:
+**Ya se hizo; el resultado está en la sección siguiente.** Queda escrito porque
+es el procedimiento, y porque cualquier corrida futura que salga con el
+instrumento equivocado se cierra igual. Una sola orden, en la máquina donde
+están los artefactos, sin agente y sin gastar nada:
 
 ```sh
 dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
@@ -391,6 +396,87 @@ todavía traía una sola columna. Su evidencia retroactiva es la respuesta de la
 herramienta, que sí está en `armA.ndjson`. Si esas seis `Edit` vinieron con
 `is_error: true`, el `passed: false` del brazo A era correcto por accidente y
 seguirá siendo `false` — por la razón de verdad esta vez.
+
+### REVERSIBLE #1, regradado: los dos brazos válidos
+
+Mismos artefactos, grader corregido, **ningún agente corrido y nada gastado**.
+Los dos brazos modificaron de verdad, completaron correctamente y restauraron
+el árbol; `status: VALID` en los dos.
+
+| | brazo A (Linux) | brazo B (Thalyx) | delta |
+| --- | --- | --- | --- |
+| costo | $0.2597362 | $0.2255152 | **−13.2 % Thalyx** |
+| pared | 47.909 s | 63.805 s | **+33.2 % peor** |
+| API | 48.485 s | 57.801 s | +19.2 % peor |
+| llamadas a herramientas | 16 | 36 | +125 % |
+| mutaciones confirmadas | 6 | 16 | +166.7 % |
+| archivos leídos | 7 | 0 | 7 → 0 |
+| bytes devueltos al modelo | 19 774 | 14 365 | −27.4 % |
+| tokens de salida del modelo | 3 880 | 5 859 | +51 % |
+| `attempt` | — | 1 abierto, 1 abandonado, 0 confirmado | |
+| restauración | sí | **PROVEN** | |
+
+**Éste es el primer resultado mixto con veredicto válido del proyecto, y hay que
+leerlo como es.** La navegación semántica volvió a ganar —cero archivos leídos
+contra siete, 27 % menos bytes hacia el modelo, menos dinero— y la frontera
+reversible funcionó de punta a punta. Lo que perdió, y por bastante, es el
+reloj.
+
+### Lo que la corrida encontró, y el cambio que provocó
+
+Escrito en tres renglones separados a propósito, porque son tres cosas
+distintas y sólo la primera es un hecho observado.
+
+**OBSERVACIÓN.** El brazo B necesitó 36 llamadas y 16 mutaciones donde el A
+necesitó 16 y 6, y produjo 51 % más tokens de salida. El trace dice de dónde
+sale la diferencia y no es un misterio: el editor del brazo A reemplaza todas
+las apariciones de un archivo en **una** llamada
+(`Edit(replace_all=true, …)`), así que hizo una por archivo; el brazo B sólo
+sabía direccionar líneas, así que hizo una por línea —56, 61, 166, 168…— y en
+cada una tuvo que **escribir el texto nuevo completo de la línea**.
+
+**HIPÓTESIS.** La granularidad de la superficie de escritura explica buena parte
+del peor tiempo de pared y del exceso de tokens de salida. No explica
+necesariamente todo: hay latencia por viaje que esta nota no midió por separado.
+
+**CAMBIO.** Se añadió una operación —no una capa— que expresa ese mismo trabajo
+en una llamada: `editar <archivo> sustituir <viejo> <nuevo> [más archivos…]`,
+expuesta al agente como `thalyx_edit` con `action: "substitute"`. Reemplaza una
+cadena exacta en todas partes, en todos los archivos nombrados, con
+precomprobación completa antes de escribir un byte, y contesta con cuentas
+—cuántos lugares, en cuántas líneas, desde cuál, por archivo— en vez de
+devolver el contenido. La regresión determinista que la sostiene,
+`crates/thalyx-cli/tests/a_mechanical_rename_costs_one_call.rs`, arma un
+proyecto de dos crates con 19 apariciones en 16 líneas de 6 archivos y hace el
+mismo renombrado de las dos maneras:
+
+| | llamadas | bytes enviados | bytes de vuelta |
+| --- | --- | --- | --- |
+| línea por línea | 16 | 1 523 | 2 956 |
+| sustitución | **1** | 252 | 742 |
+
+Y **es sustitución, no renombrado**. Nada en Thalyx sabe hoy distinguir el
+símbolo de un comentario, de una cadena, de un homónimo en otro ámbito o de un
+identificador más largo que lo contiene; llamarle «renombrado semántico» a una
+sustitución léxica sería una abstracción falsa. El día que haya un índice que
+sí pueda —LSP, SCIP, rust-analyzer— va debajo de esta misma API sin cambiarla.
+La descripción MCP manda al agente a `thalyx_symbol` antes de sustituir, que es
+lo honesto que se puede hacer hoy.
+
+**LO QUE TODAVÍA NO SE PUEDE AFIRMAR.** Que esto mejore el banco. Nadie lo ha
+medido. La próxima corrida de `--task reversible` es **la prueba de esa
+hipótesis**, no su confirmación, y el arnés queda **congelado** exactamente como
+está: no se adapta la prueba al producto. Repetirla es una sola orden:
+
+```sh
+dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+    --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+    --out target/bench-external-agent-2
+```
+
+Si el tiempo de pared no se mueve, la hipótesis estaba equivocada y la operación
+se queda de todos modos —una llamada donde había dieciséis es correcta aunque no
+sea más rápida—, pero la causa del reloj habrá que buscarla en otra parte.
 
 ---
 
@@ -460,9 +546,14 @@ Lo que estos números **no** dicen:
   razonamiento equivocado puede pasarlo.
 - **El benchmark de CHANGE simple no ejercitó `attempt`.** Lo que midió de la
   frontera reversible es nada.
-- **Todavía falta medir**: la tarea reversible multiarchivo, tareas reales, bugs
-  genuinos, otros repositorios, otras clases de cambio, y una comparación futura
-  contra herramientas semánticas especializadas.
+- **La corrida reversible es una sola corrida.** Su delta de reloj —+33 %— es de
+  esa corrida concreta y no una propiedad medida de Thalyx.
+- **`sustituir` todavía no tiene ninguna medición.** Existe porque una
+  observación válida identificó su ausencia como causa plausible; que la
+  corrija es una hipótesis sin comprobar hasta que el banco se vuelva a correr.
+- **Todavía falta medir**: la tarea reversible multiarchivo **repetida**, tareas
+  reales, bugs genuinos, otros repositorios, otras clases de cambio, y una
+  comparación futura contra herramientas semánticas especializadas.
 
 Y lo que sí es correcto afirmar, porque ocurrió:
 

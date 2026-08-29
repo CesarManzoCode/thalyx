@@ -108,7 +108,7 @@ verb exist* but *can this make an agent program better*.
 | `thalyx_symbol` | where a name is defined and every place it is used |
 | `thalyx_dependencies` | impact, without opening any file |
 | `thalyx_find` | name patterns, or literal text — the fallback |
-| `thalyx_edit` | change a file by line; every answer carries its undo |
+| `thalyx_edit` | substitute an exact string across several files in one call, or change a file by line; every answer carries its undo |
 | `thalyx_file` | create, delete, move, copy |
 | `thalyx_attempt` | begin / commit / abandon a reversible boundary |
 | `thalyx_changed` | what changed since the checkpoint |

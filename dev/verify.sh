@@ -7050,6 +7050,30 @@ else
     excerpt "$WORK/bench-harness.log" 25
 fi
 
+step "51. one call does the mechanical rename that used to take sixteen"
+
+# The claim REVERSIBLE #1 produced, held in place without spending anything.
+#
+# That run was valid and mixed: arm B was correct, cheaper and read no files,
+# and it lost a third of the wall clock making sixteen line-addressed mutations
+# where arm A made six whole-file replacements. `sustituir` is the operation
+# that closes the gap, and this stage is the arithmetic of it — a two-crate
+# fixture with 19 mentions on 16 lines in 6 files, renamed both ways, the two
+# resulting trees compared byte for byte, and put back.
+#
+# It is **not** a benchmark result and says nothing about wall clock. Whether
+# the operation moves the benchmark is answered by running the benchmark, with
+# the harness frozen. The counts are printed because the point of this stage is
+# the numbers, not the word `ok`.
+if cargo test -p thalyx-cli --test a_mechanical_rename_costs_one_call \
+        -- --nocapture --test-threads=1 > "$WORK/one-call.log" 2>&1; then
+    proven "a mechanical rename across six files is one call where it was sixteen, both ways produce the same tree, and substituting back returns it byte for byte"
+    grep -E "line by line|substitution|places on" "$WORK/one-call.log" | sed 's/^/     /'
+else
+    failed "the rename that used to take sixteen calls does not take one; see $WORK/one-call.log"
+    excerpt "$WORK/one-call.log" 25
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

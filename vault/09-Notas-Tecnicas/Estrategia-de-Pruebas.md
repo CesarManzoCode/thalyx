@@ -4962,3 +4962,38 @@ acota) y `most_tool_calls_in_one_message`. `turns_mean` lo dice dentro del
 resumen, y el `--self-test` lo fija contra la sesión capturada, para que un
 cambio en lo que Claude Code pone en `num_turns` se vea como una falla y no como
 un número que nadie puede nombrar.
+
+## Regla derivada: la regresión que sale de un banco no se escribe sobre el caso del banco — 2026-08-29
+
+REVERSIBLE #1 salió válido y mixto, y nombró una causa: el brazo B necesitó
+dieciséis mutaciones donde el otro necesitó seis, porque sólo sabía direccionar
+líneas. De ahí salió `sustituir`, y con la operación hay que escribir la
+regresión que la sostiene. **La tentación es escribirla sobre `UidRegistry`**,
+que es el símbolo del banco, con la verdad conocida ya escrita y el árbol ya
+elegido. Es exactamente lo que no se vale.
+
+Una regresión escrita sobre el caso del banco mide dos cosas a la vez y no
+distingue entre ellas: si la operación es general, y si el banco pasa. La
+segunda es la única que se puede afirmar cuando coinciden, y es la que no vale
+nada — un banco que el producto puede ver mientras se construye deja de ser una
+medición y se vuelve un examen con las respuestas al lado.
+
+Así que la regla tiene dos mitades:
+
+1. **La regresión reproduce la *forma*, no el caso.**
+   `a_mechanical_rename_costs_one_call.rs` arma su propio proyecto de dos
+   crates, con un nombre que no es el del banco (`SlotTable`), y comprueba lo
+   que la forma exige: una definición con varias menciones de su propio nombre,
+   dependientes en un segundo directorio, un cambio mecánico, y el árbol
+   devuelto. Si la operación sólo funcionara para `UidRegistry`, esta prueba
+   falla.
+2. **El arnés se congela mientras se construye contra él.** Ni el prompt, ni el
+   símbolo, ni la verdad conocida, ni el grader se tocan. Adaptar la prueba al
+   producto invalida las dos corridas —la anterior y la siguiente— y no queda
+   forma de saber cuál de los dos cambios movió el número.
+
+Y el corolario, que es de escritura y no de código: **hasta que el banco se
+vuelva a correr, ninguna nota puede decir que la operación lo mejora.** Lo que
+sí se puede escribir es lo que se observó, lo que se supone y lo que se
+construyó, separados y en ese orden. La corrida siguiente es la prueba de la
+hipótesis, no su confirmación.
