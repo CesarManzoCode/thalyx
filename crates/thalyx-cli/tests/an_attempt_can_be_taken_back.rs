@@ -122,7 +122,7 @@ fn a_machine_with_no_attempt_open_says_so_without_being_asked_twice() {
 fn the_words_that_abandon_in_one_call_are_not_refused_at_a_real_prompt() {
     // Not a test of what abandoning does — that needs Btrfs and is below — and
     // deliberately a weak one: `intento abandonar` alone answers `none_open`
-    // too, so what this pins is only that the three extra words are **not**
+    // too, so what this pins is only that the two extra words are **not**
     // refused as words this verb does not take. The test below is the one that
     // shows they are read at all, and the boundary that sits in front of them on
     // the agent's path is pinned in `external.rs`, which is a different layer
@@ -131,7 +131,8 @@ fn the_words_that_abandon_in_one_call_are_not_refused_at_a_real_prompt() {
     let answer = asked(
         root.path(),
         &work,
-        "intento abandonar snapshot=2026-08-29T11-04-02Z-rename delete=0 revert=3",
+        "intento abandonar snapshot=2026-08-29T11-04-02Z-rename \
+         state=w1-0f3cbe1100000000000000000000000000000000000000000000000000000000",
     );
 
     assert_eq!(answer["ok"], serde_json::json!(false));
@@ -143,26 +144,38 @@ fn the_words_that_abandon_in_one_call_are_not_refused_at_a_real_prompt() {
 }
 
 #[test]
-fn a_count_that_is_not_a_count_is_refused_at_a_real_prompt_too() {
-    // The discriminating half. This answer can only be reached by the parser
-    // having read `delete=`, so it is what says the words above arrive as words
-    // this verb understands rather than as noise it ignores — and it comes back
-    // before the attempt record is even looked at, which is why it is not
-    // `none_open`.
+fn the_retired_count_claim_is_refused_at_a_real_prompt_too() {
+    // The discriminating half, and now also the migration. This answer can only
+    // be reached by the parser having *read* `delete=`, so it is what says
+    // these words arrive as words this verb has an opinion about rather than as
+    // noise it ignores — and it comes back before the attempt record is even
+    // looked at, which is why it is not `none_open`.
     //
-    // It is also the rule itself: a count this cannot read is refused *as that*,
-    // never quietly dropped into "no claim was made". Dropped, it would answer
-    // with the cost object, and read to the caller as the tree having changed
+    // Ignoring them would be the dangerous reading: a caller still spelling the
+    // counts is a caller running against the rules of 2026-08-28, under which a
+    // third party's edit to a file the agent had already edited authorised
+    // itself. Dropped, its claim would silently become no claim, and the answer
+    // it got — the cost object — would read as the tree having changed
     // underneath it.
     let (root, work) = a_working_tree();
-    let answer = asked(root.path(), &work, "intento abandonar delete=lots revert=3");
-
-    assert_eq!(answer["ok"], serde_json::json!(false));
-    assert_eq!(
-        answer["error"],
-        serde_json::json!("bad_argument"),
-        "{answer}"
-    );
+    for retired in [
+        "intento abandonar delete=lots revert=3",
+        "intento abandonar snapshot=x delete=0 revert=3",
+    ] {
+        let answer = asked(root.path(), &work, retired);
+        assert_eq!(answer["ok"], serde_json::json!(false), "{answer}");
+        assert_eq!(
+            answer["error"],
+            serde_json::json!("bad_argument"),
+            "{answer}"
+        );
+        assert!(
+            answer["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("state=")),
+            "the refusal has to name what replaced it: {answer}"
+        );
+    }
 }
 
 #[test]

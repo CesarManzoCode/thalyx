@@ -1848,6 +1848,8 @@ def arm(out, name, expectations, marker=None, task="", provenance=None):
         except json.JSONDecodeError:
             row["thalyx"] = {"unreadable": str(metrics)}
 
+    row.update(work_between_inferences(row))
+
     # ── did the tree come back ──
     #
     # From the **manifests** and not from the digest files beside them,
@@ -1926,6 +1928,52 @@ def arm(out, name, expectations, marker=None, task="", provenance=None):
         row["reversible"] = reversible_verdict(row, bool(marker), bool(expectations))
 
     return row
+
+
+def work_between_inferences(row):
+    """How much deterministic machine work happened per model round trip.
+
+    `vault/09-Notas-Tecnicas/Trabajo-Entre-Inferencias.md`. Every other number
+    in this file counts what the *agent* did: turns, tool calls, tokens, cost.
+    None of them can see the quantity the current hypothesis is about, because
+    two runs of one tool call each look identical whether that call did one
+    thing or thirty — and doing thirty is the whole bet.
+
+    Read out of `thalyx-mcp --metrics`, which reads it out of the machine's own
+    answer. It exists for arm B and for no other arm, and that asymmetry is not
+    a thumb on the scale: arm A's Bash calls do many things too, and this cannot
+    see inside them. What it can honestly say is what Thalyx counted, which is
+    why the fields are named after Thalyx and not after "work".
+
+    Absent, never zero, when no program ran. "This run used no programs" and
+    "this run's programs did nothing" are different facts, and a summary that
+    printed 0 for the first would report the mechanism as having failed when it
+    was simply not reached.
+    """
+    programs = ((row.get("thalyx") or {}).get("programs")) or {}
+    if not isinstance(programs, dict) or not programs.get("run"):
+        return {}
+
+    ran = programs["run"]
+    operations = programs.get("machine_operations") or 0
+    out = {
+        "thalyx_programs": ran,
+        "thalyx_machine_operations": operations,
+        "thalyx_operations_per_program": round(operations / ran, 2),
+        "thalyx_programs_committed": programs.get("committed"),
+        "thalyx_programs_rolled_back": programs.get("rolled_back"),
+    }
+
+    # What the machine produced and did not send back, as a ratio to what it
+    # did send back. This is the compression claim, and it is the one number
+    # that says whether the small answers are small because there was nothing
+    # to say or because the rest stayed inside.
+    internal = programs.get("internal_bytes") or 0
+    returned = row.get("bytes_returned") or (row.get("thalyx") or {}).get("bytes_returned")
+    out["thalyx_internal_bytes"] = internal
+    if isinstance(returned, int) and returned > 0:
+        out["thalyx_internal_bytes_per_returned_byte"] = round(internal / returned, 2)
+    return out
 
 
 def forensics(path, marker=None):
@@ -2214,6 +2262,7 @@ def self_test():
         trouble += 1
 
     trouble += counting_self_test(sample)
+    trouble += between_inferences_self_test()
     trouble += manifest_self_test()
     trouble += verdict_self_test()
     trouble += anchoring_self_test(sample)
@@ -2222,6 +2271,57 @@ def self_test():
     print()
     print("  PROVEN" if not trouble else f"  {trouble} FAILED")
     return 1 if trouble else 0
+
+
+def between_inferences_self_test():
+    """That two runs of one call each do not look the same when one did thirty
+    things.
+
+    The quantity the current hypothesis is about, and the one every other number
+    in this file is blind to. If this ever passes with the two runs equal, the
+    summary has stopped being able to see the mechanism at all — which would be
+    worse than the mechanism not working, because nobody would know.
+    """
+    print()
+    print("  work between inferences")
+    trouble = 0
+
+    busy = work_between_inferences({
+        "bytes_returned": 1_000,
+        "thalyx": {"programs": {
+            "run": 2, "machine_operations": 60, "internal_bytes": 90_000,
+            "committed": 1, "rolled_back": 1,
+        }},
+    })
+    if busy.get("thalyx_operations_per_program") == 30.0:
+        print("  ok      a run whose programs did sixty things says so")
+    else:
+        print(f"  FAILED  the ratio is {busy!r}")
+        trouble += 1
+
+    if busy.get("thalyx_internal_bytes_per_returned_byte") == 90.0:
+        print("  ok      what stayed inside the machine is counted against what left it")
+    else:
+        print(f"  FAILED  the compression ratio is {busy!r}")
+        trouble += 1
+
+    # Absent and not zero. `0` would say the programs did nothing; nothing says
+    # no program ran, and the two are different facts about a run.
+    quiet = work_between_inferences({"thalyx": {"mutations": 3}})
+    if quiet == {}:
+        print("  ok      a run that used no programs reports no ratio rather than zero")
+    else:
+        print(f"  FAILED  a run with no programs reported {quiet!r}")
+        trouble += 1
+
+    # An arm with no adapter at all — arm A — must not acquire these fields.
+    if work_between_inferences({"arm": "A", "turns": 4}) == {}:
+        print("  ok      an arm with no Thalyx adapter is given no Thalyx numbers")
+    else:
+        print("  FAILED  arm A was given numbers only arm B's adapter can produce")
+        trouble += 1
+
+    return trouble
 
 
 def anchoring_self_test(sample):

@@ -36,24 +36,41 @@
 //! stamp the paragraph above says this is not.
 //!
 //! So there is a second way to say yes, and it is stronger rather than weaker —
-//! name the attempt by the snapshot `empezar` answered with, and state what
-//! abandoning it costs:
+//! name the attempt by the snapshot `empezar` answered with, and state **which
+//! state of the workspace** is being authorised for destruction:
 //!
 //! ```text
-//! intento abandonar snapshot=<snapshot> delete=<N> revert=<M>
+//! intento abandonar snapshot=<snapshot> state=<witness>
 //! ```
 //!
-//! It proceeds only if the attempt named is the one on record **and** both
-//! numbers are exactly what the tree holds at that moment. A caller that opened
-//! the attempt has both without asking: `empezar` answered with the snapshot,
-//! and every edit answered with how many files it changed. So the ordinary case
-//! is one call.
+//! It proceeds only if the attempt named is the one on record **and** the
+//! workspace is, at the instant of the destruction, exactly the state named. A
+//! caller that opened the attempt has both without asking: `empezar` answers
+//! with the snapshot and with the witness, and so does every answer that
+//! withholds consent. So the ordinary case is one call.
 //!
-//! What it cannot do is the one thing `si` can. A person who wrote a file while
-//! the attempt was open moves one of those numbers; the claim stops matching;
-//! the answer is the cost object and nothing is destroyed. A blind `si` would
-//! have taken their work. The two-step is untouched, so a caller that guessed
-//! wrong pays exactly what it always paid, and never more.
+//! ## Why it is a witness and not two counts, since 2026-08-29
+//!
+//! It was two counts — `delete=<N> revert=<M>` — for one day. The argument was
+//! that a person writing in the shared tree would move one of them, so a stale
+//! claim would stop matching and nothing would be destroyed.
+//!
+//! **The argument was wrong, and wrong in the direction that loses work.** A
+//! person who edits a file the agent had *already* edited moves neither number:
+//! one modified file before, one modified file after. The claim still matched,
+//! the abandon proceeded, and their edit went back to the snapshot. A count is
+//! a summary and a summary is not an identity, which is now written down in
+//! `vault/03-Primitivas/Identidad-de-Estado.md` and asserted in
+//! `thalyx-snapshot/tests/state_identity.rs` as the counterexample it came from.
+//!
+//! What replaces it is `thalyx_snapshot::Witness`: a digest over every path in
+//! the tree with its size, its modification time, its change time and its inode
+//! number. Any write to any file moves it. And it is checked **inside the
+//! lock**, immediately before the tree is replaced, because a check made
+//! outside one is a comparison with a moment after it.
+//!
+//! The two-step is untouched, so a caller that guessed wrong pays exactly what
+//! it always paid, and never more.
 //!
 //! ## Why the native backend and not the `btrfs` command
 //!
@@ -87,7 +104,7 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 const OP: &str = "attempt";
 
 /// Why a place cannot be attempted on.
-enum NotHere {
+pub enum NotHere {
     /// Where the session stands is not itself a subvolume.
     NotASubvolume,
     /// It is a subvolume, and it is the root of the running system.
@@ -136,6 +153,44 @@ fn subvolume_to_attempt<V: Volumes>(volumes: &V, here: &Path) -> Result<PathBuf,
     Ok(real)
 }
 
+impl NotHere {
+    /// The stable word the refusal carries.
+    pub fn word(&self) -> &'static str {
+        match self {
+            NotHere::NotASubvolume => "not_a_subvolume",
+            NotHere::TheWholeSystem => "the_whole_system",
+        }
+    }
+
+    /// What it says, in the words this verb has always said it in.
+    pub fn message(&self, here: &Path) -> String {
+        match self {
+            NotHere::NotASubvolume => format!(
+                "{} is not itself a Btrfs subvolume, so there is nothing to come back \
+                 to and nothing was started. A boundary is about the subvolume you are \
+                 standing in — it never looks upwards for one",
+                here.display()
+            ),
+            NotHere::TheWholeSystem => "a boundary on / would mean swapping the root of the \
+                 running system out from under every process on it, this one included. \
+                 Nothing was started"
+                .to_string(),
+        }
+    }
+}
+
+/// The subvolume a boundary opened here would be about, for a verb that is not
+/// this one.
+///
+/// `hacer` opens the same boundary `intento` does and must choose the same tree
+/// by the same rule — where the session stands, exactly, never an ancestor.
+/// Exported rather than reimplemented because the rule is the one this file's
+/// longest comment is about, and a second copy of it is a second chance to
+/// re-learn 2026-08-10 by taking a snapshot of somebody's root filesystem.
+pub fn subvolume_for(here: &Path) -> Result<PathBuf, NotHere> {
+    subvolume_to_attempt(&Native, here)
+}
+
 fn declined(face: Face, word: &str, why: &str) {
     if face == Face::Machine {
         face.say(thalyx_files::machine::declined(OP, word, why));
@@ -151,6 +206,29 @@ fn open_fields(open: &Open) -> Vec<(&'static str, serde_json::Value)> {
         ("snapshot", json!(open.snapshot)),
         ("subvolume", json!(open.subvolume.display().to_string())),
         ("since", json!(open.started_at)),
+    ]
+}
+
+/// The workspace's exact identity, as every answer that mentions one spells it.
+///
+/// One helper rather than the field written out at each site, because a caller
+/// that has to authorise a destruction with this string must find it spelled
+/// the same way everywhere it appears — and because the incomplete case has to
+/// be *visible*: a tree that could not be read everywhere has no exact identity,
+/// and an answer that carried a digest without saying so would invite a caller
+/// to authorise a destruction on the strength of a walk that had holes in it.
+fn state_fields(state: &thalyx_snapshot::Witness) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            "state",
+            if state.is_complete() {
+                json!(state.id)
+            } else {
+                json!(null)
+            },
+        ),
+        ("state_files", json!(state.files)),
+        ("state_unreadable", json!(state.unreadable)),
     ]
 }
 
@@ -189,11 +267,9 @@ struct Asked {
     /// goes back to — which is the field `empezar` answered with, spelled the
     /// same way, so that stating it is a copy and never a translation.
     snapshot: Option<String>,
-    /// How many files it expects to lose — made since the attempt began, so
-    /// there is no older version to go back to.
-    delete: Option<usize>,
-    /// And how many it expects to be put back to their older version.
-    revert: Option<usize>,
+    /// The exact state of the workspace it is authorising the destruction of,
+    /// spelled the way `thalyx_snapshot::Witness` spells one.
+    state: Option<String>,
     /// The bare `si` of the two-step protocol.
     said_yes: bool,
 }
@@ -205,12 +281,6 @@ struct Asked {
 /// caller believing it had stated the cost when it had not, and the answer it
 /// got — the cost object again — would look like the tree had changed under it.
 fn asked_of_abandon(given: &[crate::words::Word]) -> Result<Asked, String> {
-    fn count(key: &str, value: &str) -> Result<usize, String> {
-        value
-            .parse()
-            .map_err(|_| format!("`{key}=` takes how many, and was given `{value}`"))
-    }
-
     let mut asked = Asked::default();
     for word in given.iter().map(crate::words::Word::as_str) {
         let Some((key, value)) = word.split_once('=') else {
@@ -221,8 +291,22 @@ fn asked_of_abandon(given: &[crate::words::Word]) -> Result<Asked, String> {
             "snapshot" | "instantanea" if !value.is_empty() => {
                 asked.snapshot = Some(value.to_string());
             }
-            "delete" | "borrar" => asked.delete = Some(count(key, value)?),
-            "revert" | "revertir" => asked.revert = Some(count(key, value)?),
+            "state" | "estado" if !value.is_empty() => asked.state = Some(value.to_string()),
+            // Refused rather than ignored, and this is the retired protection
+            // saying so out loud. A caller still spelling the counts is a caller
+            // running against the rules of 2026-08-28, under which a third
+            // party's edit to a file the agent had already edited authorised
+            // itself. Dropping the word would leave it believing it had stated
+            // the cost; answering with the cost object would look like the tree
+            // had moved. So it is told which claim the machine now takes.
+            "delete" | "borrar" | "revert" | "revertir" => {
+                return Err(format!(
+                    "`{key}=` no longer authorises anything: how many files change is a \
+                     summary, and a summary cannot say *which* state is being destroyed. \
+                     Name the state instead — `state=` — which every answer of this verb \
+                     hands back ready to copy"
+                ));
+            }
             _ => {}
         }
     }
@@ -245,10 +329,10 @@ enum Consent {
 /// below be exercised in a container that has no Btrfs. `Estrategia-de-Pruebas`:
 /// policy that can only be run on Btrfs is policy that is never run.
 ///
-/// `removed_total` is deliberately not something the caller has to claim.
-/// Bringing a file back destroys nothing, and a number that has to be stated to
-/// authorise something harmless is a number that gets stated without being read.
-fn consent(asked: &Asked, open: &Open, difference: &thalyx_snapshot::Difference) -> Consent {
+/// What the caller has to claim is **the state**, not what the state costs.
+/// Bringing a file back destroys nothing and how many files change is a
+/// summary, and neither is an identity — see the header.
+fn consent(asked: &Asked, open: &Open, state: &thalyx_snapshot::Witness) -> Consent {
     // First, and before `si` is looked at. A caller that named an attempt and
     // named the wrong one believes it is settling something else, and letting a
     // yes carry through would be honouring a word said about a different tree.
@@ -260,14 +344,11 @@ fn consent(asked: &Asked, open: &Open, difference: &thalyx_snapshot::Difference)
         return Consent::NotThisAttempt;
     }
 
-    // Rule 9, on the one path where nobody is asked twice: a claim cannot be
-    // checked against a difference that has holes in it, so a tree that could
-    // not be compared everywhere always goes the long way round.
-    if difference.unreadable.is_empty()
-        && asked.snapshot.is_some()
-        && asked.delete == Some(difference.added_total)
-        && asked.revert == Some(difference.modified_total)
-    {
+    // `matches` is false for an incomplete witness, whatever it is compared
+    // against — which is rule 9 on the one path where nobody is asked twice: a
+    // tree that could not be read everywhere has no exact identity, so it
+    // always goes the long way round.
+    if asked.snapshot.is_some() && asked.state.as_deref().is_some_and(|c| state.matches(c)) {
         return Consent::Given;
     }
 
@@ -281,15 +362,21 @@ fn consent(asked: &Asked, open: &Open, difference: &thalyx_snapshot::Difference)
 /// The line that abandons this attempt in one call, built from what is true now.
 ///
 /// Handed back by the answer that withholds consent, so a caller never has to
-/// assemble it. That is not a weakening: the line **is** the cost, so whoever
-/// repeats it has necessarily carried both numbers — and if somebody writes in
-/// the tree in between, the line it was given stops matching and the abandon
+/// assemble it. That is not a weakening: the line **names the state**, so if
+/// anybody writes in the tree in between — including in a file the caller had
+/// already written in — the line it was given stops matching and the abandon
 /// stops. A `si` copied from an answer has no such property.
-fn one_call_to_abandon(open: &Open, difference: &thalyx_snapshot::Difference) -> String {
-    format!(
-        "intento abandonar snapshot={} delete={} revert={}",
-        open.snapshot, difference.added_total, difference.modified_total
-    )
+///
+/// `None` when the tree could not be read everywhere: there is no exact
+/// identity to hand out, and handing out an inexact one would be inviting a
+/// caller to authorise a destruction on a walk that had holes in it.
+fn one_call_to_abandon(open: &Open, state: &thalyx_snapshot::Witness) -> Option<String> {
+    state.is_complete().then(|| {
+        format!(
+            "intento abandonar snapshot={} state={}",
+            open.snapshot, state.id
+        )
+    })
 }
 
 /// `intento [empezar <etiqueta> | confirmar | abandonar [si]]`.
@@ -359,6 +446,11 @@ fn status(store: &Store, face: Face) -> Fallible {
         match &cost {
             Ok((_, plan)) => {
                 carried.push(("can_be_abandoned", json!(true)));
+                carried.push((
+                    "abandon_in_one_call",
+                    json!(one_call_to_abandon(&open, &plan.state)),
+                ));
+                carried.extend(state_fields(&plan.state));
                 carried.extend(cost_fields(&plan.difference));
             }
             // An attempt that can no longer be abandoned is still an open
@@ -434,6 +526,13 @@ fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str)
             if face == Face::Machine {
                 let mut carried = vec![("open", json!(true)), ("began", json!(true))];
                 carried.extend(open_fields(&open));
+                // What the workspace is, at the instant the boundary closed
+                // around it. Not there to be stored and reused later — by the
+                // time a caller has changed anything it is stale, which is the
+                // whole point — but so that a caller which changes *nothing*
+                // can still undo in one call, and so that the shape of the
+                // field is the same in every answer this verb gives.
+                carried.extend(state_fields(&thalyx_snapshot::witness(&open.subvolume)));
                 // The two ways out, in the answer that opened it. A caller that
                 // has to look up how to settle what it just started is one that
                 // will leave attempts open.
@@ -535,7 +634,7 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
         }
     };
 
-    match consent(&asked, &open, &plan.difference) {
+    match consent(&asked, &open, &plan.state) {
         Consent::Given => {}
         // Named rather than turned into the cost object, because it is not a
         // decision about a cost: it is a caller that believes it is settling
@@ -568,10 +667,11 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
                     // that saying yes costs one call and never an assembled guess.
                     (
                         "confirm_with",
-                        json!(one_call_to_abandon(&open, &plan.difference)),
+                        json!(one_call_to_abandon(&open, &plan.state)),
                     ),
                 ];
                 carried.extend(open_fields(&open));
+                carried.extend(state_fields(&plan.state));
                 carried.extend(cost_fields(&plan.difference));
                 face.say(thalyx_files::machine::answer(OP, carried));
                 return Ok(());
@@ -617,7 +717,15 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
         }
     }
 
-    match attempt::abandon(store, &snapshots, &open, &plan, request_id) {
+    // The plan's own witness is never what authorises this. It was taken
+    // outside the lock; what the caller stated is what it is held to, and a
+    // human's yes is held to nothing but the tree in front of them.
+    let authorised = match asked.state.as_deref() {
+        Some(claimed) => attempt::Authorised::ByState(claimed),
+        None => attempt::Authorised::ByAHuman,
+    };
+
+    match attempt::abandon(store, &snapshots, &open, &plan, authorised, request_id) {
         Ok(restored) => {
             if face == Face::Machine {
                 let mut carried = vec![
@@ -653,6 +761,17 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
                 thalyx_core::CoreError::Attempt(thalyx_core::attempt::AttemptError::NoneOpen) => {
                     "none_open"
                 }
+                // Its own word, and the most important one this verb has. A
+                // caller told `unreadable` would go looking for a corrupt file;
+                // what actually happened is that somebody wrote in the shared
+                // tree and **nothing was destroyed**, which is a fact the caller
+                // has to be able to act on rather than guess at.
+                thalyx_core::CoreError::Attempt(
+                    thalyx_core::attempt::AttemptError::WorkspaceMoved { .. },
+                ) => "workspace_moved",
+                thalyx_core::CoreError::Attempt(
+                    thalyx_core::attempt::AttemptError::WorkspaceUnreadable { .. },
+                ) => "workspace_unreadable",
                 _ => "unreadable",
             };
             declined(face, word, &error.to_string());
@@ -753,12 +872,27 @@ mod tests {
         }
     }
 
-    /// What the tree holds after an agent has edited three files and made none.
-    fn edited_three() -> thalyx_snapshot::Difference {
-        thalyx_snapshot::Difference {
-            modified: vec!["a.rs".into(), "b.rs".into(), "c.rs".into()],
-            modified_total: 3,
-            ..Default::default()
+    /// The workspace exactly as it stands, in the shape a caller has to name it.
+    ///
+    /// A literal and not a walk of a real tree, because what is under test here
+    /// is the *decision* and not the digest — the digest has its own tests, in
+    /// `thalyx-snapshot/tests/state_identity.rs`, over trees somebody really
+    /// wrote in. `Estrategia-de-Pruebas`: policy that can only be exercised
+    /// against a filesystem is policy that is never exercised.
+    fn as_it_stands() -> thalyx_snapshot::Witness {
+        thalyx_snapshot::Witness {
+            id: "w1-1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            files: 12,
+            unreadable: 0,
+        }
+    }
+
+    /// The same tree after somebody else wrote one byte in it.
+    fn after_somebody_else_wrote() -> thalyx_snapshot::Witness {
+        thalyx_snapshot::Witness {
+            id: "w1-2222222222222222222222222222222222222222222222222222222222222222".to_string(),
+            files: 12,
+            unreadable: 0,
         }
     }
 
@@ -768,18 +902,21 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_that_names_the_attempt_and_its_cost_abandons_in_one_call() {
+    fn an_agent_that_names_the_attempt_and_the_state_abandons_in_one_call() {
         // The whole point, and the round trip it removes. Three real benchmark
         // runs went `abandonar` then `abandonar si` back to back, with no call
         // in between — so the second was the same agent echoing itself, and this
         // is the shape that says the same thing once and says more.
         let open = on_record();
-        let cost = edited_three();
+        let state = as_it_stands();
         assert_eq!(
             consent(
-                &asked("snapshot=2026-08-29T11-04-02Z-rename delete=0 revert=3"),
+                &asked(&format!(
+                    "snapshot=2026-08-29T11-04-02Z-rename state={}",
+                    state.id
+                )),
                 &open,
-                &cost
+                &state
             ),
             Consent::Given
         );
@@ -792,46 +929,51 @@ mod tests {
         // and nothing else in this file would notice: the field is a string and
         // the parser is somewhere else.
         let open = on_record();
-        let cost = edited_three();
-        let handed_back = one_call_to_abandon(&open, &cost);
+        let state = as_it_stands();
+        let handed_back = one_call_to_abandon(&open, &state).expect("a complete tree has a line");
         assert_eq!(
-            consent(&asked(&handed_back), &open, &cost),
+            consent(&asked(&handed_back), &open, &state),
             Consent::Given,
             "the answer hands back `{handed_back}`, which does not abandon"
         );
     }
 
     #[test]
-    fn work_that_appeared_between_the_plan_and_the_yes_stops_the_abandon() {
-        // The property the old protocol never had. A person wrote one file in
-        // the shared tree while the attempt was open; the claim the agent copied
-        // out of the previous answer no longer describes what is there, so
-        // nothing is destroyed and the cost is shown again. A blind `si` would
-        // have taken their file.
+    fn any_write_between_the_plan_and_the_yes_stops_the_abandon() {
+        // The property the count-based protocol never had, and the reason it
+        // was replaced the day after it was written. Somebody wrote in the
+        // shared tree while the attempt was open; the claim the agent copied out
+        // of the previous answer no longer describes what is there, so nothing
+        // is destroyed and the cost is shown again.
         let open = on_record();
-        let stale = asked(&one_call_to_abandon(&open, &edited_three()));
-
-        let mut now = edited_three();
-        now.added = vec!["notes.md".into()];
-        now.added_total = 1;
-
-        assert_eq!(consent(&stale, &open, &now), Consent::ShowTheCost);
+        let stale = asked(&one_call_to_abandon(&open, &as_it_stands()).expect("a line"));
+        assert_eq!(
+            consent(&stale, &open, &after_somebody_else_wrote()),
+            Consent::ShowTheCost
+        );
     }
 
     #[test]
-    fn an_edit_by_somebody_else_stops_it_too_even_though_nothing_would_be_deleted() {
-        // The other half of the same danger, and the reason two numbers are
-        // claimed rather than one. A person who edited a file that was already
-        // there loses that edit to an abandon just as surely, and `would_delete`
-        // stays at zero the whole time.
+    fn an_edit_to_a_file_the_agent_had_already_edited_stops_it_too() {
+        // **The counterexample that retired the counts.** Under the old rule
+        // this case was indistinguishable from no write at all: one modified
+        // file before, one modified file after, both numbers unchanged, consent
+        // given, the person's edit gone. Nothing about the *shape* of a witness
+        // makes this case special, which is exactly why it is now covered — the
+        // decision no longer depends on which kind of write happened.
         let open = on_record();
-        let stale = asked(&one_call_to_abandon(&open, &edited_three()));
+        let stale = asked(&one_call_to_abandon(&open, &as_it_stands()).expect("a line"));
 
-        let mut now = edited_three();
-        now.modified.push("theirs.rs".into());
-        now.modified_total = 4;
-
-        assert_eq!(consent(&stale, &open, &now), Consent::ShowTheCost);
+        // Same file count, same everything a count could see, different tree.
+        let same_files_different_bytes = thalyx_snapshot::Witness {
+            id: "w1-3333333333333333333333333333333333333333333333333333333333333333".to_string(),
+            files: as_it_stands().files,
+            unreadable: 0,
+        };
+        assert_eq!(
+            consent(&stale, &open, &same_files_different_bytes),
+            Consent::ShowTheCost
+        );
     }
 
     #[test]
@@ -843,29 +985,28 @@ mod tests {
         let open = on_record();
         assert_eq!(
             consent(
-                &asked("snapshot=2026-08-29T09-00-00Z-something-else delete=0 revert=3 si"),
+                &asked("snapshot=2026-08-29T09-00-00Z-something-else state=w1-abc si"),
                 &open,
-                &edited_three()
+                &as_it_stands()
             ),
             Consent::NotThisAttempt
         );
     }
 
     #[test]
-    fn a_claim_that_states_only_half_the_cost_gets_the_cost_instead() {
+    fn a_claim_that_states_only_half_of_it_gets_the_cost_instead() {
         // Each of these is a caller that has not said what it accepts. None of
         // them destroys anything, and each costs exactly what the old protocol
         // cost: one more call.
         let open = on_record();
+        let state = as_it_stands();
         for half in [
-            "snapshot=2026-08-29T11-04-02Z-rename delete=0",
-            "snapshot=2026-08-29T11-04-02Z-rename revert=3",
-            "snapshot=2026-08-29T11-04-02Z-rename",
-            "delete=0 revert=3",
-            "",
+            "snapshot=2026-08-29T11-04-02Z-rename".to_string(),
+            format!("state={}", state.id),
+            String::new(),
         ] {
             assert_eq!(
-                consent(&asked(half), &open, &edited_three()),
+                consent(&asked(&half), &open, &state),
                 Consent::ShowTheCost,
                 "`intento abandonar {half}` went ahead"
             );
@@ -873,21 +1014,31 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_that_could_not_be_compared_everywhere_is_never_waved_through() {
-        // Rule 9, on the one path where nobody is asked twice. A claim cannot be
-        // checked against a difference with holes in it, so a tree that could not
-        // be read everywhere always goes the long way round — even when both
-        // numbers the caller stated are right about the part that could.
+    fn a_tree_that_could_not_be_read_everywhere_is_never_waved_through() {
+        // Rule 9 and rule 10, on the one path where nobody is asked twice. A
+        // directory that could not be opened is not a directory that is empty,
+        // so a tree with a hole in it has no exact identity — and a caller that
+        // states the digest of the part that could be read is stating something
+        // that is not an identity of anything.
         let open = on_record();
-        let mut holed = edited_three();
-        holed.unreadable = vec!["locked.bin".into()];
+        let holed = thalyx_snapshot::Witness {
+            unreadable: 1,
+            ..as_it_stands()
+        };
         assert_eq!(
             consent(
-                &asked("snapshot=2026-08-29T11-04-02Z-rename delete=0 revert=3"),
+                &asked(&format!(
+                    "snapshot=2026-08-29T11-04-02Z-rename state={}",
+                    holed.id
+                )),
                 &open,
                 &holed
             ),
             Consent::ShowTheCost
+        );
+        assert!(
+            one_call_to_abandon(&open, &holed).is_none(),
+            "a tree nobody finished reading must not be handed a one-call line"
         );
     }
 
@@ -898,12 +1049,12 @@ mod tests {
         // caller written before today.
         let open = on_record();
         assert_eq!(
-            consent(&asked(""), &open, &edited_three()),
+            consent(&asked(""), &open, &as_it_stands()),
             Consent::ShowTheCost
         );
         for yes in ["si", "sí", "yes", "y"] {
             assert_eq!(
-                consent(&asked(yes), &open, &edited_three()),
+                consent(&asked(yes), &open, &as_it_stands()),
                 Consent::Given,
                 "`intento abandonar {yes}` stopped working"
             );
@@ -911,14 +1062,22 @@ mod tests {
     }
 
     #[test]
-    fn a_count_that_is_not_a_count_is_refused_rather_than_dropped() {
-        // Dropped, it would leave a caller believing it had stated the cost when
-        // it had not — and the answer it got back, the cost object again, would
-        // read as the tree having changed under it.
-        for wrong in ["delete=none revert=3", "snapshot=x delete=0 revert=three"] {
+    fn the_retired_count_claim_is_refused_rather_than_ignored() {
+        // A caller still spelling `delete=`/`revert=` is running against the
+        // rules of 2026-08-28, under which a third party's edit to a file the
+        // agent had already edited authorised itself. Ignoring the words would
+        // leave it believing it had stated the cost when it had not, and the
+        // answer it got — the cost object again — would read as the tree having
+        // changed under it. So it is told, in the words of the verb.
+        for retired in [
+            "delete=0 revert=3",
+            "snapshot=2026-08-29T11-04-02Z-rename delete=0 revert=3",
+        ] {
+            let refusal = asked_of_abandon(&crate::words::words(retired).unwrap())
+                .expect_err("the retired claim must not be readable as a claim");
             assert!(
-                asked_of_abandon(&crate::words::words(wrong).unwrap()).is_err(),
-                "`{wrong}` was read as a claim"
+                refusal.contains("state="),
+                "the refusal has to name what replaced it: {refusal}"
             );
         }
     }

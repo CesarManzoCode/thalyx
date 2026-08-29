@@ -16,6 +16,7 @@ mod dev;
 mod edit;
 mod enforce;
 mod engine_module;
+mod exec;
 mod external;
 mod files;
 mod foreign;

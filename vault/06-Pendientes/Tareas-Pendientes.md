@@ -15,6 +15,20 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
+- [ ] **Decisión de Cesar: si `program` con ruta arbitraria se queda en la
+      superficie del agente externo.** Añadido el 2026-08-29 con
+      [[Ejecucion-Transaccional]]. Una comprobación de `hacer` puede ser
+      `{"check":"program","program":"/ruta/absoluta"}`, y eso corre confinado
+      exactamente como `ejecutar` —usuario propio, cgroup propio, raíz pivoteada,
+      filtro seccomp, y sólo los permisos que Thalyx arma: el espacio de trabajo
+      y nada más—. Se construyó porque él lo pidió en esta sesión, para que el
+      mecanismo sirva fuera de Rust. Aun así **es la primera vez que un agente
+      externo puede causar que arranque un proceso**, y [[Agentes-Externos]] dice
+      que agregar un renglón a esa lista es una decisión que pertenece al vault
+      antes que al código. Las opciones son: dejarlo; quitarlo y dejar sólo
+      `rust`, donde Thalyx elige el programa; o dejarlo detrás de una bandera de
+      la sesión. Nada de esto bloquea el banco.
+
 > **Encuadre de Cesar, 2026-08-08.** Lo que quedó suelto de la Fase 1 **no
 > pertenece a ninguna fase**, porque nada de ello bloquea nada. Sus palabras:
 > *«no quedó nada de la fase 1, esas cosas que quedaron no pertenecen a ninguna
@@ -651,7 +665,7 @@ con el que se mide, en [[Evidencia-de-Agentes]].
 - [ ] **Sistema de reputación resistente a Sybil** — pospuesto deliberadamente. Ver [[Sistema-Reputacion-Sybil]].
 - [ ] **Dependencias entre módulos y resolver con backtracking** — pospuesto hasta que exista un módulo real que las necesite. Ver [[Resolucion-de-Versiones]].
 - [ ] **Decidir el ABI de los módulos: nativo de Linux o independiente de POSIX.** [[Filosofia-Fundacional]] dice que los módulos no hablan POSIX ni libc; hoy son binarios de Linux enlazados dinámicamente, con `/usr`, `/lib` y `/etc` montados de sólo lectura y unas ciento veinte llamadas al sistema permitidas. La distinción que sí se sostiene está escrita en [[Sistema-de-Modulos]] — la API es la única superficie *mediada*. Hacer verdadera la frase entera significa módulos estáticos sin libc, un rootfs sin `/usr`, un filtro mucho más chico, o un objetivo distinto como WASM. **Es barato ahora, con un módulo, y caro con un ecosistema encima**, así que decidirlo antes de escribir más módulos.
-- [ ] **Decidir si `confirm: true` a ciegas sigue existiendo en el canal del agente.** Desde el 2026-08-29 hay una forma más fuerte de abandonar en una sola llamada: nombrar el intento y declarar lo que cuesta (`snapshot=`, `delete=`, `revert=`), que se niega justamente cuando alguien más escribió en el árbol compartido. La forma vieja —`si` / `confirm: true`, que **nunca comprobó nada** y siempre pasó derecho en una sola llamada— se dejó intacta a propósito: quitarla del canal del agente haría obligatorio el camino fuerte, y eso es un decreto de [[Camino-Confiable]] y no una decisión de implementación. Quitarla no cuesta ninguna ronda —las dos formas cuestan una llamada— así que lo único que está en juego es si la máquina **obliga** a ver el costo o sólo lo enseña. La forma humana en la terminal no se toca en ninguno de los dos casos. Ver [[Evidencia-de-Agentes]].
+- [ ] **Decidir si `confirm: true` a ciegas sigue existiendo en el canal del agente.** Desde el 2026-08-29 hay una forma más fuerte de abandonar en una sola llamada: nombrar el intento y **el estado exacto del árbol** (`snapshot=`, `state=`), que se niega justamente cuando alguien más escribió en el árbol compartido — cualquier escritura, incluida una sobre un archivo que el agente ya había editado, que es el caso que los conteos de ese mismo día no veían ([[Identidad-de-Estado]]). La brecha entre las dos formas es por eso más grande que cuando esto se escribió. La forma vieja —`si` / `confirm: true`, que **nunca comprobó nada** y siempre pasó derecho en una sola llamada— se dejó intacta a propósito: quitarla del canal del agente haría obligatorio el camino fuerte, y eso es un decreto de [[Camino-Confiable]] y no una decisión de implementación. Quitarla no cuesta ninguna ronda —las dos formas cuestan una llamada— así que lo único que está en juego es si la máquina **obliga** a ver el costo o sólo lo enseña. La forma humana en la terminal no se toca en ninguno de los dos casos. Ver [[Evidencia-de-Agentes]].
 - [ ] **Condiciones para habilitar llamadas a modelos remotos** — las reglas ya están escritas; falta decidir cuándo se activan. Ver [[Agente-Conversacional]].
 
 ## Resueltos el 2026-08-01

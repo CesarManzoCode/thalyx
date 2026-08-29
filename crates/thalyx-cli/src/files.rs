@@ -141,6 +141,20 @@ impl Where {
         self.confined_to = Some(to);
     }
 
+    /// The workspace this session may not leave, if it has one.
+    ///
+    /// Read by `hacer`, which runs several requests inside one and has to check
+    /// each of them against the same boundary a single request is checked
+    /// against. Handing back the path rather than the [`Confinement`] is
+    /// deliberate: the descriptor is the containment and it stays here, and
+    /// what a caller needs is only *which* workspace the argument check is
+    /// about.
+    pub fn confined_to(&self) -> Option<&Path> {
+        self.confined_to
+            .as_deref()
+            .map(crate::confine::Confinement::root)
+    }
+
     /// A path this session may open, held open by the kernel while it is used.
     ///
     /// **This is the containment check, and it is the open.** For an unconfined

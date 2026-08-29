@@ -74,6 +74,26 @@ pub struct Metrics {
     /// `edit show` returns numbered lines. Rule 9 — the flattering direction
     /// is the one this must never be wrong in.
     mutations: u64,
+    /// ── the ratio this whole direction is a bet on ──────────────────────
+    ///
+    /// `vault/09-Notas-Tecnicas/Trabajo-Entre-Inferencias.md`. Every number
+    /// above counts what the *agent* did. These count what the **machine** did
+    /// between two of those, which is the quantity the hypothesis is about: a
+    /// transaction that performs thirty operations for one round trip is the
+    /// win, and no total of calls can show it — a run that got more done per
+    /// call looks, in `mcp_calls` alone, exactly like a run that did less.
+    ///
+    /// Read out of the machine's own answer rather than inferred here. That is
+    /// measurement and not interpretation: nothing is decided by it, it changes
+    /// no request, and the alternative — this process counting the steps it
+    /// sent — would count what was *asked for* rather than what happened, and
+    /// would keep counting after a program stopped at its second step.
+    programs_run: u64,
+    machine_operations: u64,
+    /// Bytes the machine produced inside a program and did not send back.
+    internal_bytes: u64,
+    programs_committed: u64,
+    programs_rolled_back: u64,
 }
 
 /// Whether an `abandon` call is the one that actually undoes something.
@@ -88,7 +108,7 @@ fn consented(arguments: &Value) -> bool {
     if arguments.get("confirm").and_then(Value::as_bool) == Some(true) {
         return true;
     }
-    ["snapshot", "delete", "revert"]
+    ["snapshot", "state"]
         .iter()
         .all(|named| arguments.get(named).is_some())
 }
@@ -113,6 +133,29 @@ impl Metrics {
             machine_requests: 0,
             machine_seconds: 0.0,
             mutations: 0,
+            programs_run: 0,
+            machine_operations: 0,
+            internal_bytes: 0,
+            programs_committed: 0,
+            programs_rolled_back: 0,
+        }
+    }
+
+    /// What one `thalyx_exec` answer said the machine did.
+    ///
+    /// Every field is read defensively and a missing one adds nothing: an
+    /// answer from an older machine must leave these at what they were rather
+    /// than at zero, because a counter that reset on a version skew would
+    /// report the very thing this measures as having stopped happening.
+    pub fn program(&mut self, answer: &Value) {
+        let number = |name: &str| answer.get(name).and_then(Value::as_u64).unwrap_or(0);
+        self.programs_run += 1;
+        self.machine_operations += number("machine_operations");
+        self.internal_bytes += number("internal_bytes");
+        match answer.get("status").and_then(Value::as_str) {
+            Some("committed") => self.programs_committed += 1,
+            Some("rolled_back") => self.programs_rolled_back += 1,
+            _ => {}
         }
     }
 
@@ -199,6 +242,22 @@ impl Metrics {
                 "abandoned": self.attempts_abandoned,
             },
             "mutations": self.mutations,
+            "programs": {
+                "run": self.programs_run,
+                "committed": self.programs_committed,
+                "rolled_back": self.programs_rolled_back,
+                "machine_operations": self.machine_operations,
+                "internal_bytes": self.internal_bytes,
+                // The ratio, worked out here so that nobody reading a summary
+                // has to. `null` when no program ran, never zero: "this run
+                // used no programs" and "this run's programs did nothing" are
+                // different facts and must not share a number.
+                "operations_per_request": if self.programs_run == 0 {
+                    Value::Null
+                } else {
+                    json!(self.machine_operations as f64 / self.programs_run as f64)
+                },
+            },
             // Said out loud rather than left absent, so that a run whose summary
             // has no token count is a run where nobody could count them and not
             // one where somebody forgot to look.
@@ -236,10 +295,18 @@ fn changes_the_workspace(tool: &str, arguments: &Value) -> bool {
         // An abandon puts the workspace back, which is a change to it — and it
         // is the change the `reversible` task is about. The unconfirmed first
         // call is a question and is counted nowhere.
+        //
+        // `consented` and not `confirm` alone: the one-call form carries no
+        // `confirm`, and reading only that word would have quietly stopped
+        // counting the abandons of every agent that moved to the newer shape.
         "thalyx_attempt" => {
             arguments.get("action").and_then(Value::as_str) == Some("abandon")
-                && arguments.get("confirm").and_then(Value::as_bool) == Some(true)
+                && consented(arguments)
         }
+        // A program that ran at all touched the workspace or put it back —
+        // both are changes to it, and both are the thing being measured. What
+        // it did in detail is `programs`, above.
+        "thalyx_exec" => true,
         _ => false,
     }
 }
@@ -357,6 +424,77 @@ mod tests {
             false,
         );
         assert_eq!(metrics.object()["attempts"]["abandoned"], json!(1));
+    }
+
+    #[test]
+    fn one_call_that_did_thirty_things_does_not_look_like_one_that_did_one() {
+        // **The measurement this session exists to make possible.** Both runs
+        // below are one MCP call. Counting calls, they are identical; counting
+        // what the machine did between two inferences, one of them did thirty
+        // times as much — and that difference is the entire hypothesis.
+        let mut busy = Metrics::new(None);
+        busy.call("thalyx_exec", &json!({"steps": []}), 400, false, false);
+        busy.program(&json!({
+            "status": "committed", "machine_operations": 30, "internal_bytes": 90_000
+        }));
+
+        let mut plain = Metrics::new(None);
+        plain.call("thalyx_edit", &json!({"path": "a.rs"}), 400, false, false);
+
+        assert_eq!(busy.object()["mcp_calls"], plain.object()["mcp_calls"]);
+        assert_eq!(
+            busy.object()["programs"]["operations_per_request"],
+            json!(30.0)
+        );
+        // `null` and never zero: no program ran, which is a different fact from
+        // a program that did nothing.
+        assert_eq!(
+            plain.object()["programs"]["operations_per_request"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn an_answer_from_a_machine_that_does_not_carry_the_numbers_leaves_them_alone() {
+        // A version skew must not read as the thing being measured having
+        // stopped happening.
+        let mut metrics = Metrics::new(None);
+        metrics.program(&json!({"status": "committed", "machine_operations": 12}));
+        metrics.program(&json!({"status": "committed"}));
+        assert_eq!(
+            metrics.object()["programs"]["machine_operations"],
+            json!(12)
+        );
+        assert_eq!(metrics.object()["programs"]["run"], json!(2));
+    }
+
+    #[test]
+    fn a_rollback_and_a_commit_are_counted_apart() {
+        let mut metrics = Metrics::new(None);
+        metrics.program(&json!({"status": "committed"}));
+        metrics.program(&json!({"status": "rolled_back"}));
+        metrics.program(&json!({"status": "kept_after_failure"}));
+        assert_eq!(metrics.object()["programs"]["committed"], json!(1));
+        assert_eq!(metrics.object()["programs"]["rolled_back"], json!(1));
+    }
+
+    #[test]
+    fn the_one_call_abandon_is_counted_as_an_abandon_and_as_a_mutation() {
+        // The instrument is part of what a change can break — rule 5. When the
+        // one-call form changed from two counts to a state witness, a counter
+        // still looking for `delete` and `revert` would have reported zero
+        // abandons for every agent using it, and the run would have read as an
+        // agent that never undid anything.
+        let mut metrics = Metrics::new(None);
+        metrics.call(
+            "thalyx_attempt",
+            &json!({"action": "abandon", "snapshot": "s", "state": "w1-abc"}),
+            10,
+            false,
+            false,
+        );
+        assert_eq!(metrics.object()["attempts"]["abandoned"], json!(1));
+        assert_eq!(metrics.object()["mutations"], json!(1));
     }
 
     #[test]

@@ -118,6 +118,27 @@ pub enum AttemptError {
          the one on record now is `{0}`"
     )]
     Superseded(String),
+
+    /// The workspace is not in the state the caller authorised destroying.
+    ///
+    /// The whole of what makes a rollback in one call safe. A caller states
+    /// which state it believes the tree is in; if anything at all has been
+    /// written since — by a person, by another agent, by a build — the state it
+    /// named is no longer the state that would be destroyed, and this is the
+    /// refusal rather than the destruction.
+    #[error(
+        "the workspace has been written to since this rollback was authorised: \
+         it was `{expected}` and it is `{found}` now. Nothing was changed"
+    )]
+    WorkspaceMoved { expected: String, found: String },
+
+    /// The tree could not be read everywhere, so no exact claim about it can be
+    /// checked. Rule 9: the cautious answer, never the fast one.
+    #[error(
+        "{unreadable} path(s) under the workspace could not be read, so what a \
+         rollback would destroy cannot be established exactly. Nothing was changed"
+    )]
+    WorkspaceUnreadable { unreadable: usize },
 }
 
 /// Where the open attempt is written down.
@@ -292,6 +313,30 @@ pub fn what_abandoning_costs<V: Volumes>(
     Ok((attempt, plan))
 }
 
+/// How a caller earned the right to have a tree replaced.
+///
+/// Two shapes and not a boolean, because the two are authorised by different
+/// things and the difference is the whole of what was wrong with the design
+/// this replaced.
+///
+/// [`Authorised::ByAHuman`] is `Camino-Confiable`: somebody was shown what
+/// would be lost and said yes. What they saw was the tree in front of them, and
+/// their answer covers whatever it holds when they give it — a person cannot
+/// state a digest and should never be asked to.
+///
+/// [`Authorised::ByState`] is a program saying the same thing in the only way a
+/// program can mean it: **this exact state, and no other.** It is stronger than
+/// the human's yes and not weaker, which is why it is allowed to be one call
+/// where the human's is two.
+#[derive(Debug, Clone, Copy)]
+pub enum Authorised<'a> {
+    /// Somebody was asked and answered. The tree is replaced as it stands.
+    ByAHuman,
+    /// A caller named the state it is authorising the destruction of. Checked
+    /// against the tree under the lock, and refused if anything has moved.
+    ByState(&'a str),
+}
+
 /// Put the tree back and close the attempt.
 ///
 /// **The caller must already have asked.** Like [`crate::restore::apply`], and
@@ -303,6 +348,7 @@ pub fn abandon<V: Volumes>(
     snapshots: &Snapshots<V>,
     attempt: &Open,
     plan: &crate::restore::Plan,
+    authorised: Authorised<'_>,
     request_id: &str,
 ) -> Result<Restored> {
     // One transition: check the record, restore, clear the record. The plan and
@@ -324,6 +370,32 @@ pub fn abandon<V: Volumes>(
             )));
         }
         Some(_) => {}
+    }
+
+    // And the tree itself, re-read **here**, inside the lock, immediately
+    // before it is replaced.
+    //
+    // Not against the plan's witness, which was taken outside the lock and is
+    // therefore a statement about a moment that has already passed. What is
+    // compared is the state the *caller* authorised destroying against the
+    // state the tree is in at the instant of destruction, with nothing able to
+    // run in between — which is the only place that comparison means anything.
+    // A check made before taking the lock would be the same shape of defect as
+    // the `canonicalize`-then-open sequence `crate::api` was rewritten to stop
+    // using: a comparison and an action with a moment between them.
+    if let Authorised::ByState(claimed) = authorised {
+        let now = thalyx_snapshot::witness(&attempt.subvolume);
+        if !now.is_complete() {
+            return Err(CoreError::Attempt(AttemptError::WorkspaceUnreadable {
+                unreadable: now.unreadable,
+            }));
+        }
+        if !now.matches(claimed) {
+            return Err(CoreError::Attempt(AttemptError::WorkspaceMoved {
+                expected: claimed.to_string(),
+                found: now.id,
+            }));
+        }
     }
 
     let restored =
@@ -385,6 +457,148 @@ mod tests {
 
     fn snapshots_of(tree: &Path) -> Snapshots<Directories> {
         Snapshots::of(Directories, tree)
+    }
+
+    /// Write, and be sure the write is visible to a timestamp comparison.
+    ///
+    /// The wait is the honest part. A filesystem's timestamp granularity is
+    /// coarser than two writes in a row from the same program, so a test that
+    /// wrote twice without waiting would be measuring the clock rather than the
+    /// witness — and would fail intermittently, which is the worst way for a
+    /// test to be wrong.
+    fn write_later(path: &Path, text: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(path, text).expect("the write");
+    }
+
+    #[test]
+    fn a_rollback_that_names_the_state_the_tree_is_in_goes_ahead_in_one_call() {
+        // The positive control, and without it the test below cannot be read: a
+        // rule that refused every rollback would pass the negative one and
+        // break the feature entirely.
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+        let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+
+        write_later(&tree.join("before.txt"), "what the agent wrote");
+
+        let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+        abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByState(&plan.state.id),
+            "r2",
+        )
+        .expect("the tree was exactly what the caller said it was");
+
+        assert_eq!(
+            std::fs::read_to_string(tree.join("before.txt")).unwrap(),
+            "one",
+            "the rollback did not happen"
+        );
+        assert!(open(&store).unwrap().is_none(), "the attempt is still open");
+    }
+
+    #[test]
+    fn a_write_to_a_file_the_agent_had_already_written_stops_the_rollback() {
+        // **The defect this mechanism was built for**, end to end. The counts
+        // are identical before and after the third party's write — one modified
+        // file either way — so the protection that preceded this one let the
+        // rollback through and replaced their work with the snapshot.
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+        let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+
+        write_later(&tree.join("before.txt"), "what the agent wrote");
+        let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+        let state_the_agent_saw = plan.state.id.clone();
+
+        // Somebody else, in the same file, while the attempt is open.
+        write_later(&tree.join("before.txt"), "what the person wrote");
+
+        let refused = abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByState(&state_the_agent_saw),
+            "r2",
+        );
+
+        assert!(
+            matches!(
+                refused,
+                Err(CoreError::Attempt(AttemptError::WorkspaceMoved { .. }))
+            ),
+            "a stale state authorised a destruction: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join("before.txt")).unwrap(),
+            "what the person wrote",
+            "the third party's work was destroyed"
+        );
+        // And the attempt is still open, because an abandon that did not happen
+        // must not be recorded as one — rule 4 of this module.
+        assert!(open(&store).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_counts_alone_would_not_have_noticed_that_write() {
+        // The other half of the test above, and the reason it is a defect
+        // rather than a preference. If this ever fails, the counterexample has
+        // changed and the whole argument for a witness needs re-reading.
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+        begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+
+        write_later(&tree.join("before.txt"), "what the agent wrote");
+        let (_, agents) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+
+        write_later(&tree.join("before.txt"), "what the person wrote");
+        let (_, after) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+
+        assert_eq!(
+            (
+                agents.difference.added_total,
+                agents.difference.modified_total
+            ),
+            (
+                after.difference.added_total,
+                after.difference.modified_total
+            ),
+            "the counts moved, so this is no longer the case that fooled them"
+        );
+        assert_ne!(agents.state.id, after.state.id);
+    }
+
+    #[test]
+    fn a_human_who_said_yes_is_not_asked_for_a_digest() {
+        // `Camino-Confiable`: a person was shown what would be lost and
+        // answered about the tree in front of them. Requiring them to state a
+        // digest would be requiring something no person can produce, and the
+        // two-step path is the escape hatch every caller written before today
+        // still uses.
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+        let attempt = begin(&store, &snapshots, "rename", "r1").expect("an attempt");
+        write_later(&tree.join("before.txt"), "changed");
+
+        let (_, plan) = what_abandoning_costs(&store, &snapshots).expect("a plan");
+        abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByAHuman,
+            "r2",
+        )
+        .expect("a human's yes still settles an attempt");
+        assert_eq!(
+            std::fs::read_to_string(tree.join("before.txt")).unwrap(),
+            "one"
+        );
     }
 
     /// Two clients arriving at the same moment, on one real store.
@@ -479,7 +693,15 @@ mod tests {
         assert_eq!(first, opened);
         assert_eq!(second, opened);
 
-        abandon(&store, &snapshots, &first, &first_plan, "r2").unwrap();
+        abandon(
+            &store,
+            &snapshots,
+            &first,
+            &first_plan,
+            Authorised::ByAHuman,
+            "r2",
+        )
+        .unwrap();
         assert!(
             !tree.join("after.txt").exists(),
             "the first abandon did nothing"
@@ -488,7 +710,14 @@ mod tests {
         // Somebody starts working again in the returned tree.
         std::fs::write(tree.join("after.txt"), "written after the abandon").unwrap();
 
-        let twice = abandon(&store, &snapshots, &second, &second_plan, "r3");
+        let twice = abandon(
+            &store,
+            &snapshots,
+            &second,
+            &second_plan,
+            Authorised::ByAHuman,
+            "r3",
+        );
         assert!(
             matches!(twice, Err(CoreError::Attempt(AttemptError::NoneOpen))),
             "a second abandon of a settled attempt was carried out: {twice:?}"
@@ -516,7 +745,14 @@ mod tests {
         begin(&store, &snapshots, "two", "r3").unwrap();
         std::fs::write(tree.join("during the second.txt"), "work").unwrap();
 
-        let wrong = abandon(&store, &snapshots, &stale, &stale_plan, "r4");
+        let wrong = abandon(
+            &store,
+            &snapshots,
+            &stale,
+            &stale_plan,
+            Authorised::ByAHuman,
+            "r4",
+        );
         assert!(
             matches!(wrong, Err(CoreError::Attempt(AttemptError::Superseded(ref label))) if label == "two"),
             "a stale plan reached the attempt that came after it: {wrong:?}"
@@ -650,7 +886,15 @@ mod tests {
         std::fs::write(tree.join("new.txt"), "made during the attempt").unwrap();
 
         let (attempt, plan) = what_abandoning_costs(&store, &snapshots).unwrap();
-        abandon(&store, &snapshots, &attempt, &plan, "r1").unwrap();
+        abandon(
+            &store,
+            &snapshots,
+            &attempt,
+            &plan,
+            Authorised::ByAHuman,
+            "r1",
+        )
+        .unwrap();
 
         // The whole sentence of the decree, checked on the disk rather than in
         // the report: *intenta esto y si sale mal deshazlo*.

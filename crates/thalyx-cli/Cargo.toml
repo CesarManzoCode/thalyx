@@ -25,6 +25,7 @@ thalyx-bridge.workspace = true
 uuid.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
+thalyx-parser.workspace = true
 thalyx-memory.workspace = true
 thalyx-watch.workspace = true
 thalyx-snapshot.workspace = true

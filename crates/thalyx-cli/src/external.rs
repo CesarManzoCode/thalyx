@@ -309,6 +309,36 @@ pub const EXPOSED: &[Exposed] = &[
         repeating: MORE_TEXT,
         verbatim_from: QUOTED,
     },
+    // ── several requests as one transaction, which is the point ───────────
+    //
+    // Its one argument is a **program**: a JSON object holding the requests it
+    // wants run. That is checked as `Text` here and then, request by request,
+    // by `crate::external::one` — the same function, the same table, the same
+    // workspace — so composing does not widen anything. What a program can
+    // reach is exactly the union of what its steps could have reached one at a
+    // time, and `exec::Program::read` refuses a step naming `exec` or
+    // `attempt` before a snapshot is taken.
+    Exposed {
+        verb: "exec",
+        slots: &[Slot::Text],
+        repeating: NOTHING_MORE,
+        verbatim_from: QUOTED,
+    },
+    // The other half of the compression: what a program produced and did not
+    // send back. Read-only, and its argument is a handle this machine issued —
+    // never a path, and `exec::is_a_handle` refuses anything that is not the
+    // shape of one before it is joined onto a directory.
+    Exposed {
+        verb: "evidence",
+        slots: &[Slot::Text],
+        // `Text` and not `Option`, even though what follows is `paso=N`. The
+        // option slot's list of known names belongs to the window flags, and
+        // adding a word to it would make `ls paso=3` a call this boundary
+        // waves through and `ls` silently ignores. `evidence` refuses every
+        // word it does not know, which is the check in the place that knows.
+        repeating: MORE_TEXT,
+        verbatim_from: QUOTED,
+    },
     // ── what a verb would do, without doing any of it ─────────────────────
     //
     // `ensayo` takes a verb and that verb's arguments, so its guarding is the
@@ -466,40 +496,80 @@ impl ExternalAgentSession {
         verb: &str,
         arguments: &[String],
     ) -> Result<serde_json::Value, Refusal> {
-        let (shape, entry) = exposed(verb).ok_or_else(|| {
-            Refusal::new(
-                "not_exposed",
-                "ask_describe",
-                format!(
-                    "`{verb}` is not one of the verbs this session may reach. \
-                     The list is in the hello message and in `describe`"
-                ),
-            )
-        })?;
+        let workspace = self.real_workspace.clone();
+        one(store, &mut self.here, Some(&workspace), verb, arguments)
+    }
 
-        check(shape, arguments, &self.here, &self.real_workspace)?;
-        let line = compose(shape, entry, arguments);
+    /// Whether the session is still standing where it was confined.
+    ///
+    /// Belt over braces, and it has a reason: the check above guards arguments,
+    /// and this checks the *outcome*. A verb that moved the session out of the
+    /// workspace by some route nobody thought of would be caught here on the
+    /// next request rather than never.
+    pub fn still_confined(&self) -> bool {
+        std::fs::canonicalize(self.here.at())
+            .map(|real| real.starts_with(&self.real_workspace))
+            .unwrap_or(false)
+    }
+}
 
-        // Machine face, always. A structured caller asking for prose would be
-        // asking for a second version of events, which is the thing the
-        // two-faces decree exists to prevent.
-        let mut face = Face::Machine;
-        let store_here = &mut self.here;
-        let (outcome, said) = crate::files::caught(|| {
-            crate::session::dispatch_external(store, store_here, &mut face, &line)
-        });
+/// Run one request: check its arguments, compose its line, dispatch it, and
+/// hand back the object the verb itself produced.
+///
+/// **The one door.** It was a method of [`ExternalAgentSession`] until `hacer`
+/// needed to run several requests inside one, and lifting it out is what keeps
+/// that from being a second door: a composed program is not a new authority, it
+/// is the same requests through the same check, one after another. A `hacer`
+/// that reached past this — dispatching a line it had composed itself, say —
+/// would be the parallel API `Agentes-Externos.md` forbids, and the boundary
+/// would hold for a single request and not for a batch of them.
+///
+/// `boundary` is the workspace an external caller may not leave, and `None` is
+/// the person's own session, which has none. It is not an argument a caller
+/// supplies: it comes from the session, and this is the only shape in which
+/// "who is asking" reaches the check.
+pub fn one(
+    store: &Store,
+    here: &mut Where,
+    boundary: Option<&Path>,
+    verb: &str,
+    arguments: &[String],
+) -> Result<serde_json::Value, Refusal> {
+    let (shape, entry) = exposed(verb).ok_or_else(|| {
+        Refusal::new(
+            "not_exposed",
+            "ask_describe",
+            format!(
+                "`{verb}` is not one of the verbs this session may reach. \
+                 The list is in the hello message and in `describe`"
+            ),
+        )
+    })?;
 
-        if let Err(error) = outcome {
-            return Err(Refusal::new(
-                "failed",
-                "read_the_message",
-                error.to_string(),
-            ));
-        }
+    if let Some(workspace) = boundary {
+        check(shape, arguments, here, workspace)?;
+    }
+    let line = compose(shape, entry, arguments);
 
-        // Exactly one object. The framing contract of `thalyx_files::machine`
-        // is one line in, one object out, and a verb that broke it would hand a
-        // caller half an answer with no way to tell.
+    // Machine face, always. A structured caller asking for prose would be
+    // asking for a second version of events, which is the thing the
+    // two-faces decree exists to prevent.
+    let mut face = Face::Machine;
+    let (outcome, said) =
+        crate::files::caught(|| crate::session::dispatch_external(store, here, &mut face, &line));
+
+    if let Err(error) = outcome {
+        return Err(Refusal::new(
+            "failed",
+            "read_the_message",
+            error.to_string(),
+        ));
+    }
+
+    // Exactly one object. The framing contract of `thalyx_files::machine`
+    // is one line in, one object out, and a verb that broke it would hand a
+    // caller half an answer with no way to tell.
+    {
         match said.len() {
             1 => serde_json::from_str(&said[0]).map_err(|error| {
                 Refusal::new(
@@ -525,18 +595,6 @@ impl ExternalAgentSession {
                 ),
             )),
         }
-    }
-
-    /// Whether the session is still standing where it was confined.
-    ///
-    /// Belt over braces, and it has a reason: the check above guards arguments,
-    /// and this checks the *outcome*. A verb that moved the session out of the
-    /// workspace by some route nobody thought of would be caught here on the
-    /// next request rather than never.
-    pub fn still_confined(&self) -> bool {
-        std::fs::canonicalize(self.here.at())
-            .map(|real| real.starts_with(&self.real_workspace))
-            .unwrap_or(false)
     }
 }
 
@@ -1068,6 +1126,12 @@ mod tests {
                 "move",
                 "remove",
                 "edit",
+                // A program of the above, inside a boundary. It reaches nothing
+                // the rest of this set does not: every step goes through the
+                // same `one`, against the same workspace, and a step naming a
+                // verb that is not on this list is refused exactly as a lone
+                // request naming it would be.
+                "exec",
                 // The one whose whole purpose is that the others can be undone.
                 "attempt",
             ]),

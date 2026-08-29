@@ -135,6 +135,14 @@ impl Confinement {
         Ok(Arc::new(Self { root, real }))
     }
 
+    /// The workspace's own path, with every link already resolved.
+    ///
+    /// Never the thing containment is decided by — that is the descriptor — and
+    /// only ever the answer to "which workspace is this session's".
+    pub fn root(&self) -> &Path {
+        &self.real
+    }
+
     /// Resolve an absolute path inside the workspace, and hold it open.
     pub fn anchor(&self, path: &Path) -> Result<Anchored, NotAnchored> {
         let relative = self.relative(path)?;

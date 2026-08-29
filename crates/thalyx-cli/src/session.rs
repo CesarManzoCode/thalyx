@@ -1448,6 +1448,9 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `intento empezar <etiqueta>` opens something that can be");
             println!("  taken back whole — `intento abandonar` puts the tree back");
             println!("  as it was, `intento confirmar` keeps it.");
+            println!("  `hacer <programa>` does several of these at once inside one");
+            println!("  boundary, checks what came out and keeps it or undoes all of");
+            println!("  it; `evidencia <id>` has everything it did not say.");
             println!("  `cambios` says what the kernel has seen change and who");
             println!("  did it — reading it empties the queue, so it is not a");
             println!("  history. `estado` re-reads the");
@@ -1464,6 +1467,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
+            println!("  `hacer <programa>`, `evidencia <id>`,");
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
             println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
@@ -2131,6 +2135,20 @@ fn dispatch_asking(
             crate::history::show(store, "", face)?;
         }
         // D2: begin something, and be able to take all of it back.
+        _ if starts_any(line, &["hacer ", "do "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::exec::run(store, here, rest, face, &crate::new_request_id())?;
+        }
+        "hacer" | "do" => {
+            crate::exec::run(store, here, "", face, &crate::new_request_id())?;
+        }
+        _ if starts_any(line, &["evidencia ", "evidence "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::exec::evidence(store, rest, face)?;
+        }
+        "evidencia" | "evidence" => {
+            crate::exec::evidence(store, "", face)?;
+        }
         _ if starts_any(line, &["intento ", "attempt "]) => {
             let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
             crate::attempt::run(store, here, rest, face, &crate::new_request_id())?;

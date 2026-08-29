@@ -441,8 +441,8 @@ pub const VERBS: &[Verb] = &[
         id: "attempt",
         names: &["intento", "attempt"],
         takes: &["empezar <label> | confirmar | \
-             abandonar [si | snapshot=<name> delete=<N> revert=<N>]"],
-        flags: &["si", "yes", "snapshot=", "delete=", "revert="],
+             abandonar [si | snapshot=<name> state=<witness>]"],
+        flags: &["si", "yes", "snapshot=", "state="],
         answers: Some("attempt"),
         // The one verb whose whole purpose is that what it wraps can be
         // undone — and it changes the machine itself: a snapshot is taken,
@@ -455,11 +455,50 @@ pub const VERBS: &[Verb] = &[
             "none_open",
             "snapshot_gone",
             "not_this_attempt",
+            "workspace_moved",
+            "workspace_unreadable",
             "bad_argument",
             "unreadable",
             "unknown_argument",
         ],
         summary: "Open something that can be taken back whole, then keep it or undo all of it.",
+    },
+    Verb {
+        id: "exec",
+        names: &["hacer", "do"],
+        takes: &["program"],
+        flags: &[],
+        answers: Some("exec"),
+        // It opens a boundary, writes, validates and either keeps or undoes.
+        // The most consequential verb on the machine, and the only one whose
+        // consequence is *several* other verbs'.
+        changes: true,
+        errors: &[
+            "nothing_asked",
+            "unintelligible",
+            "not_a_subvolume",
+            "the_whole_system",
+            "already_open",
+        ],
+        summary: "Run several requests inside one reversible boundary, check the result, \
+                  and keep it or undo all of it — in one call.",
+    },
+    Verb {
+        id: "evidence",
+        names: &["evidencia", "evidence"],
+        takes: &["id"],
+        flags: &["paso=N", "step=N"],
+        answers: Some("evidence"),
+        changes: false,
+        errors: &[
+            "nothing_asked",
+            "not_a_handle",
+            "absent",
+            "unreadable",
+            "incomplete",
+        ],
+        summary: "Everything a `hacer` produced and did not send back: every answer, \
+                  every check, every line a program printed.",
     },
     Verb {
         id: "changes",
@@ -839,7 +878,28 @@ mod tests {
             .map(|op| op.name())
             .collect();
 
-        let unaskable: Vec<&&str> = ops.difference(&proposable).collect();
+        // The two verbs a sentence cannot become, named here so that a third
+        // one has to be added deliberately.
+        //
+        // Every other verb takes a *name a sentence contains* — a file, a
+        // module, a pattern — which is exactly what the local model is for:
+        // turning «borra el archivo viejo» into `rm`. `hacer` takes a program,
+        // several requests deep, and `evidencia` takes a handle this machine
+        // issued minutes ago and no person has seen. Neither is a thing anybody
+        // says out loud, and putting them in the grammar would spend a tiny
+        // model's tokens teaching it to emit JSON it cannot get right — which
+        // `Gamas-de-Modelo.md` records as the failure mode that reads as
+        // stupidity and is not.
+        //
+        // They are reachable in every other way: typed at the prompt, in the
+        // banner, in `describe`, and on the external agent's list — which is
+        // whose verbs they are.
+        const NOT_A_SENTENCE: [&str; 2] = ["exec", "evidence"];
+
+        let unaskable: Vec<&&str> = ops
+            .difference(&proposable)
+            .filter(|op| !NOT_A_SENTENCE.contains(&**op))
+            .collect();
         assert_eq!(
             unaskable,
             Vec::<&&str>::new(),
@@ -924,6 +984,10 @@ mod tests {
             BTreeSet::from([
                 "make_directory",
                 "make_file",
+                // Several of the others inside one boundary, which is more
+                // consequential than any of them and is why it is here rather
+                // than being read as "it only calls things that already say so".
+                "exec",
                 "copy",
                 "move",
                 "remove",

@@ -30,7 +30,7 @@
 use crate::store::Store;
 use crate::{CoreError, Result};
 use thalyx_journal::{Entry, Journal, Origin, Outcome};
-use thalyx_snapshot::{Difference, Restored, Snapshots, Volumes, difference};
+use thalyx_snapshot::{Difference, Restored, Snapshots, Volumes};
 
 /// What a restore would do, worked out before anything is asked.
 #[derive(Debug, Clone)]
@@ -39,6 +39,13 @@ pub struct Plan {
     pub subvolume: std::path::PathBuf,
     /// What the live tree has that the snapshot does not, and the reverse.
     pub difference: Difference,
+    /// Exactly which state of the live tree this plan was made against.
+    ///
+    /// Carried in the plan rather than taken separately, because a plan and a
+    /// witness of two different instants are worse than no witness at all: they
+    /// look like a checked pair and are not one. See
+    /// `thalyx_snapshot::difference_and_witness`.
+    pub state: thalyx_snapshot::Witness,
 }
 
 impl Plan {
@@ -93,10 +100,13 @@ impl Plan {
 /// tree in front of the human rather than about restores in general.
 pub fn plan<V: Volumes>(snapshots: &Snapshots<V>, name: &str) -> Result<Plan> {
     let snapshot = snapshots.find(name)?;
+    let (difference, state) =
+        thalyx_snapshot::difference_and_witness(snapshots.subvolume(), &snapshot.path);
     Ok(Plan {
         snapshot: snapshot.name,
         subvolume: snapshots.subvolume().to_path_buf(),
-        difference: difference(snapshots.subvolume(), &snapshot.path),
+        difference,
+        state,
     })
 }
 
@@ -333,6 +343,7 @@ mod tests {
             snapshot: "never-taken".to_string(),
             subvolume: snapshots.subvolume().to_path_buf(),
             difference: Difference::default(),
+            state: thalyx_snapshot::witness(snapshots.subvolume()),
         };
 
         assert!(apply(&store, &snapshots, &plan, "req-1").is_err());

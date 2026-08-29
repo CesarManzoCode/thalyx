@@ -979,6 +979,7 @@ dependencies = [
  "thalyx-manifest",
  "thalyx-memory",
  "thalyx-net",
+ "thalyx-parser",
  "thalyx-permd",
  "thalyx-proc",
  "thalyx-sandbox",
@@ -1182,6 +1183,8 @@ dependencies = [
 name = "thalyx-snapshot"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "sha2",
  "tempfile",
  "thalyx-syscall",
  "thiserror",

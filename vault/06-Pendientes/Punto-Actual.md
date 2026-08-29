@@ -14,9 +14,106 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Una llamada, muchas operaciones: el runtime transaccional — 2026-08-29
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Dos cosas, y la primera es un defecto sobre el que la segunda no se podía
+> construir.
+>
+> ### 1. Contar archivos no es decir cuál árbol
+>
+> El abandono en una llamada del 2026-08-28 se autorizaba con una declaración
+> sobre los **conteos** — `delete=<N> revert=<M>` —. El argumento era que si una
+> persona escribe en el árbol compartido, uno de los dos números se mueve.
+>
+> **No se mueve.** Alguien que edita un archivo que el agente *ya* había editado
+> no mueve ninguno: un archivo modificado antes, un archivo modificado después.
+> La declaración seguía coincidiendo y la edición de esa persona volvía al
+> snapshot.
+>
+> Lo reemplaza `thalyx_snapshot::Witness`: un digest sobre cada ruta del árbol
+> con su tamaño, su mtime, su ctime y su inodo, tomado con el mismo recorrido con
+> el que se planea el restore. Cualquier escritura lo mueve. La declaración ahora
+> es `state=<witness>` y se comprueba **dentro del candado**, en el instante
+> anterior a reemplazar el árbol — una comprobación afuera del candado es una
+> comparación con un momento que ya pasó. `delete=`/`revert=` se rechazan
+> nombrando lo que los reemplazó, no se ignoran. Todo en
+> [[Identidad-de-Estado]].
+>
+> El contraejemplo está escrito dos veces como aserción, con su control positivo
+> al lado: en `thalyx-snapshot/tests/state_identity.rs` y, de punta a punta sobre
+> un árbol real, en `thalyx_core::attempt`.
+>
+> ### 2. `hacer`: varias peticiones como una transacción
+>
+> [[Ejecucion-Transaccional]], y la hipótesis que lo pide está en
+> [[Trabajo-Entre-Inferencias]]. El verbo toma un **programa** —varias
+> peticiones, qué tiene que ser cierto al final, y qué hacer si no lo es—, abre
+> la frontera reversible, las corre en orden, observa lo que de verdad cambió,
+> valida, y confirma o devuelve el árbol. Todo antes de contestar.
+>
+> - **No es un shell** y no arranca uno: lo que se compone son las peticiones
+>   propias de Thalyx.
+> - **No es una segunda autoridad**: cada paso pasa por `external::one`, la misma
+>   función y la misma tabla que una petición suelta. Probado con una ruta fuera
+>   del espacio de trabajo y con cuatro verbos que no están expuestos.
+> - **No es una etiqueta**: la frontera es un snapshot, el rollback es un restore
+>   y lo autoriza el testigo de arriba.
+> - **No es validación que siempre pasa**: `text`, `parses`, `rust` y `program`
+>   establecen algo o contestan `not_proven`, y `not_proven` nunca es `passed` —
+>   una comprobación que no se pudo correr devuelve el trabajo.
+>
+> La respuesta es chica a propósito; todo lo crudo queda en el store —fuera del
+> espacio de trabajo, porque el rollback reemplaza el espacio de trabajo— y se
+> pide con `evidencia <id> [paso=N]`.
+>
+> Salió también un verbo nuevo del parser: `unbalanced`, que dice si una edición
+> mecánica se comió una llave. Lo encontró el propio archivo del parser: la
+> primera versión estaba hecha sobre `scrub`, que ante un `'` suelto blanquea el
+> resto del renglón —porque en Rust eso es un lifetime— y se comía la llave de
+> `pub fn name(self) -> &'static str {`. La prueba es cada `.rs` de este
+> repositorio, noventa mil renglones que nadie escribió para ella.
+>
+> ### Lo que está probado aquí, sin gastar API
+>
+> En el fixture, en este contenedor: **una petición externa, diez operaciones
+> adentro de la máquina**, escrito como igualdad exacta y no como piso. Rollback
+> automático con el árbol byte por byte. Estado obsoleto que falla cerrado, con
+> control positivo y negativo. Compresión: la respuesta mide menos de un cuarto
+> de lo que la máquina produjo adentro.
+>
+> ### Lo que falta comprobar, y es de Cesar
+>
+> Btrfs. Aquí la frontera se ejercita contra el falso de directorios, y `rust`/
+> `program` no corren donde el kernel no deniega.
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Las etapas nuevas son la **55** —un rollback autorizado contra un árbol en el
+> que alguien más escribió, que debe rechazarse y no destruir nada, con los
+> conteos impresos al lado para mostrar que no se movieron— y la **56** —una
+> llamada que cambia cuatro cosas y confirma, y la misma forma con una
+> comprobación que falla devolviendo un subvolumen real byte por byte—.
+>
+> ### Lo que NO se puede decir todavía
+>
+> Que esto sea más barato, más rápido, o que reduzca los pasos de inferencia de
+> un agente real. Eso lo contesta el siguiente banco controlado. Lo único
+> afirmable hoy es estructural, y el instrumento para medirlo ya existe:
+> `thalyx-mcp --metrics` escribe `programs.operations_per_request` y
+> `dev/bench-summary.py` lo reporta.
+
 > ## Menos rondas por tarea reversible: el intento se abre con la mutación y se abandona en una llamada — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> **Corregido al día siguiente**, y hay que leerlo sabiéndolo: el abandono en una
+> llamada sigue existiendo, y **los dos conteos que este bloque describe se
+> retiraron** — no alcanzaban para decir qué árbol se está destruyendo. Ver el
+> bloque de arriba y [[Identidad-de-Estado]].
 >
 > Salió de las tres corridas reales del banco reversible —#4, #5 y #6, escritas
 > enteras en [[Evidencia-de-Agentes]]—. `sustituir-lote` quedó comprobado: **1

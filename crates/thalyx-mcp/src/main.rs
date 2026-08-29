@@ -349,8 +349,12 @@ fn instructions(machine: &Machine, offered: &[&'static tools::Tool]) -> String {
          and there are no others: {}. Load them in one lookup — every one begins with \
          `thalyx_`. Thalyx answers with structured objects that carry an exact remedy \
          when they refuse — read the `remedy` field rather than guessing. Prefer \
-         thalyx_symbol and thalyx_dependencies over reading or searching files, and open \
-         the reversible boundary in the same call as your first change by passing \
+         thalyx_symbol and thalyx_dependencies over reading or searching files. When \
+         the next several operations are ones you already know you want — a change and \
+         the search that proves it landed, a change and the build that checks it — put \
+         them in one thalyx_exec: it runs them inside a reversible boundary, checks the \
+         result, and keeps the work or undoes all of it without asking you again. For a \
+         single change on its own, open the boundary in the same call by passing \
          `attempt: begin` to thalyx_edit or thalyx_file.",
         greeting.workspace,
         names.join(", ")
@@ -428,6 +432,13 @@ fn call(
     };
     let text = answer.to_string();
     metrics.call(tool.name, &arguments, text.len(), false, false);
+    // The one place this process reads a *value* out of an answer, and it
+    // decides nothing: how much work the machine did between two model
+    // inferences is the quantity this experiment exists to measure, and it is
+    // only knowable from inside the machine. See `metrics::Metrics::program`.
+    if tool.name == "thalyx_exec" {
+        metrics.program(&answer);
+    }
     Ok(json!({"content": [{"type": "text", "text": text}]}))
 }
 

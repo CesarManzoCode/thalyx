@@ -138,6 +138,29 @@ the tree exactly as it was while `intento confirmar` keeps it. Both faces are
 shown what abandoning would cost — which files would be *deleted* rather than
 reverted — before anything moves.
 
+A program can say yes in one call instead of two, by naming the attempt and the
+**exact state of the tree** it is authorising the destruction of. That state is a
+digest over every path with its size, its modification time, its change time and
+its inode; any write by anybody, including a write to a file the caller had
+already changed, makes the claim stale and the rollback is refused rather than
+done. It is checked inside the lock, immediately before the tree is replaced. A
+person is never asked for a digest — they are shown the cost and answer about the
+tree in front of them.
+
+**Several operations can be one transaction.** `hacer <program>` takes a list of
+requests, what must be true when they are done, and what to do if it is not. It
+opens the boundary, runs them in order, observes what really changed, runs the
+checks, and commits or rolls the whole thing back — before it answers. Every step
+goes through the same argument check and the same workspace boundary a single
+request goes through, so composing reaches nothing a caller could not have
+reached one call at a time. A check that could not be run counts as a failure and
+never as a pass. The answer is small on purpose; everything the machine produced
+and did not send back is kept in the store and fetched with `evidencia <id>`.
+
+What that is for is written as a hypothesis rather than a result:
+`vault/09-Notas-Tecnicas/Trabajo-Entre-Inferencias.md`. Whether it makes an agent
+cheaper or faster is not measured, and this page will not say it is until it is.
+
 **The machine says what it did, and what the kernel saw.** `historia` reads the
 journal from inside a session, newest first, saying in a field that it covers
 what Thalyx did and not everything that happened. `cambios` drains the BPF ring

@@ -399,6 +399,18 @@ fn every_verb_the_session_offers_answers_with_exactly_one_object() {
             "move" => vec!["scratch.txt", "moved.txt"],
             "remove" => vec!["doomed.txt"],
             "rehearse" => vec!["rm", "moved.txt"],
+            // A whole program as one argument. Here it can only reach
+            // `not_a_subvolume` — this container has no Btrfs — and that is
+            // still the thing this test is about: one line in, exactly one
+            // object out, through the real bridge.
+            "exec" => vec![r#"{"steps":[{"verb":"list","arguments":["."]}]}"#],
+            // With `paso=`, on purpose: it is the second half of the
+            // compression — the answer is small and this is how the detail is
+            // fetched — and it is the argument the boundary decides about. An
+            // earlier shape guarded it as a window flag and the boundary
+            // refused the word, so the only caller this verb exists for could
+            // not reach it while it worked perfectly at a prompt.
+            "evidence" => vec!["t-0", "paso=1"],
             other => panic!("`{other}` is offered and this test does not know how to call it"),
         };
         let answer = wire.ask(verb, &arguments);
