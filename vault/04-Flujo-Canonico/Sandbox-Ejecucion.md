@@ -192,6 +192,8 @@ Primero se retira la política, después se borra el cgroup.
 
 Y no se desmonta nada mientras quede alguien adentro: **un cgroup por módulo, no por proceso**, porque la política es propiedad del módulo. Quitarla cuando termina la primera instancia le arrancaría a la segunda, a mitad de vuelo, permisos que el humano sí confirmó.
 
+«Alguien adentro» son **dos preguntas distintas** desde el 2026-08-29 —¿queda otra corrida sosteniendo este cgroup? ¿queda un proceso adentro?— y la primera no se puede contestar mirando el cgroup. Ver la revisión de esa fecha.
+
 ### Por qué implementación propia
 
 Se evaluó apoyarse en bubblewrap, que ya resuelve este montaje y está auditado por su uso en Flatpak. Se decretó implementación propia: Thalyx es un sistema operativo, no una distribución que integra piezas ajenas, y el aislamiento es una pieza de arquitectura, no una dependencia delegada. El costo asumido conscientemente es tiempo de iteración y la necesidad de revisión externa sobre el montaje de user namespaces, donde los errores no se manifiestan como fallos sino como agujeros silenciosos.
@@ -199,6 +201,94 @@ Se evaluó apoyarse en bubblewrap, que ya resuelve este montaje y está auditado
 Esa exposición se compensa con los tests de nivel 2 de la [[Estrategia-de-Pruebas]].
 
 ## Revisiones
+
+### 2026-08-29 — «Mientras quede alguien adentro» no se podía contestar mirando
+
+La regla de desmontaje decía lo correcto —no se retira la política mientras
+quede otra instancia adentro— y lo comprobaba preguntándole al kernel si el
+cgroup estaba vacío. Esa pregunta no se puede contestar mirando.
+
+`Held::spawn` vuelve en cuanto existe el proceso auxiliar, y el auxiliar se une
+al cgroup varios pasos después, cuando ya desprendió sus namespaces. O sea: una
+corrida que **ya estableció su confinamiento y ya arrancó su módulo** es
+invisible adentro del cgroup durante una ventana. El entrelazado:
+
+```
+B  establece: el cgroup existe, la política está en el kernel
+A  desmonta:  is_empty() es cierto, porque el hijo de B todavía no se unió
+B  spawn:     el hijo se une al cgroup
+A  revoca:    la política de ese id de cgroup se retira
+B  …corre, en un cgroup del que el LSM no tiene entrada
+```
+
+Y **el LSM falla abierto para un cgroup sin entrada** —tiene que hacerlo, o
+todo proceso de la máquina quedaría negado para todo—, así que el módulo de B
+corre sin confinar, amparado por una confirmación que el humano dio para una
+corrida confinada, y nada en ninguna parte lo dice.
+
+**El arreglo es contar en vez de mirar.** Adentro de la imagen hay un solo
+Thalyx y los módulos son sus hijos, así que dos corridas concurrentes son dos
+llamadores en **un proceso**: un contador de confinamientos vivos por cgroup es
+exacto donde `is_empty()` adivina, y es exacto desde que `establish` devuelve y
+no desde que a un hijo lo planifican.
+
+La comprobación de vacío se queda, y se queda como un **y**: un contador que
+llegó a cero mientras el cgroup todavía tiene un proceso es un módulo que
+sobrevivió a su confinamiento, y quitarle la política sería la misma falla por
+otra ruta. Y el orden entre las dos importa —primero el vacío, después el
+contador— porque una reclamación entregada mientras el cgroup sigue ocupado
+deja un módulo vivo sin dueño.
+
+No es un candado y no serializa nada; es un refcount, y lo que protege es la
+decisión de revocar. Se descartó el cgroup por corrida: cambiaría lo que
+significa el techo de memoria —hoy es del módulo, pasaría a ser de cada
+corrida, y N corridas tendrían N techos— y eso es una decisión de Cesar, no una
+consecuencia de arreglar una carrera.
+
+Dos tests en `lib.rs` para la decisión, uno de ellos por la falla que el
+contador podría introducir (una reclamación que no se devuelve deja un cgroup y
+una política que no se van nunca), y **uno contra un cgroup real** en
+`tests/real_cgroup.rs`, con un proceso vivo adentro, que es el estado que un
+fake no puede sostener. Ese corre bajo `THALYX_REQUIRE_CGROUP_TESTS=1`, que
+`verify.sh` ya exige.
+
+### 2026-08-25 — `sched_setattr` queda denegada: una capacidad con dos puertas y un filtro que sólo ve una
+**Antes:** el filtro aprendió el 2026-08-24 a mirar el argumento de
+`sched_setscheduler`, y con eso el decreto se daba por cumplido: un módulo
+acomoda sus propios hilos y no puede tomar la máquina.
+
+**Ahora:** queda escrito que la misma capacidad tiene una segunda puerta,
+`sched_setattr`, y que **está cerrada a propósito**.
+
+**Motivo:** `sched_setattr` pone la política igual que `sched_setscheduler`,
+pero la recibe dentro de una estructura, detrás de un puntero. Un filtro de
+seccomp compara registros y **no puede seguir un puntero**, así que no existe
+guardia por argumento que la vigile: o se permite entera —y con ella
+`SCHED_FIFO`, que es quedarse un procesador contra la máquina— o se deniega
+entera. Cesar decidió el 2026-08-25 denegarla.
+
+**El costo, que es real y está medido, no supuesto:** un programa que ponga
+política ordinaria *sólo* por esa puerta no puede hacerlo bajo Thalyx.
+util-linux 2.41 es uno: agregó `supports_custom_slice`, y desde ahí
+`chrt --other` y `chrt --batch` pasan por `sched_setattr` en vez de por
+`sched_setscheduler`. Hasta 2.40 pasaban por la vieja. Ningún runtime medido
+depende de esa puerta: la traza de [[Que-Necesita-Un-Agente-Ajeno]] muestra al
+agente ajeno arrancando con `sched_setscheduler` y con nada más.
+
+**Lo único que podría mirar detrás del puntero** es `SECCOMP_RET_USER_NOTIF`, un
+proceso supervisor que lee la estructura de la memoria del módulo mientras la
+llamada está detenida. Es un componente nuevo, vivo durante toda la ejecución
+del módulo, con su propia superficie y su propia carrera entre comprobar y usar.
+Queda anotado en [[Tareas-Pendientes]] como lo que es —una opción, no un
+pendiente— y no se construyó.
+
+**Y una consecuencia para el arnés:** `chrt --other` dejó de servir para
+preguntarle a un módulo si puede acomodar sus hilos, porque en 2.41 la respuesta
+no depende del filtro sino de la versión de util-linux. `dev/verify.sh` y la
+prueba del workspace preguntan con `chrt --idle`, que ninguna versión manda por
+la puerta cerrada, y `--other` se sigue corriendo como **reporte** —nunca como
+veredicto— para que el costo de arriba se vea en la máquina donde se paga.
+
 
 ### 2026-08-02 — Se implementa `module_standard` y se introduce `unsafe` contenido
 **Antes:** el perfil estaba decretado y no construido; el aislamiento era `thalyx-lsm` y nada más.

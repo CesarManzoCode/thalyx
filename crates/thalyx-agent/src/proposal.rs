@@ -22,15 +22,172 @@ use serde::Deserialize;
 /// waiting for something that will not happen.
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 
-/// What the minimal agent can propose.
+/// What a model is allowed to propose.
 ///
-/// One variant, because `vault/09-Notas-Tecnicas/Agente-Minimo.md` decrees one
-/// use case. Widening this enum is how the scope grows, and it should be a
-/// visible act rather than a thing that drifts.
+/// One variant per verb the session has, plus [`ProposedOperation::Nothing`].
+/// Cesar's decree of 2026-08-23, answering the question
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md` had left open: the model
+/// may propose the whole catalogue, and the terminal confirmation stays the
+/// barrier rather than the grammar being it.
+///
+/// Widening this enum is still how the scope grows, and it is still meant to be
+/// a visible act. What changed is where the line is drawn — not at what the
+/// model may **say**, but at what the machine does without a human at a
+/// terminal saying yes.
+///
+/// ## Why the names are the CLI's `op` and not a vocabulary of their own
+///
+/// The catalogue in `thalyx-cli` declares an `op` for every verb, and that is
+/// the string a program already matches on. A second set of names here would
+/// be a second thing to keep in step, and `thalyx-cli` has a test that binds
+/// the two sets to each other — it can see both crates, and this one cannot see
+/// the catalogue at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposedOperation {
-    InstallModule,
+    /// The model found nothing to do.
+    ///
+    /// It has a spelling of its own because it stopped being expressible any
+    /// other way. While `install_module` was the only operation, an empty
+    /// `targets` list said it: nothing to install is nothing to do. Most verbs
+    /// of the catalogue take no arguments at all, so an empty list on `disks`
+    /// is a complete request rather than an abstention, and one of the two
+    /// meanings had to get a word.
+    ///
+    /// `Gamas-de-Modelo.md` calls abstention the measurement that matters most.
+    /// A model that cannot decline invents on every ambiguous sentence, and it
+    /// is not bad at abstaining — it has been made unable to.
+    Nothing,
+
+    List,
+
+    Read,
+
+    Go,
+
+    Where,
+
+    MakeDirectory,
+
+    MakeFile,
+
+    Copy,
+
+    Move,
+
+    Remove,
+
+    Edit,
+
+    Structured,
+
+    Rehearse,
+
+    Describe,
+
+    IndexBuild,
+
+    DependsOn,
+
+    DependedOnBy,
+
+    Symbol,
+
+    Find,
+
+    Grep,
+
+    Processes,
+
+    Memory,
+
+    Stop,
+
+    History,
+
+    Attempt,
+
+    Changes,
+
+    Clear,
+
+    /// Put the one screen on the display —
+    /// `vault/02-Arquitectura/La-Pantalla.md`.
+    ///
+    /// Proposable because the catalogue is one surface and a verb missing from
+    /// the grammar is a verb a model has no way to ask for. It is also the one
+    /// verb whose answer is not text: it refuses on the structured face and on
+    /// anything that is not a keyboard, so a model that names it has named a
+    /// place to be rather than something done.
+    Screen,
+
+    Available,
+
+    /// `install_module` deserialises to this too, and that alias is not a
+    /// legacy spelling waiting to be tidied away.
+    ///
+    /// Every captured sample of a real model's output in
+    /// `grammar_effect.rs` — including the one the 3B produced when it
+    /// abstained, which is the only evidence that tier can — spells it that
+    /// way, because that was the grammar's only word for eleven days. Rule 6
+    /// of `Estrategia-de-Pruebas.md` is that a captured sample is the format
+    /// and a rewritten one is your model of it, so the samples stay verbatim
+    /// and the parser stays able to read them.
+    ///
+    /// The grammar emits `install`, so the alias is only ever the parser being
+    /// broader than the grammar — which is the safe direction. The other way
+    /// round is a grammar naming something the parser refuses, and that makes
+    /// every inference fail while looking like a bad model.
+    #[serde(alias = "install_module")]
+    Install,
+
+    Modules,
+
+    Run,
+
+    Permissions,
+
+    /// Make the kernel guard binding.
+    Deny,
+
+    /// Stop the kernel guard from denying.
+    ///
+    /// Proposable, and that is the decree of 2026-08-24 working as written:
+    /// the line is what the machine *does* without a human at a terminal, not
+    /// what the model may *say*. The structured face refuses this one with
+    /// `needs_a_human` no matter who asked.
+    Observe,
+
+    Rollback,
+
+    State,
+
+    Kernel,
+
+    Disks,
+
+    Network,
+
+    /// Which keyboard layout the kernel holds —
+    /// `crates/thalyx-term/src/keymap.rs`. A first-class operation and not a
+    /// setting, because on a machine whose every sentence is Spanish it is the
+    /// difference between writing and not.
+    Keyboard,
+
+    InstallOnto,
+
+    /// Run a program nobody signed, confined —
+    /// `vault/02-Arquitectura/Programas-Ajenos.md`.
+    ///
+    /// Proposable like the rest of the catalogue, and no weaker for it: the
+    /// verb refuses on the structured face and asks a human at a terminal
+    /// whatever proposed it. A model that names this has named a question, not
+    /// an act.
+    Execute,
+
+    Leave,
+
+    PowerOff,
 }
 
 impl ProposedOperation {
@@ -47,12 +204,140 @@ impl ProposedOperation {
     /// remembering.
     pub const fn name(self) -> &'static str {
         match self {
-            ProposedOperation::InstallModule => "install_module",
+            ProposedOperation::Nothing => "nothing",
+            ProposedOperation::List => "list",
+            ProposedOperation::Read => "read",
+            ProposedOperation::Go => "go",
+            ProposedOperation::Where => "where",
+            ProposedOperation::MakeDirectory => "make_directory",
+            ProposedOperation::MakeFile => "make_file",
+            ProposedOperation::Copy => "copy",
+            ProposedOperation::Move => "move",
+            ProposedOperation::Remove => "remove",
+            ProposedOperation::Edit => "edit",
+            ProposedOperation::Structured => "structured",
+            ProposedOperation::Rehearse => "rehearse",
+            ProposedOperation::Describe => "describe",
+            ProposedOperation::IndexBuild => "index_build",
+            ProposedOperation::DependsOn => "depends_on",
+            ProposedOperation::DependedOnBy => "depended_on_by",
+            ProposedOperation::Symbol => "symbol",
+            ProposedOperation::Find => "find",
+            ProposedOperation::Grep => "grep",
+            ProposedOperation::Processes => "processes",
+            ProposedOperation::Memory => "memory",
+            ProposedOperation::Stop => "stop",
+            ProposedOperation::History => "history",
+            ProposedOperation::Attempt => "attempt",
+            ProposedOperation::Changes => "changes",
+            ProposedOperation::Clear => "clear",
+            ProposedOperation::Screen => "screen",
+            ProposedOperation::Available => "available",
+            ProposedOperation::Install => "install",
+            ProposedOperation::Modules => "modules",
+            ProposedOperation::Run => "run",
+            ProposedOperation::Permissions => "permissions",
+            ProposedOperation::Deny => "deny",
+            ProposedOperation::Observe => "observe",
+            ProposedOperation::Rollback => "rollback",
+            ProposedOperation::State => "state",
+            ProposedOperation::Kernel => "kernel",
+            ProposedOperation::Disks => "disks",
+            ProposedOperation::Network => "network",
+            ProposedOperation::Keyboard => "keyboard",
+            ProposedOperation::InstallOnto => "install_onto",
+            ProposedOperation::Execute => "execute",
+            ProposedOperation::Leave => "leave",
+            ProposedOperation::PowerOff => "power_off",
         }
     }
 
-    /// Every operation the minimal agent can propose.
-    pub const ALL: [ProposedOperation; 1] = [ProposedOperation::InstallModule];
+    /// The contract the core carries this out under, when there is one.
+    ///
+    /// [`None`] for most of the catalogue, and that is not a gap. A contract is
+    /// the shape `vault/04-Flujo-Canonico/Contrato-Estructurado.md` gives to an
+    /// operation that **changes the machine and needs a human to say yes**:
+    /// provenance on every field, a rendered confirmation, a journal entry, a
+    /// way back. Asking what is in a directory is not that, and dressing it as
+    /// a contract would make the word mean nothing.
+    ///
+    /// So a proposal of `list` produces a [`crate::Plan::Verb`] instead, with
+    /// its arguments attributed exactly the same way. What it does not produce
+    /// is a contract claiming to be an install, which is what this returned
+    /// before it existed: [`crate::assemble`] wrote `InstallModule` whatever
+    /// the model had proposed, because there was only ever one thing to write.
+    pub const fn contract_operation(self) -> Option<thalyx_contract::Operation> {
+        match self {
+            ProposedOperation::Install => Some(thalyx_contract::Operation::InstallModule),
+            ProposedOperation::Remove => Some(thalyx_contract::Operation::DeleteFiles),
+            ProposedOperation::IndexBuild => Some(thalyx_contract::Operation::BuildGraph),
+            _ => None,
+        }
+    }
+
+    /// Whether this operation's arguments are module ids rather than free text.
+    ///
+    /// It decides which target rule the grammar hands the model, and that is
+    /// the one guarantee widening the catalogue would otherwise have cost.
+    /// While `install_module` was the only operation, every target was an id
+    /// and the grammar declined to spend tokens on anything that was not
+    /// shaped like one. A single loose rule for all thirty-nine would have
+    /// dropped that for the two operations it was protecting.
+    ///
+    /// `thalyx-cli` checks this against the catalogue's own `takes`, which is
+    /// the authority on what a verb is given.
+    pub const fn takes_module_id(self) -> bool {
+        matches!(self, ProposedOperation::Install | ProposedOperation::Run)
+    }
+
+    /// Every operation the agent can propose.
+    pub const ALL: [ProposedOperation; 45] = [
+        ProposedOperation::Nothing,
+        ProposedOperation::List,
+        ProposedOperation::Read,
+        ProposedOperation::Go,
+        ProposedOperation::Where,
+        ProposedOperation::MakeDirectory,
+        ProposedOperation::MakeFile,
+        ProposedOperation::Copy,
+        ProposedOperation::Move,
+        ProposedOperation::Remove,
+        ProposedOperation::Edit,
+        ProposedOperation::Structured,
+        ProposedOperation::Rehearse,
+        ProposedOperation::Describe,
+        ProposedOperation::IndexBuild,
+        ProposedOperation::DependsOn,
+        ProposedOperation::DependedOnBy,
+        ProposedOperation::Symbol,
+        ProposedOperation::Find,
+        ProposedOperation::Grep,
+        ProposedOperation::Processes,
+        ProposedOperation::Memory,
+        ProposedOperation::Stop,
+        ProposedOperation::History,
+        ProposedOperation::Attempt,
+        ProposedOperation::Changes,
+        ProposedOperation::Clear,
+        ProposedOperation::Screen,
+        ProposedOperation::Available,
+        ProposedOperation::Install,
+        ProposedOperation::Modules,
+        ProposedOperation::Run,
+        ProposedOperation::Permissions,
+        ProposedOperation::Deny,
+        ProposedOperation::Observe,
+        ProposedOperation::Rollback,
+        ProposedOperation::State,
+        ProposedOperation::Kernel,
+        ProposedOperation::Disks,
+        ProposedOperation::Network,
+        ProposedOperation::Keyboard,
+        ProposedOperation::InstallOnto,
+        ProposedOperation::Execute,
+        ProposedOperation::Leave,
+        ProposedOperation::PowerOff,
+    ];
 }
 
 /// A model's suggestion, before anything has been decided about it.
@@ -164,7 +449,7 @@ mod tests {
         let proposal = Proposal::parse(completion)
             .expect("a correct answer from a real model was refused as a broken tool");
 
-        assert_eq!(proposal.operation, ProposedOperation::InstallModule);
+        assert_eq!(proposal.operation, ProposedOperation::Install);
         assert_eq!(proposal.targets, ["dev.thalyx.demo"]);
         assert!(
             !completion.contains("end of text"),
@@ -227,7 +512,7 @@ mod tests {
         )
         .expect("this is the shape the grammar produces");
 
-        assert_eq!(proposal.operation, ProposedOperation::InstallModule);
+        assert_eq!(proposal.operation, ProposedOperation::Install);
         assert_eq!(proposal.targets, ["thalyx.demo"]);
         assert_eq!(proposal.constraint.as_deref(), Some("^1.0"));
     }

@@ -61,6 +61,63 @@ pub struct RunRequest<'a> {
     /// nothing on a capable machine would be that same failure wearing the
     /// opposite hat.
     pub unconfined: bool,
+    /// How the module's own descriptors are wired. See [`Wiring`].
+    pub wiring: Wiring,
+}
+
+/// What Thalyx does with the module's `stdin` and `stdout`.
+///
+/// [`Wiring::Collected`] is what `correr` has always had and what every module
+/// but one gets: descriptor 0 closed, and both output pipes drained into
+/// [`RunOutcome::wrote`].
+///
+/// [`Wiring::Talks`] is for a **resident** module — one that is started once
+/// and asked many things. Descriptor 0 becomes a pipe whose only writer is
+/// Thalyx, and descriptor 1 is handed to the caller instead of being drained,
+/// because for such a module `stdout` is the answers rather than a transcript.
+/// `stderr` is still drained: a module that dies with a message has to be able
+/// to say why, and that is the descriptor it says it on.
+///
+/// It is a field of the request rather than a second launcher because that is
+/// the whole point — the cgroup, the policy, the seccomp filter, the pivoted
+/// root, the uid, the channel and the journal entry are the ones every module
+/// gets, established by this file and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wiring {
+    #[default]
+    Collected,
+    Talks,
+}
+
+/// What a run would be, answered before it is one.
+///
+/// Every field here is read by the same code that would run it, in the same
+/// order — see [`foresee_run`]. The two things it deliberately does not
+/// contain are the two a rehearsal cannot know: the exit code and what the
+/// module would say. Nothing is invented for them.
+#[derive(Debug)]
+pub struct RunForeseen {
+    pub module_id: String,
+    pub version: String,
+    pub program: PathBuf,
+    /// How the resolved profile would isolate it, in the profile's own words.
+    pub isolation: String,
+    /// Whether that profile isolates anything at all.
+    pub isolates: bool,
+    /// Whether it would be given a user of its own.
+    pub own_user: bool,
+    /// What it holds **in force**, which is not what its manifest asks for.
+    pub permissions: Vec<thalyx_manifest::Permission>,
+    /// What the kernel is doing. `None` when there is no policy map to ask.
+    pub enforcement: Option<thalyx_permd::Enforcement>,
+    /// Whether the run would be recorded as degraded — asked for unconfined,
+    /// or confined under a kernel that is not denying.
+    pub degraded: bool,
+    pub unconfined: bool,
+    /// Whether it would start at all.
+    pub would_run: bool,
+    /// Why not, in the words the real verb would use. `None` when it would run.
+    pub refusal: Option<String>,
 }
 
 #[derive(Debug)]
@@ -76,6 +133,15 @@ pub struct RunOutcome {
     pub isolation: Option<String>,
     /// Whether the profile in force actually isolated anything.
     pub isolated: bool,
+    /// Whether the kernel side was denying or only watching while it ran.
+    /// `None` when the module ran unconfined, where the question does not
+    /// arise.
+    ///
+    /// Carried rather than assumed, because `make -C lsm load` lands in
+    /// observe mode and a run under an observing kernel is a run nobody could
+    /// tell apart from a confined one — which is the failure the journal block
+    /// below has a comment about.
+    pub enforcement: Option<thalyx_permd::Enforcement>,
     pub permissions: Vec<thalyx_manifest::Permission>,
     /// The user the module ran as. `None` when it ran as Thalyx itself.
     pub uid: Option<u32>,
@@ -152,7 +218,7 @@ const MAX_KEPT_OUTPUT: usize = 64 * 1024;
 /// A module that fills the pipe buffer while Thalyx waits for it to exit is a
 /// deadlock, and it is the ordinary case rather than a hostile one: the buffer
 /// is 64 KiB on Linux and a module that prints a directory can reach it.
-fn drain<R: std::io::Read + Send + 'static>(
+pub(crate) fn drain<R: std::io::Read + Send + 'static>(
     stream: Option<R>,
 ) -> std::thread::JoinHandle<(String, bool)> {
     std::thread::spawn(move || {
@@ -196,7 +262,7 @@ fn drain<R: std::io::Read + Send + 'static>(
 /// A panicked drain thread is reported as truncation rather than propagated:
 /// the module has already run, and losing its result because reading its
 /// output went wrong would turn a reporting fault into a failed run.
-fn collect(
+pub(crate) fn collect(
     out: std::thread::JoinHandle<(String, bool)>,
     err: std::thread::JoinHandle<(String, bool)>,
 ) -> ModuleOutput {
@@ -217,7 +283,7 @@ pub fn run(
 ) -> Result<RunOutcome> {
     let journal = Journal::open(store.journal_path())?;
 
-    match run_inner(store, policies, &request) {
+    match start(store, policies, &request).and_then(|running| running.wait(policies)) {
         Ok(outcome) => {
             let mut notes = vec![match outcome.exit_code {
                 Some(0) => "module exited cleanly".to_string(),
@@ -237,6 +303,9 @@ pub fn run(
             if let Some(isolation) = &outcome.isolation {
                 notes.push(isolation.clone());
             }
+            if let Some(enforcement) = &outcome.enforcement {
+                notes.push(format!("kernel enforcement: {}", enforcement.describe()));
+            }
 
             journal.append(&Entry {
                 timestamp: thalyx_journal::now(),
@@ -249,12 +318,35 @@ pub fn run(
                 // profile promised. Anything less is degraded and says so —
                 // a run nobody can tell apart from a confined one is the
                 // failure this project keeps arranging against.
-                outcome: match (outcome.confined(), outcome.isolated) {
-                    (true, true) => Outcome::Success,
-                    (true, false) => Outcome::Degraded {
+                outcome: match (
+                    outcome.confined(),
+                    outcome.enforcement.clone(),
+                    outcome.isolated,
+                ) {
+                    (true, Some(thalyx_permd::Enforcement::Enforcing), true) => Outcome::Success,
+                    // Ahead of the isolation clause below: a kernel that
+                    // denies nothing is the larger of the two gaps, and a
+                    // journal that named only the smaller one would be
+                    // describing the wrong run.
+                    (true, Some(thalyx_permd::Enforcement::Observing), _) => Outcome::Degraded {
+                        reason: "the kernel side was attached but only observing: the policy was \
+                                 written and no denial would have been applied"
+                            .to_string(),
+                    },
+                    (true, Some(thalyx_permd::Enforcement::Unreadable(reason)), _) => {
+                        Outcome::Degraded {
+                            reason: format!(
+                                "whether the kernel was enforcing could not be read — {reason}"
+                            ),
+                        }
+                    }
+                    (true, _, false) => Outcome::Degraded {
                         reason: "ran under a profile that isolates nothing".to_string(),
                     },
-                    (false, _) => Outcome::Degraded {
+                    (true, None, true) => Outcome::Degraded {
+                        reason: "confined, but the kernel's mode was never read".to_string(),
+                    },
+                    (false, _, _) => Outcome::Degraded {
                         reason: "ran without kernel enforcement".to_string(),
                     },
                 },
@@ -284,11 +376,22 @@ pub fn run(
     }
 }
 
-fn run_inner(
-    store: &Store,
-    policies: &dyn PolicyStore,
-    request: &RunRequest<'_>,
-) -> Result<RunOutcome> {
+/// Everything a run works out before anything of it has happened.
+///
+/// Split out of [`run_inner`] on 2026-08-26 so that `ensayo correr` could exist
+/// without being a second implementation of it. D1 of
+/// `vault/02-Arquitectura/Superficie-para-el-LLM.md` had been eight of nine for
+/// that reason: a rehearsal built beside the verb answers a question about
+/// itself, and this project has already paid twice for two copies of one
+/// judgement drifting apart.
+struct Resolved {
+    manifest: thalyx_manifest::Manifest,
+    module_dir: std::path::PathBuf,
+    program: std::path::PathBuf,
+    permissions: Vec<thalyx_manifest::Permission>,
+}
+
+fn resolve(store: &Store, request: &RunRequest<'_>) -> Result<Resolved> {
     // The manifest is re-verified against the pinned publisher key on this
     // read. It is the authority on the entrypoint, so believing a tampered
     // copy would mean launching something else with this module's permissions.
@@ -321,6 +424,304 @@ fn run_inner(
                 kind: grant.kind,
             })
             .collect();
+
+    Ok(Resolved {
+        manifest,
+        module_dir,
+        program,
+        permissions,
+    })
+}
+
+/// What `correr <id>` would do, worked out by the code that would do it.
+///
+/// D1 says every verb that changes the machine can be rehearsed, and `correr`
+/// was the one that could not. The reason written beside it was real at the
+/// time — *"what a run would be allowed to do is a question for the kernel
+/// side, and answering it from the manifest would describe a run that the
+/// machine may not be able to give"* — and it stopped being real on
+/// 2026-08-25, when Thalyx learned to read the mode. This asks the kernel the
+/// same two questions the run asks, in the same order, and stops one line
+/// before the program exists.
+pub fn foresee_run(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &RunRequest<'_>,
+) -> Result<RunForeseen> {
+    let resolved = resolve(store, request)?;
+
+    // In the order the run asks them, because the order is a decision this
+    // file's comments defend twice: a profile nothing resolves is wrong on a
+    // machine with no BPF at all, so it is reported before the kernel is asked
+    // anything.
+    let profile = thalyx_sandbox::profile::resolve(request.profile)?;
+
+    let available = policies.is_available();
+    let enforcement = available.then(|| policies.enforcement());
+    // Worked out before the value moves into the answer, and worth naming: a
+    // module may run under a kernel that denies nothing — somebody signed it —
+    // and the run is recorded as degraded. So is this, before it happens.
+    let degraded = request.unconfined
+        || (available && !matches!(enforcement, Some(thalyx_permd::Enforcement::Enforcing)));
+
+    // Exactly the gate `run_inner` applies, and nothing else: a rehearsal that
+    // invented a reason to refuse would be worse than none, because the person
+    // reading it would go and fix something that was never in the way.
+    let refusal = (!available && !request.unconfined).then(|| {
+        CoreError::NothingCanEnforce {
+            module_id: resolved.manifest.id.clone(),
+            permissions: resolved.permissions.len(),
+        }
+        .to_string()
+    });
+
+    Ok(RunForeseen {
+        module_id: resolved.manifest.id,
+        version: resolved.manifest.version.to_string(),
+        program: resolved.program,
+        isolation: profile.describe(),
+        isolates: profile.isolates(),
+        own_user: profile.own_user,
+        permissions: resolved.permissions,
+        enforcement,
+        degraded,
+        unconfined: request.unconfined,
+        would_run: refusal.is_none(),
+        refusal,
+    })
+}
+
+/// A module that is running, with everything holding it up still owned.
+///
+/// The split this type exists for: `run` used to be one function that
+/// established a confinement, spawned, waited, and tore the confinement down —
+/// which is exactly right for `correr` and cannot express the engine, whose
+/// whole point since 2026-08-28 is that the process outlives the answer. Rather
+/// than write a second launcher for it — a second place to get the cgroup, the
+/// policy, the seccomp filter, the pivoted root and the uid right, and a second
+/// place for them to drift — the middle of the one launcher was given a name.
+///
+/// [`run`] is now `start` followed by [`RunningModule::wait`], so the ordinary
+/// path exercises the same code the resident path holds open.
+///
+/// **Holding one of these owns the teardown.** Dropping it without
+/// [`RunningModule::wait`] or [`RunningModule::shutdown`] leaves a live process,
+/// a cgroup and a policy in the kernel behind it.
+pub struct RunningModule {
+    /// `None` when the module ran unconfined, where there is nothing to release.
+    held: Option<thalyx_sandbox::Held>,
+    child: std::process::Child,
+    serving: Option<std::thread::JoinHandle<(crate::api::ModuleApi, Option<String>)>>,
+    draining_out: Option<std::thread::JoinHandle<(String, bool)>>,
+    draining_err: Option<std::thread::JoinHandle<(String, bool)>>,
+    /// Only under [`Wiring::Talks`]: the pipe requests are written to.
+    stdin: Option<std::process::ChildStdin>,
+    /// Only under [`Wiring::Talks`]: the pipe answers are read from. Under
+    /// `Collected` this is `None` because a drain thread has it.
+    stdout: Option<std::process::ChildStdout>,
+    module_id: String,
+    version: String,
+    program: PathBuf,
+    cgroup_id: Option<u64>,
+    policy: Option<thalyx_permd::Policy>,
+    isolation: Option<String>,
+    isolated: bool,
+    enforcement: Option<thalyx_permd::Enforcement>,
+    permissions: Vec<thalyx_manifest::Permission>,
+    uid: Option<u32>,
+}
+
+impl RunningModule {
+    /// The pid Thalyx holds for this module, in Thalyx's own namespace.
+    ///
+    /// What makes "the same engine answered both sentences" a thing somebody
+    /// can check rather than a thing this project asserts. It is the pid of the
+    /// process Thalyx spawned — the outer stage of `thalyx_sandbox::launch`,
+    /// which `exec`s its way down to the module — so it is the module's pid
+    /// from out here even where the module has a pid namespace of its own and
+    /// believes it is 1.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn cgroup_id(&self) -> Option<u64> {
+        self.cgroup_id
+    }
+
+    /// The request pipe, taken once. See [`Wiring::Talks`].
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.stdin.take()
+    }
+
+    /// The answer pipe, taken once. See [`Wiring::Talks`].
+    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.stdout.take()
+    }
+
+    /// Whether it is still there, without blocking on it.
+    ///
+    /// A resident module that died is not an error until the next request
+    /// needs it, and this is how that is asked. `Err` from `try_wait` is
+    /// treated as gone: a process Thalyx can no longer ask about is not one it
+    /// can go on sending requests to. Rule 9 — the cautious answer.
+    pub fn still_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Wait for it to end, collect what it said, and tear the confinement down.
+    pub fn wait(mut self, policies: &dyn PolicyStore) -> Result<RunOutcome> {
+        let status = self
+            .child
+            .wait()
+            .map_err(|source| CoreError::io(&self.program, source))?;
+        Ok(self.finish(policies, status.code()))
+    }
+
+    /// Whether [`RunningModule::finish`] has already run.
+    fn ended(&self) -> bool {
+        self.serving.is_none()
+    }
+
+    /// Kill it and tear the confinement down, without waiting for an answer.
+    ///
+    /// For a resident module Thalyx is done with, or one that stopped making
+    /// sense. The pipes are dropped first: a module blocked writing into a pipe
+    /// nobody empties would not notice a `SIGTERM` until it did, and this is
+    /// the one path where Thalyx is holding a pipe rather than draining it.
+    pub fn shutdown(mut self, policies: &dyn PolicyStore) -> RunOutcome {
+        self.stdin = None;
+        self.stdout = None;
+        let _ = self.child.kill();
+        let code = self.child.wait().ok().and_then(|status| status.code());
+        self.finish(policies, code)
+    }
+
+    /// Everything both endings share: join the threads, release, report.
+    ///
+    /// Takes `&mut self` rather than `self` so that [`Drop`] can tell whether
+    /// it has run. See the `Drop` impl: a handle that is dropped without
+    /// either ending would otherwise leave a live process behind, and the one
+    /// module this matters for is the one that stays alive on purpose.
+    fn finish(&mut self, policies: &dyn PolicyStore, exit_code: Option<i32>) -> RunOutcome {
+        // The module is gone, so its end of the socket is closed and the server
+        // has returned or is about to.
+        let (said, dropped_notices, channel_error) = match self.serving.take() {
+            Some(handle) => match handle.join() {
+                Ok((api, error)) => (api.said().to_vec(), api.dropped_notices(), error),
+                Err(_) => (Vec::new(), 0, Some("the API thread panicked".to_string())),
+            },
+            None => (Vec::new(), 0, None),
+        };
+
+        let wrote = match (self.draining_out.take(), self.draining_err.take()) {
+            (Some(out), Some(err)) => collect(out, err),
+            // `Wiring::Talks` keeps `stdout` for the protocol, so only `stderr`
+            // was drained. Reported as an empty `stdout` rather than as
+            // truncation: nothing was cut, it was never Thalyx's to keep.
+            (None, Some(err)) => {
+                let (stderr, cut) = err.join().unwrap_or_else(|_| (String::new(), true));
+                ModuleOutput {
+                    stdout: String::new(),
+                    stderr,
+                    truncated: cut,
+                }
+            }
+            _ => ModuleOutput::default(),
+        };
+
+        // Teardown happens whatever the module did. `release` is a no-op while
+        // another instance is still inside, so a second run is not stripped of
+        // its permissions when the first one ends.
+        if let Some(held) = self.held.take() {
+            let _ = held.release(policies);
+        }
+
+        RunOutcome {
+            module_id: self.module_id.clone(),
+            version: self.version.clone(),
+            program: self.program.clone(),
+            cgroup_id: self.cgroup_id,
+            policy: self.policy,
+            isolation: self.isolation.clone(),
+            isolated: self.isolated,
+            enforcement: self.enforcement.clone(),
+            uid: self.uid,
+            permissions: std::mem::take(&mut self.permissions),
+            exit_code,
+            said,
+            wrote,
+            dropped_notices,
+            channel_error,
+        }
+    }
+}
+
+impl Drop for RunningModule {
+    /// The last resort, and it is only half of one.
+    ///
+    /// A handle dropped without [`RunningModule::wait`] or
+    /// [`RunningModule::shutdown`] is a bug, and it happened on 2026-08-28: an
+    /// `if let (false, Some(stale)) = (usable, held.take())` in the engine took
+    /// the live resident out of its slot on every call, whether or not the arm
+    /// fired, and dropped it. The process stayed — nothing killed it — so the
+    /// machine quietly ran one engine per sentence with the old ones still in
+    /// memory, which is worse than the failure it was replacing.
+    ///
+    /// So a drop kills the process, which is the half that can be done from
+    /// here. The cgroup and the kernel policy cannot be: withdrawing a policy
+    /// needs the policy store, and this has no borrow of one — that is the
+    /// whole reason [`thalyx_sandbox::Held`] exists. They are left, and the
+    /// next run of the same module reuses the cgroup rather than failing.
+    fn drop(&mut self) {
+        if self.ended() {
+            return;
+        }
+        self.stdin = None;
+        self.stdout = None;
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Serve the module's channel on a thread, for as long as it holds its end.
+///
+/// In a thread because both have to be happening at once: a module that asks
+/// something before Thalyx starts listening would block, and a Thalyx that
+/// waited for the child before listening would deadlock against it.
+fn serve_channel(
+    manifest: &thalyx_manifest::Manifest,
+    permissions: &[thalyx_manifest::Permission],
+    thalyx_end: std::os::unix::net::UnixStream,
+) -> std::thread::JoinHandle<(crate::api::ModuleApi, Option<String>)> {
+    let mut api = crate::api::ModuleApi::for_module(manifest, permissions);
+    std::thread::spawn(move || {
+        let mut stream = thalyx_end;
+        // A channel that broke is reported, not swallowed. A module whose
+        // requests stopped being answered halfway looks, from its own exit
+        // code, exactly like one that finished — and the difference is whether
+        // the work happened.
+        let outcome = thalyx_abi::serve(&mut stream, &mut api)
+            .err()
+            .map(|error| error.to_string());
+        (api, outcome)
+    })
+}
+
+/// Start a module and hand back the handle that holds it up.
+///
+/// Everything [`run`] did up to the `wait`, and nothing after it. See
+/// [`RunningModule`] for why the split exists.
+pub fn start(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &RunRequest<'_>,
+) -> Result<RunningModule> {
+    let Resolved {
+        manifest,
+        module_dir,
+        program,
+        permissions,
+    } = resolve(store, request)?;
 
     // `--unconfined` means what it says, always.
     //
@@ -355,6 +756,16 @@ fn run_inner(
         });
     }
 
+    // Read once, here, rather than after the run: the answer has to be about
+    // the kernel the module ran under, and `make -C lsm enforce` in another
+    // terminal halfway through would otherwise have the journal describe a run
+    // that never happened.
+    //
+    // Unlike a guest, a module is allowed to run under an observing kernel —
+    // somebody signed it and a human read its manifest — but the run is
+    // degraded and says so. See `run_foreign`, which refuses instead.
+    let enforcement = policies.enforcement();
+
     // The user this module runs as, assigned once and kept forever.
     //
     // Before the confinement is established, so a module that cannot be given
@@ -376,7 +787,11 @@ fn run_inner(
     };
 
     let parent = thalyx_sandbox::cgroup::parent()?;
-    let confinement = Confinement::establish(
+    // Detached the moment it is established, because the handle this returns
+    // may outlive the frame that made it — see [`RunningModule`]. Nothing about
+    // the confinement changes; what is given up is the borrow of the policy
+    // store, which is named again at release.
+    let held = Confinement::establish(
         policies,
         &parent,
         &manifest.id,
@@ -384,12 +799,13 @@ fn run_inner(
         &permissions,
         thalyx_permd::boot_ns(),
         thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
-    )?;
+    )?
+    .detach();
 
-    let cgroup_id = confinement.cgroup_id();
-    let policy = confinement.policy();
-    let isolation = confinement.profile().describe();
-    let isolated = confinement.profile().isolates();
+    let cgroup_id = held.cgroup_id();
+    let policy = held.policy();
+    let isolation = held.profile().describe();
+    let isolated = held.profile().isolates();
 
     // The channel, before the module exists.
     //
@@ -401,13 +817,19 @@ fn run_inner(
 
     let mut child = {
         use std::os::fd::AsFd;
-        confinement.spawn(
+        held.spawn(
             &request.helper,
-            &module_dir,
-            &program,
-            uid,
-            &request.args,
-            Some(module_end.as_fd()),
+            thalyx_sandbox::Launch {
+                module_dir: &module_dir,
+                program: &program,
+                uid,
+                args: &request.args,
+                channel: Some(module_end.as_fd()),
+                stdin: match request.wiring {
+                    Wiring::Collected => thalyx_sandbox::Stdin::Closed,
+                    Wiring::Talks => thalyx_sandbox::Stdin::Piped,
+                },
+            },
         )?
     };
 
@@ -419,45 +841,23 @@ fn run_inner(
 
     // Before the wait, not after. The module holds the writing end of two
     // pipes; if nobody is emptying them it stops on a full buffer and Thalyx
-    // waits for a module that is waiting for Thalyx.
-    let draining_out = drain(child.stdout.take());
-    let draining_err = drain(child.stderr.take());
+    // waits for a module that is waiting for Thalyx. Under `Wiring::Talks`
+    // `stdout` is not drained because it is the caller who empties it, one
+    // answer at a time.
+    let (draining_out, stdout) = match request.wiring {
+        Wiring::Collected => (Some(drain(child.stdout.take())), None),
+        Wiring::Talks => (None, child.stdout.take()),
+    };
+    let draining_err = Some(drain(child.stderr.take()));
 
-    // Serve while it runs, in a thread, because both have to be happening at
-    // once: a module that asks something before Thalyx starts listening would
-    // block, and a Thalyx that waited for the child before listening would
-    // deadlock against it.
-    let mut api = crate::api::ModuleApi::for_module(&manifest, &permissions);
-    let serving = std::thread::spawn(move || {
-        let mut stream = thalyx_end;
-        let outcome = thalyx_abi::serve(&mut stream, &mut api);
-        (api, outcome)
-    });
-
-    let status = child
-        .wait()
-        .map_err(|source| CoreError::io(&request.helper, source))?;
-
-    // The module is gone, so its end of the socket is closed and the server
-    // has returned or is about to.
-    let (api, served) = serving
-        .join()
-        .map_err(|_| CoreError::io(&program, std::io::Error::other("the API thread panicked")))?;
-
-    // A channel that broke is reported, not swallowed. A module whose requests
-    // stopped being answered halfway looks, from its own exit code, exactly
-    // like one that finished — and the difference is whether the work happened.
-    let channel_error = served.err().map(|error| error.to_string());
-    let said = api.said().to_vec();
-    let dropped_notices = api.dropped_notices();
-    let wrote = collect(draining_out, draining_err);
-
-    // Teardown happens whatever the module did. `release` is a no-op while
-    // another instance is still inside, so a second run is not stripped of its
-    // permissions when the first one ends.
-    confinement.release()?;
-
-    Ok(RunOutcome {
+    Ok(RunningModule {
+        held: Some(held),
+        serving: Some(serve_channel(&manifest, &permissions, thalyx_end)),
+        stdin: child.stdin.take(),
+        stdout,
+        child,
+        draining_out,
+        draining_err,
         module_id: manifest.id.clone(),
         version: manifest.version.clone(),
         program,
@@ -465,13 +865,9 @@ fn run_inner(
         policy: Some(policy),
         isolation: Some(isolation),
         isolated,
-        uid,
+        enforcement: Some(enforcement),
         permissions,
-        exit_code: status.code(),
-        said,
-        wrote,
-        dropped_notices,
-        channel_error,
+        uid,
     })
 }
 
@@ -490,7 +886,7 @@ fn run_unconfined(
     program: &std::path::Path,
     request: &RunRequest<'_>,
     permissions: Vec<thalyx_manifest::Permission>,
-) -> Result<RunOutcome> {
+) -> Result<RunningModule> {
     let (thalyx_end, module_end) =
         std::os::unix::net::UnixStream::pair().map_err(|source| CoreError::io(program, source))?;
 
@@ -509,9 +905,13 @@ fn run_unconfined(
         // meant "may forge the trusted path", and a module that could draw
         // Thalyx's confirmation frame on the human's screen would be doing
         // exactly that. See `thalyx_sandbox::launch::spawn`, which explains
-        // why these are pipes Thalyx drains rather than the null device.
+        // why these are pipes Thalyx drains rather than the null device — and
+        // why a request pipe from Thalyx is not the terminal either.
         command
-            .stdin(std::process::Stdio::null())
+            .stdin(match request.wiring {
+                Wiring::Collected => std::process::Stdio::null(),
+                Wiring::Talks => std::process::Stdio::piped(),
+            })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
@@ -520,25 +920,19 @@ fn run_unconfined(
     };
     drop(module_end);
 
-    let draining_out = drain(child.stdout.take());
-    let draining_err = drain(child.stderr.take());
+    let (draining_out, stdout) = match request.wiring {
+        Wiring::Collected => (Some(drain(child.stdout.take())), None),
+        Wiring::Talks => (None, child.stdout.take()),
+    };
 
-    let mut api = crate::api::ModuleApi::for_module(manifest, &permissions);
-    let serving = std::thread::spawn(move || {
-        let mut stream = thalyx_end;
-        let outcome = thalyx_abi::serve(&mut stream, &mut api);
-        (api, outcome)
-    });
-
-    let status = child
-        .wait()
-        .map_err(|source| CoreError::io(program, source))?;
-
-    let (api, served) = serving
-        .join()
-        .map_err(|_| CoreError::io(program, std::io::Error::other("the API thread panicked")))?;
-
-    Ok(RunOutcome {
+    Ok(RunningModule {
+        held: None,
+        serving: Some(serve_channel(manifest, &permissions, thalyx_end)),
+        stdin: child.stdin.take(),
+        stdout,
+        draining_out,
+        draining_err: Some(drain(child.stderr.take())),
+        child,
         module_id: manifest.id.clone(),
         version: manifest.version.clone(),
         program: program.to_path_buf(),
@@ -546,12 +940,8 @@ fn run_unconfined(
         policy: None,
         isolation: None,
         isolated: false,
-        uid: None,
+        enforcement: None,
         permissions,
-        exit_code: status.code(),
-        said: api.said().to_vec(),
-        wrote: collect(draining_out, draining_err),
-        dropped_notices: api.dropped_notices(),
-        channel_error: served.err().map(|error| error.to_string()),
+        uid: None,
     })
 }

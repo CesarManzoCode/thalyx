@@ -39,10 +39,12 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ### 2. Arquitectura general (cómo está construido)
 - [[Superficie-para-el-LLM]] — **el catálogo entero** de lo que se puede crear o cambiar para que un LLM se mueva mejor aquí, y el criterio de cinco costos que decide si algo entra
+- [[La-Pantalla]] — **una sola pantalla que es Thalyx**: sin ventanas, sin escritorio, y la tipografía cargando procedencia
 - [[Arquitectura-Asimetrica]] — cara humana vs. cara IA
 - [[Core-Nucleo]] — el núcleo del sistema operativo
 - [[Core]] — el orquestador del flujo, y por qué es un solo proceso con módulos internos
 - [[Sistema-de-Modulos]] — el ecosistema de módulos `.thmod`
+- [[Programas-Ajenos]] — **`ejecutar`**: correr un programa que nadie firmó, confinado, y por qué eso no toca la firma
 - [[Formato-Manifiesto-Thmod]] — el schema del manifiesto
 - [[Agente-Conversacional]] — el traductor de intención
 - [[Gamas-de-Modelo]] — cuatro gamas que elige el usuario, y qué garantiza la gramática
@@ -72,6 +74,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 
 ### 6. Decisiones y debates (el porqué de cada cosa)
 - [[Debates-Overview]] — mapa de todos los debates resueltos
+- [[Ritmo-de-Construccion]] — **agresivos sin ser estúpidos**: qué se le pregunta a Cesar y qué se hace sin preguntar
 
 ### 7. Pendientes (qué falta)
 - [[Punto-Actual]] — **dónde quedó el proyecto y qué sigue**; se actualiza cada vez que se termina algo
@@ -81,6 +84,8 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Fases-de-Implementacion]] — las 4 fases del roadmap
 - [[Criterio-de-Salida-Fase-1]] — la definición de terminado de la Fase 1
 - [[Condiciones-de-Adopcion]] — gates para abrir a usuarios (NO son de Fase 1)
+- [[Prioridad-Operativa]] — **la prioridad de esta etapa**: demostrar y medir que Thalyx mejora el trabajo de un agente; qué queda diferido y qué no cambia
+- [[Evidencia-de-Agentes]] — **el documento canónico de evidencia**: cada corrida medida, incluidas las que no favorecen a Thalyx
 - [[Por-Que-Elegirian-Este-SO]] — análisis honesto de propuesta de valor, con huecos reconocidos
 
 ### 9. Investigación
@@ -93,6 +98,7 @@ nota de esta bóveda que lo contradiga está equivocada.
 - [[Construccion-del-ISO]] — **la imagen es el kernel y un programa**, y cómo se cuenta
 - [[Primer-Arranque]] — los comandos para arrancarla, y qué significa cada fallo
 - [[Cargador-BPF-Propio]] — cómo Thalyx carga su enforcement sin bpftool
+- [[Que-Necesita-Un-Agente-Ajeno]] — **medido**: 40 de 41 llamadas ya permitidas, y dónde sí bloquea
 
 ### 11. Contexto personal y de carrera
 - [[Estrategia-Carrera]] · [[Riesgo-de-Ejecucion]]

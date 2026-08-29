@@ -45,6 +45,24 @@ El diferenciador: *"el sistema fue diseñado desde cero asumiendo que un agente 
 
 Todo lo anterior es razonamiento a priori, no evidencia. Es correcto diseñar primero y validar después mientras se está en fase de construcción sin audiencia, pero mostrarle el prototipo a 2-3 developers reales en algún punto de Fase 1 (aunque sea rudimentario) y ver si genuinamente entienden el valor sin necesitar la explicación profunda que se le da a una IA, ahorraría mucho tiempo de construir features que solo al creador le parecen obviamente valiosas.
 
+## Revisiones
+
+### 2026-08-28 — El hueco de «no hay ninguna métrica concreta» dejó de estar vacío
+**Antes:** *«Vacío identificado: no hay ninguna métrica concreta de "esto te
+ahorra X"»*, con tres candidatos a medir y ninguno medido.
+**Ahora:** esa frase era cierta cuando se escribió y ya no lo es del todo. Hay
+tres corridas controladas con un agente de programación real, el mismo modelo en
+los dos brazos, anotadas una por una en [[Evidencia-de-Agentes]]: dos de lectura
+semántica donde el brazo Thalyx fue correcto y gastó bastante menos costo y
+contexto, y una de escritura simple donde no hubo ventaja.
+**Lo que no cambia:** los tres candidatos que esta nota listó —tiempo de setup,
+context-switch, fricción de permisos— **siguen sin medirse**, y la pregunta
+abierta más importante de esta nota sigue abierta: *¿es un dolor real y sentido
+por otros?* Tres corridas de un banco propio no son usuarios. Y **ningún decreto
+de la bóveda ha sido contrastado todavía con una persona ajena al proyecto**.
+**Motivo:** [[Prioridad-Operativa]], que convierte precisamente eso en la
+prioridad de la etapa.
+
 ## Relacionado
 - [[Condiciones-de-Adopcion]]
 - [[Filosofia-Fundacional]]

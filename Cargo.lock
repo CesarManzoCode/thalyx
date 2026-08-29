@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,6 +191,15 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "core_maths"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -382,6 +397,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "fontdue"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7894823fa221401399e2598f8b63f81ac77ff5c63248b7656779bff1632d7d3d"
+dependencies = [
+ "hashbrown 0.15.5",
+ "ttf-parser",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -454,6 +479,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash",
 ]
 
@@ -522,6 +549,12 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libsqlite3-sys"
@@ -893,6 +926,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-btrfs"
 version = "0.1.0"
 dependencies = [
@@ -900,6 +942,13 @@ dependencies = [
  "thalyx-syscall",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "thalyx-capture"
+version = "0.1.0"
+dependencies = [
+ "thalyx-syscall",
 ]
 
 [[package]]
@@ -917,21 +966,28 @@ dependencies = [
  "thalyx-abi",
  "thalyx-agent",
  "thalyx-bpf",
+ "thalyx-bridge",
  "thalyx-btrfs",
+ "thalyx-capture",
  "thalyx-contract",
  "thalyx-core",
+ "thalyx-edit",
  "thalyx-files",
  "thalyx-graph",
  "thalyx-install",
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-memory",
+ "thalyx-net",
  "thalyx-permd",
+ "thalyx-proc",
  "thalyx-sandbox",
+ "thalyx-screen",
  "thalyx-snapshot",
  "thalyx-syscall",
  "thalyx-term",
  "thalyx-watch",
+ "thiserror",
  "toml",
  "uuid",
 ]
@@ -965,11 +1021,22 @@ dependencies = [
  "thalyx-journal",
  "thalyx-manifest",
  "thalyx-permd",
+ "thalyx-proc",
  "thalyx-sandbox",
  "thalyx-snapshot",
  "thalyx-syscall",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "thalyx-edit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thalyx-term",
+ "thiserror",
 ]
 
 [[package]]
@@ -980,6 +1047,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
@@ -988,10 +1056,11 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
+ "thalyx-files",
  "thalyx-parser",
  "thiserror",
- "walkdir",
 ]
 
 [[package]]
@@ -1033,6 +1102,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-mcp"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thalyx-bridge",
+]
+
+[[package]]
 name = "thalyx-memory"
 version = "0.1.0"
 dependencies = [
@@ -1040,6 +1120,14 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "thalyx-net"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -1060,6 +1148,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-proc"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thalyx-syscall",
+ "thiserror",
+]
+
+[[package]]
 name = "thalyx-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -1071,6 +1168,14 @@ dependencies = [
  "thalyx-permd",
  "thalyx-syscall",
  "thiserror",
+]
+
+[[package]]
+name = "thalyx-screen"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "fontdue",
 ]
 
 [[package]]
@@ -1191,6 +1296,15 @@ name = "toml_writer"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+dependencies = [
+ "core_maths",
+]
 
 [[package]]
 name = "typenum"

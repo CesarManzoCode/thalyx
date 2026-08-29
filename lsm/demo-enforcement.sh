@@ -66,8 +66,23 @@ cleanup() {
         sudo bpftool map delete pinned "$PINDIR/maps/thalyx_policy" \
             key hex $KEY_HEX 2>/dev/null && echo "    policy entry removed"
     fi
-    sudo bpftool map update pinned "$PINDIR/maps/thalyx_enforcing" \
-        key 0 0 0 0 value 0 0 0 0 2>/dev/null && echo "    back to observe mode"
+    # Loudly, and never swallowed. This demo is the only thing in the tree that
+    # arms the machine and then gives it back, and a restore that failed in
+    # silence leaves every later command on this machine running under a kernel
+    # that denies — which is not a state anybody would think to look for.
+    #
+    # It used to be `2>/dev/null && echo "back to observe mode"`: the success
+    # said so and the failure said nothing at all, which is precisely backwards.
+    # `verify.sh` came back on 2026-08-26 with twelve `FAILED` from stages that
+    # had run enforcing without knowing it, and this is the first place anybody
+    # would have to rule out.
+    if sudo bpftool map update pinned "$PINDIR/maps/thalyx_enforcing" \
+        key 0 0 0 0 value 0 0 0 0; then
+        echo "    back to observe mode"
+    else
+        red "    COULD NOT GO BACK TO OBSERVE MODE — this machine is still denying"
+        red "    run: sudo make -C lsm observe"
+    fi
     sudo rmdir "$CGROUP" 2>/dev/null && echo "    cgroup removed"
 }
 

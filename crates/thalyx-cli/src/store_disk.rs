@@ -672,8 +672,6 @@ fn format(
     no_subvolumes: bool,
     workspace: &Path,
 ) -> Fallible {
-    use std::io::{IsTerminal, Write};
-
     println!("About to write a Thalyx store onto {}.", device.display());
     println!();
     // What is there now, said before the question rather than after it. A
@@ -693,17 +691,23 @@ fn format(
 
     if yes {
         println!("  confirmed with --yes");
-    } else if !std::io::stdin().is_terminal() {
-        // Silence is not consent, the same rule the capability prompt keeps.
-        eprintln!("  no terminal available to confirm; refusing");
-        return Err("formatting was not confirmed".into());
     } else {
-        print!("  Type the device's path to confirm: ");
-        let _ = std::io::stdout().flush();
-        let answer = crate::term::read_answer()?.unwrap_or_default();
-        if answer.trim() != device.display().to_string() {
-            eprintln!("  that is not {}; refusing", device.display());
-            return Err("formatting was not confirmed".into());
+        // Silence is not consent, the same rule the capability prompt keeps.
+        let asked = crate::ask::Accepts::Exactly(device.display().to_string());
+        match crate::ask::confirm("  Type the device's path to confirm: ", &asked) {
+            crate::ask::Answered::Yes => {}
+            crate::ask::Answered::No => {
+                eprintln!("  that is not {}; refusing", device.display());
+                return Err("formatting was not confirmed".into());
+            }
+            crate::ask::Answered::NoOneToAsk => {
+                eprintln!("  no terminal available to confirm; refusing");
+                return Err("formatting was not confirmed".into());
+            }
+            crate::ask::Answered::Unreadable => {
+                eprintln!("  the answer could not be read; refusing");
+                return Err("formatting was not confirmed".into());
+            }
         }
     }
 
@@ -875,12 +879,20 @@ mod tests {
     }
 
     #[test]
-    fn both_readmes_name_every_package_the_doctor_asks_for() {
+    fn the_document_that_teaches_the_build_names_every_package_the_doctor_asks_for() {
         // The exit criterion is a person outside the project following **only**
-        // the README. If `doctor` grows a prerequisite and the README does not,
-        // that person installs an incomplete list, re-runs, and is sent round
-        // again — which is the one-at-a-time misery `doctor` exists to end,
-        // moved into the document instead of the build.
+        // the written instructions. If `doctor` grows a prerequisite and that
+        // document does not, the person installs an incomplete list, re-runs,
+        // and is sent round again — which is the one-at-a-time misery `doctor`
+        // exists to end, moved into the document instead of the build.
+        //
+        // The document is `docs/BOOT.md` and it used to be both READMEs. The
+        // rewrite of 2026-08-21 moved the build path out of the front page and
+        // this test kept asserting on the old home, so it failed on `main` for
+        // a day saying the README never mentions `bc` — which was true, correct,
+        // and no longer the question. **The claim survived the move; the file
+        // name in it did not**, which is the whole reason this is bound to a
+        // path rather than to a phrase.
         //
         // Read from the Makefile rather than hardcoded here, so this cannot
         // drift the same way. `libbpf-dev` is in the list because it was
@@ -896,17 +908,24 @@ mod tests {
              parser above has probably stopped matching the Makefile"
         );
 
-        for name in ["README.md", "README.es.md"] {
-            let text = readme(name);
-            for package in &wanted {
-                assert!(
-                    text.contains(package.as_str()),
-                    "{name} never mentions `{package}`, which `doctor` will ask \
-                     for — so somebody following only that file installs an \
-                     incomplete list"
-                );
-            }
+        let name = "docs/BOOT.md";
+        let text = readme(name);
+        for package in &wanted {
+            assert!(
+                text.contains(package.as_str()),
+                "{name} never mentions `{package}`, which `doctor` will ask \
+                 for — so somebody following only that file installs an \
+                 incomplete list"
+            );
         }
+
+        // And the front page must still lead there. A build path in a file
+        // nothing points at is a build path nobody finds, which is the same
+        // failure this test exists for one step earlier.
+        assert!(
+            readme("README.md").contains("docs/BOOT.md"),
+            "README.md no longer points at the document that carries the build"
+        );
     }
 
     #[test]
@@ -1456,11 +1475,22 @@ mod tests {
         // Not a check that the file parses as make: only that every name PID 1
         // will mount is a subvolume somebody created, and that nothing else was
         // created that nothing mounts.
+        //
+        // **Only the top level.** Since the external agent bridge, the Makefile
+        // also creates a subvolume *inside* `user` for the workspace a
+        // programming agent works in — because `intento` snapshots exactly the
+        // subvolume the session stands in, and a workspace that were a plain
+        // directory would make every attempt answer `not_a_subvolume`. That one
+        // is not on this list and must not be: PID 1 never mounts it, it arrives
+        // with whatever `user` is mounted at, and its name is whatever project
+        // somebody imported. Counting it here is what this test did on the day
+        // it was written, and the failure read as the decree being broken.
         let text = image_makefile();
 
         let mut created: Vec<&str> = text
             .lines()
             .filter_map(|line| line.trim().strip_prefix("btrfs subvolume create $(MNT)/"))
+            .filter(|name| !name.contains('/'))
             .collect();
         created.sort_unstable();
         assert!(

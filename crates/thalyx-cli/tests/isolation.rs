@@ -835,50 +835,15 @@ fn a_write_grant_on_someone_elses_directory_works_through_an_idmapped_mount() {
         target.path().display()
     ));
 
-    let rootfs = thalyx_sandbox::RootFs::for_module_as(
-        module.dir(),
-        &[grant(target.path(), "write")],
-        Some(thalyx_core::uids::FIRST_UID),
-    );
-
-    let rootfs = match rootfs {
-        Ok(rootfs) => rootfs,
-        Err(error) => panic!("{error}"),
-    };
-
-    let spec = thalyx_sandbox::LaunchSpec {
-        cgroup: arena.0.join("org.thalyx.demo"),
-        profile: profile::MODULE_STANDARD.to_string(),
-        namespaces: standard(),
-        rootfs: Some(rootfs),
-        program: module.program(),
-        uid: Some(thalyx_core::uids::FIRST_UID),
-        channel_fd: None,
-    };
-
-    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
-        .args(
-            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
-                .expect("argv"),
-        )
-        .output()
-        .expect("launch");
-
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    // Keyed on what the kernel refusing actually says, and nothing else. A
-    // looser match caught the helper's own goodbye and reported NOT PROVEN for
-    // a run that had worked.
-    if stderr.contains("the kernel refused to remap") {
-        eprintln!("NOT PROVEN: this kernel or filesystem refused the idmapped mount.");
-        eprintln!("  {}", stderr.trim());
-        eprintln!("  This test did not run. It did not pass.");
-        assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
-            "{stderr}"
-        );
+    let output = remapped(&arena, &module, &[grant(target.path(), "write")]).expect("launch");
+    if remap_refused(
+        &output,
+        "a write onto someone else's directory went unchecked",
+    ) {
         return;
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "{stderr}");
     assert_eq!(stdout(&output), "wrote");
 
@@ -916,12 +881,37 @@ fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
         dir = target.path().display()
     ));
 
+    let output = remapped(&arena, &module, &[grant(target.path(), "read")]).expect("launch");
+    if remap_refused(&output, "a read of a private directory went unchecked") {
+        return;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    let seen = stdout(&output);
+    assert!(seen.contains("granted content"), "{seen}");
+    assert!(seen.contains("read-only"), "{seen}");
+    assert!(!target.path().join("more").exists());
+}
+
+/// Launch a module in a root remapped to its own uid, and hand back what it said.
+///
+/// Extracted when this became the third copy of the same eight lines. It is
+/// `create_target_like`'s lesson one crate over: two pieces of code that must
+/// agree about the same kernel protocol, kept apart, stop agreeing — and here
+/// the protocol is which uid the root was built for, which has to be the same
+/// uid the launch runs as or the remapping proves nothing.
+fn remapped(
+    arena: &Arena,
+    module: &Module,
+    grants: &[thalyx_manifest::Permission],
+) -> std::io::Result<Output> {
     let rootfs = thalyx_sandbox::RootFs::for_module_as(
         module.dir(),
-        &[grant(target.path(), "read")],
+        grants,
         Some(thalyx_core::uids::FIRST_UID),
     )
-    .expect("rootfs");
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
 
     let spec = thalyx_sandbox::LaunchSpec {
         cgroup: arena.0.join("org.thalyx.demo"),
@@ -933,27 +923,482 @@ fn a_read_grant_on_a_private_directory_is_readable_and_still_not_writable() {
         channel_fd: None,
     };
 
-    let output = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+    Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
+        )
+        .output()
+}
+
+/// Whether this kernel or filesystem turned the remapping down.
+///
+/// Keyed on what the refusal actually says, and nothing else. A looser match
+/// caught the helper's own goodbye and reported `NOT PROVEN` for a run that had
+/// worked — the eleventh time the instrument was the thing that was wrong.
+fn remap_refused(output: &Output, what: &str) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.contains("the kernel refused to remap") {
+        return false;
+    }
+
+    eprintln!("NOT PROVEN: this kernel or filesystem refused the idmapped mount, so {what}");
+    eprintln!("  {}", stderr.trim());
+    eprintln!("  This test did not run. It did not pass.");
+    assert!(
+        std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
+        "{stderr}"
+    );
+    true
+}
+
+#[test]
+fn a_write_grant_on_a_single_file_lands_through_the_remapped_mount() {
+    // The shape every other grant in this file happened not to have. On
+    // 2026-08-04 a granted path that named one file — the greeter's
+    // `notes.txt` — got a directory for its mount point, and the remapped bind
+    // died at its last syscall with `EINVAL` on the machine's own console,
+    // while this suite was green: every permission in every test here was a
+    // directory, so the kernel rule that a bind's target must be the same kind
+    // as its source was never asked about.
+    //
+    // `create_target_like` has held that rule in one place since, and a unit
+    // test covers it without mounting anything. This is the same claim made
+    // where it broke — a real remapped root, a real bind, one real file.
+    let Some(arena) = arena("idmap-file") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let home = tempfile::tempdir().unwrap();
+    let note = home.path().join("notes.txt");
+    std::fs::write(&note, "what was already there\n").unwrap();
+    set_mode(&note, 0o600); // the human's file, and nobody else's
+
+    let module = Module::with(&format!(
+        "cat {note}; echo 'and what the module added' >> {note} 2>/dev/null \
+         && echo appended || echo DENIED",
+        note = note.display()
+    ));
+
+    let output = remapped(&arena, &module, &[grant(&note, "write")]).expect("launch");
+    if remap_refused(&output, "a granted file was never bound") {
+        return;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+
+    let seen = stdout(&output);
+    assert!(
+        seen.contains("what was already there"),
+        "the granted file was not readable inside: {seen}"
+    );
+    assert!(seen.contains("appended"), "the write was refused: {seen}");
+
+    // And on the host it is the same file, not a copy and not a directory with
+    // something in it: the bind has to have landed on the file itself.
+    let after = std::fs::read_to_string(&note).unwrap();
+    assert_eq!(after, "what was already there\nand what the module added\n");
+
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        std::fs::metadata(&note).unwrap().uid(),
+        current_uid(),
+        "the file changed hands; the module's user does not exist outside Thalyx"
+    );
+}
+
+#[test]
+fn a_granted_file_does_not_bring_the_directory_it_lives_in() {
+    // The control for the one above. Without it, "the granted file is
+    // reachable" would also be true of a sandbox that bound its whole
+    // directory — which is the obvious way to make a file grant work and the
+    // one that hands over everything beside it.
+    let Some(arena) = arena("idmap-file-only") else {
+        return;
+    };
+    let _cgroup = cgroup_in(&arena);
+
+    let home = tempfile::tempdir().unwrap();
+    let note = home.path().join("notes.txt");
+    std::fs::write(&note, "granted\n").unwrap();
+    std::fs::write(home.path().join("private.txt"), "never granted\n").unwrap();
+
+    let module = Module::with(&format!(
+        "cat {note}; [ -e {other} ] && echo REACHABLE || echo absent",
+        note = note.display(),
+        other = home.path().join("private.txt").display()
+    ));
+
+    let output = remapped(&arena, &module, &[grant(&note, "read")]).expect("launch");
+    if remap_refused(&output, "the neighbour of a granted file went unchecked") {
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let seen = stdout(&output);
+    assert!(seen.contains("granted"), "{seen}");
+    assert!(
+        seen.contains("absent"),
+        "the file's neighbour came along with it: {seen}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The order the confinement is built in, measured rather than reasoned about.
+// ---------------------------------------------------------------------------
+
+/// A launch traced by `strace`, so the *order* of its syscalls can be read.
+///
+/// `strace` and not Thalyx, and that is the whole design of this check: rule 5
+/// says the instrument includes the harness, and asking Thalyx whether it did
+/// its work in the right order would pass on any build where the ordering and
+/// the belief about it are wrong together — which is exactly what happened.
+/// `-y` is what makes it readable at all: a `write` carries a descriptor
+/// number, and `-y` annotates it with the path it was opened from.
+fn traced_launch(arena: &Arena, module: &Module) -> Option<(Output, String)> {
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), &[]).expect("rootfs");
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: arena.0.join("org.thalyx.demo"),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: None,
+        channel_fd: None,
+    };
+
+    let scratch = tempfile::tempdir().expect("temp dir");
+    let trace = scratch.path().join("trace");
+
+    let output = Command::new("strace")
+        .args(["-f", "-y", "-o"])
+        .arg(&trace)
+        .arg("--")
+        .arg(env!("CARGO_BIN_EXE_thalyx"))
         .args(
             thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
                 .expect("argv"),
         )
-        .output()
-        .expect("launch");
+        .output();
 
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stderr.contains("the kernel refused to remap") {
-        eprintln!("NOT PROVEN: idmapped mounts refused here. This test did not pass.");
-        assert!(
-            std::env::var_os("THALYX_REQUIRE_CGROUP_TESTS").is_none(),
-            "{stderr}"
-        );
-        return;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return unmeasurable(&format!("strace could not be run: {error}")),
+    };
+
+    let text = std::fs::read_to_string(&trace).unwrap_or_default();
+    if text.is_empty() {
+        // `strace` exists but could not attach — a container without
+        // `CAP_SYS_PTRACE`, or `yama/ptrace_scope`. Never a pass: nothing was
+        // measured.
+        return unmeasurable("strace produced no trace, so it could not attach");
     }
 
-    assert!(output.status.success(), "{stderr}");
-    let seen = stdout(&output);
-    assert!(seen.contains("granted content"), "{seen}");
-    assert!(seen.contains("read-only"), "{seen}");
-    assert!(!target.path().join("more").exists());
+    Some((output, text))
+}
+
+fn unmeasurable(reason: &str) -> Option<(Output, String)> {
+    let message = format!("NOT PROVEN: the order of the launch could not be traced ({reason})");
+    assert!(
+        std::env::var_os("THALYX_REQUIRE_STRACE_TESTS").is_none(),
+        "{message}"
+    );
+    eprintln!("{message}");
+    eprintln!("  This test did not run. It did not pass.");
+    None
+}
+
+/// The pid `strace -f` prefixes a line with.
+fn pid_of(line: &str) -> Option<&str> {
+    let pid = line.split_whitespace().next()?;
+    pid.chars().all(|c| c.is_ascii_digit()).then_some(pid)
+}
+
+/// The syscall name, as it appears after the pid.
+fn call_on(line: &str) -> &str {
+    line.split_whitespace().nth(1).unwrap_or("")
+}
+
+fn is_an_open(line: &str) -> bool {
+    let call = call_on(line);
+    call.starts_with("open(") || call.starts_with("openat(") || call.starts_with("openat2(")
+}
+
+/// Whether this line opens something in a mode the LSM counts as writing.
+///
+/// The same reading `lsm/file_open` does — `flags & O_ACCMODE`, where
+/// `O_RDONLY` is 0 — so what this test calls a write is what the kernel calls
+/// one, rather than a second opinion about it.
+fn opens_for_writing(line: &str) -> bool {
+    let call = call_on(line);
+    if call.starts_with("creat(") {
+        return true;
+    }
+    is_an_open(line) && (line.contains("O_WRONLY") || line.contains("O_RDWR"))
+}
+
+#[test]
+fn nothing_is_opened_for_writing_after_the_launcher_takes_the_module_s_identity() {
+    // The defect of 2026-08-26, and the only shape of test that could have
+    // caught it a day earlier.
+    //
+    // Joining the cgroup is the moment the process starts being governed by
+    // the module's permissions: `lsm/file_open` looks up the policy by cgroup
+    // id, asks for `FS_WRITE` on anything not opened read-only, and answers
+    // `-EPERM`. So every write Thalyx has to do to *build* the confinement has
+    // to happen before that line. It did not: the launcher joined first and
+    // assembled afterwards, the LSM denied Thalyx creating the mount point for
+    // `/dev/null`, and on an enforcing kernel nothing could be launched at all
+    // — not a guest, not a signed module.
+    //
+    // No test saw it because this container has no BPF LSM, so `check()`
+    // returns 0 and every one of those opens succeeds. The property that
+    // survives without an LSM is the **order**, and strace can read it.
+    let Some(arena) = arena("order") else { return };
+    let _cgroup = cgroup_in(&arena);
+
+    let module = Module::with("echo inside");
+    let Some((output, trace)) = traced_launch(&arena, &module) else {
+        return;
+    };
+
+    // The control, first. Everything below is a claim about a window in a
+    // trace, and a launch that died early would have a very quiet one.
+    assert_eq!(
+        stdout(&output),
+        "inside",
+        "the module did not run, so the order of a launch is not what was measured: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lines: Vec<&str> = trace.lines().collect();
+
+    // Rule 10, and this is exactly the shape it warns about: a failure to read
+    // is not a failure to exist. The whole check hangs on `-y`, which annotates
+    // a descriptor with the path it was opened from — without it a `write` is a
+    // number and the join is invisible. An old `strace` would then look
+    // identical to a launcher that never joined its cgroup, which is a very
+    // loud accusation to make about somebody else's tooling. This project has
+    // already been caught twice measuring the instrument's version instead of
+    // the subject.
+    let Some(join) = lines
+        .iter()
+        .position(|line| line.contains("write(") && line.contains("cgroup.procs>"))
+    else {
+        if !trace.contains("cgroup.procs>") {
+            unmeasurable(
+                "this strace does not annotate descriptors with their paths, so the join cannot be located",
+            );
+            return;
+        }
+        panic!("the launcher never wrote its pid into cgroup.procs");
+    };
+    let pid = pid_of(lines[join]).expect("a pid on the join line");
+
+    let exec = lines[join + 1..]
+        .iter()
+        .position(|line| pid_of(line) == Some(pid) && call_on(line).starts_with("execve("))
+        .map(|offset| join + 1 + offset)
+        .expect("the launcher never reached execve after joining the cgroup");
+
+    // The baseline, and rule 4 is the whole reason it is here: "no writes
+    // after the join" is also true of a launcher that never wrote anything,
+    // and of one that never assembled a root at all.
+    //
+    // Asked in two halves on purpose. The mount point for `/dev/null` is the
+    // exact write the machine denied, so "it was never created" and "it was
+    // created on the wrong side of the join" are different findings and must
+    // not arrive as the same sentence — the first says this trace proves
+    // nothing, the second is the defect.
+    let created: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            pid_of(line) == Some(pid) && opens_for_writing(line) && line.contains("/dev/null")
+        })
+        .map(|(at, _)| at)
+        .collect();
+    assert!(
+        !created.is_empty(),
+        "the launcher never created a mount point for /dev/null anywhere in this trace, \
+         so the ordering was not exercised and nothing below means anything"
+    );
+    let late: Vec<&usize> = created.iter().filter(|&&at| at > join).collect();
+    assert!(
+        late.is_empty(),
+        "the mount point for /dev/null was created after the launcher joined the cgroup, \
+         which is the -EPERM that stopped every launch on an enforcing kernel:\n{}",
+        late.iter()
+            .map(|&&at| format!("  {}", lines[at]))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // And the claim.
+    let window = &lines[join + 1..exec];
+
+    let writes: Vec<&&str> = window
+        .iter()
+        .filter(|line| pid_of(line) == Some(pid) && opens_for_writing(line))
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "the launcher opened something for writing after joining the cgroup, \
+         which an enforcing kernel answers with -EPERM:\n{}",
+        writes
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Fail closed, rule 9. `strace -f` can split a syscall across two lines
+    // when another process interleaves, and half an `openat` does not say what
+    // it was opened for. An unreadable line is not a line that said no.
+    let unreadable: Vec<&&str> = window
+        .iter()
+        .filter(|line| {
+            pid_of(line) == Some(pid) && is_an_open(line) && line.contains("<unfinished")
+        })
+        .collect();
+    assert!(
+        unreadable.is_empty(),
+        "an open in the window was cut in half by strace, so what it asked for cannot be read:\n{}",
+        unreadable
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn the_pid_the_launcher_writes_lands_the_right_task_in_the_cgroup() {
+    // The outside column for a subtlety the reorder of 2026-08-26 introduced,
+    // and the only place it can be seen.
+    //
+    // The join now happens in `init`, which is PID 1 of its own namespace — so
+    // `std::process::id()` is 1, and 1 is what gets written into `cgroup.procs`.
+    // That is correct only because the kernel resolves the number in the
+    // namespace of the task doing the writing. If it did not, writing "1" to a
+    // cgroup on the host would move **the machine's own init** into the
+    // module's cgroup, under the module's policy — which is not a bug that
+    // announces itself, and which nothing inside the sandbox could ever see.
+    //
+    // So this reads `cgroup.procs` from out here, in the host's pid namespace,
+    // with `std::fs` rather than through Thalyx: asking the code under test
+    // whether it put the right task in the right place is the failure mode this
+    // whole file exists to avoid.
+    let Some(arena) = arena("vpid") else { return };
+    let cgroup = cgroup_in(&arena);
+
+    let module = Module::with("sleep 3");
+    let rootfs = thalyx_sandbox::RootFs::for_module(module.dir(), &[]).expect("rootfs");
+    let spec = thalyx_sandbox::LaunchSpec {
+        cgroup: cgroup.path().to_path_buf(),
+        profile: profile::MODULE_STANDARD.to_string(),
+        namespaces: standard(),
+        rootfs: Some(rootfs),
+        program: module.program(),
+        uid: None,
+        channel_fd: None,
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thalyx"))
+        .args(
+            thalyx_sandbox::launch::argv(thalyx_sandbox::launch::ENTER_MARKER, &spec, &[])
+                .expect("argv"),
+        )
+        .spawn()
+        .expect("launch");
+
+    // Poll rather than sleep once: a fixed wait is a race with a slow machine
+    // in one direction and wasted seconds in the other.
+    let procs = cgroup.path().join("cgroup.procs");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut members: Vec<i64> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        members = std::fs::read_to_string(&procs)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|pid| pid.parse().ok())
+            .collect();
+        if !members.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let outside = std::process::id() as i64;
+    let launcher = child.id() as i64;
+
+    // Corroborated here, while the module is still inside its `sleep`. The
+    // first version of this test waited for the launch to finish and then asked
+    // `/proc` about pids that had been gone for three seconds, which is a test
+    // measuring its own ordering rather than Thalyx's.
+    let mut corroborated = 0;
+    let name = cgroup
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a cgroup name")
+        .to_string();
+    for member in &members {
+        // Rule 10. A task that exited between the two reads cannot answer, and
+        // that is not the same as answering no.
+        let Ok(its_cgroup) = std::fs::read_to_string(format!("/proc/{member}/cgroup")) else {
+            continue;
+        };
+        assert!(
+            its_cgroup.contains(&name),
+            "pid {member} is listed in cgroup.procs and does not agree it is in \
+             this cgroup: {its_cgroup}"
+        );
+        corroborated += 1;
+    }
+
+    let _ = child.wait();
+
+    // The baseline: something joined at all. Without it every assertion below
+    // is true of an empty file, which is also what a launch that died early
+    // produces.
+    assert!(
+        !members.is_empty(),
+        "nothing ever appeared in {}, so the module never joined its cgroup",
+        procs.display()
+    );
+
+    // And the claim. `1` here would be the host's init, which is the whole
+    // reason this test exists; the test process and the launcher are the two
+    // other tasks that must never be in there.
+    assert!(
+        !members.contains(&1),
+        "pid 1 is in the module's cgroup: the vpid was written to the host's \
+         namespace and moved the machine's init under a module's policy"
+    );
+    assert!(
+        !members.contains(&outside),
+        "the test process itself is in the module's cgroup: {members:?}"
+    );
+    assert!(
+        !members.contains(&launcher),
+        "the outer launcher is in the module's cgroup, which it stopped joining \
+         when the join moved into `init`: {members:?}"
+    );
+
+    // And `/proc` agrees with `cgroup.procs`, which is a different answer from
+    // a different place. More than one member is the correct answer and was the
+    // first thing this test got wrong: the module is `sh`, `sleep` is its child,
+    // and a cgroup that did not hold the children would not confine much.
+    assert!(
+        corroborated > 0,
+        "not one of {members:?} could be corroborated at /proc, so cgroup.procs \
+         is the only thing that said any of this"
+    );
 }

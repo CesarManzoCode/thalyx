@@ -1,6 +1,6 @@
 //! Terminal output, and the terminal end of the trusted path.
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use thalyx_core::install::Confirmer;
 use thalyx_core::permissions::Registry;
 use thalyx_core::trusted_path::CapabilityPrompt;
@@ -41,17 +41,34 @@ impl Confirmer for TerminalConfirmer {
             return false;
         }
 
-        print!("  Confirm? [y/N] ");
-        let _ = std::io::stdout().flush();
-
-        let answer = crate::term::read_answer()
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if false {
-            return false;
+        // **A read that failed is not a yes, and it is not an empty answer
+        // either.** Both refuse today, so this branch changes no behaviour — and
+        // that is exactly why it has to be here rather than left implicit.
+        //
+        // It went implicit on 2026-08-09, when this was moved onto the session's
+        // single `stdin` reader: the old shape was `if read_line(..).is_err() {
+        // return false }` and the new one folded the error into
+        // `unwrap_or_default()`, which does not match `y` and so refuses by
+        // accident of the default. Rule 9 says a corrupt input gets the cautious
+        // answer; a rule that holds because of what `String::default()` happens
+        // to be is a rule that stops holding the day somebody changes it, in the
+        // one place in the system where the cautious answer is the whole point.
+        //
+        // The leftover `if false { return false }` from that move is what made
+        // it visible — a guard nobody could delete because nobody could say what
+        // it had been guarding.
+        match crate::ask::confirm("  Confirm? [y/N] ", &crate::ask::Accepts::Yes) {
+            crate::ask::Answered::Yes => true,
+            crate::ask::Answered::No => false,
+            crate::ask::Answered::NoOneToAsk => {
+                eprintln!("  no terminal available to confirm; refusing");
+                false
+            }
+            crate::ask::Answered::Unreadable => {
+                eprintln!("  could not read the answer; refusing");
+                false
+            }
         }
-        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
     }
 }
 

@@ -548,6 +548,76 @@ fn a_rehearsed_delete_says_what_would_go_and_leaves_it_there() {
 }
 
 #[test]
+fn a_rehearsal_speaks_in_the_conditional_and_the_verb_it_rehearses_does_not() {
+    // The defect: `ensayo rm notas.txt` printed `removed /ruta/notas.txt` for a
+    // file that is still there. It is the same fault as `matar` reporting that
+    // it stopped a kernel thread — a sentence that says something happened when
+    // nothing did — and it is worse than an error, because the person who reads
+    // it learns not to believe the next sentence either.
+    //
+    // Why four rehearsal tests missed it: **the machine face was right the whole
+    // time.** Its `op` is `rehearse`, so a program could always tell the two
+    // apart, and a test that reads objects cannot see the sentence a person is
+    // shown. The only instrument that catches this is the human face itself.
+    let home = tempfile::tempdir().expect("a store");
+    std::fs::write(home.path().join("notas.txt"), "12345").expect("a file");
+
+    let output = piped(
+        home.path(),
+        &[
+            &inside(home.path()),
+            "ensayo rm notas.txt",
+            "ensayo cp notas.txt copia.txt",
+            "ensayo mv notas.txt movido.txt",
+            "ensayo mkdir nueva",
+            "salir",
+        ],
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+
+    for line in [
+        "would remove",
+        "would copy",
+        "would move",
+        "would make the directory",
+    ] {
+        assert!(
+            said.contains(line),
+            "the rehearsal did not say `{line}`: {said}"
+        );
+    }
+    // No rehearsal may claim a completed act, whatever wording replaces the
+    // ones above. `removed` is the one that was actually printed.
+    for claim in ["removed ", "copied ", "moved ", "made directory "] {
+        assert!(
+            !said.contains(claim),
+            "a rehearsal reported `{claim}` as done: {said}"
+        );
+    }
+    // And against the disk, from outside: nothing moved.
+    assert!(home.path().join("notas.txt").exists());
+    assert!(!home.path().join("copia.txt").exists());
+    assert!(!home.path().join("nueva").exists());
+
+    // The control, without which a change that made every sentence conditional
+    // would look exactly like this one. The real verb still reports the past.
+    let real = piped(
+        home.path(),
+        &[&inside(home.path()), "rm notas.txt", "salir"],
+    );
+    let real = String::from_utf8_lossy(&real.stdout);
+    assert!(
+        real.contains("removed "),
+        "the real verb stopped saying so: {real}"
+    );
+    assert!(
+        !real.contains("would remove"),
+        "the real verb hedged: {real}"
+    );
+    assert!(!home.path().join("notas.txt").exists());
+}
+
+#[test]
 fn a_rehearsal_refuses_where_the_real_thing_would_and_gives_the_same_word() {
     let home = a_home_with_things_in_it();
 
@@ -597,15 +667,58 @@ fn rehearsing_something_harmless_says_so_instead_of_pretending_to_work() {
 #[test]
 fn rehearsing_a_verb_that_has_no_check_half_says_that_rather_than_reporting_nothing() {
     let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &["structured on", "ensayo correr algo", "salir"],
+    );
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // `correr` is the last verb with no check half, and it stays honest rather
+    // than guessing: what a run would be allowed to do is a question for the
+    // kernel side, and answering it from the manifest would describe a run the
+    // machine may not be able to give. A rehearsal that quietly reported an
+    // empty plan would read as "this would do nothing", which is the opposite
+    // of true.
+    //
+    // This test named `revertir` until 2026-08-23, when `revertir` grew its
+    // rehearsal. The claim it makes is about the *shape* of the honest answer,
+    // so it moved to the verb that still has that shape rather than being
+    // deleted with the gap it was describing.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["error"], serde_json::json!("cannot"));
+}
+
+#[test]
+fn rehearsing_an_undo_with_nothing_to_undo_says_that_and_not_that_it_cannot() {
+    let home = a_home_with_things_in_it();
     let output = piped(home.path(), &["structured on", "ensayo revertir", "salir"]);
     let objects = objects(&output);
     let answer = answer_to(&objects, "rehearse");
 
-    // `revertir` changes the machine and has no check half yet. A rehearsal that
-    // quietly reported an empty plan would read as "this would do nothing",
-    // which is the opposite of true.
+    // Two different facts that a single `cannot` used to fold together: *this
+    // verb has no rehearsal* and *there is nothing here to undo*. The first
+    // sends a caller away for good; the second is a fact about this store right
+    // now, and it changes the moment anything is installed.
     assert_eq!(answer["ok"], serde_json::json!(false));
-    assert_eq!(answer["error"], serde_json::json!("cannot"));
+    assert_eq!(answer["error"], serde_json::json!("nothing_to_undo"));
+}
+
+#[test]
+fn a_rehearsed_install_says_what_it_would_ask_for_and_that_it_would_write_nothing() {
+    let home = a_home_with_things_in_it();
+    let output = piped(
+        home.path(),
+        &["structured on", "ensayo instalar dev.thalyx.nope", "salir"],
+    );
+    let objects = objects(&output);
+    let answer = answer_to(&objects, "rehearse");
+
+    // No repository here, so the interesting half is the refusal: it names the
+    // way out rather than only the problem, which is punto A2. What it must not
+    // do is answer as though the module were installable.
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(answer["remedy"], serde_json::json!("list_available"));
 }
 
 #[test]

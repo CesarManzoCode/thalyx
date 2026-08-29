@@ -8,14 +8,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thalyx-files.workspace = true
 thalyx-parser.workspace = true
 rusqlite.workspace = true
-walkdir.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

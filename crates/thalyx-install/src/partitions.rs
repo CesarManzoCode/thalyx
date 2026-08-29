@@ -20,6 +20,25 @@
 //! subdirectory of it holding a `partition` file is one of its partitions, with that
 //! file's contents being the number. The directory's name is the kernel's name for
 //! the device, which is what devtmpfs puts under `/dev`.
+//!
+//! ## Why the partitions are handed over open
+//!
+//! Closing a handle that had the whole disk open for writing makes the kernel
+//! re-examine the disk on its own, in its own time — which is a second partition
+//! rescan, after the one [`reread`] asked for and some unknowable number of
+//! milliseconds later. While it runs, every partition is deleted and then made
+//! again, and a node opened inside that window fails with `ENXIO`: *No such device
+//! or address*, for a name that is right there in `/dev`.
+//!
+//! Nothing observable says when that has finished. What *is* true is that the
+//! kernel refuses to drop the partitions of a disk while any of them is open, so
+//! [`appear`] returns the partitions **already open** and the caller keeps the
+//! handles: the second rescan then finds the disk busy and leaves it alone.
+//!
+//! Found on 2026-08-23, on the second install onto the same disk. The first one
+//! could not hit it — there were no partitions to delete and no leftover nodes, so
+//! the wait below did what it says. The second one had both, and the wait ended
+//! before it had waited for anything.
 
 use std::path::{Path, PathBuf};
 
@@ -64,14 +83,18 @@ pub enum PartitionError {
     },
 
     #[error(
-        "the kernel made {device}'s partition {number} and no node for it appeared \
-         at {expected} within {seconds} seconds"
+        "the kernel made {device}'s partition {number} and would not hand it over at \
+         {expected} within {seconds} seconds: {source}\n  \
+         `No such device or address` here means the name is there and the partition \
+         behind it is not — a node left by the table that was on this disk before."
     )]
     NoNode {
         device: PathBuf,
         number: u32,
         expected: PathBuf,
         seconds: u64,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error(
@@ -261,36 +284,47 @@ pub fn every() -> Vec<PathBuf> {
     found
 }
 
-/// Re-read the table and wait until the nodes for `wanted` partitions are there.
+/// Re-read the table and wait until the kernel will hand over `wanted` partitions,
+/// then keep holding them.
 ///
 /// The wait exists for hosts where `/dev` is made by udev rather than by the kernel:
 /// sysfs has the partition the instant the ioctl returns, and the node appears when
 /// a program in userspace gets round to it. Inside the image there is no udev and no
 /// wait — devtmpfs has already made the node — so the loop below normally goes round
 /// once, and the timeout is for the machine where it does not.
-pub fn appear(device: &Path, wanted: usize, seconds: u64) -> Result<Vec<PathBuf>, PartitionError> {
+///
+/// **The wait is for the partition, not for the name.** Until 2026-08-23 it asked
+/// whether the path existed, which on a disk being installed onto a second time is
+/// true before anything has happened at all: the nodes from the table that was there
+/// before are still in `/dev`. `exists` answers with `stat(2)`, and `stat(2)` on a
+/// node whose partition has been deleted succeeds — it is a name, and the name is
+/// fine. Only opening it asks the question the caller needs answered.
+///
+/// The handles come back with it because the answer has a shelf life; see the note
+/// at the top of this file.
+pub fn appear(
+    device: &Path,
+    wanted: usize,
+    seconds: u64,
+) -> Result<Vec<(PathBuf, std::fs::File)>, PartitionError> {
     reread(device)?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     loop {
         let found = of(device)?;
         if found.len() >= wanted {
-            let missing = found
-                .iter()
-                .take(wanted)
-                .find(|(_, path)| !path.exists())
-                .cloned();
-            match missing {
-                None => return Ok(found.into_iter().take(wanted).map(|(_, p)| p).collect()),
-                Some((number, expected)) if std::time::Instant::now() >= deadline => {
+            match hold(&found[..wanted]) {
+                Ok(open) => return Ok(open),
+                Err((number, expected, source)) if std::time::Instant::now() >= deadline => {
                     return Err(PartitionError::NoNode {
                         device: device.to_path_buf(),
                         number,
                         expected,
                         seconds,
+                        source,
                     });
                 }
-                Some(_) => {}
+                Err(_) => {}
             }
         } else if std::time::Instant::now() >= deadline {
             // The failure that reads as nothing having happened. A table the kernel
@@ -304,6 +338,36 @@ pub fn appear(device: &Path, wanted: usize, seconds: u64) -> Result<Vec<PathBuf>
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+/// Open every one of them, or none of them.
+///
+/// All or nothing on purpose. Holding one partition of a disk is enough to make the
+/// kernel refuse to drop any of them, so a half-open set left behind by a failed
+/// attempt would block the very rescan this is waiting for — and the next time round
+/// would find the same disk in the same wrong state, until the deadline.
+///
+/// Read-write, which is what the caller needs and therefore the only question worth
+/// asking. A probe that opened read-only could succeed where the real open is about
+/// to fail, and an instrument that answers an easier question than the one being
+/// asked is how this project has been fooled before.
+fn hold(
+    partitions: &[(u32, PathBuf)],
+) -> Result<Vec<(PathBuf, std::fs::File)>, (u32, PathBuf, std::io::Error)> {
+    let mut held = Vec::with_capacity(partitions.len());
+    for (number, path) in partitions {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(handle) => held.push((path.clone(), handle)),
+            // `held` goes out of scope here, which closes what was opened. That is
+            // the point: see the paragraph above.
+            Err(source) => return Err((*number, path.clone(), source)),
+        }
+    }
+    Ok(held)
 }
 
 #[cfg(test)]
@@ -324,6 +388,90 @@ mod tests {
             "{error:?}"
         );
         assert!(error.to_string().contains("losetup -f -P"), "{error}");
+    }
+
+    /// A block major number no driver on this machine has registered.
+    ///
+    /// Read from `/proc/devices` rather than picked, because a number picked by
+    /// hand is a number that is free on the machine where it was picked. `8:200`
+    /// looks safely absent until somebody attaches a fourteenth SATA disk, and then
+    /// this test opens one of their partitions read-write.
+    fn a_major_nobody_has() -> Option<u32> {
+        let devices = std::fs::read_to_string("/proc/devices").ok()?;
+        let block = devices.split("Block devices:").nth(1)?;
+        let taken: Vec<u32> = block
+            .lines()
+            .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+            .collect();
+        (60..=250).find(|major| !taken.contains(major))
+    }
+
+    #[test]
+    fn a_node_that_is_there_and_a_partition_that_is_not_are_two_different_answers() {
+        // The whole of the 2026-08-23 defect, in three lines. `exists` is `stat(2)`
+        // and `stat(2)` answers about the name: it succeeds on a node whose
+        // partition the kernel has deleted. Installing a second time onto the same
+        // disk leaves exactly such a node behind, so the wait for the partitions
+        // ended before it had waited for anything, and the install died on
+        // `opening /dev/loop0p1: No such device or address`.
+        let Some(major) = a_major_nobody_has() else {
+            eprintln!("NOT PROVEN: every block major on this machine is taken");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let node = directory.path().join("p1");
+        let made = std::process::Command::new("mknod")
+            .arg(&node)
+            .args(["b", &major.to_string(), "1"])
+            .status();
+        if !matches!(&made, Ok(status) if status.success()) {
+            let gap = "a device node could not be made; mknod(2) needs root";
+            assert!(
+                std::env::var_os("THALYX_REQUIRE_DEVICE_NODE_TESTS").is_none(),
+                "NOT PROVEN: {gap}, and this run demanded it"
+            );
+            eprintln!("NOT PROVEN: {gap}");
+            return;
+        }
+
+        // The half that fooled it.
+        assert!(node.exists(), "the name is there");
+
+        // And the half that matters: it cannot be opened. **Which** errno says so
+        // is a fact about the machine and not about this crate, so the test does
+        // not name one. Both of these were captured on 2026-08-23:
+        //
+        //   ENXIO  — the node is there and no partition is behind it. What the
+        //            install hit on Cesar's disk.
+        //   EACCES — Fedora mounts /tmp as a tmpfs with `nodev`, and no device node
+        //            on such a filesystem can be opened at all, whatever is behind
+        //            it. What this very test hit on his machine, after an earlier
+        //            version of it asserted ENXIO and failed his whole suite for a
+        //            mount option.
+        //
+        // Both are the property being tested: the name resolves and the device does
+        // not. Pinning the errno would have made this a test of where `tempdir()`
+        // happens to put things.
+        let (number, named, why) = hold(&[(1, node.clone())]).unwrap_err();
+        assert_eq!((number, named), (1, node.clone()));
+        assert!(
+            why.raw_os_error().is_some(),
+            "the open failed with no errno at all: {why}"
+        );
+    }
+
+    #[test]
+    fn one_partition_that_will_not_open_means_none_of_them_are_held() {
+        // All or nothing, because holding one partition of a disk is enough to make
+        // the kernel refuse to drop any of them — so a half-open set left by a
+        // failed attempt would block the rescan the next attempt is waiting for.
+        let directory = tempfile::tempdir().unwrap();
+        let fine = directory.path().join("p1");
+        std::fs::write(&fine, b"").unwrap();
+        let absent = directory.path().join("p2");
+
+        let (number, named, _) = hold(&[(1, fine), (2, absent.clone())]).unwrap_err();
+        assert_eq!((number, named), (2, absent));
     }
 
     #[test]

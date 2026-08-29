@@ -28,9 +28,21 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 /// Boxed because the two are different types and the caller does not care which
 /// one it got. Which one it was is visible in the output either way: the
 /// unconfigured one produces an error naming itself.
-fn model_for(store: &Store) -> Result<Box<dyn Model>, Box<dyn std::error::Error>> {
+pub(crate) fn model_for(store: &Store) -> Result<Box<dyn Model>, Box<dyn std::error::Error>> {
     match agent_model::configured(store)? {
-        Some(settings) => Ok(Box::new(settings.model()?)),
+        Some(settings) => {
+            let model = settings.model()?;
+            // The engine is a module when the settings say so, and a program on
+            // `PATH` otherwise. Both run the same prompt through the same
+            // grammar and come back to the same parser: what changes is who
+            // starts llama.cpp, which is the seam Cesar decreed on 2026-08-28.
+            Ok(
+                match crate::engine_module::ModuleEngine::for_settings(store, &settings)? {
+                    Some(engine) => Box::new(model.through(engine)),
+                    None => Box::new(model),
+                },
+            )
+        }
         None => Ok(Box::new(UnconfiguredModel)),
     }
 }
@@ -258,26 +270,24 @@ pub(crate) fn recall_object(store: &Store, task: &str) -> Fallible {
         // Rule 10, and the memory's own version of it: an unreadable memory and
         // an empty one are different facts about the machine.
         Err(error) => {
-            println!(
-                "{}",
-                thalyx_files::machine::declined("memory", "unreadable", &error.to_string())
-            );
+            crate::files::Face::Machine.say(thalyx_files::machine::declined(
+                "memory",
+                "unreadable",
+                &error.to_string(),
+            ));
             return Ok(());
         }
     };
 
-    println!(
-        "{}",
-        thalyx_files::machine::answer(
-            "memory",
-            vec![
-                ("task", serde_json::json!(task)),
-                ("said", serde_json::json!(context.said)),
-                ("holds", serde_json::json!(context.holds)),
-                ("unconfirmable", serde_json::json!(context.unconfirmable)),
-            ],
-        )
-    );
+    crate::files::Face::Machine.say(thalyx_files::machine::answer(
+        "memory",
+        vec![
+            ("task", serde_json::json!(task)),
+            ("said", serde_json::json!(context.said)),
+            ("holds", serde_json::json!(context.holds)),
+            ("unconfirmable", serde_json::json!(context.unconfirmable)),
+        ],
+    ));
     Ok(())
 }
 
@@ -378,7 +388,7 @@ fn plan(store: &Store, planning: Planning<'_>) -> Fallible {
     let model = model_for(store)?;
     let plan = thalyx_agent::plan(&transcript, model.as_ref(), policy, caller(request_id))?;
 
-    println!("understood by: {}", describe_path(plan.path));
+    println!("understood by: {}", describe_path(plan.path()));
     if policy == ForeignText::MayActThisTask {
         println!(
             "note: you allowed the model to act after reading foreign text, for \
@@ -386,22 +396,56 @@ fn plan(store: &Store, planning: Planning<'_>) -> Fallible {
         );
     }
     println!();
-    println!("{}", plan.contract.to_json());
+
+    // A contract prints as a contract. A verb prints as what it is, and does
+    // not borrow the word: `Contrato-Estructurado.md` gives a contract to an
+    // operation that changes the machine and needs a human to say yes, and
+    // most of the catalogue is not that. Printing `list` as a contract would
+    // make the word mean nothing to whoever reads the next one.
+    match &plan {
+        thalyx_agent::Plan::Contracted { contract, .. } => println!("{}", contract.to_json()),
+        thalyx_agent::Plan::Verb {
+            operation, targets, ..
+        } => {
+            println!("verb: {}", operation.name());
+            println!(
+                "arguments: {}",
+                if targets.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    targets.join(" ")
+                }
+            );
+            println!();
+            println!(
+                "  There is no contract for this one. It is a verb of the session, \n  \
+                 and `thalyx agent do` does not carry it out — `thalyx {}` does, \n  \
+                 with the same confirmation it always asks for.",
+                operation.name()
+            );
+        }
+    }
     println!();
 
     // Provenance printed as its own block rather than left inside the JSON.
     // It is the field that decides whether the core will look at any of the
     // others, so burying it in a structure someone skims is the wrong place.
+    //
+    // Printed for a verb plan too, and not as decoration: a target that
+    // appears only in a fetched page is refused for `read` exactly as it is
+    // for `install`, and the block is where that is visible.
     println!("provenance:");
-    for (field, origin) in plan.contract.origins.iter() {
+    for (field, origin) in plan.origins().iter() {
         println!("  {field:<12} {origin}");
     }
 
-    if let Some(repo) = repo {
+    if let Some(repo) = repo
+        && let Some(contract) = plan.contract()
+    {
         println!();
         println!("resolution against {}:", repo.display());
-        for target in &plan.contract.targets {
-            match thalyx_core::repo::resolve(repo, target, plan.contract.constraint.as_deref()) {
+        for target in &contract.targets {
+            match thalyx_core::repo::resolve(repo, target, contract.constraint.as_deref()) {
                 Ok(found) => println!("  {target} → {} ({})", found.path.display(), found.version),
                 Err(error) => println!("  {target} → {error}"),
             }
@@ -445,17 +489,35 @@ fn act(store: &Store, doing: Doing<'_>) -> Fallible {
     let model = model_for(store)?;
     let plan = thalyx_agent::plan(&transcript, model.as_ref(), policy, caller(request_id))?;
 
-    println!("understood by: {}", describe_path(plan.path));
+    println!("understood by: {}", describe_path(plan.path()));
+
+    // `do` carries out an install and nothing else, and says which one it got
+    // rather than failing at whatever the core would have refused it for. The
+    // model may now propose the whole catalogue — Cesar's decree of
+    // 2026-08-23 — and being able to say a thing is not being able to have it
+    // done: everything else goes through the verb, at a terminal, with the
+    // confirmation that verb already asks for.
+    let contract = plan
+        .contract()
+        .filter(|c| c.operation == thalyx_contract::Operation::InstallModule)
+        .ok_or_else(|| {
+            format!(
+                "`agent do` carries out an install, and this is `{}`.\n  \
+                 Run it as a verb: `thalyx {}`.",
+                plan.operation(),
+                plan.operation()
+            )
+        })?
+        .clone();
 
     // One target, because the minimal agent installs one module. Resolution is
     // a sub-task without a contract of its own — see Resolver-vs-Instalar — so
     // it happens here rather than becoming a second thing to authorise.
-    let target = plan
-        .contract
+    let target = contract
         .targets
         .first()
         .ok_or("the contract names nothing to install")?;
-    let resolved = thalyx_core::repo::resolve(repo, target, plan.contract.constraint.as_deref())?;
+    let resolved = thalyx_core::repo::resolve(repo, target, contract.constraint.as_deref())?;
     println!(
         "resolved: {} {} from {}",
         target,
@@ -468,7 +530,7 @@ fn act(store: &Store, doing: Doing<'_>) -> Fallible {
     // one that arrived from anywhere else.
     let request = thalyx_core::InstallRequest {
         bundle_path: &resolved.path,
-        contract: plan.contract,
+        contract,
     };
     let mut prompt = render::TerminalConfirmer::new(yes);
     let outcome = thalyx_core::install(store, request, &mut prompt)?;

@@ -43,7 +43,10 @@ const OP: &str = "changes";
 
 /// `cambios [limite=N]` — drain what the kernel has queued.
 pub fn show(rest: &str, face: Face) -> Fallible {
-    let (extra, window) = match crate::index::asked_of(rest) {
+    let Some(given) = crate::words::asked(face, OP, rest) else {
+        return Ok(());
+    };
+    let (extra, window) = match crate::index::asked_of(&given) {
         Ok(both) => both,
         Err(why) => {
             declined(face, "bad_cursor", &why.to_string());
@@ -135,7 +138,7 @@ pub fn show(rest: &str, face: Face) -> Fallible {
             ("more_being_written", json!(found.stopped_at_busy)),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        println!("{}", thalyx_files::machine::answer(OP, carried));
+        face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
     }
 
@@ -191,7 +194,7 @@ fn running_as_root() -> bool {
 
 fn declined(face: Face, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(OP, word, why));
+        face.say(thalyx_files::machine::declined(OP, word, why));
     } else {
         println!("\n  {why}\n");
     }

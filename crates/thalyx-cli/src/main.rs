@@ -6,26 +6,41 @@
 
 mod agent;
 mod agent_model;
+mod ask;
 mod attempt;
+mod bridge;
 mod catalogue;
 mod changes;
+mod confine;
 mod dev;
+mod edit;
 mod enforce;
+mod engine_module;
+mod external;
 mod files;
+mod foreign;
 mod graph;
+mod guard;
 mod history;
 mod image;
 mod index;
 mod init;
 mod install;
+mod keyboard;
 mod memory;
+mod modules;
+mod net;
+mod proc;
 mod render;
 mod restore;
 mod run;
+mod screen;
+mod search;
 mod session;
 mod snapshot;
 mod store_disk;
 mod term;
+mod words;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -146,9 +161,47 @@ enum Command {
     /// store. Everything on the disk is lost.
     Install(install::InstallArgs),
 
+    /// Draw the one screen on this machine's display
+    ///
+    /// Takes over `/dev/fb0` and the text console until Ctrl-C. The decree is
+    /// `vault/02-Arquitectura/La-Pantalla.md`. To look at the screen on a
+    /// machine that has no display, use `thalyx dev screen`.
+    Screen {
+        /// Say what this display is and whether the screen would come up on it,
+        /// without touching the console
+        #[arg(long)]
+        describe: bool,
+        /// Answer with one JSON object instead of sentences
+        #[arg(long)]
+        structured: bool,
+    },
+
     /// Packaging tools for module publishers
     #[command(subcommand)]
     Dev(dev::DevCommand),
+
+    /// Serve the channel a programming agent outside this machine reaches it through
+    ///
+    /// Inside a Thalyx machine this runs by itself, on a thread of the session,
+    /// when QEMU gave the machine a virtio-serial port. This subcommand is the
+    /// same endpoint reachable from a host — which is what lets the confinement
+    /// and the answers be exercised somewhere that has no QEMU.
+    Bridge(BridgeArgs),
+}
+
+#[derive(clap::Args)]
+struct BridgeArgs {
+    /// The directory the agent is confined to. It cannot name anything outside it.
+    #[arg(long)]
+    workspace: PathBuf,
+
+    /// A character device to serve on — inside the machine, the virtio-serial port
+    #[arg(long, conflicts_with = "listen")]
+    port: Option<PathBuf>,
+
+    /// A UNIX socket to serve on, for a host
+    #[arg(long)]
+    listen: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -313,6 +366,43 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Store::open(&root)?;
             memory::run(&root, command)
         }
+        Command::Screen {
+            describe,
+            structured,
+        } => {
+            let face = if structured {
+                files::Face::Machine
+            } else {
+                files::Face::Human
+            };
+            if describe {
+                screen::describe(face)
+            } else {
+                let store = Store::open(&root)?;
+                let mut session = session::Session::opening(&store);
+                screen::show(&mut session).map(|_| ()).map_err(Into::into)
+            }
+        }
+        Command::Bridge(args) => {
+            // Opened here and not inside the loop, so that a root that is not a
+            // store fails now — with the person watching — rather than on the
+            // first thing an agent asks, on the far side of a socket.
+            Store::open(&root)?;
+            match (&args.port, &args.listen) {
+                (Some(port), _) => {
+                    let read = std::fs::OpenOptions::new().read(true).open(port)?;
+                    let write = std::fs::OpenOptions::new().write(true).open(port)?;
+                    bridge::serve(read, write, &root, &args.workspace)?;
+                    Ok(())
+                }
+                (None, Some(socket)) => {
+                    bridge::listen(socket, &root, &args.workspace).map_err(Into::into)
+                }
+                (None, None) => Err("name where to serve: --port <device> inside a machine, or \
+                         --listen <socket> on a host"
+                    .into()),
+            }
+        }
         Command::Enforce(command) => enforce::run(&root, command),
         Command::Disk(command) => store_disk::run(command),
         Command::Install(args) => install::run(args),
@@ -409,15 +499,19 @@ fn run_module(
             entrypoint,
             unconfined,
             args,
-        } => run::run(
+        } => run::run(run::Asked {
             root,
-            &module_id,
-            &profile,
-            &entrypoint,
+            module_id: &module_id,
+            profile: &profile,
+            entrypoint: &entrypoint,
             args,
             unconfined,
-            new_request_id(),
-        ),
+            request_id: new_request_id(),
+            // The host CLI has no session face to carry; `thalyx module run`
+            // from a shell is the human route, and the structured one is the
+            // session's `correr`.
+            face: files::Face::Human,
+        }),
         ModuleCommand::List => render::module_list(&store),
         ModuleCommand::Remove { module_id } => {
             let version = thalyx_core::remove(&store, &module_id, &new_request_id())?;

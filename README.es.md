@@ -75,9 +75,17 @@ sudo make -C image store  # el único comando que necesita root
 make -C image run         # arrancar
 ```
 
-La máquina levanta, dice qué tiene y qué no, y espera. **No hay login**, porque
-no hay nadie más que ser. **No hay shell**: lo que no es una palabra que la
-sesión conozca, no existe.
+La máquina levanta, dice qué tiene y qué no, y **sale en la pantalla**: una sola
+superficie con la conversación al centro y paneles alrededor, dibujada por
+Thalyx sobre el framebuffer del firmware — sin X, sin Wayland, sin compositor, y
+adentro del mismo programa, así que `make -C image count` sigue diciendo `1`. No
+hay comando que la encienda: es lo que se ve al arrancar. **No hay login**,
+porque no hay nadie más que ser. **No hay shell**: lo que no es una palabra que
+la sesión conozca, no existe.
+
+Si esa pantalla saliera en negro, Ctrl-C con la línea vacía devuelve la sesión de
+texto **a ciegas**, y `thalyx.pantalla=no` en la línea de comandos del kernel
+arranca directo en ella.
 
 ## Qué está probado y qué no
 

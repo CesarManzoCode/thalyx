@@ -27,7 +27,7 @@ mod encoding;
 mod store;
 
 pub use encoding::{cgroup_key_bytes, policy_bytes};
-pub use store::{KernelStore, MemoryStore, PolicyStore, StoreError};
+pub use store::{Enforcement, KernelStore, MemoryStore, Mode, PolicyStore, StoreError};
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -174,15 +174,49 @@ pub fn cgroup_id(path: &Path) -> Result<u64> {
     Ok(metadata.ino())
 }
 
+/// Bits every confined program needs before any grant is considered.
+///
+/// `lsm/file_open` is path-blind on purpose: the mount namespace decides *what*
+/// a confined program can see, and the policy decides *read or write* on it.
+/// The two only compose if the program can read what was mounted for it —
+/// otherwise it cannot open its own binary, and the confinement is not a
+/// confinement, it is a brick.
+///
+/// So this is not a grant and it is not asked about. It is the floor that makes
+/// the mount namespace mean what the human was told it means. It widens nothing:
+/// `/` inside the sandbox is the root Thalyx built, holding the module's or the
+/// guest's own directory, the read-only system paths, and whatever was named
+/// and confirmed.
+///
+/// Found on 2026-08-25, the first time anything ran under an *enforcing*
+/// kernel: `ejecutar /usr/bin/node --version` grants nothing, came out
+/// `allowed=0x0`, and died before `node` — the launcher joins the cgroup and
+/// then reads `cgroup.procs` back to check the join took, which is a file open
+/// by a task that is now inside a cgroup allowed nothing.
+///
+/// The evidence it had been found before and worked around rather than fixed is
+/// in `lsm/demo-enforcement.sh`, whose header says it puts "filesystem allowed,
+/// network denied" in the map. It had to: with filesystem denied, the `python3`
+/// it runs inside the cgroup could not have started, and the demo would have
+/// been measuring `exec` instead of `connect`.
+pub const CONFINED_FLOOR: u32 = FS_READ;
+
 /// Apply a module's granted permissions to the kernel.
+///
+/// `floor` is OR'd into the result before it is written. Passed by the caller
+/// rather than assumed here, because the two callers want different things:
+/// launching a program needs [`CONFINED_FLOOR`], and binding a cgroup by hand
+/// for inspection must reproduce exactly what was asked for and nothing else.
 pub fn apply(
     store: &dyn PolicyStore,
     cgroup: u64,
     permissions: &[Permission],
     now_ns: u64,
     jit_lifetime_ns: u64,
+    floor: u32,
 ) -> Result<Policy> {
-    let policy = policy_for(permissions, now_ns, jit_lifetime_ns)?;
+    let mut policy = policy_for(permissions, now_ns, jit_lifetime_ns)?;
+    policy.allowed |= floor;
     store.set(cgroup, policy)?;
     Ok(policy)
 }
@@ -200,6 +234,64 @@ pub fn revoke(store: &dyn PolicyStore, cgroup: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_granted_nothing_can_still_read_what_was_mounted_for_it() {
+        // The case `ejecutar <ruta>` with no words after it produces, and the
+        // case that did not work. `lsm/file_open` is path-blind, so
+        // `allowed=0x0` denies the program its own binary — it cannot reach
+        // `exec`, let alone anything a human would have refused it.
+        let store = MemoryStore::new();
+        let policy = apply(
+            &store,
+            42,
+            &[],
+            1_000,
+            DEFAULT_JIT_LIFETIME_NS,
+            CONFINED_FLOOR,
+        )
+        .expect("a policy with no grants is still a policy");
+
+        assert!(policy.allows(FS_READ));
+        // And the floor is a floor, not a door. Rule 4's control: a floor that
+        // granted everything would pass the line above and be a hole.
+        assert!(!policy.allows(FS_WRITE));
+        assert!(!policy.allows(NET_OUTBOUND));
+    }
+
+    #[test]
+    fn binding_a_cgroup_by_hand_writes_exactly_what_was_asked_and_no_floor() {
+        // `thalyx enforce apply` is for inspection and for processes Thalyx
+        // did not start. A floor added there would make the command's own
+        // report a description of a map other than the one it wrote.
+        let store = MemoryStore::new();
+        let policy =
+            apply(&store, 42, &[], 1_000, DEFAULT_JIT_LIFETIME_NS, 0).expect("an empty policy");
+
+        assert_eq!(policy.allowed, 0);
+    }
+
+    #[test]
+    fn the_floor_expires_with_the_soonest_jit_grant_it_sits_beside() {
+        // Not a bug being pinned as correct — a consequence being written down
+        // where it can be found. The floor is OR'd into one entry, and an
+        // entry has one deadline, so a guest that named a `leyendo` path loses
+        // the floor when that grant runs out. Thirty seconds by default, which
+        // is the ceiling on how long anything launched with a JIT grant can
+        // run at all.
+        let store = MemoryStore::new();
+        let policy = apply(
+            &store,
+            42,
+            &[permission("/tmp/x", "read", PermissionKind::Jit)],
+            1_000,
+            DEFAULT_JIT_LIFETIME_NS,
+            CONFINED_FLOOR,
+        )
+        .expect("a policy");
+
+        assert_eq!(policy.expires_ns, 1_000 + DEFAULT_JIT_LIFETIME_NS);
+    }
 
     fn permission(resource: &str, action: &str, kind: PermissionKind) -> Permission {
         Permission {

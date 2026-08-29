@@ -314,6 +314,41 @@ type     = "persistent""#,
         out
     }
 
+    /// Type lines at a real session and give back everything it printed.
+    ///
+    /// The session and not the subcommand, because the session is where a
+    /// person and an agent both arrive, and because rule 1 has been paid for
+    /// twice by things that were right in the library and wrong at the prompt.
+    pub fn typed(&self, lines: &[&str]) -> String {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = Command::new(binary())
+            .args(["--root"])
+            .arg(self.root())
+            .arg("session")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the session");
+
+        let mut script = String::new();
+        for line in lines {
+            script.push_str(line);
+            script.push('\n');
+        }
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(script.as_bytes())
+            .expect("feeding the session");
+
+        let output = child.wait_with_output().expect("waiting for the session");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
     pub fn run(&self, args: &[&str]) -> RunStatus {
         let mut command = Command::new(binary());
         command.args(["--root"]).arg(self.root()).args(args);
