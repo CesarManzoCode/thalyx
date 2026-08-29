@@ -119,6 +119,53 @@ fn a_machine_with_no_attempt_open_says_so_without_being_asked_twice() {
 }
 
 #[test]
+fn the_words_that_abandon_in_one_call_are_not_refused_at_a_real_prompt() {
+    // Not a test of what abandoning does — that needs Btrfs and is below — and
+    // deliberately a weak one: `intento abandonar` alone answers `none_open`
+    // too, so what this pins is only that the three extra words are **not**
+    // refused as words this verb does not take. The test below is the one that
+    // shows they are read at all, and the boundary that sits in front of them on
+    // the agent's path is pinned in `external.rs`, which is a different layer
+    // and a different test.
+    let (root, work) = a_working_tree();
+    let answer = asked(
+        root.path(),
+        &work,
+        "intento abandonar snapshot=2026-08-29T11-04-02Z-rename delete=0 revert=3",
+    );
+
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(
+        answer["error"],
+        serde_json::json!("none_open"),
+        "the one-call abandon was refused for its shape rather than answered: {answer}"
+    );
+}
+
+#[test]
+fn a_count_that_is_not_a_count_is_refused_at_a_real_prompt_too() {
+    // The discriminating half. This answer can only be reached by the parser
+    // having read `delete=`, so it is what says the words above arrive as words
+    // this verb understands rather than as noise it ignores — and it comes back
+    // before the attempt record is even looked at, which is why it is not
+    // `none_open`.
+    //
+    // It is also the rule itself: a count this cannot read is refused *as that*,
+    // never quietly dropped into "no claim was made". Dropped, it would answer
+    // with the cost object, and read to the caller as the tree having changed
+    // underneath it.
+    let (root, work) = a_working_tree();
+    let answer = asked(root.path(), &work, "intento abandonar delete=lots revert=3");
+
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    assert_eq!(
+        answer["error"],
+        serde_json::json!("bad_argument"),
+        "{answer}"
+    );
+}
+
+#[test]
 fn without_a_subvolume_it_refuses_instead_of_copying_a_directory() {
     let (root, work) = a_working_tree();
     let answer = asked(root.path(), &work, "intento empezar refactor");
