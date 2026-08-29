@@ -192,6 +192,206 @@ pub fn would_substitute(old: &str, new: &str, done: &[Substituted]) -> String {
     object("rehearse", true, carried)
 }
 
+/// One batch's worth of substitutions, told twice: by pattern and by file.
+///
+/// **Twice, and neither half is redundant.** A caller that asked for five
+/// patterns wants to know that each of the five found what it was looking for —
+/// that is `operations`, and a pattern that matched three places instead of the
+/// thirty it expected is the answer that saves it a wrong diff. A caller that
+/// wants to check the work opens *files*, and a file touched by four of the five
+/// patterns appears in four places under `operations` and once under `changed`,
+/// with the size it actually has now.
+///
+/// What is deliberately **not** here is any of the text. The whole reason a
+/// line-by-line rename cost what it did is that every one of its sixteen calls
+/// answered with a file's new state and was sent a file's new line; answering
+/// here with the changed lines would put all of that back one level up. A
+/// caller that wants to look knows exactly where: `first_line`, per pattern,
+/// per file.
+///
+/// `did`, `undo` and `changed` mean the same thing they mean in [`substituted`],
+/// on purpose. A caller that already reads the single-substitution answer reads
+/// this one without learning a second shape; `operations` is the only key it has
+/// to know is new.
+pub struct Batched<'a> {
+    pub old: &'a str,
+    pub new: &'a str,
+    pub done: &'a [Substituted],
+}
+
+/// What every file in a batch looks like now, once, with its final size.
+///
+/// Built from the per-operation rows rather than measured again: a file the
+/// fourth operation touched carries the size the fourth operation left, and
+/// summing the replacements across the operations that named it is what "this
+/// file changed in seven places" means when seven places came from five
+/// patterns.
+fn changed_across(batch: &[Batched<'_>]) -> Value {
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut replacements: std::collections::BTreeMap<PathBuf, usize> = Default::default();
+    let mut bytes: std::collections::BTreeMap<PathBuf, u64> = Default::default();
+    for operation in batch {
+        for one in operation.done {
+            if !replacements.contains_key(&one.path) {
+                order.push(one.path.clone());
+            }
+            *replacements.entry(one.path.clone()).or_default() += one.replacements;
+            // The last operation to touch it is the one whose size is current.
+            bytes.insert(one.path.clone(), one.bytes);
+        }
+    }
+    Value::Array(
+        order
+            .into_iter()
+            .map(|path| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "replacements": replacements.get(&path).copied().unwrap_or(0),
+                    "bytes": bytes.get(&path).copied().unwrap_or(0),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn operations_of(batch: &[Batched<'_>]) -> Value {
+    Value::Array(
+        batch
+            .iter()
+            .map(|operation| {
+                let overlapping: Vec<Value> = operation
+                    .done
+                    .iter()
+                    .filter(|one| one.new_already > 0)
+                    .map(|one| json!(one.path.to_string_lossy()))
+                    .collect();
+                let mut carried = serde_json::Map::new();
+                carried.insert("old".into(), json!(operation.old));
+                carried.insert("new".into(), json!(operation.new));
+                carried.insert("files".into(), json!(operation.done.len()));
+                carried.insert(
+                    "replacements".into(),
+                    json!(
+                        operation
+                            .done
+                            .iter()
+                            .map(|one| one.replacements)
+                            .sum::<usize>()
+                    ),
+                );
+                // Per operation and not only for the batch: substituting back is
+                // the inverse of *this pattern* or it is not, and a caller told
+                // only that some pattern somewhere overlapped cannot act on it.
+                carried.insert("new_was_present".into(), json!(!overlapping.is_empty()));
+                if !overlapping.is_empty() {
+                    carried.insert("new_was_present_in".into(), Value::Array(overlapping));
+                }
+                carried.insert(
+                    "in".into(),
+                    Value::Array(
+                        operation
+                            .done
+                            .iter()
+                            .map(|one| {
+                                json!({
+                                    "path": one.path.to_string_lossy(),
+                                    "replacements": one.replacements,
+                                    "lines": one.lines,
+                                    "first_line": one.first_line,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                Value::Object(carried)
+            })
+            .collect(),
+    )
+}
+
+fn batch_totals(batch: &[Batched<'_>]) -> Map<String, Value> {
+    let changed = changed_across(batch);
+    let files = changed.as_array().map(Vec::len).unwrap_or(0);
+    let mut carried = fields([
+        ("operations", operations_of(batch)),
+        ("changed", changed),
+        // The two totals a caller checks against what it expected, and they are
+        // about the batch: files is **distinct** files, not the sum of each
+        // operation's, which would count a file five patterns touched five
+        // times.
+        ("files", json!(files)),
+    ]);
+    carried.insert(
+        "replacements".into(),
+        json!(
+            batch
+                .iter()
+                .flat_map(|operation| operation.done.iter())
+                .map(|one| one.replacements)
+                .sum::<usize>()
+        ),
+    );
+    carried
+}
+
+/// What a batch of substitutions did.
+pub fn substituted_batch(batch: &[Batched<'_>]) -> String {
+    let mut carried = batch_totals(batch);
+    carried.insert("did".into(), json!(Change::Substituted.word()));
+    carried.insert("undo".into(), json!("attempt"));
+    object("edit", true, carried)
+}
+
+/// The same, with nothing written.
+pub fn would_substitute_batch(batch: &[Batched<'_>]) -> String {
+    let mut carried = fields([("verb", json!("edit"))]);
+    carried.extend(batch_totals(batch));
+    carried.insert("would".into(), json!(Change::Substituted.word()));
+    carried.insert("wrote".into(), json!(false));
+    object("rehearse", true, carried)
+}
+
+/// A batch that passed its preflight and then could not finish writing.
+///
+/// The batch's whole point is that its preflight is complete: every file is
+/// opened, every operation applied **in memory**, and only then is anything
+/// saved. So reaching here means a save failed — a full disk, a file that
+/// became read-only — with earlier files already replaced, and the same thing
+/// [`half_substituted`] says has to be said: exactly which files carry the new
+/// text and which do not, and that only an attempt puts all of them back.
+pub fn half_substituted_batch(
+    batch: &[Batched<'_>],
+    written: &[PathBuf],
+    left: &[PathBuf],
+    error: &EditError,
+) -> String {
+    let mut carried = batch_totals(batch);
+    carried.insert("error".into(), json!(error.word()));
+    carried.insert("remedy".into(), json!(error.remedy()));
+    carried.insert("message".into(), json!(error.to_string()));
+    carried.insert("did".into(), json!(Change::Substituted.word()));
+    carried.insert("wrote".into(), json!(true));
+    carried.insert(
+        "written".into(),
+        Value::Array(
+            written
+                .iter()
+                .map(|path| json!(path.to_string_lossy()))
+                .collect(),
+        ),
+    );
+    carried.insert(
+        "not_written".into(),
+        Value::Array(
+            left.iter()
+                .map(|path| json!(path.to_string_lossy()))
+                .collect(),
+        ),
+    );
+    carried.insert("undo".into(), json!("attempt"));
+    object("edit", false, carried)
+}
+
 /// Why a substitution did not happen, and the one fact that makes it recoverable.
 ///
 /// `wrote: false` is the field, and it is said out loud rather than inferred
@@ -325,6 +525,8 @@ fn path_in(error: &EditError) -> Option<&Path> {
         | EditError::SameText { .. }
         | EditError::TooMuch { .. }
         | EditError::Incomplete { .. }
+        | EditError::BadBatch { .. }
+        | EditError::Chained { .. }
         | EditError::NoScreen => None,
     }
 }

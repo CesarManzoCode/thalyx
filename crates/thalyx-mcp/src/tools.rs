@@ -95,6 +95,45 @@ fn paths(arguments: &Value) -> Result<Vec<String>, String> {
     Ok(vec![text(arguments, "path")?])
 }
 
+/// One substitution of a batch, as the arguments spelled it.
+pub struct Operation {
+    pub old: String,
+    pub new: String,
+    pub paths: Vec<String>,
+}
+
+/// The operations of a `substitute_batch`, or which one of them is wrong.
+///
+/// Every refusal here happens before anything is sent to the machine, for the
+/// reason [`paths`] gives for the same choice: a shape this adapter can see is
+/// wrong costs the caller one corrected call, and a shape it passes on costs a
+/// round trip into the machine first. What it does **not** do is decide what a
+/// batch means — that is the verb's, and every rule about composition, order and
+/// ceilings lives there.
+fn batch(arguments: &Value) -> Result<Vec<Operation>, String> {
+    let Some(Value::Array(listed)) = arguments.get("operations") else {
+        return Err("`substitute_batch` needs `operations`, a list of \
+                    {old, new, paths}"
+            .to_string());
+    };
+    if listed.is_empty() {
+        return Err("`operations` is empty; name at least one substitution".to_string());
+    }
+    let mut operations = Vec::with_capacity(listed.len());
+    for (index, one) in listed.iter().enumerate() {
+        let at = index + 1;
+        let old = text(one, "old").map_err(|why| format!("operation {at}: {why}"))?;
+        let new = text(one, "new").map_err(|why| format!("operation {at}: {why}"))?;
+        let named = paths(one).map_err(|why| format!("operation {at}: {why}"))?;
+        operations.push(Operation {
+            old,
+            new,
+            paths: named,
+        });
+    }
+    Ok(operations)
+}
+
 /// A window flag, when the caller asked for one.
 fn limit(arguments: &Value) -> Option<String> {
     arguments
@@ -382,17 +421,20 @@ with none, it answers that none is open.",
         name: "thalyx_edit",
         verbs: &["edit"],
         description: "\
-Change a file. Use `substitute` for anything repeated or mechanical — a rename, \
-a changed constant, a moved import: it replaces an exact string everywhere it \
-occurs, in one call, across every file in `paths` — which is the file list \
-thalyx_symbol just gave you. It answers with how many places in each, so you \
-do not need to read them back. It matches text and not symbols, so get the \
-name from thalyx_symbol first. The line actions are for surgical changes: \
-`insert` puts text before a line, `replace` swaps a line or a range (`3-7`), \
-`delete` removes them, `show` returns numbered lines; use \\n in the text for \
-more than one line. Nothing is written unless every named file passes: a file \
-the text is not in refuses the whole call and changes nothing. Every answer \
-carries its undo.",
+Change a file. For anything repeated or mechanical — a rename, a changed \
+constant, a moved import — `substitute` replaces an exact string everywhere it \
+occurs, in one call, across every file in `paths` — the file list thalyx_symbol \
+just gave you — and answers with how many places in each, so you do not read \
+them back. \
+`substitute_batch` does the same with several different old/new pairs at once, \
+which is what a rename usually needs: the qualified name, the bare name, the \
+definition. Put them all in `operations`; they apply in the order you give \
+them. Both match text and not symbols, so get the name from thalyx_symbol \
+first. The line actions are for surgical changes: `insert` puts text before a \
+line, `replace` swaps a line or a range (`3-7`), `delete` removes them, `show` \
+returns numbered lines; use \\n in the text for more than one line. Nothing is \
+written unless every part of the call passes — a file the text is not in \
+refuses the whole thing and changes nothing. Every answer carries its undo.",
         schema: || {
             json!({
                 "type": "object",
@@ -403,7 +445,29 @@ carries its undo.",
                     },
                     "action": {
                         "type": "string",
-                        "enum": ["substitute", "show", "insert", "replace", "delete"]
+                        "enum": ["substitute", "substitute_batch", "show", "insert",
+                                 "replace", "delete"]
+                    },
+                    "operations": {
+                        "type": "array",
+                        "description": "For substitute_batch: several substitutions in one \
+                                        call, applied in this order. Each must be found in \
+                                        every file it names, or nothing is written.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old": {"type": "string",
+                                        "description": "The exact text to find. One line."},
+                                "new": {"type": "string",
+                                        "description": "What replaces it. One line."},
+                                "paths": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Every file this one substitution changes."
+                                }
+                            },
+                            "required": ["old", "new", "paths"]
+                        }
                     },
                     "paths": {
                         "type": "array",
@@ -436,6 +500,36 @@ carries its undo.",
             // The one action whose arguments are not a line and a body. Composed
             // here and nowhere else: this is still only a translation — the
             // machine decides what a substitution is, refuses it, and counts it.
+            // Several exact substitutions in one call, composed onto the one
+            // line `editar` reads. The counts are the line's own grammar — see
+            // `edit::substitute_batch` for why it is counts and not a separator
+            // — and composing them is exactly the adapting this crate is for:
+            // no agent writes this, and no logic here decides what any of it
+            // means.
+            if action == "substitute_batch" {
+                let operations = batch(arguments)?;
+                let (first, rest) = operations
+                    .split_first()
+                    .expect("`batch` never returns an empty list");
+                let mut given = vec![
+                    first.paths[0].clone(),
+                    // The CLI's own spelling of the subverb, which is this
+                    // string unchanged: `edit::SUBSTITUTE_BATCH` carries it, so
+                    // there is no mapping between two names to keep in step.
+                    action,
+                    first.paths.len().to_string(),
+                    first.old.clone(),
+                    first.new.clone(),
+                ];
+                given.extend(first.paths[1..].iter().cloned());
+                for operation in rest {
+                    given.push(operation.paths.len().to_string());
+                    given.push(operation.old.clone());
+                    given.push(operation.new.clone());
+                    given.extend(operation.paths.iter().cloned());
+                }
+                return Ok(vec![("edit", given)]);
+            }
             if action == "substitute" {
                 let named = paths(arguments)?;
                 let (first, rest) = named.split_first().expect("`paths` is never empty here");
@@ -658,6 +752,10 @@ mod tests {
         let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
         for taught in [
             "substitute",
+            // The second shape, which is worth nothing if the model never
+            // learns that the first one cannot carry two patterns.
+            "substitute_batch",
+            "operations",
             "mechanical",
             "one call",
             "thalyx_symbol",
@@ -697,6 +795,128 @@ mod tests {
             (attempt.calls)(&json!({"action": "abandon", "confirm": true})).unwrap(),
             vec![("attempt", vec!["abandonar".to_string(), "si".to_string()])]
         );
+    }
+
+    #[test]
+    fn a_batch_of_substitutions_becomes_one_line_with_a_count_in_front_of_each() {
+        // The composition, spelled out. Nothing here is clever and that is the
+        // point: `edit::read_operations` reads exactly this back, and the two
+        // are a grammar that only works if both halves agree about where the
+        // counts go.
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        let calls = (edit.calls)(&json!({
+            "action": "substitute_batch",
+            "operations": [
+                {"old": "a::B::c", "new": "a::D::c", "paths": ["one.rs", "two.rs"]},
+                {"old": "B::c", "new": "D::c", "paths": ["three.rs"]},
+            ]
+        }))
+        .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "edit");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                // The first operation's first file, where `editar` puts a name.
+                "one.rs",
+                "substitute_batch",
+                // Two files in the first operation, one of which is above.
+                "2",
+                "a::B::c",
+                "a::D::c",
+                "two.rs",
+                "1",
+                "B::c",
+                "D::c",
+                "three.rs",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_batch_that_is_not_a_batch_is_refused_here_rather_than_by_the_machine() {
+        // Every one of these costs a round trip into the machine if it goes out,
+        // and none of them needs one to be seen as wrong.
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        for given in [
+            json!({"action": "substitute_batch"}),
+            json!({"action": "substitute_batch", "operations": []}),
+            json!({"action": "substitute_batch", "operations": [{"new": "b", "paths": ["x"]}]}),
+            json!({"action": "substitute_batch", "operations": [{"old": "a", "paths": ["x"]}]}),
+            json!({"action": "substitute_batch", "operations": [{"old": "a", "new": "b"}]}),
+            json!({"action": "substitute_batch",
+                   "operations": [{"old": "a", "new": "b", "paths": []}]}),
+        ] {
+            assert!(
+                (edit.calls)(&given).is_err(),
+                "`{given}` was composed into a line instead of refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_asks_for_fewer_bytes_than_the_calls_it_replaces() {
+        // The request half of the table in
+        // `tests/several_substitutions_are_one_call.rs`, which measures the
+        // answers. Both directions are asserted rather than reported, because a
+        // change that made the surface *bigger* to send would be a change that
+        // moved the cost rather than removing it.
+        let five: Vec<Value> = [
+            (
+                "store::Ledger::open",
+                "store::LedgerRenamed::open",
+                vec!["api/src/serve.rs"],
+            ),
+            (
+                "pub struct Ledger;",
+                "pub struct LedgerRenamed;",
+                vec!["store/src/ledger.rs"],
+            ),
+            (
+                "impl Ledger {",
+                "impl LedgerRenamed {",
+                vec!["store/src/ledger.rs"],
+            ),
+            (
+                "(Ledger, usize)",
+                "(LedgerRenamed, usize)",
+                vec!["store/src/ledger.rs", "api/src/report.rs"],
+            ),
+            (
+                "Ledger::open",
+                "LedgerRenamed::open",
+                vec!["api/src/report.rs"],
+            ),
+        ]
+        .into_iter()
+        .map(|(old, new, paths)| {
+            json!({"action": "substitute", "old": old, "new": new,
+                                        "paths": paths})
+        })
+        .collect();
+        let one = json!({
+            "action": "substitute_batch",
+            "operations": five.iter().map(|call| json!({
+                "old": call["old"], "new": call["new"], "paths": call["paths"]
+            })).collect::<Vec<_>>()
+        });
+
+        let apart: usize = five.iter().map(|call| call.to_string().len()).sum();
+        let together = one.to_string().len();
+        assert!(
+            together < apart,
+            "one batch is {together} bytes to send and five calls are {apart}"
+        );
+        // And every one of them still composes, so the comparison is between two
+        // things the machine would actually accept.
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        assert!((edit.calls)(&one).is_ok());
+        for call in &five {
+            assert!((edit.calls)(call).is_ok());
+        }
     }
 
     #[test]

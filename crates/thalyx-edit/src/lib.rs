@@ -102,6 +102,21 @@ pub const MOST_FILES: usize = 64;
 /// caller learns what it actually asked for.
 pub const MOST_REPLACEMENTS: usize = 2000;
 
+/// The most substitutions one batch may carry.
+///
+/// A batch is several exact substitutions applied in one call, in order, to one
+/// set of files — the shape a mechanical rename actually has. The rename the
+/// benchmark asks for needed **five**: the qualified path, the definition, the
+/// impl, a tuple type and the bare name. Each of those was its own call, its own
+/// round trip into the machine and its own answer to read.
+///
+/// Sixteen for the same reason [`MOST_FILES`] is sixty-four: well past what any
+/// one mechanical change needs, and far short of a caller that has lost track of
+/// what it asked for. It is a ceiling on *patterns*, and the ceilings on files
+/// and on places to change still apply to the batch as a whole — a batch is not
+/// a way to ask for sixteen times as much.
+pub const MOST_OPERATIONS: usize = 16;
+
 /// How many changes back the screen can go.
 ///
 /// Bounded, and the bound is the point. Each step keeps a copy of the lines, so
@@ -381,6 +396,38 @@ pub enum EditError {
     #[error("{needs}")]
     Incomplete { needs: &'static str },
 
+    /// A batch whose shape could not be read at all.
+    ///
+    /// One variant for every way the *arguments* of a batch can be wrong —
+    /// a count that is not a number, a count that runs off the end of the line,
+    /// an operation with no files, two operations looking for the same text —
+    /// because they are one fact from the caller's side: what arrived is not a
+    /// batch, and nothing was opened to find that out. The sentence says which.
+    #[error("{why}")]
+    BadBatch { why: String },
+
+    /// Two substitutions in one batch where the second would change what the
+    /// first had just written.
+    ///
+    /// **The one refusal a batch has that a single substitution cannot.** A
+    /// batch runs its operations in the order it was given — that is defined,
+    /// and it is what makes `uids::Thing::load` before the bare `Thing::load`
+    /// mean what a caller writing those two means. What is *not* defined is
+    /// `A -> B` followed by `B -> C`: every `A` becomes a `C`, which nobody
+    /// asked for and which reading the call does not show. So the composition
+    /// is checked against the text before anything is written, and an ambiguous
+    /// one is refused rather than resolved by a rule the caller would have to
+    /// know. Rule 9: the cautious answer, never the fast one.
+    #[error(
+        "`{later_old}` is inside `{earlier_new}`, which an earlier operation of this \
+             batch writes — so the batch would change text it had just made, and what it \
+             means would depend on the order it ran in"
+    )]
+    Chained {
+        earlier_new: String,
+        later_old: String,
+    },
+
     /// The screen was asked for where there is no terminal to draw it on.
     ///
     /// Its own variant, and this is the one that earns it: a program down a pipe
@@ -412,6 +459,8 @@ impl EditError {
             EditError::TooMuch { .. } => "too_much",
             EditError::RepeatedPath { .. } => "repeated_path",
             EditError::Incomplete { .. } => "incomplete",
+            EditError::BadBatch { .. } => "bad_batch",
+            EditError::Chained { .. } => "chained_substitution",
             EditError::NoScreen => "no_screen",
         }
     }
@@ -441,6 +490,11 @@ impl EditError {
             EditError::TooMuch { .. } => "send_less",
             EditError::RepeatedPath { .. } => "name_it_once",
             EditError::Incomplete { .. } => "ask_describe",
+            EditError::BadBatch { .. } => "ask_describe",
+            // Not "send less" and not "name the text": the batch is fine, the
+            // two operations in it are not composable, and the way out is to
+            // make the second call separately once the first has landed.
+            EditError::Chained { .. } => "separate_the_calls",
             EditError::NoScreen => "address_lines",
         }
     }

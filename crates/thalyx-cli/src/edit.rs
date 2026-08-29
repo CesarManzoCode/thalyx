@@ -95,6 +95,11 @@ pub const ACTIONS: &[&str] = &[
     // is the one to reach for, and `describe` says so.
     "sustituir",
     "substitute",
+    // Several exact substitutions, in order, in one call. Last because it is
+    // the newest; it is the one a mechanical rename of a symbol actually wants,
+    // and `describe` says so.
+    "sustituir-lote",
+    "substitute_batch",
 ];
 
 /// The two spellings of the subverb that addresses text instead of a line.
@@ -104,6 +109,19 @@ pub const ACTIONS: &[&str] = &[
 /// line, and the tests — and three copies of two strings is how one of them
 /// keeps the old spelling after a rename.
 pub const SUBSTITUTE: &[&str] = &["sustituir", "substitute"];
+
+/// The two spellings of the subverb that carries several substitutions at once.
+///
+/// Its own constant beside [`SUBSTITUTE`] and for the same reason: the parser
+/// here, the external boundary's decision about how to check the arguments past
+/// the action, and the tests all have to agree about these two strings.
+///
+/// The English spelling has an underscore where the Spanish has a hyphen, which
+/// is not an oversight. `crear-carpeta` is how this session spells a two-word
+/// name in Spanish, and `substitute_batch` is what `thalyx_edit`'s `action`
+/// enumeration sends — one string, passed through, rather than a mapping
+/// between two spellings that somebody has to keep in step.
+pub const SUBSTITUTE_BATCH: &[&str] = &["sustituir-lote", "substitute_batch"];
 
 /// How many lines one `ver` answers with when nobody said.
 ///
@@ -193,6 +211,10 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
     // would mean opening it twice and refusing the second as a repeat.
     if SUBSTITUTE.contains(&action) {
         return substitute(here, named.as_str(), argument, face, rehearsing)
+            .map(|()| Opens::Nothing);
+    }
+    if SUBSTITUTE_BATCH.contains(&action) {
+        return substitute_batch(here, named.as_str(), argument, face, rehearsing)
             .map(|()| Opens::Nothing);
     }
 
@@ -637,6 +659,446 @@ fn substitute(
         println!("  To take this back, it had to have been inside an `intento`.\n");
     }
     Ok(())
+}
+
+/// One substitution of a batch, as the line spelled it.
+struct Operation {
+    old: String,
+    new: String,
+    paths: Vec<String>,
+}
+
+/// `editar <archivo> sustituir-lote <n> <viejo> <nuevo> [n-1 archivos] <n> …`
+///
+/// ## Why the counts, and why the first file is where it is
+///
+/// The line has to say where one operation stops and the next begins, and both
+/// of the obvious ways of saying it are wrong. A separator word — `--`, `+` —
+/// is a word a file can be called and a word an exact string can be; the day it
+/// collides, a rename silently becomes two. Guessing from the shape is worse:
+/// `old`, `new` and a path are all just words.
+///
+/// A count cannot collide with anything, because after it is read the arity of
+/// everything that follows is known. It is the total number of files that
+/// operation names, and the first operation takes its first file from the name
+/// before the subverb — which is where `editar` puts a file name, and where a
+/// caller reading `editar src/a.rs sustituir …` already expects one.
+///
+/// **No caller writes this by hand.** `thalyx_edit`'s `substitute_batch` takes
+/// `operations: [{old, new, paths}]` and composes the line, which is the whole
+/// point of an adapter; a person with two substitutions to make types
+/// `sustituir` twice and is right to.
+///
+/// ## What the batch means, said before it is implemented
+///
+/// **The operations apply in the order they were given, each to what the one
+/// before it left.** That is exactly what the same calls made one after another
+/// mean, which is the property that matters: a batch is a way to spend one
+/// round trip instead of five, never a different semantics arriving under a new
+/// name. It is also what makes the natural pair
+///
+///     uids::Thing::load  ->  uids::ThingRenamed::load
+///     Thing::load        ->  ThingRenamed::load
+///
+/// mean what whoever wrote it meant — the qualified spellings first, then
+/// whatever bare ones are left. Those two *overlap* and the order settles them,
+/// which is defined rather than accidental.
+///
+/// What is refused is the composition that order cannot settle honestly:
+/// `A -> B` and then `B -> C`, where the second operation eats what the first
+/// wrote and every `A` silently becomes a `C`. Nothing in the call shows that,
+/// so it is refused with both strings named — [`EditError::Chained`].
+///
+/// ## Preflight is complete here, and that is not a slogan
+///
+/// Every file is opened **once**, every operation is applied to it **in
+/// memory**, and only then is anything saved. So a batch whose third pattern is
+/// not in one of its files writes nothing at all, and a file five patterns touch
+/// is written once with all five in it rather than five times against a state
+/// each save is racing. What remains uncoverable is the save itself, and the
+/// answer for that is the same one `sustituir` gives: exactly which files carry
+/// the new text and which do not, and `intento` to put all of them back.
+fn substitute_batch(
+    here: &Where,
+    first_named: &str,
+    rest: &str,
+    face: Face,
+    rehearsing: bool,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let op = op_of(rehearsing);
+    let Some(words) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    let words: Vec<String> = words.iter().map(|word| word.as_str().to_string()).collect();
+
+    let operations = match read_operations(first_named, &words) {
+        Ok(operations) => operations,
+        Err(error) => return refuse_substitution(op, &error, face),
+    };
+
+    // ── everything decidable from the arguments, before a file is opened ──
+    //
+    // A batch that opens sixty-four files to discover that two of its patterns
+    // look for the same text has spent sixty-four opens on a refusal that was
+    // in the line all along.
+    for operation in &operations {
+        if let Err(error) = thalyx_edit::substitutable(&operation.old, &operation.new) {
+            return refuse_substitution(op, &error, face);
+        }
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        for other in &operations[index + 1..] {
+            if other.old == operation.old {
+                return refuse_substitution(
+                    op,
+                    &EditError::BadBatch {
+                        why: format!(
+                            "two operations of this batch both look for `{}`. The second \
+                             would run against what the first left, so what it means \
+                             depends on the first — name the text once",
+                            operation.old
+                        ),
+                    },
+                    face,
+                );
+            }
+            // The chain, checked between the strings themselves rather than
+            // against the files. `A -> B` then `B -> C` is ambiguous whether or
+            // not the two happen to share a file today, and a check that let it
+            // through on a batch whose paths did not overlap would be a check
+            // that starts refusing when somebody adds a file.
+            if operation.new.contains(other.old.as_str()) {
+                return refuse_substitution(
+                    op,
+                    &EditError::Chained {
+                        earlier_new: operation.new.clone(),
+                        later_old: other.old.clone(),
+                    },
+                    face,
+                );
+            }
+        }
+    }
+
+    // The `..` rule, applied here rather than at the external boundary. That
+    // boundary checks argument slots by position, and a batch's positions mean
+    // nothing until its counts have been read — so it cannot tell a path from
+    // an exact string, and checking every word as a path would refuse a rename
+    // of the text `../mod.rs`. This is the one place that knows which words are
+    // files. `here.anchor` below is still the real check, in the kernel; this
+    // is the cheap early one it used to have.
+    for operation in &operations {
+        for name in &operation.paths {
+            if std::path::Path::new(name)
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+            {
+                return refuse_substitution(
+                    op,
+                    &EditError::BadBatch {
+                        why: format!(
+                            "`{name}` has a `..` in it, and every file a batch names is \
+                             below the workspace root"
+                        ),
+                    },
+                    face,
+                );
+            }
+        }
+    }
+
+    // ── open every distinct file once, and remember which operation wants it ──
+    //
+    // Once, by inode, across the **whole** batch. Two operations naming the same
+    // file is the ordinary case — it is what a five-pattern rename of one symbol
+    // looks like — and opening it twice would give each operation a copy of the
+    // text as it was before the call, so the second save would throw the first
+    // away. That is the same mistake `RepeatedPath` refuses inside one
+    // operation, and across operations the answer is not to refuse but to share
+    // the open file.
+    let mut held: Vec<(crate::confine::Anchored, Text)> = Vec::new();
+    let mut by_inode: std::collections::BTreeMap<(u64, u64), usize> = Default::default();
+    // Per operation, which entries of `held` it applies to, in the order it
+    // named them.
+    let mut wants: Vec<Vec<usize>> = Vec::with_capacity(operations.len());
+
+    for operation in &operations {
+        let mut mine = Vec::with_capacity(operation.paths.len());
+        let mut seen: std::collections::BTreeSet<(u64, u64)> = Default::default();
+        for name in &operation.paths {
+            let path = thalyx_files::resolve(here.at(), name);
+            let anchored = match here
+                .anchor(&path)
+                .and_then(|_| here.anchor_parent(&path))
+                .map_err(|error| {
+                    EditError::Absent(
+                        error
+                            .path()
+                            .unwrap_or(std::path::Path::new(""))
+                            .to_path_buf(),
+                    )
+                }) {
+                Ok(anchored) => anchored,
+                Err(error) => return refuse_substitution(op, &error, face),
+            };
+            let identity = match std::fs::metadata(anchored.path()) {
+                Ok(meta) => (meta.dev(), meta.ino()),
+                Err(error) => {
+                    return refuse_substitution(
+                        op,
+                        &EditError::Unreadable {
+                            path,
+                            detail: error.to_string(),
+                        },
+                        face,
+                    );
+                }
+            };
+            if !seen.insert(identity) {
+                return refuse_substitution(op, &EditError::RepeatedPath { path }, face);
+            }
+            let at = match by_inode.get(&identity) {
+                Some(at) => *at,
+                None => {
+                    let text = match Text::open_anchored(anchored.path(), &path) {
+                        Ok(text) => text,
+                        Err(error) => return refuse_substitution(op, &error, face),
+                    };
+                    held.push((anchored, text));
+                    by_inode.insert(identity, held.len() - 1);
+                    held.len() - 1
+                }
+            };
+            mine.push(at);
+        }
+        wants.push(mine);
+    }
+
+    if held.len() > thalyx_edit::MOST_FILES {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "files named in one batch",
+                given: held.len(),
+                most: thalyx_edit::MOST_FILES,
+            },
+            face,
+        );
+    }
+
+    // ── apply the whole batch in memory, and only then write ──
+    //
+    // In order, each operation against what the one before it left, which is
+    // the semantics written at the top of this function and the only one that
+    // makes a batch equal to the same calls made in sequence.
+    let mut done: Vec<Vec<thalyx_edit::Substituted>> = Vec::with_capacity(operations.len());
+    let mut total = 0usize;
+    for (operation, mine) in operations.iter().zip(&wants) {
+        let mut theirs = Vec::with_capacity(mine.len());
+        for at in mine {
+            let (_, text) = &mut held[*at];
+            match text.substitute(&operation.old, &operation.new) {
+                Ok(one) => {
+                    total += one.replacements;
+                    theirs.push(one);
+                }
+                // Nothing has been saved, so this is an ordinary refusal and
+                // the workspace is untouched — which is the whole reason the
+                // applying happens before any of the writing.
+                Err(error) => return refuse_substitution(op, &error, face),
+            }
+        }
+        done.push(theirs);
+    }
+
+    if total > thalyx_edit::MOST_REPLACEMENTS {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "places to change in one batch",
+                given: total,
+                most: thalyx_edit::MOST_REPLACEMENTS,
+            },
+            face,
+        );
+    }
+
+    let batch: Vec<thalyx_edit::machine::Batched<'_>> = operations
+        .iter()
+        .zip(&done)
+        .map(|(operation, theirs)| thalyx_edit::machine::Batched {
+            old: &operation.old,
+            new: &operation.new,
+            done: theirs,
+        })
+        .collect();
+
+    if rehearsing {
+        if face.is_machine() {
+            face.say(thalyx_edit::machine::would_substitute_batch(&batch));
+        } else {
+            tell_a_person(&operations, &batch, true);
+        }
+        return Ok(());
+    }
+
+    // One save per file, and only files something actually changed. A file
+    // every operation skipped cannot exist here — an operation whose text is
+    // not in a file it named refused the whole batch above — but saving by
+    // `modified` rather than by "we opened it" is the honest condition.
+    let mut written: Vec<std::path::PathBuf> = Vec::new();
+    for index in 0..held.len() {
+        let (_, text) = &mut held[index];
+        if !text.is_modified() {
+            continue;
+        }
+        if let Err(error) = text.save() {
+            let left: Vec<std::path::PathBuf> = held[index..]
+                .iter()
+                .filter(|(_, text)| text.is_modified())
+                .map(|(_, text)| text.path().to_path_buf())
+                .collect();
+            if written.is_empty() {
+                return refuse_substitution(op, &error, face);
+            }
+            if face.is_machine() {
+                face.say(thalyx_edit::machine::half_substituted_batch(
+                    &batch, &written, &left, &error,
+                ));
+            } else {
+                println!("\n  {error}.");
+                for path in &written {
+                    println!("    changed: {}", path.display());
+                }
+                for path in &left {
+                    println!("    left alone: {}", path.display());
+                }
+                println!("  Only an `intento` puts all of them back.\n");
+            }
+            return Ok(());
+        }
+        written.push(text.path().to_path_buf());
+    }
+
+    if face.is_machine() {
+        face.say(thalyx_edit::machine::substituted_batch(&batch));
+        return Ok(());
+    }
+    tell_a_person(&operations, &batch, false);
+    Ok(())
+}
+
+/// Read the operations off the line, or say exactly which word broke it.
+///
+/// Its own function because it takes no filesystem and no session: the whole of
+/// what a batch's shape is can then be tested against a list of strings, which
+/// is what a grammar deserves.
+fn read_operations(first_named: &str, words: &[String]) -> Result<Vec<Operation>, EditError> {
+    const SHAPE: &str = "editar <archivo> sustituir-lote <cuántos-archivos> <viejo> <nuevo> \
+                         [más archivos…] [<cuántos-archivos> <viejo> <nuevo> <archivos…>…]";
+
+    let mut operations: Vec<Operation> = Vec::new();
+    let mut at = 0usize;
+    while at < words.len() {
+        let counted: usize = words[at].parse().map_err(|_| EditError::BadBatch {
+            why: format!(
+                "`{}` is where this batch says how many files its operation {} names, and \
+                 it is not a number: {SHAPE}",
+                words[at],
+                operations.len() + 1
+            ),
+        })?;
+        if counted == 0 {
+            return Err(EditError::BadBatch {
+                why: format!(
+                    "operation {} of this batch names no file, and a substitution across \
+                     nothing is not a substitution",
+                    operations.len() + 1
+                ),
+            });
+        }
+        // The first operation's first file is the name before the subverb, so
+        // that is one fewer word to read off the line for it and none for the
+        // rest.
+        let borrowed = usize::from(operations.is_empty());
+        let here = counted - borrowed;
+        let needs = 3 + here;
+        if at + needs > words.len() {
+            return Err(EditError::BadBatch {
+                why: format!(
+                    "operation {} of this batch says it names {counted} file(s) and the \
+                     line ends before they are all there: {SHAPE}",
+                    operations.len() + 1
+                ),
+            });
+        }
+        let mut paths: Vec<String> = Vec::with_capacity(counted);
+        if operations.is_empty() {
+            paths.push(first_named.to_string());
+        }
+        paths.extend(words[at + 3..at + 3 + here].iter().cloned());
+        operations.push(Operation {
+            old: words[at + 1].clone(),
+            new: words[at + 2].clone(),
+            paths,
+        });
+        at += needs;
+    }
+
+    if operations.is_empty() {
+        return Err(EditError::BadBatch {
+            why: format!("this batch carries no operation at all: {SHAPE}"),
+        });
+    }
+    if operations.len() > thalyx_edit::MOST_OPERATIONS {
+        return Err(EditError::TooMuch {
+            what: "substitutions in one batch",
+            given: operations.len(),
+            most: thalyx_edit::MOST_OPERATIONS,
+        });
+    }
+    Ok(operations)
+}
+
+/// The batch, for somebody reading it on a screen.
+fn tell_a_person(
+    operations: &[Operation],
+    batch: &[thalyx_edit::machine::Batched<'_>],
+    rehearsing: bool,
+) {
+    let places: usize = batch
+        .iter()
+        .flat_map(|one| one.done.iter())
+        .map(|one| one.replacements)
+        .sum();
+    let what = if rehearsing {
+        "would change"
+    } else {
+        "changed"
+    };
+    println!(
+        "\n  {what} {places} place(s) with {} substitution(s):",
+        operations.len()
+    );
+    for one in batch {
+        println!("    `{}` -> `{}`", one.old, one.new);
+        for row in one.done {
+            println!(
+                "      {} — {} place(s) on {} line(s), from line {}",
+                row.path.display(),
+                row.replacements,
+                row.lines,
+                row.first_line
+            );
+        }
+    }
+    if rehearsing {
+        println!("  Nothing was written.\n");
+    } else {
+        println!("  To take this back, it had to have been inside an `intento`.\n");
+    }
 }
 
 /// A substitution that refused before it wrote anything.

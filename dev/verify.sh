@@ -7074,6 +7074,34 @@ else
     excerpt "$WORK/one-call.log" 25
 fi
 
+step "52. several patterns are one call where they were five"
+
+# The claim the run of 2026-08-29 produced, and it is the next one down from
+# stage 51's.
+#
+# That run's arm B did the whole rename in **five** `thalyx_edit` calls, not
+# sixteen — stage 51's change worked. What it could not do was carry more than
+# one `old`/`new` pair, and a rename of one type needs several: the qualified
+# path, the definition, the impl, a type inside a tuple, the bare name. Five
+# round trips into the machine for one plan.
+#
+# So this is that plan's arithmetic. The fixture is the *shape* of it with names
+# of its own — a benchmark's vocabulary does not go into the system under test —
+# and what is checked is the part a batch could get wrong: five patterns in one
+# call leave byte for byte what five calls leave, an operation that matches
+# nothing writes none of the others, and `A -> B` followed by `B -> C` is
+# refused rather than silently turning every `A` into a `C`.
+#
+# It says nothing about wall clock or cost. Whether it moves the benchmark is
+# answered by running the benchmark.
+if cargo test -p thalyx-cli --test several_substitutions_are_one_call \
+        > "$WORK/one-batch.log" 2>&1; then
+    proven "five substitutions in one call leave the same bytes as five calls, one pattern that matches nothing writes none of them, an ambiguous composition is refused, and the answer says what each pattern did and what each file now is"
+else
+    failed "several substitutions in one call do not hold their own claims; see $WORK/one-batch.log"
+    excerpt "$WORK/one-batch.log" 25
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

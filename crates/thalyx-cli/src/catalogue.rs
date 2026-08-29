@@ -220,8 +220,13 @@ pub const VERBS: &[Verb] = &[
         // name after them is another file to do the same thing in.
         takes: &[
             "path",
-            "ver|poner|cambiar|borrar|sustituir",
-            "line|line-line|old-text",
+            "ver|poner|cambiar|borrar|sustituir|sustituir-lote",
+            // For `sustituir-lote` the third slot is how many files its first
+            // substitution names, and everything past it is that operation's
+            // strings and files followed by the next operation's, each opened
+            // by its own count. Said as a position rather than as prose because
+            // that is what this table is; `describe edit` carries the sentence.
+            "line|line-line|old-text|how-many-files",
             "text|new-text",
             "path...",
         ],
@@ -252,9 +257,15 @@ pub const VERBS: &[Verb] = &[
             "too_much",
             "repeated_path",
             "incomplete",
+            // The two only a batch can produce. `chained_substitution` is the
+            // interesting one: it is not a bad argument, it is two arguments
+            // that are each fine and cannot be composed — `A -> B` followed by
+            // `B -> C`, where every `A` would quietly become a `C`.
+            "bad_batch",
+            "chained_substitution",
         ],
         summary: "Change the text in a file: by line, by exact substitution across several \
-                  files, or on a screen for a person.",
+                  files, by several substitutions at once, or on a screen for a person.",
     },
     Verb {
         id: "structured",

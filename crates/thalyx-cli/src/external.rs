@@ -75,8 +75,22 @@ pub struct Exposed {
     pub verb: &'static str,
     /// One entry per argument slot, in order.
     pub slots: &'static [Slot],
-    /// The slot every argument past `slots` must match, if any are allowed.
-    pub repeating: Option<Slot>,
+    /// The slot every argument past `slots` must match, if any are allowed —
+    /// decided per call, from the arguments themselves.
+    ///
+    /// A function for the same reason `verbatim_from` is one, and it is the same
+    /// verb that needs it. `editar … sustituir-lote` carries several exact
+    /// strings **and** several file names past the action, interleaved, and
+    /// which is which is only knowable after reading the counts inside the
+    /// line. So this table cannot type-check them by position: checking them all
+    /// as paths would refuse a rename of the text `../mod.rs`, and checking them
+    /// all as text would drop the path rule for the file names.
+    ///
+    /// It is `Text` for that one subverb, and the path rule moves into
+    /// `edit::substitute_batch`, which is the one place that knows which word is
+    /// a file — written there, beside the loop that does it, saying what it is
+    /// standing in for. Every other entry answers the same slot it always did.
+    pub repeating: fn(&[String]) -> Option<Slot>,
     /// The slot from which arguments are put on the line **unquoted**, joined by
     /// single spaces — decided per call, from the arguments themselves.
     ///
@@ -108,6 +122,13 @@ pub struct Exposed {
 /// that is different.
 const QUOTED: fn(&[String]) -> Option<usize> = |_| None;
 
+/// The four answers a verb gives about its arguments past the last named slot,
+/// as named constants so the table below still reads as a table.
+const NOTHING_MORE: fn(&[String]) -> Option<Slot> = |_| None;
+const MORE_PATHS: fn(&[String]) -> Option<Slot> = |_| Some(Slot::Path);
+const MORE_OPTIONS: fn(&[String]) -> Option<Slot> = |_| Some(Slot::Option);
+const MORE_TEXT: fn(&[String]) -> Option<Slot> = |_| Some(Slot::Text);
+
 /// The whole of what an external agent may ask for.
 ///
 /// Read it as the claim it is: **these and only these**. Adding a line is a
@@ -118,63 +139,63 @@ pub const EXPOSED: &[Exposed] = &[
     Exposed {
         verb: "state",
         slots: &[],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "describe",
         slots: &[Slot::Text],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "where",
         slots: &[],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "list",
         slots: &[Slot::Path],
-        repeating: Some(Slot::Option),
+        repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "read",
         slots: &[Slot::Path],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     // ── the index, which is the reason any of this is worth doing ─────────
     Exposed {
         verb: "index_build",
         slots: &[Slot::Path],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "symbol",
         slots: &[Slot::Text],
-        repeating: Some(Slot::Option),
+        repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "depends_on",
         slots: &[Slot::Path],
-        repeating: Some(Slot::Option),
+        repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "depended_on_by",
         slots: &[Slot::Path],
-        repeating: Some(Slot::Option),
+        repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
     // ── searching the bytes, for the questions the index cannot answer ────
     Exposed {
         verb: "find",
         slots: &[Slot::Pattern],
-        repeating: Some(Slot::Option),
+        repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
     Exposed {
@@ -183,7 +204,7 @@ pub const EXPOSED: &[Exposed] = &[
         // first — which is what `search::parse` does and why the slots are in
         // this order and not the catalogue's reading order.
         slots: &[],
-        repeating: Some(Slot::Text),
+        repeating: MORE_TEXT,
         verbatim_from: QUOTED,
     },
     // ── changing the workspace ────────────────────────────────────────────
@@ -207,44 +228,60 @@ pub const EXPOSED: &[Exposed] = &[
         // slot there is, so naming a seventh file costs the same check the
         // first one got. For the line-addressed subverbs there is never a fifth
         // argument: `editar` takes the rest of the line as one text.
-        repeating: Some(Slot::Path),
+        // For `sustituir` this is more files to make the same substitution in,
+        // guarded as paths — the strictest slot there is, so naming a seventh
+        // file costs the same check the first one got. For `sustituir-lote` it
+        // cannot be: see `Exposed::repeating`. For the line-addressed subverbs
+        // there is never a fifth argument at all, because `editar` takes the
+        // rest of the line as one text.
+        repeating: |arguments| match arguments.get(1) {
+            Some(action) if crate::edit::SUBSTITUTE_BATCH.contains(&action.as_str()) => {
+                Some(Slot::Text)
+            }
+            _ => Some(Slot::Path),
+        },
         verbatim_from: |arguments| match arguments.get(1) {
             // Two exact strings and a list of names. Every one of them is
             // lossless inside single quotes and none of them is content with
             // meaningful leading spaces, so there is nothing here for the
             // carve-out to protect.
-            Some(action) if crate::edit::SUBSTITUTE.contains(&action.as_str()) => None,
+            Some(action)
+                if crate::edit::SUBSTITUTE.contains(&action.as_str())
+                    || crate::edit::SUBSTITUTE_BATCH.contains(&action.as_str()) =>
+            {
+                None
+            }
             _ => Some(1),
         },
     },
     Exposed {
         verb: "make_file",
         slots: &[],
-        repeating: Some(Slot::Path),
+        repeating: MORE_PATHS,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "make_directory",
         slots: &[],
-        repeating: Some(Slot::Path),
+        repeating: MORE_PATHS,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "copy",
         slots: &[Slot::Path, Slot::Path],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "move",
         slots: &[Slot::Path, Slot::Path],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     Exposed {
         verb: "remove",
         slots: &[],
-        repeating: Some(Slot::Path),
+        repeating: MORE_PATHS,
         verbatim_from: QUOTED,
     },
     // ── the boundary around a change, which is the whole pitch ────────────
@@ -264,7 +301,7 @@ pub const EXPOSED: &[Exposed] = &[
             ]),
             Slot::Text,
         ],
-        repeating: None,
+        repeating: NOTHING_MORE,
         verbatim_from: QUOTED,
     },
     // ── what a verb would do, without doing any of it ─────────────────────
@@ -275,7 +312,7 @@ pub const EXPOSED: &[Exposed] = &[
     Exposed {
         verb: "rehearse",
         slots: &[],
-        repeating: Some(Slot::Text),
+        repeating: MORE_TEXT,
         verbatim_from: QUOTED,
     },
 ];
@@ -558,7 +595,7 @@ fn check(
     here: &Where,
     workspace: &Path,
 ) -> Result<(), Refusal> {
-    if shape.repeating.is_none() && arguments.len() > shape.slots.len() {
+    if (shape.repeating)(arguments).is_none() && arguments.len() > shape.slots.len() {
         return Err(Refusal::new(
             "too_many_arguments",
             "ask_describe",
@@ -628,7 +665,7 @@ fn check(
             .slots
             .get(position)
             .copied()
-            .or(shape.repeating)
+            .or_else(|| (shape.repeating)(arguments))
             .ok_or_else(|| {
                 Refusal::new(
                     "too_many_arguments",
