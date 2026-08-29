@@ -5095,3 +5095,75 @@ inicial del experimento que estaba despejando.
 Y el orden es parte de la regla: nada de lo que el brazo B necesita para estar
 vivo depende de que el brazo A haya corrido, así que no hay ninguna razón para
 enterarse en ese orden — y hay una razón cara para no hacerlo.
+
+---
+
+## Regla derivada: dos cosas con el mismo nombre en espacios de nombres distintos no se comparan — 2026-08-29
+
+El grader del banco reportó el brazo B como `VIOLATED` —salió de su espacio de
+trabajo— en una corrida donde no había salido de ningún lado. Comparaba
+
+```
+/home/bench-thalyx                  el espacio de trabajo, adentro de la máquina
+…/bench-external-agent-3/b          el directorio donde arrancó el proceso claude
+```
+
+Los dos son rutas, los dos se ven como rutas, y `os.path.normpath` los compara
+felizmente. Uno está adentro de una imagen Btrfs que QEMU tiene abierta y el
+otro está en el anfitrión. **Ninguna comparación entre ellos significa nada**, y
+la que se estaba haciendo producía una acusación falsa contra el sistema medido.
+
+Lo que hizo posible el error fue que las dos cosas se llamaban `workspace`. Una
+sola palabra para el directorio donde vive un proceso y para el árbol sobre el
+que trabaja: mientras los dos brazos fueron iguales —el brazo A los tiene
+juntos— la palabra alcanzaba, y el día que dejaron de serlo el código siguió
+comparándolos porque el nombre decía que eran lo mismo.
+
+**La regla:** cuando dos cosas que un programa compara pueden vivir en espacios
+de nombres distintos —dos máquinas, dos contenedores, un anfitrión y un
+huésped—, se les ponen **nombres distintos en el código**, y cada comprobación
+dice cuál de los dos está mirando. Un `if a == b` entre dos cosas que se llaman
+igual es la comparación que nadie va a leer dos veces.
+
+Y el corolario, que es de dónde salió el arreglo: cuando dos casos se juzgan bajo
+reglas distintas, la regla se elige **por escrito** —un campo en la procedencia,
+un modelo nombrado— y no por una condición implícita. La función que decidía
+seguía siendo una sola porque nadie se había preguntado si las dos preguntas eran
+la misma.
+
+---
+
+## Regla derivada: un barrido que sólo mira cadenas no ve una lista — 2026-08-29
+
+Buscando el error de arriba apareció otro, más viejo y peor. El mismo grader
+recogía las rutas que nombraba cada llamada así:
+
+```python
+PATH_FIELDS = ("file_path", "path", "notebook_path", …)   # `paths` no estaba
+…
+for key, value in given.items():
+    if key in PATH_FIELDS or not isinstance(value, str):
+        continue                                          # y esto salta las listas
+```
+
+`thalyx_edit` nombra sus archivos en `paths`, una **lista**. El campo no estaba
+en la tabla, y el barrido de respaldo —el que existe justamente para cubrir un
+campo que nadie listó— sólo mira valores que sean cadenas. Así que una llamada
+que nombrara seis rutas absolutas fuera del espacio de trabajo eran **seis rutas
+que nadie revisaba**, en el archivo cuyo trabajo entero es revisarlas.
+
+Lo cachó la **columna de control** de su propia prueba: un caso que esperaba
+`refused: 1` contestó `0`, y el veredicto que se estaba probando —`INTACT`— salía
+correcto por la razón equivocada. Sin ese renglón el hueco seguía ahí.
+
+**La regla:** una comprobación que recorre datos de forma genérica tiene que
+decir qué hace con **cada forma** que esos datos pueden tener —cadena, lista,
+objeto anidado— y una forma que no maneja es una forma que deja pasar en
+silencio. Un `isinstance(value, str)` en un barrido de seguridad es una lista
+blanca de tipos escrita sin querer.
+
+Y el corolario para las pruebas: **la aserción que descubre esto no es la del
+caso que falla, es la del caso que pasa.** Un caso positivo que llega al
+veredicto correcto por el camino equivocado se ve idéntico a uno que funciona;
+lo que los separa es afirmar también *qué vio* la comprobación, y no sólo qué
+contestó.

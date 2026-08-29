@@ -581,12 +581,33 @@ con el que se mide, en [[Evidencia-de-Agentes]].
       «renombrado» sería una abstracción falsa. LSP/SCIP van debajo de la misma
       API el día que existan, sin cambiarla.
 
-- [ ] **Volver a correr `--task reversible` con `sustituir` en el camino.** Es la
-      prueba de la hipótesis que provocó esa operación, y el arnés queda
-      **congelado**: mismo prompt, mismo símbolo, misma verdad conocida, mismo
-      grader. Adaptar la prueba al producto invalidaría las dos corridas.
-      Ninguna cifra de mejora puede escribirse en ninguna nota antes de eso.
-      Ver [[Evidencia-de-Agentes]].
+- [x] **Volver a correr `--task reversible` con `sustituir` en el camino** —
+      corrido el 2026-08-29 (REVERSIBLE #2). El brazo B bajó de 36 llamadas a 14
+      y de 16 mutaciones a 5, con 46 % menos bytes devueltos y cero archivos
+      leídos; el reloj y el costo salieron **arriba** del brazo A, +14.2 % y
+      +14.3 %. Su regrade con el instrumento corregido **no se ha corrido**, así
+      que la corrida es PENDIENTE y ninguna de esas cifras es todavía un
+      resultado de la comparación. Ver [[Evidencia-de-Agentes]].
+
+- [ ] **Correr el regrade de REVERSIBLE #2.** Sobre los artefactos que ya
+      existen, sin llamar a Claude:
+      `dev/bench-external-agent.sh --task reversible --symbol UidRegistry
+      --out ~/thalyx/target/bench-external-agent-3 --regrade`. Decide `VALID` /
+      `INVALID` / `NOT PROVEN` por brazo, cada uno bajo su propia frontera.
+      Mientras no se corra, esa corrida no cuenta como comparación.
+
+- [ ] **Volver a correr `--task reversible` con `sustituir-lote` en el camino.**
+      La misma disciplina: el arnés queda **congelado** —mismo prompt, mismo
+      símbolo, misma verdad conocida, mismo grader—, porque adaptar la prueba al
+      producto invalidaría las corridas anteriores. Lo único medido del lote es
+      local y es de llamadas y bytes; que mueva costo o reloj no se puede
+      escribir en ninguna nota antes de esto. Ver [[Evidencia-de-Agentes]].
+
+- [ ] **Decidir si `attempt abandon` puede confirmarse en una sola llamada desde
+      el canal del agente.** Hoy cuesta dos y la razón es real: abandonar
+      reemplaza un árbol **compartido**, y lo que se destruye no tiene otro
+      snapshot. Es un decreto de [[Camino-Confiable]], así que no se tocó. Sólo
+      Cesar puede cambiarlo.
 
 ## Pendientes de decreto formal
 

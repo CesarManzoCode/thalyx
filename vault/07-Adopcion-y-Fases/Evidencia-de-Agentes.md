@@ -624,6 +624,253 @@ sea más rápida—, pero la causa del reloj habrá que buscarla en otra parte.
 
 ---
 
+## REVERSIBLE #2 — la corrida post-lote, y las dos cosas que el instrumento hizo mal
+
+**Los números de abajo son de la corrida del 2026-08-29 en
+`target/bench-external-agent-3/`, tal como el arnés los imprimió.** El regrade
+con el instrumento corregido **todavía no se ha corrido** —se corre en la
+máquina de Cesar, donde están los artefactos, y el comando está más abajo—, así
+que el veredicto formal de esta corrida es **PENDIENTE**, ni válido ni inválido.
+Lo que sí se sabe de ella, porque lo dijo el arnés en su momento: el restore de
+los dos brazos quedó `PROVEN`.
+
+### La secuencia, que es lo que esta sección conserva
+
+**OBSERVACIÓN 1** — REVERSIBLE #1. El brazo B fue correcto y más barato en
+lectura y gastó un tercio del reloj haciendo **dieciséis** mutaciones dirigidas
+por línea donde el brazo A hizo seis reemplazos de archivo entero. La causa
+plausible que se escribió entonces: la granularidad de la superficie de
+escritura.
+
+**CAMBIO 1** — `editar … sustituir`: una cadena exacta, en varios archivos, en
+una llamada.
+
+**OBSERVACIÓN 2** — esta corrida. El cambio 1 funcionó y se puede leer en los
+números:
+
+| | REVERSIBLE #1 (brazo B) | REVERSIBLE #2 (brazo B) |
+|---|---|---|
+| llamadas a herramienta | 36 | 14 |
+| mutaciones | 16 | 5 |
+| turnos | 37 | 15 |
+| tokens de salida | 5 859 | 3 661 |
+| bytes enviados | 4 074 | 1 383 |
+| tiempo de pared | 63.8 s | 57.7 s |
+
+Y esta corrida, brazo contra brazo:
+
+| métrica | A (Linux) | B (Thalyx) | diferencia |
+|---|---|---|---|
+| llamadas a herramienta | 17 | 14 | −17.6 % |
+| mutaciones | 6 | 5 | −16.7 % |
+| archivos leídos | 8 | **0** | |
+| bytes devueltos al modelo | 32 251 | 17 400 | **−46.0 %** |
+| bytes enviados | 2 324 | 1 383 | −40.5 % |
+| tokens de salida | 4 324 | 3 661 | −15.3 % |
+| tiempo de API | 50.392 s | 50.964 s | +1.1 % |
+| tiempo de pared | 50.500 s | 57.696 s | **+14.2 %** |
+| costo | $0.2070212 | $0.2365656 | **+14.3 %** |
+| mensajes del asistente | 8 | 15 | |
+| mensajes con herramienta | 7 | 14 | |
+| máximo de herramientas en un mensaje | 6 | **1** | |
+| `attempt` | — | comenzado 1, abandonado 1, confirmado 0 |
+| restore | `PROVEN` | `PROVEN` | |
+
+**El resultado no favorece a Thalyx en costo ni en reloj, y va escrito con el
+mismo detalle que los que sí** — regla 2 de esta nota.
+
+Y la traza del brazo B, que es de donde sale el cambio 2:
+
+```
+1. ToolSearch
+2. attempt begin
+3. thalyx_edit substitute   (multiarchivo)
+4. thalyx_edit substitute
+5. thalyx_edit substitute
+6. thalyx_edit substitute
+7. thalyx_edit substitute
+8. attempt abandon          -> needs confirmation
+9. attempt abandon confirm
+10. find
+…
+```
+
+**CAMBIO 2** — `editar … sustituir-lote`: varias sustituciones exactas, con sus
+propios conjuntos de archivos, en una llamada. Las cinco de arriba son un solo
+plan que la API no podía expresar: llevaba un par `old`/`new` a través de muchos
+archivos y no llevaba muchos pares.
+
+**Nada de esto dice que el cambio 2 mejore el costo o el reloj.** Eso se mide
+corriendo el banco. Lo único medido hasta ahora es local y es esto, sobre un
+fixture con la forma de ese plan y nombres propios, sin Claude y sin API:
+
+| | antes | después |
+|---|---|---|
+| llamadas lógicas | 5 | **1** |
+| llamadas que mutan | 5 | **1** |
+| bytes de petición | 569 | 508 |
+| bytes de respuesta | 1 499 | 1 452 |
+
+Los bytes bajan poco a propósito: la respuesta del lote dice *más* —qué hizo
+cada patrón y cómo quedó cada archivo— en menos espacio del que ocupaban cinco
+respuestas. Lo que baja de verdad son los viajes de ida y vuelta.
+
+### Los dos errores del instrumento, y ninguno es del sistema medido
+
+**Primero: `--out` relativo.** La corrida se lanzó con
+`--out target/bench-external-agent-3` y el brazo A contestó `Settings file not
+found.`. `run_arm` hace `cd` al directorio del agente antes de ejecutar
+`claude`, así que `--settings $OUT/armA.settings.json` se resolvía contra ese
+directorio y no contra donde estaba parado quien escribió el comando. Arreglado
+en un solo lugar (`normalise_paths`), con self-test que corre desde un
+directorio que no es ninguno de los dos.
+
+**Segundo, y es el que importa: el scope del brazo B era un falso positivo.** El
+grader comparaba
+
+```
+/home/bench-thalyx                    el espacio de trabajo, adentro de la máquina
+…/bench-external-agent-3/b            el directorio donde arrancó el proceso claude
+```
+
+y los declaraba distintos. Lo son: **no están en el mismo espacio de nombres.**
+El brazo B corre en el anfitrión con todas sus herramientas de archivo quitadas;
+el directorio vacío donde se para no es un espacio de trabajo del que se salió,
+es el piso de un cuarto sin nada adentro.
+
+Las dos palabras quedan separadas para siempre, y cada brazo se juzga bajo la
+frontera que ese brazo de verdad tiene:
+
+| | `host_control_cwd` | `guest_project_workspace` |
+|---|---|---|
+| **brazo A** | la copia montada | la misma copia — y que sean la misma es su frontera |
+| **brazo B** | infraestructura, un directorio vacío | una ruta adentro de la máquina, alcanzable sólo por el socket |
+
+La frontera del brazo A: arrancó adentro del árbol y no salió. La del brazo B es
+el canal, y son cuatro cosas:
+
+1. no tiene ninguna herramienta host que pueda leer o escribir el proyecto —
+   `Read`, `Edit`, `Write`, `Grep`, `Glob`, `Bash` se le quitan, y un stream con
+   una de ellas adentro es una corrida cuyo confinamiento no ocurrió;
+2. toda ruta que sus herramientas de Thalyx **aceptaron** cae bajo el espacio de
+   trabajo guest;
+3. toda ruta con la que la máquina **contestó**, también;
+4. el preflight probó, antes de gastar un centavo, que el canal apuntaba a ese
+   árbol.
+
+**Una ruta que la máquina rechazó no es una brecha: es la frontera funcionando**,
+que es exactamente lo que el experimento mide. Regla 4: la diferencia entre una
+negación y una operación que nunca existió. Un preflight ausente es `NOT PROVEN`;
+uno que alcanzó otro espacio de trabajo es evidencia en contra, y eso sí es
+`VIOLATED`.
+
+**Y buscando eso apareció un tercer hueco, más viejo y peor.** `paths` en plural
+no era un campo que el grader conociera, y su barrido de respaldo sólo miraba
+valores que fueran cadenas: **toda ruta nombrada dentro de una lista era una ruta
+que nadie revisaba** — que es exactamente cómo `thalyx_edit` nombra sus
+archivos. Lo cachó la columna de control de su propia prueba, no la prueba.
+Regla 5 otra vez, y la regla nueva que sale de él está en
+[[Estrategia-de-Pruebas]].
+
+El regrade ahora incluye el scope como conjunto: un brazo fuera de su frontera
+es `INVALID`, uno cuya frontera nadie puede comprobar es `NOT PROVEN`.
+
+### El regrade de esta corrida, que falta correr
+
+Sobre los artefactos que ya existen, sin llamar a Claude y sin gastar nada:
+
+```sh
+dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+    --out ~/thalyx/target/bench-external-agent-3 --regrade
+```
+
+Escribe `summary-regraded.json` y **no toca** `summary.json`. Imprime una línea
+por brazo con `VALID` / `INVALID` / `NOT PROVEN`, la frontera bajo la que lo
+decidió y por qué.
+
+Si los dos salen `VALID`, esta corrida es la primera comparación
+metodológicamente limpia después del endurecimiento y después del lote: los dos
+brazos anclados, la parity comprobada, el preflight comprobado, el restore
+comprobado por fuera, y cada brazo juzgado bajo su propia frontera. Hasta que se
+corra, es **PENDIENTE**, y esta nota no la cuenta como resultado.
+
+### Una herramienta por mensaje: qué es de Thalyx y qué no
+
+El dato más raro de la corrida es ese renglón: el brazo A llegó a emitir **seis**
+llamadas en un mismo mensaje del asistente y el brazo B nunca pasó de **una**.
+Lo que se determinó, y de dónde:
+
+**No es una limitación del cliente.** Claude Code (CLI 2.1.251) emite dos
+llamadas a herramientas MCP en un solo mensaje del asistente y las dos se
+ejecutan; se comprobó en vivo, en una sesión aparte, sin costo de banco. Así que
+«el modelo no puede paralelizar MCP» es falso y no explica nada.
+
+**Sí hay una serialización, y es de Thalyx, pero es de ejecución y no de
+emisión.** `crates/thalyx-mcp/src/main.rs` sirve así:
+
+```rust
+for line in stdin.lock().lines() { … handle(…) … writeln!(stdout, …) }
+```
+
+Un mensaje, el viaje completo al socket de la máquina, la respuesta, y hasta
+entonces el siguiente. Aunque el cliente mandara N llamadas a la vez, se
+ejecutarían en fila. Eso no cambia cuántas emite el modelo; cambia lo que
+cuestan.
+
+**Y ahí es donde encaja el reloj.** El brazo B gastó 57.696 s de pared contra
+50.964 s de API: **6.7 s fuera de la API**. El brazo A gastó 50.500 contra
+50.392: 0.1 s. Esos casi siete segundos son las catorce llamadas cruzando el
+adaptador y el socket hacia adentro de la máquina, una tras otra. Es una
+**hipótesis sobre la causa del delta de reloj**, no una medición de ella: lo que
+está medido es la diferencia entre pared y API en los dos brazos.
+
+**Por qué las cinco `thalyx_edit` no eran paralelizables de todas formas.** El
+resto de la traza es causalmente dependiente por diseño y ese diseño es correcto:
+el `attempt` tiene que estar abierto antes de que cambie nada, y el `abandon`
+tiene que ser después. Las cinco sustituciones sí eran independientes entre sí —
+pero cinco llamadas paralelas seguirían siendo cinco viajes por un adaptador que
+los hace en fila, y **una sola llamada es mejor que cinco paralelas**: un viaje,
+un preflight completo, una escritura por archivo. Por eso el cambio 2 es el lote
+y no concurrencia en el adaptador.
+
+**La frontera, dicha de una vez.** La métrica que importa dejó de ser «¿puede el
+modelo emitir seis llamadas MCP a la vez?» —puede— y es «¿puede el mismo plan
+expresarse en una a tres llamadas?». Hacer el adaptador concurrente exigiría
+encauzar peticiones por el puente y una máquina que sirva verbos en paralelo:
+es un cambio de protocolo, no una optimización local, y no compraría nada en
+esta traza.
+
+### `attempt abandon`, que sigue costando dos llamadas y se queda así
+
+La traza gasta dos: `abandon`, «needs confirmation», `abandon confirm=true`. Se
+revisó si esa confirmación es una propiedad de seguridad real o UX humana
+reciclada, y **es real**, escrita en `crates/thalyx-cli/src/attempt.rs`:
+abandonar **reemplaza el árbol**, y el árbol es **compartido**. La persona pudo
+haber escrito en él mientras el intento estaba abierto, y su trabajo no es del
+agente para tirarlo porque el agente cambió de opinión. Lo que se destruye no
+tiene otro snapshot que lo recupere. Por eso los dos rostros ven primero
+exactamente qué se perdería.
+
+No es que la máquina lo imponga —`confirm: true` en la primera llamada pasa
+derecho hoy—, sino que la descripción enseña el camino que hace ver el costo
+antes. Quitarlo del canal del agente sería debilitar la única protección que hay
+sobre el trabajo de alguien más, y eso **no se cambia sin que Cesar lo apruebe**:
+es un decreto de [[Camino-Confiable]] y no una decisión de implementación.
+
+### `changed` y las validaciones posteriores
+
+Se buscó en la traza un viaje evitable de este tipo y **no lo hay**: el agente
+nunca llamó `thalyx_changed`, porque la respuesta de `sustituir` ya trae por
+archivo cuántos lugares, en cuántas líneas, desde cuál y cuántos bytes tiene
+ahora. La respuesta del lote conserva eso y agrega el desglose por patrón.
+
+El `find` que sigue al abandon **no se toca**: es el agente comprobando por su
+cuenta que el árbol volvió, que es el último paso de la tarea. Ahorrárselo
+haciendo que Thalyx afirme su propio éxito es exactamente lo que la regla 2 de
+[[Estrategia-de-Pruebas]] prohíbe.
+
+---
+
 ## El protocolo del bug real (dogfooding)
 
 **Política, decretada el 2026-08-28.** Cuando aparezca un bug **real y no
@@ -692,9 +939,20 @@ Lo que estos números **no** dicen:
   frontera reversible es nada.
 - **La corrida reversible es una sola corrida.** Su delta de reloj —+33 %— es de
   esa corrida concreta y no una propiedad medida de Thalyx.
-- **`sustituir` todavía no tiene ninguna medición.** Existe porque una
-  observación válida identificó su ausencia como causa plausible; que la
-  corrija es una hipótesis sin comprobar hasta que el banco se vuelva a correr.
+- **`sustituir` tiene una medición y `sustituir-lote` no tiene ninguna.**
+  REVERSIBLE #2 muestra el brazo B bajando de 36 llamadas a 14 y de 16
+  mutaciones a 5 después de `sustituir` — una observación de una corrida, no una
+  propiedad medida. `sustituir-lote` existe porque esa misma corrida identificó
+  cinco llamadas que eran un solo plan; que eso mueva costo o reloj es una
+  hipótesis sin comprobar hasta que el banco se vuelva a correr.
+- **REVERSIBLE #2 no tiene veredicto todavía.** Sus artefactos existen y su
+  regrade con el instrumento corregido no se ha corrido. Hasta entonces es
+  PENDIENTE, y sus cifras son cifras de esa corrida y no un resultado de la
+  comparación.
+- **El delta de reloj de REVERSIBLE #2 —+14.2 %— tiene una hipótesis y no una
+  causa medida.** Lo medido es que el brazo B gastó 6.7 s fuera de la API y el
+  brazo A 0.1 s; que eso sean los viajes por el adaptador serializado es la
+  explicación más simple y no está comprobada.
 - **Todavía falta medir**: la tarea reversible multiarchivo **repetida**, tareas
   reales, bugs genuinos, otros repositorios, otras clases de cambio, y una
   comparación futura contra herramientas semánticas especializadas.

@@ -14,6 +14,90 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+> ## Cinco llamadas eran un solo plan, y el brazo B nunca había salido de ningún lado — 2026-08-29
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Lo que quedó hecho
+>
+> **Dos errores del instrumento, ninguno del sistema medido.**
+>
+> - `--out` relativo. `run_arm` hace `cd` al directorio del agente antes de
+>   ejecutar `claude`, así que un `--out target/…` hacía que
+>   `--settings $OUT/armA.settings.json` se resolviera contra ese directorio y
+>   no contra donde estaba parado quien lo escribió. El brazo A de la corrida
+>   del 2026-08-29 contestó `Settings file not found.` por eso. Arreglado en un
+>   solo lugar, `normalise_paths`, con self-test que corre desde un directorio
+>   que no es ninguno de los dos.
+> - **El scope del brazo B era un falso positivo.** El grader comparaba
+>   `/home/bench-thalyx` —el espacio de trabajo, adentro de la máquina— con el
+>   directorio host donde arrancó el proceso `claude`, y los declaraba
+>   distintos. Lo son: no están en el mismo espacio de nombres. Ahora
+>   `host_control_cwd` y `guest_project_workspace` son dos palabras distintas
+>   para siempre, y cada brazo se juzga bajo la frontera que ese brazo tiene: la
+>   del A es que arrancó adentro del árbol y no salió; la del B es el canal —cero
+>   herramientas host que puedan tocar el proyecto, toda ruta que la máquina
+>   *aceptó* bajo el espacio guest, toda ruta con la que *contestó* también, y el
+>   preflight probando de antemano a qué árbol apuntaba el canal. Una ruta que la
+>   máquina **rechazó** no es una brecha: es la frontera funcionando.
+> - Y de paso, un hueco más viejo: `paths` en plural no era un campo que el
+>   grader conociera y su barrido de respaldo sólo miraba cadenas, así que toda
+>   ruta nombrada dentro de una lista era una ruta que nadie revisaba — que es
+>   exactamente cómo `thalyx_edit` nombra sus archivos.
+>
+> **`editar … sustituir-lote`**: varias sustituciones exactas, cada una con sus
+> archivos, en una llamada. La corrida post-`sustituir` bajó de 16 mutaciones a
+> 5, y las cinco eran el mismo plan — la ruta calificada, la definición, el
+> `impl`, un tipo dentro de una tupla, el nombre pelado. Se aplican en el orden
+> dado, cada una sobre lo que dejó la anterior (que es lo que significan esas
+> llamadas hechas en fila); una composición que el orden no puede resolver
+> —`A -> B` y luego `B -> C`— se rechaza con las dos cadenas nombradas. Preflight
+> completo: cada archivo se abre una vez por inodo, todo se aplica en memoria, y
+> sólo entonces se escribe.
+>
+> Medido local, sin Claude: 5 llamadas -> 1, 5 mutaciones -> 1, 569 -> 508 bytes
+> de petición, 1499 -> 1452 de respuesta. **No dice nada de costo ni de reloj.**
+>
+> ### Lo que falta, y en este orden
+>
+> **1. El regrade de la corrida que ya existe**, en tu máquina, sin gastar nada:
+>
+> ```sh
+> cd ~/thalyx && git pull
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --out ~/thalyx/target/bench-external-agent-3 --regrade
+> ```
+>
+> Escribe `summary-regraded.json`, no toca `summary.json`, e imprime una línea
+> por brazo: `VALID` / `INVALID` / `NOT PROVEN`, con la frontera bajo la que lo
+> decidió. Hasta que se corra, REVERSIBLE #2 es **PENDIENTE**.
+>
+> **2. La verificación de siempre**, que es donde se comprueba lo que este
+> contenedor no puede: el lote adentro de un `intento` sobre Btrfs de verdad.
+>
+> ```sh
+> cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> **3. Una corrida limpia del banco**, cuando las dos de arriba salgan bien. El
+> comando exacto está en [[Evidencia-de-Agentes]]. Ésa es la que dice si el lote
+> mueve costo y reloj; nada de lo escrito hasta ahora lo afirma.
+>
+> ### Una decisión que es tuya y no se tomó
+>
+> `attempt abandon` sigue costando dos llamadas: la primera contesta qué se
+> perdería, la segunda con `confirm` lo hace. Se revisó si eso es seguridad real
+> o UX humana reciclada y **es real**: abandonar reemplaza el árbol, el árbol es
+> compartido, y lo que se destruye no tiene otro snapshot que lo recupere. Es un
+> decreto de [[Camino-Confiable]], así que se quedó como está. Si alguna vez
+> quieres que el canal del agente pueda saltárselo, esa decisión es tuya.
+>
+> El detalle completo —la traza, por qué el brazo B nunca emitió más de una
+> herramienta por mensaje, y qué parte de eso es de Thalyx— está en
+> [[Evidencia-de-Agentes]].
+
+---
+
 > ## El brazo A no estaba anclado a `--project`, y ahora no puede no estarlo — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó, y el

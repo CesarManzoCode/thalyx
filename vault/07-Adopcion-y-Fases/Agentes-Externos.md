@@ -169,7 +169,7 @@ alcanzable y no está anunciado.
 | `thalyx_symbol` | `symbol` | dónde se define un nombre y dónde se usa |
 | `thalyx_dependencies` | `depends_on` / `depended_on_by` | impacto sin abrir archivos |
 | `thalyx_find` | `find` / `grep` | el respaldo, cuando no es un símbolo |
-| `thalyx_edit` | `edit` | sustituir una cadena exacta en varios archivos en una llamada, o cambiar por línea; el deshacer va en la respuesta |
+| `thalyx_edit` | `edit` | sustituir una cadena exacta en varios archivos en una llamada, **varias sustituciones distintas en una sola** (`substitute_batch`), o cambiar por línea; el deshacer va en la respuesta |
 | `thalyx_file` | `make_file` / `make_directory` / `remove` / `move` / `copy` | crear, borrar, mover |
 | `thalyx_attempt` | `attempt` | la frontera reversible |
 | `thalyx_changed` | `attempt` | qué cambió desde el punto de control |

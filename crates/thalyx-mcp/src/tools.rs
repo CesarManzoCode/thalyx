@@ -6,7 +6,7 @@
 //! arguments, and the machine does the rest — which is why this file is a table
 //! and not a program.
 //!
-//! ## Why there are ten of these and not forty
+//! ## Why there are eleven of these and not forty
 //!
 //! Because the list is a prompt. Every tool an agent is shown is a branch it has
 //! to consider on every turn, and a surface that offers one tool per verb spends
