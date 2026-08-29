@@ -53,9 +53,31 @@ pub struct Store {
 /// guaranteed order. Phase 1 has one user and one agent, so no two contracts
 /// contend in a way anybody could observe the order of — and a fair queue
 /// would need a broker process, which is a larger thing than the problem.
+/// ## Why the drop unlocks instead of only closing
+///
+/// `flock` attaches to the open file description, and a `fork` copies every
+/// descriptor. A child between its fork and its `exec` therefore holds a second
+/// reference to this one, and a lock is released on close only when the last
+/// reference goes — so dropping this in that instant would release nothing, and
+/// the store would stay locked for as long as the child took to reach `exec`.
+///
+/// Thalyx spawns `btrfs` and `bpftool` while holding this lock, so the case is
+/// real: the next `thalyx` would queue behind a lock nobody holds any more.
+/// `flock(LOCK_UN)` takes the lock off the description itself, which every copy
+/// of the descriptor sees at once.
 #[must_use = "the lock is released the moment it is dropped"]
 pub struct ContractLock {
-    _file: std::fs::File,
+    file: std::fs::File,
+}
+
+impl Drop for ContractLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsFd;
+
+        // Best effort: the only way this fails is a descriptor that is already
+        // gone, and there is nobody left to tell.
+        let _ = thalyx_syscall::unlock(self.file.as_fd());
+    }
 }
 
 impl Store {
@@ -153,7 +175,7 @@ impl Store {
 
         thalyx_syscall::lock_exclusive(file.as_fd()).map_err(|e| CoreError::io(&path, e))?;
 
-        Ok(ContractLock { _file: file })
+        Ok(ContractLock { file })
     }
 
     /// Whether another process is inside a contract right now.
@@ -176,6 +198,14 @@ impl Store {
 
         let acquired = thalyx_syscall::try_lock_exclusive(file.as_fd())
             .map_err(|e| CoreError::io(&path, e))?;
+        if acquired {
+            // Taken off the description and not merely closed, for the reason
+            // [`ContractLock`] gives: a diagnostic that answered "nobody holds
+            // it" by holding it, and then leaked it into a child that happened
+            // to be forking at that instant, would be the one thing a
+            // diagnostic must never do — change the answer.
+            let _ = thalyx_syscall::unlock(file.as_fd());
+        }
         Ok(!acquired)
     }
 
@@ -359,6 +389,61 @@ mod tests {
         assert!(
             !store.contract_in_progress().unwrap(),
             "the lock outlived the scope that took it"
+        );
+    }
+
+    #[test]
+    fn closing_a_descriptor_is_not_releasing_a_lock_when_a_fork_copied_it() {
+        // **The cause of the only test that failed in the full suite on Fedora,
+        // and never alone.** `flock` belongs to the open file description, and
+        // a lock on one is released by a close only when the *last* descriptor
+        // referring to it goes. `fork` copies every descriptor a process has,
+        // so a child between its fork and its `exec` holds one of these — and
+        // dropping the lock in the parent during that instant releases nothing.
+        //
+        // In one `cargo test` process the tests are threads, and the test below
+        // spawns a child. On a machine with enough cores to overlap that spawn
+        // with `the_lock_is_released_when_it_goes_out_of_scope`'s drop, that
+        // test sees a lock that outlived its scope — which is what it is named
+        // for and exactly not what happened. Four cores here never hit it in
+        // forty runs of the suite; twelve did, once.
+        //
+        // It is not only a test artefact, which is why the fix is in the lock
+        // and not in the test. Thalyx spawns `btrfs` and `bpftool` while
+        // holding this lock, so a real `thalyx` can leave the store locked
+        // after it has finished with it, and the next one queues behind
+        // nobody.
+        //
+        // The duplicate here is `try_clone`, which is the same `dup` a fork
+        // does, with the timing taken out so the mechanism can be asserted
+        // rather than waited for.
+        use std::os::fd::AsFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let path = store.lock_path();
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        thalyx_syscall::lock_exclusive(file.as_fd()).unwrap();
+        let inherited = file.try_clone().expect("what a fork hands the child");
+
+        drop(file);
+        assert!(
+            store.contract_in_progress().unwrap(),
+            "closing one reference released a lock the description still has, \
+             so this test no longer describes the defect it is named for"
+        );
+
+        // And what `ContractLock::drop` does instead of only closing.
+        thalyx_syscall::unlock(inherited.as_fd()).unwrap();
+        assert!(
+            !store.contract_in_progress().unwrap(),
+            "the lock survived an explicit unlock"
         );
     }
 

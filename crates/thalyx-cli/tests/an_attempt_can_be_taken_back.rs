@@ -132,7 +132,7 @@ fn the_words_that_abandon_in_one_call_are_not_refused_at_a_real_prompt() {
         root.path(),
         &work,
         "intento abandonar snapshot=2026-08-29T11-04-02Z-rename \
-         state=w1-0f3cbe1100000000000000000000000000000000000000000000000000000000",
+         state=w2-0f3cbe1100000000000000000000000000000000000000000000000000000000",
     );
 
     assert_eq!(answer["ok"], serde_json::json!(false));

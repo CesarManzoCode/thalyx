@@ -229,6 +229,13 @@ fn state_fields(state: &thalyx_snapshot::Witness) -> Vec<(&'static str, serde_js
         ),
         ("state_files", json!(state.files)),
         ("state_unreadable", json!(state.unreadable)),
+        // What the identity cost to take, said rather than left to be measured.
+        // Since 2026-08-29 a state check reads what every file holds, because a
+        // witness made of timestamps cannot separate two writes inside one
+        // filesystem tick — and an identity that is cheap and wrong authorises
+        // destroying somebody's work. A caller that finds this number large
+        // knows why its rollback is not instant.
+        ("state_bytes", json!(state.bytes)),
     ]
 }
 
@@ -325,14 +332,42 @@ enum Consent {
 
 /// The whole of the decision, and nothing else in this file makes it.
 ///
-/// A function of three values and no filesystem, which is what lets every rule
+/// A function of two values and no filesystem, which is what lets every rule
 /// below be exercised in a container that has no Btrfs. `Estrategia-de-Pruebas`:
 /// policy that can only be run on Btrfs is policy that is never run.
 ///
 /// What the caller has to claim is **the state**, not what the state costs.
 /// Bringing a file back destroys nothing and how many files change is a
 /// summary, and neither is an identity — see the header.
-fn consent(asked: &Asked, open: &Open, state: &thalyx_snapshot::Witness) -> Consent {
+///
+/// ## Why the state is not compared here, since 2026-08-29
+///
+/// It was, for one day, and that is the defect `dev/verify.sh` stage 55 found
+/// on Fedora the first time it ran. This function held the witness the *plan*
+/// was made from and returned [`Consent::ShowTheCost`] when the caller's claim
+/// did not match it — so a rollback authorised against a tree somebody else had
+/// written in never reached [`thalyx_core::attempt::abandon`] at all, and the
+/// one answer the whole mechanism exists to give, `workspace_moved`, was
+/// unreachable from the face that gives answers.
+///
+/// Nothing was destroyed by it. What came back instead was the cost object with
+/// `done: false` and a **fresh** `confirm_with` line, which is worse than it
+/// looks: an agent in a loop copies that line and destroys the person's work on
+/// the next call, having been told nothing about why the first one did not
+/// take. A refusal that reads as "try again with this" is not a refusal.
+///
+/// It was invisible in the container for the plainest reason: the core test
+/// that proves the refusal calls `abandon` directly, and the only thing that
+/// was ever wrong was the path between this function and it. Rule 5 — the
+/// instrument includes the harness — and its narrower form, that a test of two
+/// layers has to cross the join.
+///
+/// So a caller that names the attempt **and** names a state has made an
+/// authorisation, and this says so. Whether the claim is true about the tree is
+/// a question with exactly one right place to be asked, and it is not here: it
+/// is under the lock, in the instant before the swap, where nothing can run
+/// between the answer and the act.
+fn consent(asked: &Asked, open: &Open) -> Consent {
     // First, and before `si` is looked at. A caller that named an attempt and
     // named the wrong one believes it is settling something else, and letting a
     // yes carry through would be honouring a word said about a different tree.
@@ -344,11 +379,9 @@ fn consent(asked: &Asked, open: &Open, state: &thalyx_snapshot::Witness) -> Cons
         return Consent::NotThisAttempt;
     }
 
-    // `matches` is false for an incomplete witness, whatever it is compared
-    // against — which is rule 9 on the one path where nobody is asked twice: a
-    // tree that could not be read everywhere has no exact identity, so it
-    // always goes the long way round.
-    if asked.snapshot.is_some() && asked.state.as_deref().is_some_and(|c| state.matches(c)) {
+    // The attempt named, and a state named: that is a program saying "this
+    // exact tree and no other". It goes to the tree to be judged.
+    if asked.snapshot.is_some() && asked.state.is_some() {
         return Consent::Given;
     }
 
@@ -357,6 +390,24 @@ fn consent(asked: &Asked, open: &Open, state: &thalyx_snapshot::Witness) -> Cons
     }
 
     Consent::ShowTheCost
+}
+
+/// What the tree will be held to when it is replaced.
+///
+/// The plan's own witness is never what authorises a rollback. It was taken
+/// outside the lock and is therefore a statement about a moment that has
+/// already passed; what the caller *stated* is what it is held to, and a
+/// human's yes is held to nothing but the tree in front of them.
+///
+/// Its own function so that the join can be asserted without a filesystem. The
+/// defect stage 55 found was never in [`consent`] alone and never in
+/// [`thalyx_core::attempt::abandon`] alone — it was that the first never
+/// reached the second, and a test of each half separately is what let it ship.
+fn how_it_is_authorised(asked: &Asked) -> attempt::Authorised<'_> {
+    match asked.state.as_deref() {
+        Some(claimed) => attempt::Authorised::ByState(claimed),
+        None => attempt::Authorised::ByAHuman,
+    }
 }
 
 /// The line that abandons this attempt in one call, built from what is true now.
@@ -634,7 +685,7 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
         }
     };
 
-    match consent(&asked, &open, &plan.state) {
+    match consent(&asked, &open) {
         Consent::Given => {}
         // Named rather than turned into the cost object, because it is not a
         // decision about a cost: it is a caller that believes it is settling
@@ -717,13 +768,7 @@ fn abandon(store: &Store, given: &[crate::words::Word], face: Face, request_id: 
         }
     }
 
-    // The plan's own witness is never what authorises this. It was taken
-    // outside the lock; what the caller stated is what it is held to, and a
-    // human's yes is held to nothing but the tree in front of them.
-    let authorised = match asked.state.as_deref() {
-        Some(claimed) => attempt::Authorised::ByState(claimed),
-        None => attempt::Authorised::ByAHuman,
-    };
+    let authorised = how_it_is_authorised(&asked);
 
     match attempt::abandon(store, &snapshots, &open, &plan, authorised, request_id) {
         Ok(restored) => {
@@ -881,18 +926,10 @@ mod tests {
     /// against a filesystem is policy that is never exercised.
     fn as_it_stands() -> thalyx_snapshot::Witness {
         thalyx_snapshot::Witness {
-            id: "w1-1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            id: "w2-1111111111111111111111111111111111111111111111111111111111111111".to_string(),
             files: 12,
             unreadable: 0,
-        }
-    }
-
-    /// The same tree after somebody else wrote one byte in it.
-    fn after_somebody_else_wrote() -> thalyx_snapshot::Witness {
-        thalyx_snapshot::Witness {
-            id: "w1-2222222222222222222222222222222222222222222222222222222222222222".to_string(),
-            files: 12,
-            unreadable: 0,
+            bytes: 4096,
         }
     }
 
@@ -916,7 +953,6 @@ mod tests {
                     state.id
                 )),
                 &open,
-                &state
             ),
             Consent::Given
         );
@@ -932,48 +968,56 @@ mod tests {
         let state = as_it_stands();
         let handed_back = one_call_to_abandon(&open, &state).expect("a complete tree has a line");
         assert_eq!(
-            consent(&asked(&handed_back), &open, &state),
+            consent(&asked(&handed_back), &open),
             Consent::Given,
             "the answer hands back `{handed_back}`, which does not abandon"
         );
     }
 
     #[test]
-    fn any_write_between_the_plan_and_the_yes_stops_the_abandon() {
-        // The property the count-based protocol never had, and the reason it
-        // was replaced the day after it was written. Somebody wrote in the
-        // shared tree while the attempt was open; the claim the agent copied out
-        // of the previous answer no longer describes what is there, so nothing
-        // is destroyed and the cost is shown again.
+    fn a_state_claim_is_carried_to_the_tree_and_never_settled_here() {
+        // **The defect stage 55 found on Fedora, as an assertion.** This
+        // function used to compare the caller's claim against the witness the
+        // *plan* was made from, and answer `ShowTheCost` when they differed.
+        //
+        // Nothing was destroyed by that. What it destroyed was the answer: a
+        // rollback authorised against a tree somebody else had written in never
+        // reached `thalyx_core::attempt::abandon`, so `workspace_moved` — the
+        // one word the whole mechanism exists to say — could not be said. The
+        // caller got the cost object and a fresh line to copy instead, which an
+        // agent in a loop copies, and then the person's work is gone.
+        //
+        // So a claim is carried, whatever it says. Where it is judged is under
+        // the lock, in the instant before the swap, and the two tests that hold
+        // that end are `thalyx_core::attempt`'s
+        // `a_write_to_a_file_the_agent_had_already_written_stops_the_rollback`
+        // and `a_rollback_that_names_the_state_the_tree_is_in_goes_ahead_in_one_call`.
         let open = on_record();
-        let stale = asked(&one_call_to_abandon(&open, &as_it_stands()).expect("a line"));
-        assert_eq!(
-            consent(&stale, &open, &after_somebody_else_wrote()),
-            Consent::ShowTheCost
+        let stale = one_call_to_abandon(&open, &as_it_stands()).expect("a line");
+
+        assert_eq!(consent(&asked(&stale), &open), Consent::Given);
+        // And it is carried as a claim about a state, not as a bare yes. A
+        // `ByAHuman` here would mean the tree was replaced as it stands, which
+        // is the destruction the claim was supposed to prevent.
+        assert!(
+            matches!(
+                how_it_is_authorised(&asked(&stale)),
+                attempt::Authorised::ByState(claimed) if claimed == as_it_stands().id
+            ),
+            "the state the caller named is not what the destruction is held to"
         );
     }
 
     #[test]
-    fn an_edit_to_a_file_the_agent_had_already_edited_stops_it_too() {
-        // **The counterexample that retired the counts.** Under the old rule
-        // this case was indistinguishable from no write at all: one modified
-        // file before, one modified file after, both numbers unchanged, consent
-        // given, the person's edit gone. Nothing about the *shape* of a witness
-        // makes this case special, which is exactly why it is now covered — the
-        // decision no longer depends on which kind of write happened.
-        let open = on_record();
-        let stale = asked(&one_call_to_abandon(&open, &as_it_stands()).expect("a line"));
-
-        // Same file count, same everything a count could see, different tree.
-        let same_files_different_bytes = thalyx_snapshot::Witness {
-            id: "w1-3333333333333333333333333333333333333333333333333333333333333333".to_string(),
-            files: as_it_stands().files,
-            unreadable: 0,
-        };
-        assert_eq!(
-            consent(&stale, &open, &same_files_different_bytes),
-            Consent::ShowTheCost
-        );
+    fn a_bare_yes_is_held_to_nothing_but_the_tree_in_front_of_the_person() {
+        // The other side of it, and why the two forms are not one. A person at
+        // a terminal was shown what would be lost and said yes about the tree
+        // they were looking at. They cannot state a digest and must not be
+        // asked to, so their yes authorises the tree as it stands.
+        assert!(matches!(
+            how_it_is_authorised(&asked("si")),
+            attempt::Authorised::ByAHuman
+        ));
     }
 
     #[test]
@@ -985,9 +1029,8 @@ mod tests {
         let open = on_record();
         assert_eq!(
             consent(
-                &asked("snapshot=2026-08-29T09-00-00Z-something-else state=w1-abc si"),
+                &asked("snapshot=2026-08-29T09-00-00Z-something-else state=w2-abc si"),
                 &open,
-                &as_it_stands()
             ),
             Consent::NotThisAttempt
         );
@@ -1006,7 +1049,7 @@ mod tests {
             String::new(),
         ] {
             assert_eq!(
-                consent(&asked(&half), &open, &state),
+                consent(&asked(&half), &open),
                 Consent::ShowTheCost,
                 "`intento abandonar {half}` went ahead"
             );
@@ -1014,31 +1057,30 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_that_could_not_be_read_everywhere_is_never_waved_through() {
+    fn a_tree_that_could_not_be_read_everywhere_is_never_handed_a_one_call_line() {
         // Rule 9 and rule 10, on the one path where nobody is asked twice. A
-        // directory that could not be opened is not a directory that is empty,
-        // so a tree with a hole in it has no exact identity — and a caller that
-        // states the digest of the part that could be read is stating something
-        // that is not an identity of anything.
+        // directory that could not be opened — or a file whose bytes could not
+        // be read — is not one that is empty, so a tree with a hole in it has no
+        // exact identity, and there is no line to hand out.
+        //
+        // A caller that assembles one anyway is refused, and this is not where:
+        // `Witness::matches` is false for an incomplete witness whatever it is
+        // compared against, and the comparison that matters happens under the
+        // lock. `thalyx_core::attempt`'s
+        // `a_tree_that_could_not_be_read_everywhere_authorises_nothing` is the
+        // assertion that end holds.
         let open = on_record();
         let holed = thalyx_snapshot::Witness {
             unreadable: 1,
             ..as_it_stands()
         };
-        assert_eq!(
-            consent(
-                &asked(&format!(
-                    "snapshot=2026-08-29T11-04-02Z-rename state={}",
-                    holed.id
-                )),
-                &open,
-                &holed
-            ),
-            Consent::ShowTheCost
-        );
         assert!(
             one_call_to_abandon(&open, &holed).is_none(),
             "a tree nobody finished reading must not be handed a one-call line"
+        );
+        assert!(
+            !holed.matches(&holed.id),
+            "an incomplete witness matched itself, which is an authorisation"
         );
     }
 
@@ -1048,13 +1090,10 @@ mod tests {
         // working: the human face's escape hatch is this word, and so is every
         // caller written before today.
         let open = on_record();
-        assert_eq!(
-            consent(&asked(""), &open, &as_it_stands()),
-            Consent::ShowTheCost
-        );
+        assert_eq!(consent(&asked(""), &open), Consent::ShowTheCost);
         for yes in ["si", "sí", "yes", "y"] {
             assert_eq!(
-                consent(&asked(yes), &open, &as_it_stands()),
+                consent(&asked(yes), &open),
                 Consent::Given,
                 "`intento abandonar {yes}` stopped working"
             );

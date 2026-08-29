@@ -488,7 +488,7 @@ mod tests {
         let mut metrics = Metrics::new(None);
         metrics.call(
             "thalyx_attempt",
-            &json!({"action": "abandon", "snapshot": "s", "state": "w1-abc"}),
+            &json!({"action": "abandon", "snapshot": "s", "state": "w2-abc"}),
             10,
             false,
             false,

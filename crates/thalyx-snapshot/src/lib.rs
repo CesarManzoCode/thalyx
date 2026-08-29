@@ -703,31 +703,66 @@ impl Difference {
 /// replaced by the snapshot. Counts are a summary, and a summary is not an
 /// identity.
 ///
-/// So this is the identity: a digest over **every** path in the tree together
-/// with its size, its modification time, its change time and its inode number.
-/// Any write to any file moves at least the modification time and the change
-/// time of that file, whether or not it was already modified, and whether or
-/// not it changes the file's length. A path that appears, disappears or is
-/// replaced moves the set or the inode.
+/// ## Why metadata was not enough either, and what that cost
 ///
-/// ## What it is not
+/// What replaced the counts was a digest over every path with its size, its
+/// modification time, its change time and its inode number. That is strictly
+/// better and still not an identity, and the file that first carried it said so
+/// out loud without noticing: its own tests slept twenty milliseconds between
+/// two writes, because *two writes in a row from the same program can share a
+/// timestamp*. A test that has to wait for the clock is a test whose subject
+/// depends on the clock.
 ///
-/// It is not a content hash. Reading every byte of a subvolume to answer
-/// "is this still the tree I was looking at" would cost more than the restore
-/// it guards, and this crate's own comparison — the one a restore is planned
-/// with — has always been by size and time for exactly that reason. What is
-/// claimed here is therefore precise and bounded: **this is the same set of
-/// inodes, with the same lengths, last written and last changed at the same
-/// instants.** A writer that produced a byte-different file of the same length
-/// and then forged both timestamps back to the nanosecond would defeat it; a
-/// writer that merely wrote would not.
+/// The case is not exotic. It is the one this whole mechanism exists for, at
+/// speed: the agent writes `shared.txt`, takes the state, and a person writes
+/// the same file the same instant with a line of the same length. Same path,
+/// same inode, same size, and — inside one filesystem tick — the same `mtime`
+/// and the same `ctime`. Every field moved by nothing. The stale claim matches
+/// and their work goes back to the snapshot.
 ///
-/// The timestamps are read from the kernel at nanosecond resolution. On a
-/// filesystem whose timestamp granularity is coarser than the interval between
-/// two writes, two different states could hash the same — which is why the
-/// change time and the inode are in there beside the modification time, and
-/// why the version prefix exists: a witness whose prefix this build does not
-/// know is refused rather than compared, which is rule 9.
+/// **A state identity that depends on waiting for the clock is not a state
+/// identity.** So the digest now covers what the file *holds*:
+///
+/// - a regular file contributes a digest of its bytes;
+/// - a symbolic link contributes the path it points at;
+/// - anything else — a fifo, a socket, a device — contributes only its kind,
+///   because opening one would block on a writer that may never come, and
+///   nothing about the byte stream of a fifo is a property of the tree.
+///
+/// beside the path, the size, the two timestamps and the inode, all of which
+/// stay: they can only make it refuse more often, never less.
+///
+/// ## What that costs, said plainly rather than discovered later
+///
+/// Every byte of the workspace is read on every state check. That is a real
+/// price and it is the reason the previous design did not pay it — but the
+/// thing being bought is the only thing this mechanism sells. An identity that
+/// is cheap and wrong authorises destroying somebody's work, and there is no
+/// price at which that is a saving. [`Witness::bytes`] reports what was
+/// weighed so an answer can say what it cost instead of leaving it to be
+/// found out.
+///
+/// The kernel's mutation counter — `thalyx-watch`, which counts every write on
+/// this machine and can be scoped to one tree — was examined as the cheap way
+/// to do this and rejected, with reasons, in
+/// `vault/03-Primitivas/Identidad-de-Estado.md`. The short form: its write hook
+/// is `lsm/file_permission`, which a shared mapping's dirty page never passes
+/// through, so a file rewritten through `mmap` moves nothing. A missed change
+/// is the one failure this design does not get to have.
+///
+/// ## What is still not claimed
+///
+/// The walk is not atomic. What the witness says is: *at the moment each of
+/// these paths was looked at, this is what it held.* A file rewritten while the
+/// walk is between two other files is seen in one of its two states and not in
+/// some third one — but which of the two is not pinned down, which is why the
+/// comparison that authorises a destruction is made **under the lock,
+/// immediately before the swap**, and why the tree it replaces is kept rather
+/// than deleted. See `thalyx_core::attempt::abandon`.
+///
+/// The version prefix is in the string. A witness whose prefix this build does
+/// not know is refused rather than compared under rules it was not made
+/// under, which is rule 9.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Witness {
     /// The comparable string. Carries its version so that a witness made by
@@ -742,10 +777,21 @@ pub struct Witness {
     /// that authorise a destruction with it must refuse it — see
     /// [`Witness::is_complete`].
     pub unreadable: usize,
+    /// How many bytes of file content went into the digest.
+    ///
+    /// Reported, never used to decide anything. It is what this identity costs
+    /// to compute, and an answer that can say what it weighed is an answer
+    /// nobody has to measure to find out — rule 9 of `Estrategia-de-Pruebas`
+    /// applied to a price rather than to a value.
+    pub bytes: u64,
 }
 
 /// The rules the current witness is made under, named in the witness itself.
-pub const WITNESS_VERSION: &str = "w1";
+///
+/// `w2` since 2026-08-29: `w1` was size and timestamps, which two writes in the
+/// same filesystem tick can share. A `w1` string is refused on sight rather
+/// than compared, which is the whole reason the prefix is there.
+pub const WITNESS_VERSION: &str = "w2";
 
 impl Witness {
     /// Whether every path under the tree was actually looked at.
@@ -771,7 +817,7 @@ impl Witness {
 pub fn witness(live: &Path) -> Witness {
     let mut scratch = Difference::default();
     let mut here = std::collections::BTreeMap::new();
-    collect(live, live, &mut here, &mut scratch);
+    collect(live, live, &mut here, &mut scratch, Weigh::Contents);
     witness_of(&here, &scratch.unreadable)
 }
 
@@ -785,6 +831,7 @@ fn witness_of(here: &std::collections::BTreeMap<String, Stat>, unreadable: &[Str
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
+    let mut bytes = 0u64;
     hasher.update(WITNESS_VERSION.as_bytes());
     hasher.update(b"\n");
     for (path, stat) in here {
@@ -797,6 +844,17 @@ fn witness_of(here: &std::collections::BTreeMap<String, Stat>, unreadable: &[Str
         hasher.update(stat.mtime_ns.to_le_bytes());
         hasher.update(stat.ctime_ns.to_le_bytes());
         hasher.update(stat.ino.to_le_bytes());
+        // The half no timestamp can be asked to carry. A `None` here is a file
+        // whose contents nobody read; its path is in `unreadable` beside it, so
+        // the witness is incomplete and authorises nothing.
+        match &stat.holds {
+            Some(digest) => {
+                hasher.update(b"=");
+                hasher.update(digest);
+                bytes = bytes.saturating_add(stat.weighed);
+            }
+            None => hasher.update(b"?"),
+        }
         hasher.update(b"\n");
     }
     // In the digest and not only in the count, so two trees that could not be
@@ -811,6 +869,7 @@ fn witness_of(here: &std::collections::BTreeMap<String, Stat>, unreadable: &[Str
         id: format!("{WITNESS_VERSION}-{}", hex::encode(digest)),
         files: here.len(),
         unreadable: unreadable.len(),
+        bytes,
     }
 }
 
@@ -835,13 +894,22 @@ pub fn difference_and_witness(live: &Path, snapshot: &Path) -> (Difference, Witn
     let mut here = std::collections::BTreeMap::new();
     let mut there = std::collections::BTreeMap::new();
 
-    collect(live, live, &mut here, &mut difference);
+    collect(live, live, &mut here, &mut difference, Weigh::Contents);
     // Taken before the snapshot is walked, so that what the witness covers is
     // the live tree and only the live tree. An unreadable path in the snapshot
     // is a fact about the snapshot; folding it in here would make the witness
     // of a workspace depend on something outside it.
     let live_unreadable = difference.unreadable.clone();
-    collect(snapshot, snapshot, &mut there, &mut difference);
+    // Stat only. The snapshot is compared against, not identified, and reading
+    // every byte of it would double what a confirmation costs to sharpen an
+    // answer nobody acts on differently.
+    collect(
+        snapshot,
+        snapshot,
+        &mut there,
+        &mut difference,
+        Weigh::Nothing,
+    );
 
     for (path, stat) in &here {
         match there.get(path) {
@@ -883,17 +951,26 @@ pub fn difference_and_witness(live: &Path, snapshot: &Path) -> (Difference, Witn
 
 /// What one file looked like when the tree was walked.
 ///
-/// Four fields where the comparison needs two, and the extra pair is the whole
-/// of what [`Witness`] adds over a count: the change time moves on any write to
-/// the inode, including one that keeps the length and is followed by a
-/// modification time being set back, and the inode number moves when a path is
-/// replaced by a different file of the same size at the same instant.
+/// Six fields where the comparison needs two. The change time and the inode are
+/// what [`Witness`] adds over a count; `holds` is what it adds over a
+/// timestamp, and it is the only one of them that two writes inside one
+/// filesystem tick cannot make identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stat {
     size: u64,
     mtime_ns: i64,
     ctime_ns: i64,
     ino: u64,
+    /// A digest of what this path holds, when it was read.
+    ///
+    /// `None` means it was not read — either because nobody asked (the
+    /// snapshot side of a comparison never needs it) or because it could not
+    /// be. Those two are told apart by whether the path is in
+    /// [`Difference::unreadable`], which is what makes rule 10 answerable
+    /// here: a failure to read is not a failure to exist.
+    holds: Option<[u8; 32]>,
+    /// How many bytes were read to produce `holds`. Reported, never compared.
+    weighed: u64,
 }
 
 impl Stat {
@@ -904,9 +981,31 @@ impl Stat {
     /// as its own question so that adding a field to [`Stat`] cannot silently
     /// change what "modified" means — which it would have, since deriving
     /// `PartialEq` and comparing whole values is what this replaced.
+    ///
+    /// Deliberately not `holds`, even now that there is one. A restore plan is
+    /// "which files would have to be put back", and answering it by content
+    /// would mean reading every byte of the **snapshot** as well — doubling the
+    /// cost of a confirmation to sharpen an answer nobody acts on differently.
+    /// The witness reads one tree, and it reads it to answer a different
+    /// question.
     fn differs_in_content_from(&self, other: &Self) -> bool {
         self.size != other.size || self.mtime_ns != other.mtime_ns
     }
+}
+
+/// Whether a walk reads what the files hold, or only what the directory says.
+///
+/// The live tree is weighed; the snapshot it is compared against is not. Making
+/// it a named type rather than a `bool` at the call site is not decoration —
+/// `collect(root, path, into, difference, true)` at the wrong call site would
+/// double the cost of every confirmation in the system and nothing would look
+/// wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Weigh {
+    /// Read what each path holds. For the tree whose identity is being taken.
+    Contents,
+    /// Stat only. For the tree that is merely being compared against.
+    Nothing,
 }
 
 fn collect(
@@ -914,6 +1013,7 @@ fn collect(
     directory: &Path,
     into: &mut std::collections::BTreeMap<String, Stat>,
     difference: &mut Difference,
+    weigh: Weigh,
 ) {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -938,18 +1038,36 @@ fn collect(
         }
 
         match entry.metadata() {
-            Ok(metadata) if metadata.is_dir() => collect(root, &path, into, difference),
+            Ok(metadata) if metadata.is_dir() => collect(root, &path, into, difference, weigh),
             Ok(metadata) => {
                 use std::os::unix::fs::MetadataExt;
 
+                let name = relative(root, &path).to_string();
                 let mtime = metadata
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_nanos() as i64)
                     .unwrap_or(0);
+
+                let (holds, weighed) = match weigh {
+                    Weigh::Nothing => (None, 0),
+                    Weigh::Contents => match what_it_holds(&path, &metadata) {
+                        Some((digest, read)) => (Some(digest), read),
+                        // Rule 10 said in the one place it is load-bearing: the
+                        // path stays in the map, so the restore plan still sees
+                        // the file and does not report it as removed, and the
+                        // name goes in `unreadable`, so the witness over this
+                        // walk is incomplete and authorises nothing.
+                        None => {
+                            difference.unreadable.push(name.clone());
+                            (None, 0)
+                        }
+                    },
+                };
+
                 into.insert(
-                    relative(root, &path).to_string(),
+                    name,
                     Stat {
                         size: metadata.len(),
                         mtime_ns: mtime,
@@ -961,6 +1079,8 @@ fn collect(
                             .saturating_mul(1_000_000_000)
                             .saturating_add(i64::from(metadata.ctime_nsec() as i32)),
                         ino: metadata.ino(),
+                        holds,
+                        weighed,
                     },
                 );
             }
@@ -969,6 +1089,68 @@ fn collect(
                 .push(relative(root, &path).to_string()),
         }
     }
+}
+
+/// What a path holds, digested, and how many bytes that took.
+///
+/// `None` is "could not be read", and the caller turns that into an incomplete
+/// witness. Every other outcome is a value, including the ones that are not
+/// bytes at all.
+///
+/// **A fifo is never opened.** `entry.metadata()` does not follow symbolic
+/// links, so a link to a fifo arrives here as a link, but a fifo made directly
+/// in the workspace arrives as a fifo — and opening one blocks until somebody
+/// writes to it, which may be never. A state check that hangs is worse than one
+/// that is imprecise, and there is nothing about the byte stream of a fifo that
+/// is a property of the tree anyway: what the tree holds is *a fifo, here*,
+/// which the kind and the inode already say.
+fn what_it_holds(path: &Path, metadata: &std::fs::Metadata) -> Option<([u8; 32], u64)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use std::os::unix::fs::FileTypeExt;
+
+    let kind = metadata.file_type();
+
+    if kind.is_symlink() {
+        // What a link holds is where it points. Following it would weigh some
+        // other tree's file — possibly one outside the workspace entirely.
+        let target = std::fs::read_link(path).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"symlink\0");
+        hasher.update(target.as_os_str().as_encoded_bytes());
+        return Some((hasher.finalize().into(), 0));
+    }
+
+    if kind.is_fifo() || kind.is_socket() || kind.is_block_device() || kind.is_char_device() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"special\0");
+        hasher.update(kind.is_fifo().to_string().as_bytes());
+        hasher.update(kind.is_socket().to_string().as_bytes());
+        hasher.update(kind.is_block_device().to_string().as_bytes());
+        hasher.update(kind.is_char_device().to_string().as_bytes());
+        return Some((hasher.finalize().into(), 0));
+    }
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"file\0");
+    let mut buffer = vec![0u8; 128 * 1024];
+    let mut read = 0u64;
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&buffer[..n]);
+                read = read.saturating_add(n as u64);
+            }
+            // A read that failed part way through is a file nobody has read,
+            // not a shorter file. Rule 9: the cautious answer, never the fast
+            // one.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    Some((hasher.finalize().into(), read))
 }
 
 fn relative<'a>(root: &Path, path: &'a Path) -> std::borrow::Cow<'a, str> {
@@ -990,6 +1172,48 @@ pub struct Restored {
     pub atomic: bool,
 }
 
+/// A restore that is built and not yet committed.
+///
+/// The writable copy exists, beside the subvolume, under a name nothing points
+/// at. Nothing has moved. [`Prepared::commit`] is one `RENAME_EXCHANGE` and the
+/// tidying after it; dropping this instead throws the copy away and leaves the
+/// tree exactly as it was.
+///
+/// ## Why the two halves are named separately
+///
+/// Because of what sits between them. A rollback authorised by a state has to
+/// compare that state against the tree **at the instant of the destruction**,
+/// and the useful meaning of "instant" is *with as little as possible able to
+/// happen after it*. While this was one function, everything the restore had to
+/// do first — opening the journal, writing the intent, clearing a stale staging
+/// name, making the writable copy of the snapshot — happened after the check.
+/// On Btrfs that is milliseconds, and milliseconds are enough for somebody
+/// else's editor to save.
+///
+/// It does not close the window; nothing short of freezing the filesystem
+/// would. It moves the expensive half of the work to the side of the check
+/// where it is harmless, and what is left after the check is the exchange
+/// itself. What lands in what remains is not destroyed either: it is displaced
+/// into [`Restored::replaced_kept_as`], which the answer names.
+#[must_use = "a prepared restore that is neither committed nor dropped leaves a staging tree"]
+pub struct Prepared<'a, V: Volumes> {
+    snapshots: &'a Snapshots<V>,
+    snapshot: Snapshot,
+    staging: PathBuf,
+    kept: String,
+    kept_path: PathBuf,
+}
+
+impl<V: Volumes> Drop for Prepared<'_, V> {
+    fn drop(&mut self) {
+        // A refused rollback must leave nothing behind. Best effort on purpose:
+        // the caller is already carrying an error, and a staging tree that
+        // outlived its attempt is inert — nothing points at it, and the next
+        // prepare of this process clears the name.
+        let _ = self.snapshots.volumes.delete(&self.staging);
+    }
+}
+
 impl<V: Volumes> Snapshots<V> {
     /// Return the subvolume to a snapshot.
     ///
@@ -1005,6 +1229,15 @@ impl<V: Volumes> Snapshots<V> {
     /// available it falls back, and says so, so the journal can record that
     /// this restore had a window and the atomic ones did not.
     pub fn restore(&self, name: &str, timestamp: &str) -> Result<Restored> {
+        self.prepare_restore(name, timestamp)?.commit()
+    }
+
+    /// Everything a restore does before anything moves.
+    ///
+    /// For a caller that has a last question to ask about the live tree and
+    /// wants as little as possible to happen between the answer and the swap.
+    /// See [`Prepared`].
+    pub fn prepare_restore(&self, name: &str, timestamp: &str) -> Result<Prepared<'_, V>> {
         let snapshot = self.find(name)?;
 
         let directory = self.directory();
@@ -1020,22 +1253,60 @@ impl<V: Volumes> Snapshots<V> {
         let kept = format!("replaced-{}", sanitise(timestamp));
         let kept_path = directory.join(&kept);
 
-        let atomic = match thalyx_syscall::exchange_paths(&staging, &self.subvolume) {
+        Ok(Prepared {
+            snapshots: self,
+            snapshot,
+            staging,
+            kept,
+            kept_path,
+        })
+    }
+}
+
+impl<V: Volumes> Prepared<'_, V> {
+    /// The snapshot this would put back, for an answer that has to name it.
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    /// Throw the writable copy away and leave the tree as it is.
+    ///
+    /// The same thing dropping it does, named, so a refusal reads as a refusal
+    /// at the call site instead of as a variable going out of scope.
+    pub fn discard(self) {}
+
+    /// The swap, and nothing before it.
+    ///
+    /// Consuming, and the `Drop` that throws a staging tree away is suppressed
+    /// for the whole of it: after the exchange the staging *name* holds the
+    /// tree that was live, and deleting it would be deleting exactly the work
+    /// this restore promised to keep aside.
+    pub fn commit(self) -> Result<Restored> {
+        let this = std::mem::ManuallyDrop::new(self);
+        let snapshots = this.snapshots;
+        let staging = this.staging.clone();
+        let kept = this.kept.clone();
+        let kept_path = this.kept_path.clone();
+        let snapshot = this.snapshot.clone();
+
+        let atomic = match thalyx_syscall::exchange_paths(&staging, &snapshots.subvolume) {
             Ok(()) => true,
             Err(_) => {
                 // No exchange on this filesystem. Two renames, with the live
                 // tree moved out of the way first so the failure mode is "the
                 // tree is missing and the journal says where it went" rather
                 // than "the restore half happened".
-                std::fs::rename(&self.subvolume, &kept_path).map_err(|source| {
+                std::fs::rename(&snapshots.subvolume, &kept_path).map_err(|source| {
                     SnapshotError::Io {
-                        path: self.subvolume.clone(),
+                        path: snapshots.subvolume.clone(),
                         source,
                     }
                 })?;
-                std::fs::rename(&staging, &self.subvolume).map_err(|source| SnapshotError::Io {
-                    path: staging.clone(),
-                    source,
+                std::fs::rename(&staging, &snapshots.subvolume).map_err(|source| {
+                    SnapshotError::Io {
+                        path: staging.clone(),
+                        source,
+                    }
                 })?;
                 return Ok(Restored {
                     snapshot: snapshot.name,

@@ -1317,7 +1317,7 @@ mod tests {
                 json!({
                     "action": "abandon",
                     "snapshot": "2026-08-29T11-04-02Z-rename",
-                    "state": "w1-0f3c",
+                    "state": "w2-0f3c",
                 }),
             ),
         ]);
@@ -1404,7 +1404,7 @@ mod tests {
             (attempt.calls)(&json!({
                 "action": "abandon",
                 "snapshot": "2026-08-29T11-04-02Z-rename",
-                "state": "w1-0f3cbe11",
+                "state": "w2-0f3cbe11",
             }))
             .unwrap(),
             vec![(
@@ -1412,7 +1412,7 @@ mod tests {
                 vec![
                     "abandonar".to_string(),
                     "snapshot=2026-08-29T11-04-02Z-rename".to_string(),
-                    "state=w1-0f3cbe11".to_string(),
+                    "state=w2-0f3cbe11".to_string(),
                 ]
             )]
         );
@@ -1426,7 +1426,7 @@ mod tests {
         let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
         let sent = (attempt.calls)(&json!({
             "action": "abandon", "confirm": true,
-            "snapshot": "2026-08-29T11-04-02Z-rename", "state": "w1-0f3cbe11",
+            "snapshot": "2026-08-29T11-04-02Z-rename", "state": "w2-0f3cbe11",
         }))
         .unwrap();
         assert!(!sent[0].1.iter().any(|word| word == "si"), "{sent:?}");
@@ -1441,7 +1441,7 @@ mod tests {
         let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
         for half in [
             json!({"action": "abandon", "snapshot": "x"}),
-            json!({"action": "abandon", "state": "w1-0f3cbe11"}),
+            json!({"action": "abandon", "state": "w2-0f3cbe11"}),
         ] {
             let sent = (attempt.calls)(&half).expect("composed");
             assert_eq!(sent[0].1, vec!["abandonar".to_string()], "{half}");

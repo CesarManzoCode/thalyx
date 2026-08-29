@@ -15,6 +15,20 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
+- [ ] **Decidir si el resumen que se le muestra a una persona se vuelve exacto.**
+      Añadido el 2026-08-29 con la revisión de [[Identidad-de-Estado]]. `Difference`
+      —los conteos «N archivos volverían a su contenido anterior» que se enseñan
+      antes de confirmar— compara por tamaño y mtime, así que dos escrituras del
+      mismo largo dentro de un tic pueden contarse como ningún cambio. **La
+      autorización no tiene ese hueco**: el testigo lee lo que cada archivo
+      contiene, y es el testigo el que decide. Lo que puede quedarse corto es lo
+      que se le enseña a la persona.
+      Hacerlo exacto significa leer también cada byte del snapshot, o sea duplicar
+      lo que cuesta cada confirmación, y hoy el árbol vivo ya se lee entero. La
+      aserción `the_count_of_modified_files_can_understate_where_the_witness_cannot`
+      falla el día que el resumen se vuelva exacto, para que esta nota no quede
+      mintiendo. Nada de esto bloquea el banco.
+
 - [ ] **Decisión de Cesar: si `program` con ruta arbitraria se queda en la
       superficie del agente externo.** Añadido el 2026-08-29 con
       [[Ejecucion-Transaccional]]. Una comprobación de `hacer` puede ser
