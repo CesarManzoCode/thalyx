@@ -174,7 +174,7 @@ the index still stops. The decree is
 carried a byte yet** — everything above the transport ran over a UNIX socket,
 which is the same code on a different pair of descriptors.
 
-**Built and covered by over 1,500 tests**, including fault injection that kills
+**Built and covered by over 1,600 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
 

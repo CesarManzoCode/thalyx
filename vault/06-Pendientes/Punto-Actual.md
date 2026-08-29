@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-28
+fecha-actualizacion: 2026-08-29
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,73 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La prioridad de la etapa se reordena: demostrar y medir la ventaja para agentes — 2026-08-28
+> ## Los cuatro P0 de la auditoría, cerrados, y ninguno se arregló por lectura — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Una auditoría había señalado cuatro defectos. Los cuatro eran reales, y **tres
+> eran el mismo defecto** en tres subsistemas que nadie habría puesto juntos:
+> una regla correcta, escrita, con su comentario explicando por qué importa, y
+> **comprobada en vez de impuesta**. La regla nueva está en
+> [[Estrategia-de-Pruebas]], 2026-08-29.
+>
+> **1. El oráculo del benchmark reversible daba tres falsos positivos.**
+> `really_changed` se leía como «el nombre nuevo apareció en alguna llamada»,
+> que es una frase que escribe el agente: un `Grep` de ese nombre la satisface,
+> un `Edit` que falló la satisface, y una corrida muerta en su límite de turnos
+> no se miraba. Cualquiera de los tres, con el árbol intacto porque nadie lo
+> tocó, salía `passed: true`. Y el digest era `find -type f | xargs sha256sum`
+> —contenido y nada más— mientras el prompt promete *byte por byte, ningún
+> archivo agregado ni quitado*: un symlink a `/etc/passwd` donde había un
+> fuente restauraba «perfecto». Ahora son cinco propiedades de cinco
+> instrumentos, con testigo externo del estado intermedio, y el digest es sobre
+> un manifiesto —tipo, permisos, contenido, destino de symlink— con **una sola
+> implementación**. Los siete falsos positivos están nombrados en
+> `bench-summary.py --self-test`. Ver [[Agentes-Externos]], revisión del
+> 2026-08-28.
+>
+> **2. `intento` comprobaba la exclusión en vez de imponerla.** Dos clientes que
+> llegan juntos ven los dos «no hay ninguno abierto», los dos toman snapshot, y
+> el segundo pisa el registro del primero — dejando un snapshot que nada nombra
+> y un `abandonar` que devuelve el árbol a un punto que no es el que el primer
+> cliente cree. Las tres transiciones toman ahora `Store::lock()`, el mismo
+> `flock` de siempre, y `attempt.json` se publica con `write_durably` en vez de
+> `std::fs::write`. Ver [[Concurrencia]], revisión del 2026-08-28.
+>
+> **3. La frontera del espacio de trabajo era una comparación.**
+> `canonicalize → comparar → el verbo abre el nombre original`, que es la
+> secuencia que `api.rs` fue reescrito para dejar de usar hace semanas. Se midió
+> antes de arreglar nada: un hilo que cambia `src` por un enlace a otro árbol
+> mientras un agente lee `src/main.rs` sacó **57 archivos de fuera del espacio
+> de trabajo en 4000 lecturas**. Ahora es `openat2` con `RESOLVE_BENEATH` contra
+> un descriptor del espacio de trabajo, y el verbo abre ese descriptor.
+> Ver [[Agentes-Externos]], revisión del 2026-08-28.
+>
+> **4. El desmontaje del sandbox preguntaba si el cgroup estaba vacío.** Esa
+> pregunta no se puede contestar mirando: `spawn` vuelve antes de que el
+> auxiliar se una al cgroup, así que una corrida que ya arrancó su módulo es
+> invisible durante una ventana — y el LSM falla abierto para un cgroup sin
+> entrada. Se cuenta en vez de mirar. Ver [[Sandbox-Ejecucion]], revisión del
+> 2026-08-29.
+>
+> **Cada arreglo se comprobó quitándolo.** Los cuatro tests adversariales de la
+> frontera fallan sin el anclaje; el de la carrera de `intento` falla cinco de
+> cinco corridas sin el candado; el del cgroup falla sin el contador.
+>
+> **Lo siguiente, y lo que no se hizo.** El cuello de botella que queda es que
+> el agente no puede compilar ni probar lo que cambió. Se midió el costo de
+> `validar` y no cabía honestamente en esta sesión —hace falta un perfil de
+> seccomp derivado corriendo un toolchain real, que es justo lo que no se puede
+> adivinar— así que quedó **una propuesta concreta** en
+> [[Validacion-Confiable]] en vez de arquitectura a medio construir.
+>
+> **El benchmark sigue sin correrse.** Eso no cambió y es deliberado: lo corre
+> Cesar.
+>
+
+> ## La prioridad de la etapa se reordena: demostrar y medir la ventaja para agentes — 2026-08-28
+>
+> **Cómo se llegó.**
 >
 > **Nada se construyó en este paso.** Es documentación, estrategia y
 > formalización: dos notas nuevas y revisiones fechadas en las que ya existían.

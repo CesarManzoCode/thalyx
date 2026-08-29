@@ -371,7 +371,7 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-Más de 1 340 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+**1 649 pruebas** en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
@@ -383,6 +383,31 @@ un disco ya construidos; **corrida así el 2026-08-06 con idéntico resultado**,
 que es lo que demuestra que la etapa del arranque no se estaba saltando. La del
 agente es distinta por naturaleza: no hay máquina que la satisfaga todavía,
 porque lo que le falta al agente no es hardware sino código.
+
+### Las pruebas que fuerzan un entrelazado — 2026-08-29
+
+Una clase nueva, y la única que puede ver la familia de defectos que cerró los
+cuatro P0 del 2026-08-28: **una regla comprobada y no impuesta se comporta
+igual que una impuesta mientras haya un solo cliente**, y cada prueba que había
+hacía una cosa a la vez.
+
+- **Dos clientes con una barrera**, en `attempt.rs`: dos hilos que abren su
+  propia descripción de `state/lock` —que es lo que tienen dos procesos— y
+  arrancan a la vez. Sin la barrera el primero termina antes de que el segundo
+  empiece.
+- **Un adversario en paralelo**, en `external.rs`: cuatro pruebas, una por verbo,
+  con un hilo cambiando un directorio por un symlink mientras 4000 peticiones
+  entran. De un solo lado —la afirmación es *cero* escapes— y con el conteo de
+  rechazos al lado como control, sin el cual «no escapó nada» y «no hubo
+  carrera» se leen igual.
+- **El estado intermedio sostenido a mano**, en `thalyx-sandbox`: dos
+  confinamientos establecidos y nada adentro del cgroup, que una máquina real
+  sostiene un instante y un fake sostiene para siempre. Con su mitad de kernel
+  en `tests/real_cgroup.rs`, con un proceso vivo adentro.
+
+**Los tres arreglos se comprobaron quitándolos**, y ésa es la parte que no es
+opcional: un test de concurrencia que nadie vio fallar pasa igual si mide la
+propiedad y si no mide nada.
 
 ## Lo que la auditoría del 2026-08-04 cambió
 

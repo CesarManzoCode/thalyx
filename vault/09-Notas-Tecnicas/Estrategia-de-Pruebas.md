@@ -4738,6 +4738,64 @@ tener consecuencias, sus falsos positivos viejos son defectos nuevos. Hay que ir
 a buscarlos **corriendo la cosa sobre este repositorio y leyendo las filas**, no
 sobre fixtures — los tres estaban en código real y ninguno en un fixture.
 
+## Regla derivada: comprobar no es imponer, y las dos se ven idénticas hasta que hay dos clientes — 2026-08-29
+
+Una auditoría encontró cuatro P0 el 2026-08-28. **Tres eran el mismo defecto**,
+en tres subsistemas que nadie habría puesto en la misma frase:
+
+| Dónde | La regla que decía | Cómo la comprobaba |
+|---|---|---|
+| `intento empezar` | un intento abierto a la vez | leer el registro, después escribirlo |
+| la frontera del agente externo | nada fuera del espacio de trabajo | `canonicalize`, comparar, y después abrir el nombre otra vez |
+| el desmontaje del sandbox | no retirar la política si queda alguien adentro | `is_empty()`, y después revocar |
+
+Los tres tenían la regla correcta escrita, con su comentario explicando por qué
+importaba. Los tres la **comprobaban**. Ninguno la **imponía**.
+
+Y las dos cosas son indistinguibles con un solo cliente. Cada test que existía
+pasaba, porque cada test hacía una cosa a la vez, que es exactamente el caso en
+el que una comprobación y una imposición dan la misma respuesta.
+
+**La regla.** Cuando una afirmación es sobre algo que puede cambiar entre la
+comprobación y el uso —otro cliente, otro proceso, el sistema de archivos— la
+prueba que vale es la que **fuerza el entrelazado**, y hay tres formas y sólo
+tres:
+
+1. **Dos clientes reales con una barrera.** Hilos, con descripciones de archivo
+   separadas si lo que se prueba es `flock`. Sin la barrera el primero termina
+   antes de que el segundo empiece y el test pasa en una máquina donde el
+   defecto sigue ahí.
+2. **Un adversario corriendo en paralelo**, para lo que no se puede sincronizar:
+   un hilo que cambia un directorio por un symlink mientras el otro lee. De un
+   solo lado —regla 7— porque una corrida donde el adversario nunca ganó no
+   prueba nada: la afirmación es *cero* escapes, y al lado va el conteo de
+   rechazos como control, sin el cual «no pasó nada» y «no hubo carrera» se ven
+   igual.
+3. **El estado intermedio sostenido a mano**, cuando el entrelazado es una
+   ventana de milisegundos que no se puede provocar: dos confinamientos
+   establecidos y nada adentro del cgroup es un estado que un fake sostiene
+   indefinidamente y una máquina real sostiene un instante cada vez.
+
+**Y cada arreglo se comprobó quitándolo.** Los cuatro tests adversariales de la
+frontera fallan sin el anclaje; el de la carrera de `intento` falla cinco de
+cinco corridas sin el candado; el del cgroup falla sin el contador. Un test de
+concurrencia que nadie vio fallar no es evidencia de nada — pasa igual si mide
+la propiedad y si no mide nada.
+
+### El corolario para los oráculos
+
+El cuarto P0 no era una carrera y es la misma familia: el veredicto del
+benchmark reversible leía *«el agente cambió algo de verdad»* de que el nombre
+nuevo apareciera en alguna llamada. Eso es una frase que escribe el agente. Un
+`Grep` de ese nombre la satisface; un `Edit` que falló la satisface.
+
+Es la regla 2 —preguntarle al sistema si funcionó no prueba nada— aplicada a un
+instrumento en vez de a una máquina, y duele más ahí: **un instrumento falso
+produce evidencia falsa**, y la evidencia falsa se cree. La forma de la regla
+para un oráculo: cada propiedad del veredicto viene de un instrumento distinto
+del sujeto, y una propiedad que no se pudo medir hace el veredicto *ausente*,
+nunca `false` y nunca `true`.
+
 ## Regla derivada: un guardia se calibra sobre el repositorio, no sobre el ejemplo que lo motivó — 2026-08-28
 
 La regla de las aristas de símbolo —*un nombre que exactamente un archivo del

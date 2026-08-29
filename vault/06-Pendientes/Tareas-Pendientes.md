@@ -478,6 +478,20 @@ con el que se mide, en [[Evidencia-de-Agentes]].
       cuesta su hierro, porque el hash de después del brazo B va con la máquina
       apagada (`sudo make -C image agent-export`, y una segunda pasada con
       `--arms none --restored-b`).
+      **El oráculo se arregló el 2026-08-28** y hasta entonces no se podía
+      creer: daba `passed: true` a una corrida que sólo leyó, a una edición que
+      falló, y a una que murió en su límite de turnos. Corriendo hoy conviene
+      pedir las dos garantías, que son dos variables porque son dos requisitos:
+      `THALYX_REQUIRE_RESTORE_CHECK=1` y `THALYX_REQUIRE_MUTATION_WITNESS=1`.
+- [ ] **Decidir si se construye `validar`.** El agente externo puede entender,
+      leer y modificar, y no puede compilar ni probar lo que cambió — la mitad
+      del ciclo que falta. La propuesta concreta, con las cuatro piezas medidas
+      y en orden de costo, está en [[Validacion-Confiable]]. Lo caro y lo que no
+      se puede apurar es el perfil de seccomp: la lista de `module_standard`
+      tiene 36 entradas y `rustc` no cabe, y adivinarla es exactamente el error
+      que `dev/foreign-agent-needs.sh` existe para no cometer. Es de Cesar
+      porque cambia una frontera decretada: hoy `EXPOSED` no deja al agente
+      ejecutar nada.
 - [ ] **Decidir qué hacer con el `CLAUDE.md` en el brazo A.** El brazo A trabaja
       dentro de la copia y Claude Code se lo carga; el brazo B no lo ve. Le suma
       tokens al brazo A por algo que no es la tarea, **o sea al lado que
