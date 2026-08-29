@@ -128,11 +128,29 @@ pub enum Check {
         #[serde(default)]
         arguments: Vec<String>,
     },
-    /// `cargo check` over the packages the changed files belong to.
+    /// `cargo check` over the crates the change really reaches.
+    ///
+    /// **Not the crates the changed files are in.** Change a type in
+    /// `thalyx-core` and compiling `thalyx-core` proves nothing about the
+    /// twelve crates that use it, so the selection is the reverse dependency
+    /// closure — derived from Cargo's own graph, so the model never spends a
+    /// turn deciding it. `thalyx_rust::affected` is where the rule lives.
+    ///
+    /// The answer is reused when the exact bytes it would read have already
+    /// been checked by this machine under this toolchain, and it says which
+    /// happened.
     Rust {
         /// `check` (the default) or `test`.
         #[serde(default = "check_word")]
         mode: String,
+        /// Check these crates instead of the derived ones.
+        ///
+        /// The escape hatch, and it is deliberately a *replacement* rather than
+        /// an addition: a caller that has decided what to compile has made a
+        /// decision, and a machine that widened it would make the hatch a
+        /// suggestion.
+        #[serde(default)]
+        packages: Vec<String>,
     },
 }
 
@@ -330,6 +348,21 @@ pub struct Metrics {
     pub internal_bytes: usize,
     /// Bytes of the answer that leaves for the model.
     pub returned_bytes: usize,
+    /// Questions put to the Rust semantic provider inside this request.
+    pub semantic_queries: usize,
+    /// Of those, answered from what the machine already knew about an
+    /// unchanged tree.
+    pub semantic_cache_hits: usize,
+    /// Times a rust-analyzer had to be started. The expensive one — about 25
+    /// seconds on this workspace — and the number the persistent store exists
+    /// to keep at zero.
+    pub analyzer_starts: usize,
+    /// Validations answered from a previous run over the same bytes.
+    pub validation_cache_hits: usize,
+    /// Validations that had to be run.
+    pub validation_cache_misses: usize,
+    /// How many crates the change was found to reach.
+    pub affected_packages: usize,
 }
 
 // ── the evidence store ───────────────────────────────────────────────────────
@@ -400,6 +433,10 @@ pub fn carry_out<V: Volumes>(
     program: &Program,
 ) -> Evidence {
     let started = std::time::Instant::now();
+    // Read before anything runs and subtracted after, because the provider
+    // outlives the request on purpose: its totals are the process's and only
+    // the difference belongs to this call.
+    let semantics_before = crate::semantic::tally(&asked.subvolume);
     let mut metrics = Metrics {
         external_requests: 1,
         ..Metrics::default()
@@ -638,6 +675,12 @@ pub fn carry_out<V: Volumes>(
     let end = thalyx_snapshot::witness(&asked.subvolume);
     evidence.end_state = end.is_complete().then(|| end.id.clone());
 
+    let semantics = crate::semantic::tally(&asked.subvolume);
+    metrics.semantic_queries = semantics.queries.saturating_sub(semantics_before.queries);
+    metrics.semantic_cache_hits = semantics.hits.saturating_sub(semantics_before.hits);
+    metrics.analyzer_starts = semantics
+        .analyzer_starts
+        .saturating_sub(semantics_before.analyzer_starts);
     metrics.machine_time_ms = started.elapsed().as_millis();
     evidence.metrics = metrics;
     evidence
@@ -763,7 +806,7 @@ fn run_check(
         }
 
         Check::Program { program, arguments } => {
-            let outcome = run_confined(asked, program, arguments, &[], metrics);
+            let outcome = run_confined(asked, program, arguments, &[], &[], metrics);
             CheckRecord {
                 check: format!("program `{program}`"),
                 verdict: outcome.verdict,
@@ -772,7 +815,7 @@ fn run_check(
             }
         }
 
-        Check::Rust { mode } => rust_check(asked, difference, mode, metrics),
+        Check::Rust { mode, packages } => rust_check(asked, difference, mode, packages, metrics),
     }
 }
 
@@ -803,6 +846,7 @@ fn run_confined(
     program: &str,
     arguments: &[String],
     also_readable: &[PathBuf],
+    also_writable: &[PathBuf],
     metrics: &mut Metrics,
 ) -> Ran {
     use thalyx_manifest::{Permission, PermissionKind};
@@ -838,6 +882,17 @@ fn run_confined(
             action: "read".to_string(),
             kind: PermissionKind::Session,
         });
+    }
+    // A place to build that is not the workspace. Both ways, because a build
+    // directory is written and then read back.
+    for extra in also_writable {
+        for action in ["read", "write"] {
+            grants.push(Permission {
+                resource: extra.display().to_string(),
+                action: action.to_string(),
+                kind: PermissionKind::Session,
+            });
+        }
     }
 
     metrics.process_launches += 1;
@@ -915,21 +970,77 @@ fn rust_check(
     asked: &Asked<'_>,
     difference: &thalyx_snapshot::Difference,
     mode: &str,
+    named: &[String],
     metrics: &mut Metrics,
 ) -> CheckRecord {
-    let packages = affected_packages(&asked.subvolume, difference);
     let subcommand = if mode == "test" { "test" } else { "check" };
+    let changed: Vec<String> = difference
+        .added
+        .iter()
+        .chain(difference.modified.iter())
+        .chain(difference.removed.iter())
+        .cloned()
+        .collect();
+
+    let Some(selection) =
+        crate::semantic::selection(asked.store.root(), &asked.subvolume, &changed, named)
+    else {
+        return CheckRecord {
+            check: format!("cargo {subcommand}"),
+            verdict: Verdict::NotProven,
+            summary: "this workspace is not one Cargo can describe, so there is nothing \
+                      this could have compiled"
+                .to_string(),
+            output: json!({"word": "not_a_cargo_workspace"}),
+        };
+    };
+    let packages = selection.packages;
+    metrics.affected_packages = packages.len();
 
     if packages.is_empty() {
         return CheckRecord {
             check: format!("cargo {subcommand}"),
             verdict: Verdict::NotProven,
-            summary: "no changed file belongs to a Cargo package, so there is nothing \
-                      this could have checked"
-                .to_string(),
-            output: json!({"packages": []}),
+            summary: format!("nothing was compiled: {}", selection.why),
+            output: json!({
+                "packages": packages,
+                "why": selection.why,
+                // Named rather than dropped. A changed file nobody could place
+                // is a reason this check might not cover the change, and a
+                // caller that only saw "no packages" would read it as a clean
+                // check of nothing.
+                "unattributed": selection.unattributed,
+            }),
         };
     }
+
+    // ── has this exact state already been checked? ──────────────────────────
+    let key = format!("cargo {subcommand}|{}", packages.join(","));
+    if let Some(identity) = &selection.identity
+        && let Some(remembered) =
+            crate::semantic::recall_validation(asked.store.root(), &asked.subvolume, &key, identity)
+        && let Ok(record) = serde_json::from_str::<Remembered>(&remembered)
+    {
+        metrics.validation_cache_hits += 1;
+        return CheckRecord {
+            check: format!("cargo {subcommand} over {}", packages.join(", ")),
+            verdict: record.verdict,
+            // Said out loud. A caller told a check passed, when what happened
+            // is that the same bytes passed an hour ago, is entitled to know
+            // which of the two it is being told.
+            summary: format!(
+                "{} (reused: these exact bytes were already checked)",
+                record.summary
+            ),
+            output: json!({
+                "packages": packages,
+                "why": selection.why,
+                "cached": true,
+                "state": identity.id,
+            }),
+        };
+    }
+    metrics.validation_cache_misses += 1;
 
     let Some(cargo) = find_cargo() else {
         // Rule 10, in the place it matters most: a toolchain that is not here
@@ -943,11 +1054,19 @@ fn rust_check(
         };
     };
 
+    // Built outside the workspace, and it is not tidiness. A `target/` inside
+    // the tree is inside the snapshot: the boundary would copy a build tree,
+    // the difference would report thousands of changed files, and a rollback
+    // would throw away the build cache that makes the *next* check cheap. It is
+    // the same reason the provider tells rust-analyzer where to build.
+    let build_into = crate::semantic::build_directory(asked.store.root(), &asked.subvolume);
     let mut arguments = vec![
         subcommand.to_string(),
         // No network from inside the confinement, so a build that wanted to
         // fetch would fail as a network error and read as broken code.
         "--offline".to_string(),
+        "--target-dir".to_string(),
+        build_into.display().to_string(),
         "--manifest-path".to_string(),
         asked.subvolume.join("Cargo.toml").display().to_string(),
     ];
@@ -965,13 +1084,37 @@ fn rust_check(
         readable.push(PathBuf::from(&home).join(".rustup"));
     }
 
+    // Made here rather than left to Cargo: the grant names a path, and a
+    // grant on a directory that does not exist yet is a grant on nothing.
+    let _ = std::fs::create_dir_all(&build_into);
     let outcome = run_confined(
         asked,
         &cargo.display().to_string(),
         &arguments,
         &readable,
+        std::slice::from_ref(&build_into),
         metrics,
     );
+
+    // A verdict about the tree is remembered; `not_proven` never is. A machine
+    // that once had no cargo would otherwise go on reporting `not_proven`
+    // about bytes it never compiled, for as long as nobody touched them.
+    if let Some(identity) = &selection.identity
+        && outcome.verdict != Verdict::NotProven
+        && let Ok(text) = serde_json::to_string(&Remembered {
+            verdict: outcome.verdict,
+            summary: outcome.summary.clone(),
+        })
+    {
+        crate::semantic::remember_validation(
+            asked.store.root(),
+            &asked.subvolume,
+            &key,
+            identity,
+            &text,
+        );
+    }
+
     CheckRecord {
         check: format!("cargo {subcommand} over {}", packages.join(", ")),
         verdict: outcome.verdict,
@@ -980,70 +1123,25 @@ fn rust_check(
             let mut output = outcome.output;
             if let Some(object) = output.as_object_mut() {
                 object.insert("packages".to_string(), json!(packages));
+                object.insert("why".to_string(), json!(selection.why));
+                object.insert("unattributed".to_string(), json!(selection.unattributed));
+                object.insert("cached".to_string(), json!(false));
             }
             output
         },
     }
 }
 
-/// Every Cargo package a changed file falls inside.
+/// What is kept about a check that has already been run.
 ///
-/// Walking up from each changed file to the nearest manifest that declares a
-/// package, which is what Cargo itself means by "which package is this file
-/// in". A file under no manifest belongs to no package and is skipped rather
-/// than attributed to the workspace root, because a workspace root often has no
-/// package of its own and `-p` on it would fail.
-fn affected_packages(root: &Path, difference: &thalyx_snapshot::Difference) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    for name in difference.added.iter().chain(difference.modified.iter()) {
-        let mut directory = root.join(name);
-        while let Some(parent) = directory.parent() {
-            if !parent.starts_with(root) {
-                break;
-            }
-            if let Some(package) = package_named_in(&parent.join("Cargo.toml"))
-                && !found.contains(&package)
-            {
-                found.push(package);
-                break;
-            }
-            if parent == root {
-                break;
-            }
-            directory = parent.to_path_buf();
-        }
-    }
-    found
-}
-
-/// The `name` of the `[package]` a manifest declares, if it declares one.
-///
-/// Read by hand rather than with a TOML parser, and the reason is what it must
-/// *not* do: a workspace manifest with no `[package]` must come back `None`, and
-/// a `name` under `[dependencies]` must never be mistaken for the package's own.
-/// So the section is tracked, and only the first `name` inside `[package]`
-/// counts.
-fn package_named_in(manifest: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(manifest).ok()?;
-    let mut inside = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            inside = line == "[package]";
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("name") {
-            let value = value.trim_start().strip_prefix('=')?.trim();
-            let name = value.trim_matches(|c| c == '"' || c == '\'');
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
+/// The verdict and one line, and never the compiler's output: the output is
+/// megabytes, it is already in the evidence of the run that produced it, and a
+/// cache that carried it would be a second copy of the thing this whole system
+/// keeps out of the model's context.
+#[derive(Serialize, Deserialize)]
+struct Remembered {
+    verdict: Verdict,
+    summary: String,
 }
 
 /// Where `cargo` is, if it is anywhere this machine can name.
@@ -1054,8 +1152,27 @@ fn package_named_in(manifest: &Path) -> Option<String> {
 /// would be a validation whose meaning depends on who started the session.
 fn find_cargo() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    // The **real** cargo of an installed toolchain first, before rustup's shim.
+    //
+    // `~/.cargo/bin/cargo` is a shim that re-executes `~/.cargo/bin/rustup`,
+    // and inside the confinement that is a second program the grants say
+    // nothing about — so the run is refused for naming `rustup`, which reads
+    // like a broken change and is a broken `PATH`. Rule 5, where the instrument
+    // is the installation layout.
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".cargo/bin/cargo"));
+        let toolchains = PathBuf::from(&home).join(".rustup").join("toolchains");
+        if let Ok(entries) = std::fs::read_dir(&toolchains) {
+            let mut found: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path().join("bin").join("cargo"))
+                .collect();
+            // Sorted, so that a machine with several toolchains picks the same
+            // one every time. A validation whose meaning depends on directory
+            // order is a validation nobody can reproduce.
+            found.sort();
+            candidates.extend(found);
+        }
+        candidates.push(PathBuf::from(&home).join(".cargo/bin/cargo"));
     }
     candidates.push(PathBuf::from("/usr/local/bin/cargo"));
     candidates.push(PathBuf::from("/usr/bin/cargo"));
@@ -1178,6 +1295,27 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
         ),
         ("machine_time_ms", json!(evidence.metrics.machine_time_ms)),
         ("internal_bytes", json!(evidence.metrics.internal_bytes)),
+        // The programming face's own numbers. Zeroes on a run that asked
+        // nothing semantic, and said anyway: a field that only appears on the
+        // interesting day is a field nobody handles on the interesting day.
+        ("semantic_queries", json!(evidence.metrics.semantic_queries)),
+        (
+            "semantic_cache_hits",
+            json!(evidence.metrics.semantic_cache_hits),
+        ),
+        ("analyzer_starts", json!(evidence.metrics.analyzer_starts)),
+        (
+            "validation_cache_hits",
+            json!(evidence.metrics.validation_cache_hits),
+        ),
+        (
+            "validation_cache_misses",
+            json!(evidence.metrics.validation_cache_misses),
+        ),
+        (
+            "affected_packages",
+            json!(evidence.metrics.affected_packages),
+        ),
     ]
 }
 
@@ -1592,6 +1730,338 @@ mod tests {
             here,
             program,
         )
+    }
+
+    /// A workspace that is a real Cargo package, for the checks that ask Cargo
+    /// and the compiler frontend about it.
+    ///
+    /// A real one — manifest, `src/`, a name used across two files — because
+    /// rule 8 applies to a workspace as much as to a fake: a directory with
+    /// `.rs` files in it that Cargo cannot describe is not a small Cargo
+    /// project, it is a different system.
+    fn a_crate() -> (tempfile::TempDir, Store, PathBuf, Where) {
+        a_workspace(&[
+            (
+                "Cargo.toml",
+                "[workspace]\n\n[package]\nname = \"vertical\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            ("src/lib.rs", "pub mod boot;\npub mod keystore;\n"),
+            (
+                "src/keystore.rs",
+                "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+            ),
+            (
+                "src/boot.rs",
+                "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n",
+            ),
+        ])
+    }
+
+    /// Rule 3, inside the crate: a machine with no rust-analyzer says so, and
+    /// `THALYX_REQUIRE_RUST_ANALYZER=1` turns the skip into a failure.
+    fn analyzer_or_skip(what: &str) -> bool {
+        if thalyx_rust::analyzer::find().is_some() {
+            return true;
+        }
+        let message = format!(
+            "NOT PROVEN: {what} — there is no rust-analyzer on this machine. \
+             Set THALYX_REQUIRE_RUST_ANALYZER=1 to make this a failure."
+        );
+        assert!(
+            std::env::var("THALYX_REQUIRE_RUST_ANALYZER").as_deref() != Ok("1"),
+            "{message}"
+        );
+        eprintln!("{message}");
+        false
+    }
+
+    #[test]
+    fn one_request_resolves_a_symbol_edits_every_use_and_commits() {
+        // **The vertical.** One call in. Inside it: a boundary, a compiler
+        // frontend asked what `Keystore` is, every use of it found — including
+        // the one three files away that is spelled `Keys` — two files
+        // rewritten, the tree observed, two checks run, a commit. Out comes one
+        // small answer.
+        //
+        // What makes it worth having is not that it is possible. It is that
+        // *no* frontier-model inference happens between any two of those.
+        if !analyzer_or_skip("that one request resolves, edits and commits") {
+            return;
+        }
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "rename Keystore",
+                "steps": [
+                    {"verb": "rename", "arguments": ["Keystore", "KeyVault"]},
+                    // A read whose answer the model never sees, in the same
+                    // call, from the tree the rename has just produced.
+                    {"verb": "read", "arguments": ["src/boot.rs"]}
+                ],
+                "validate": [
+                    {"check": "text", "text": "Keystore", "expect": "none"},
+                    {"check": "text", "text": "KeyVault", "expect": "some"},
+                    {"check": "parses"}
+                ]
+            })),
+        );
+
+        assert_eq!(evidence.status, "committed", "{}", evidence.reason);
+        assert!(!evidence.rolled_back);
+
+        let keystore = std::fs::read_to_string(tree.join("src/keystore.rs")).expect("keystore");
+        assert!(keystore.contains("pub struct KeyVault;"), "{keystore}");
+        let boot = std::fs::read_to_string(tree.join("src/boot.rs")).expect("boot");
+        assert!(
+            boot.contains("use crate::keystore::KeyVault as Keys;"),
+            "the import three files away is the whole claim, and it says:\n{boot}"
+        );
+        assert!(
+            boot.contains("-> Keys"),
+            "`Keys` is a different name and must not have been touched:\n{boot}"
+        );
+
+        assert_eq!(evidence.metrics.external_requests, 1);
+        assert!(
+            evidence.metrics.machine_operations >= 4,
+            "the boundary, two steps and the settling, at least: {:?}",
+            evidence.metrics
+        );
+        assert!(
+            evidence.metrics.semantic_queries >= 1,
+            "the rename was supposed to resolve a name, and asked nothing: {:?}",
+            evidence.metrics
+        );
+        assert_eq!(
+            evidence.metrics.analyzer_starts, 1,
+            "one start for the whole request. More than one means the provider \
+             is being rebuilt per question, which is 25 seconds each: {:?}",
+            evidence.metrics
+        );
+        // Named rather than counted: `cargo metadata`, run inside the
+        // boundary by the provider, writes a `Cargo.lock` into a workspace that
+        // has not got one — a real change, made inside the transaction, and one
+        // a count would have silently absorbed.
+        for name in ["src/keystore.rs", "src/boot.rs"] {
+            assert!(
+                evidence.changed.iter().any(|changed| changed == name),
+                "{name} is not among what the tree says changed: {:?}",
+                evidence.changed
+            );
+        }
+        assert!(
+            evidence.metrics.filesystem_mutations <= 3,
+            "two files and at most a lockfile: {:?}",
+            evidence.changed
+        );
+    }
+
+    #[test]
+    fn the_rust_check_selects_the_crates_the_change_reaches() {
+        // The container cannot run the compiler under confinement, so the
+        // verdict here is `not_proven` and says so. What *is* proven is the
+        // half this change is about: which crates the machine decided to
+        // compile, derived from Cargo's graph rather than from the model.
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "affected",
+                "steps": [{"verb": "edit", "arguments": [
+                    "src/keystore.rs", "sustituir", "Keystore", "KeyVault"
+                ]}],
+                "validate": [{"check": "rust"}],
+                "on_failure": "keep"
+            })),
+        );
+
+        let check = evidence.checks.first().expect("the rust check ran");
+        assert_eq!(
+            check.output["packages"],
+            serde_json::json!(["vertical"]),
+            "the crate the changed file is in was not selected: {check:?}"
+        );
+        assert_eq!(evidence.metrics.affected_packages, 1);
+        assert_eq!(check.output["cached"], serde_json::json!(false));
+        assert!(
+            check.output["why"]
+                .as_str()
+                .is_some_and(|why| why.contains("vertical")),
+            "the answer should say why it chose what it chose: {check:?}"
+        );
+    }
+
+    #[test]
+    fn a_check_of_bytes_this_machine_has_already_checked_is_not_run_again() {
+        // Rule 13, as a design: the claim is that an expensive thing stops
+        // happening, so the test counts the times it happens. `process_launches`
+        // is that count, and a cache that quietly re-ran the compiler would pass
+        // every assertion about the verdict.
+        //
+        // The program below changes a file and changes it back. That is not a
+        // contrived shape: it is the reversible task the whole benchmark is
+        // made of, and it is exactly where an identity made of timestamps says
+        // "a different tree" about the same bytes.
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+
+        let changed = vec!["src/keystore.rs".to_string()];
+        let selection = crate::semantic::selection(store.root(), &tree, &changed, &[])
+            .expect("a Cargo workspace");
+        assert_eq!(selection.packages, vec!["vertical".to_string()]);
+        let identity = selection.identity.expect("an identity for the check");
+
+        let remembered = serde_json::to_string(&Remembered {
+            verdict: Verdict::Passed,
+            summary: "compiled clean".to_string(),
+        })
+        .expect("a record");
+        crate::semantic::remember_validation(
+            store.root(),
+            &tree,
+            "cargo check|vertical",
+            &identity,
+            &remembered,
+        );
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "there and back",
+                "steps": [
+                    {"verb": "edit", "arguments": [
+                        "src/keystore.rs", "sustituir", "Keystore", "Interim"
+                    ]},
+                    {"verb": "edit", "arguments": [
+                        "src/keystore.rs", "sustituir", "Interim", "Keystore"
+                    ]}
+                ],
+                "validate": [{"check": "rust"}]
+            })),
+        );
+
+        let check = evidence.checks.first().expect("the rust check ran");
+        assert_eq!(
+            check.verdict,
+            Verdict::Passed,
+            "the same bytes were checked before and the answer was not reused: {check:?}"
+        );
+        assert_eq!(check.output["cached"], serde_json::json!(true));
+        assert_eq!(evidence.metrics.validation_cache_hits, 1);
+        assert_eq!(evidence.metrics.validation_cache_misses, 0);
+        assert_eq!(
+            evidence.metrics.process_launches, 0,
+            "a compiler was started for bytes this machine had already compiled"
+        );
+        assert_eq!(evidence.status, "committed", "{}", evidence.reason);
+    }
+
+    #[test]
+    fn a_check_of_bytes_nobody_has_seen_is_run() {
+        // The control for the test above. Without it, a cache that answered
+        // `passed` to everything would pass that one — rule 4, where the
+        // baseline is the miss.
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+
+        let changed = vec!["src/keystore.rs".to_string()];
+        let selection = crate::semantic::selection(store.root(), &tree, &changed, &[])
+            .expect("a Cargo workspace");
+        let remembered = serde_json::to_string(&Remembered {
+            verdict: Verdict::Passed,
+            summary: "compiled clean".to_string(),
+        })
+        .expect("a record");
+        crate::semantic::remember_validation(
+            store.root(),
+            &tree,
+            "cargo check|vertical",
+            &selection.identity.expect("an identity"),
+            &remembered,
+        );
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "a real change",
+                "steps": [{"verb": "edit", "arguments": [
+                    "src/keystore.rs", "sustituir", "Keystore", "KeyVault"
+                ]}],
+                "validate": [{"check": "rust"}],
+                "on_failure": "keep"
+            })),
+        );
+
+        let check = evidence.checks.first().expect("the rust check ran");
+        assert_ne!(
+            check.verdict,
+            Verdict::Passed,
+            "the bytes changed and the old answer was handed over anyway: {check:?}"
+        );
+        assert_eq!(check.output["cached"], serde_json::json!(false));
+        assert_eq!(evidence.metrics.validation_cache_hits, 0);
+        assert_eq!(evidence.metrics.validation_cache_misses, 1);
+    }
+
+    #[test]
+    fn a_failing_check_puts_the_rename_back_and_keeps_the_evidence() {
+        // The other half of the vertical, and the half that makes the first
+        // half safe to use: a rename that touched two files and a check that
+        // says no leaves a tree byte for byte what it was — with the diagnosis
+        // still in the store.
+        if !analyzer_or_skip("that a failed check undoes a semantic rename") {
+            return;
+        }
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+        let before: Vec<String> = ["src/keystore.rs", "src/boot.rs"]
+            .iter()
+            .map(|name| std::fs::read_to_string(tree.join(name)).expect(name))
+            .collect();
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "a rename nobody wanted",
+                "steps": [{"verb": "rename", "arguments": ["Keystore", "KeyVault"]}],
+                // A check that cannot hold: the old name is gone by
+                // construction, and this demands it be there.
+                "validate": [{"check": "text", "text": "Keystore", "expect": "some"}]
+            })),
+        );
+
+        assert_eq!(evidence.status, "rolled_back", "{}", evidence.reason);
+        assert!(evidence.rolled_back);
+        for (name, was) in ["src/keystore.rs", "src/boot.rs"].iter().zip(before.iter()) {
+            assert_eq!(
+                &std::fs::read_to_string(tree.join(name)).expect(name),
+                was,
+                "{name} did not come back"
+            );
+        }
+        // The evidence outlives the tree it describes, which is why it is in
+        // the store and not in the workspace.
+        assert!(
+            evidence_path(&store, &evidence.transaction).is_file() || !evidence.checks.is_empty(),
+            "the diagnosis was rolled back along with the change"
+        );
+        assert_eq!(evidence.checks.len(), 1);
+        assert_eq!(evidence.checks[0].verdict, Verdict::Failed);
     }
 
     #[test]
@@ -2010,43 +2480,59 @@ mod tests {
 
     #[test]
     fn the_packages_a_change_touches_are_the_packages_that_get_checked() {
-        // Package scope, read off the manifests on disk. A file under no
-        // manifest belongs to no package and is skipped rather than attributed
-        // to the workspace root, which often has no package of its own.
-        let base = tempfile::tempdir().expect("a temp dir");
-        let root = base.path();
-        for (path, text) in [
-            ("Cargo.toml", "[workspace]\nmembers = [\"crates/one\"]\n"),
+        // Now asked of Cargo rather than read off the manifests by hand. The
+        // hand-written version got the attribution right and could not answer
+        // the question that actually decides a check: `two` uses `one`, so a
+        // change to `one` has to compile `two` as well, and no amount of
+        // walking up to the nearest manifest says so.
+        let (_base, store, tree, _here) = a_workspace(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nresolver = \"2\"\nmembers = [\"crates/one\", \"crates/two\"]\n",
+            ),
             (
                 "crates/one/Cargo.toml",
-                "[package]\nname = \"one\"\n\n[dependencies]\nname = \"not-this\"\n",
+                "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
             ),
-            ("crates/two/Cargo.toml", "[package]\nname = \"two\"\n"),
-        ] {
-            let full = root.join(path);
-            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-            std::fs::write(full, text).unwrap();
-        }
+            ("crates/one/src/lib.rs", "pub fn ground() -> u32 { 1 }\n"),
+            (
+                "crates/two/Cargo.toml",
+                "[package]\nname = \"two\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n                 [dependencies]\none = { path = \"../one\" }\n",
+            ),
+            (
+                "crates/two/src/lib.rs",
+                "pub fn stacked() -> u32 { one::ground() + 1 }\n",
+            ),
+        ]);
+        crate::semantic::release(&tree);
 
-        let difference = thalyx_snapshot::Difference {
-            modified: vec![
-                "crates/one/src/lib.rs".into(),
-                "crates/one/src/deep/other.rs".into(),
-                "crates/two/src/lib.rs".into(),
-                "README.md".into(),
-            ],
-            modified_total: 4,
-            ..Default::default()
-        };
-        assert_eq!(affected_packages(root, &difference), vec!["one", "two"]);
+        let selection = crate::semantic::selection(
+            store.root(),
+            &tree,
+            &["crates/one/src/lib.rs".to_string(), "README.md".to_string()],
+            &[],
+        )
+        .expect("a Cargo workspace");
 
-        // And a `name` under `[dependencies]` is never mistaken for the
-        // package's own — which is the whole reason this is not a `split` on
-        // the word `name`.
         assert_eq!(
-            package_named_in(&root.join("crates/one/Cargo.toml")),
-            Some("one".to_string())
+            selection.packages,
+            vec!["one".to_string(), "two".to_string()],
+            "compiling only `one` would prove nothing about the crate that uses it"
         );
-        assert_eq!(package_named_in(&root.join("Cargo.toml")), None);
+        assert_eq!(
+            selection.unattributed,
+            vec!["README.md".to_string()],
+            "a file nobody can place is named rather than dropped"
+        );
+
+        // The escape hatch replaces the derivation rather than adding to it.
+        let asked = crate::semantic::selection(
+            store.root(),
+            &tree,
+            &["crates/one/src/lib.rs".to_string()],
+            &["two".to_string()],
+        )
+        .expect("a Cargo workspace");
+        assert_eq!(asked.packages, vec!["two".to_string()]);
     }
 }

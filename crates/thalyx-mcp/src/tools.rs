@@ -273,12 +273,80 @@ opening any of them.",
         calls: |arguments| Ok(vec![("read", vec![text(arguments, "path")?])]),
     },
     Tool {
+        name: "thalyx_context",
+        verbs: &["context"],
+        description: "\
+What a name IS, resolved by a compiler frontend rather than matched as text: \
+its kind, its crate, its signature, where it is declared, how many places use \
+it, and a handle. Ask this INSTEAD of reading files. One answer is a few \
+hundred bytes where the file it describes is tens of thousands, and it is \
+exact — an alias, a re-export or a trait method resolves to the thing it \
+really names, which no text search can do. \
+Give it a symbol (`Store::lock`, `Keystore`), or a path ending in `.rs` for a \
+map of everything one file declares. \
+`budget` bounds the answer in bytes and the answer says how many entries did \
+not fit; nothing is lost, it is held. `uses` asks for that many use sites as \
+`file:line` — the answer always carries the count, and the list only when you \
+ask, because on a common name the list is the whole budget. \
+When you actually need the source, call this again with `expand` set to an \
+entry's handle and you get exactly the lines that declaration occupies — not \
+the file. \
+Every answer says `source` and `fresh`: `rust-analyzer` means the name was \
+resolved, `index` means it was matched, and `stale` means the tree moved since \
+the machine last looked. Believe them.",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "A symbol name, `Type::method`, or a path to a \
+                                        `.rs` file for a map of it."
+                    },
+                    "budget": {
+                        "type": "integer",
+                        "description": "Most bytes of entries to return. Defaults to 2000."
+                    },
+                    "uses": {
+                        "type": "integer",
+                        "description": "Return this many use sites (`file:line`). \
+                                        Defaults to none; the count is always there."
+                    },
+                    "expand": {
+                        "type": "string",
+                        "description": "A handle from a previous answer. Returns the exact \
+                                        source lines of that declaration."
+                    }
+                }
+            })
+        },
+        calls: |arguments| {
+            let mut given: Vec<String> = Vec::new();
+            if let Some(handle) = optional(arguments, "expand") {
+                given.push(format!("expandir={handle}"));
+            } else {
+                given.push(text(arguments, "query")?);
+            }
+            if let Some(budget) = arguments.get("budget").and_then(Value::as_u64) {
+                given.push(format!("presupuesto={budget}"));
+            }
+            if let Some(uses) = arguments.get("uses").and_then(Value::as_u64) {
+                given.push(format!("usos={uses}"));
+            }
+            Ok(vec![("context", given)])
+        },
+    },
+    Tool {
         name: "thalyx_symbol",
         verbs: &["symbol", "index_build"],
         description: "\
 Where a name is defined and every place it is used, from Thalyx's parsed \
 semantic index — exact, and never a match inside a comment or a string. \
-Prefer this over text search whenever the question is about a code symbol. \
+For Rust, prefer thalyx_context: it resolves names with a compiler frontend \
+where this one matches them, so it follows aliases and re-exports and this \
+does not. Use this for every other language, and when you want the whole list \
+of uses rather than a count. \
+Prefer either over text search whenever the question is about a code symbol. \
 If the workspace changed since the index was built, this rebuilds it and then \
 answers about the tree as it is now; the answer says which happened. Matching \
 is exact and case-sensitive, so `login` does not find `login_user`.",
@@ -529,7 +597,13 @@ them: a rename across files then a search proving the old name is gone; an edit 
 then a compile; make files, change them, verify, and undo it all if the \
 verification fails. That is the normal case, not the exotic one. \
 `steps` are ordinary Thalyx requests — the same verbs and arguments the other \
-tools send, so anything you could do in five calls you can do here in one. They \
+tools send, so anything you could do in five calls you can do here in one. Two \
+are worth knowing by name: `rename` takes a Rust symbol and a new name and \
+rewrites every place that really refers to it, resolved by a compiler frontend, \
+including the aliased imports a search would miss; and the `rust` check \
+compiles exactly the crates your change reaches — the ones it is in and the \
+ones that depend on them, worked out from Cargo's graph — and reuses the answer \
+when this machine has already compiled these exact bytes. They \
 run in order and stop at the first refusal. `validate` decides the outcome: if \
 every check passes the work is committed, and otherwise the whole thing is \
 rolled back and the workspace is byte-for-byte what it was. A check that could \

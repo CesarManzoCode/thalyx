@@ -439,6 +439,9 @@ fn call(
     if tool.name == "thalyx_exec" {
         metrics.program(&answer);
     }
+    if tool.name == "thalyx_context" {
+        metrics.context(&answer);
+    }
     Ok(json!({"content": [{"type": "text", "text": text}]}))
 }
 

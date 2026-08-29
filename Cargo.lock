@@ -976,12 +976,14 @@ dependencies = [
  "thalyx-graph",
  "thalyx-install",
  "thalyx-journal",
+ "thalyx-know",
  "thalyx-manifest",
  "thalyx-memory",
  "thalyx-net",
  "thalyx-parser",
  "thalyx-permd",
  "thalyx-proc",
+ "thalyx-rust",
  "thalyx-sandbox",
  "thalyx-screen",
  "thalyx-snapshot",
@@ -1088,6 +1090,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "thalyx-know"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rusqlite",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "walkdir",
+]
+
+[[package]]
 name = "thalyx-manifest"
 version = "0.1.0"
 dependencies = [
@@ -1154,6 +1168,18 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "thalyx-syscall",
+ "thiserror",
+]
+
+[[package]]
+name = "thalyx-rust"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thalyx-graph",
+ "thalyx-know",
  "thiserror",
 ]
 

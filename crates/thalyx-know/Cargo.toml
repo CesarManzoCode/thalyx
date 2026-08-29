@@ -1,0 +1,21 @@
+[package]
+name = "thalyx-know"
+description = "Persistent machine knowledge: facts with a witness, and the standing that says whether they still hold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

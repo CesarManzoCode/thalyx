@@ -94,6 +94,24 @@ pub struct Metrics {
     internal_bytes: u64,
     programs_committed: u64,
     programs_rolled_back: u64,
+
+    // ── the programming face ────────────────────────────────────────────────
+    //
+    // The comparison the second cost is about: what a context answer put into
+    // the model, against what it described and did not. Both read out of the
+    // machine's own answer, like everything above: this process counting the
+    // bytes it forwarded would count the JSON and not the alternative.
+    context_questions: u64,
+    context_bytes: u64,
+    /// Bytes of source those answers described and did not return.
+    context_bytes_held: u64,
+    /// Semantic questions the machine answered inside a program, and how many
+    /// of them it already knew.
+    semantic_queries: u64,
+    semantic_cache_hits: u64,
+    analyzer_starts: u64,
+    validation_cache_hits: u64,
+    validation_cache_misses: u64,
 }
 
 /// Whether an `abandon` call is the one that actually undoes something.
@@ -138,7 +156,27 @@ impl Metrics {
             internal_bytes: 0,
             programs_committed: 0,
             programs_rolled_back: 0,
+            context_questions: 0,
+            context_bytes: 0,
+            context_bytes_held: 0,
+            semantic_queries: 0,
+            semantic_cache_hits: 0,
+            analyzer_starts: 0,
+            validation_cache_hits: 0,
+            validation_cache_misses: 0,
         }
+    }
+
+    /// What one `thalyx_context` answer put into the model, and what it did not.
+    ///
+    /// Read the same way and for the same reason as [`Metrics::program`]: the
+    /// interesting number is not the size of the JSON, it is the size of what
+    /// the agent would otherwise have read, and only the machine knows that.
+    pub fn context(&mut self, answer: &Value) {
+        let number = |name: &str| answer.get(name).and_then(Value::as_u64).unwrap_or(0);
+        self.context_questions += 1;
+        self.context_bytes += number("returned_bytes");
+        self.context_bytes_held += number("held_bytes");
     }
 
     /// What one `thalyx_exec` answer said the machine did.
@@ -152,6 +190,11 @@ impl Metrics {
         self.programs_run += 1;
         self.machine_operations += number("machine_operations");
         self.internal_bytes += number("internal_bytes");
+        self.semantic_queries += number("semantic_queries");
+        self.semantic_cache_hits += number("semantic_cache_hits");
+        self.analyzer_starts += number("analyzer_starts");
+        self.validation_cache_hits += number("validation_cache_hits");
+        self.validation_cache_misses += number("validation_cache_misses");
         match answer.get("status").and_then(Value::as_str) {
             Some("committed") => self.programs_committed += 1,
             Some("rolled_back") => self.programs_rolled_back += 1,
@@ -242,6 +285,26 @@ impl Metrics {
                 "abandoned": self.attempts_abandoned,
             },
             "mutations": self.mutations,
+            "context": {
+                "questions": self.context_questions,
+                "bytes_returned": self.context_bytes,
+                "bytes_held": self.context_bytes_held,
+                // What the compression actually was. `null` when nothing was
+                // asked, never zero: "no context questions" and "context
+                // questions that saved nothing" are different facts.
+                "times_smaller": if self.context_bytes == 0 {
+                    Value::Null
+                } else {
+                    json!(self.context_bytes_held as f64 / self.context_bytes as f64)
+                },
+            },
+            "semantics": {
+                "queries": self.semantic_queries,
+                "cache_hits": self.semantic_cache_hits,
+                "analyzer_starts": self.analyzer_starts,
+                "validation_cache_hits": self.validation_cache_hits,
+                "validation_cache_misses": self.validation_cache_misses,
+            },
             "programs": {
                 "run": self.programs_run,
                 "committed": self.programs_committed,

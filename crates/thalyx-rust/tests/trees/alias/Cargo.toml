@@ -1,0 +1,9 @@
+# `[workspace]` so this tree is its own workspace and not a member of Thalyx's.
+# Without it `cargo metadata` on the repository refuses to describe a package
+# that is inside the tree and outside the members list.
+[workspace]
+
+[package]
+name = "alias-fixture"
+version = "0.1.0"
+edition = "2021"

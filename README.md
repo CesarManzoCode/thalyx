@@ -237,6 +237,30 @@ whether a denial is real. Now a guest is refused there too, a module runs but
 the journal calls it degraded, and `thalyx enforce status` says which mode the
 machine is in.
 
+**New, and the newest thing here.** Thalyx has a programming face for a frontier
+agent, and it is built out of machinery that already works rather than invented
+here. `contexto <nombre>` answers what a name *is* — kind, crate, signature,
+where, how many uses, and a handle — in a couple of hundred bytes where the file
+it describes is ten thousand, and `contexto expandir=<asa>` fetches exactly the
+lines that declaration occupies when the model decides it needs them. On Rust the
+answer comes from **rust-analyzer**, so `Keys` in `use crate::keystore::Keystore
+as Keys` resolves to `Keystore` — the case Thalyx's own scanner has carried in
+its corpus as a known limit since it was written, because following a binding is
+a compiler and not a scan. Cargo's crate graph decides what a change reaches, so
+`hacer`'s Rust check compiles the crates the change is in *and everything that
+depends on them*, and does not recompile bytes this machine has already compiled
+under this toolchain. Everything either tool learns is kept per tree with the
+identity of the state it came from, so a second session starts from what the
+first one found out and a stale answer says it is stale.
+
+The whole of that is one call: resolve the symbol, rewrite every real use, see
+what changed, work out what to compile, reuse what still holds, compile the rest,
+commit or put the tree back — with no model inference in between. What is proven
+in a container is stage 57 of `verify.sh`; the vertical over a real Btrfs
+subvolume with the compiler running confined is stage 58, and whether any of it
+makes a frontier agent do more correct work with less effort is **not measured**.
+It is built to be measured next; no benchmark was run.
+
 **Not proven.** `thalyx_watch` — the filesystem watcher, ten BPF hooks against
 the LSM's two — has never been loaded by Thalyx's own loader; `bpftool` still
 loads it, and *likely the same loader works* is not *proven*. An internal disk

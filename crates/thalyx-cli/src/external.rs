@@ -191,6 +191,25 @@ pub const EXPOSED: &[Exposed] = &[
         repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
+    // The programming face. `context` takes a name or a relative path in one
+    // slot: it is `Text` rather than `Path` because most queries are neither,
+    // and the one shape that *is* a path is anchored by the verb before it
+    // opens anything — see `semantic::context`.
+    Exposed {
+        verb: "context",
+        slots: &[Slot::Text],
+        repeating: MORE_OPTIONS,
+        verbatim_from: QUOTED,
+    },
+    Exposed {
+        verb: "rename",
+        // What to rename and what to call it. Both text: the first may be a
+        // bare name, and `file:line:column` is not a path this table could
+        // check without teaching it the suffix.
+        slots: &[Slot::Text, Slot::Text],
+        repeating: NOTHING_MORE,
+        verbatim_from: QUOTED,
+    },
     // ── searching the bytes, for the questions the index cannot answer ────
     Exposed {
         verb: "find",
@@ -1124,6 +1143,10 @@ mod tests {
                 "make_file",
                 "copy",
                 "move",
+                // It writes, and inside the workspace only: every path
+                // rust-analyzer names is anchored through the session's own
+                // boundary before anything is opened.
+                "rename",
                 "remove",
                 "edit",
                 // A program of the above, inside a boundary. It reaches nothing

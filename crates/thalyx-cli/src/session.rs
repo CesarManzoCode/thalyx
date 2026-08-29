@@ -1425,6 +1425,18 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  those two read the tree, so they answer about anything,");
             println!("  and `buscar` reads the index, so it answers better where");
             println!("  it can. Both take `en=<carpeta>`, and it goes first.");
+            println!("  `contexto <nombre>` says what a name *is* — qué clase de");
+            println!("  cosa, en qué crate, su firma, dónde está y cuántas veces se");
+            println!("  usa — en unos cientos de bytes en lugar del archivo entero,");
+            println!("  y devuelve un asa; `contexto expandir=<asa>` trae exactamente");
+            println!("  las líneas de esa declaración. `contexto <archivo>.rs` hace el");
+            println!("  mapa de un archivo. `presupuesto=N` limita la respuesta y dice");
+            println!("  cuánto no cupo, y `usos=N` pide los lugares donde se usa —");
+            println!("  el número de usos siempre viene. En Rust lo contesta un");
+            println!("  compilador de verdad, así que sigue un alias hasta lo que");
+            println!("  de veras nombra.");
+            println!("  `renombrar-simbolo <nombre> <nuevo>` lo cambia en cada lugar");
+            println!("  que de veras lo usa — no donde el texto coincide.");
             println!("  `procesos` says what is running with its number, `memoria`");
             println!("  how much is left, and `matar <numero>` asks one to stop —");
             println!("  `matar <numero> forzar` does not ask. `ensayo matar` says");
@@ -1467,6 +1479,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `indexar`, `depende <archivo>`, `usan <archivo>`,");
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
+            println!("  `contexto <nombre|archivo> [presupuesto=N|usos=N|expandir=asa]`,");
+            println!("  `renombrar-simbolo <nombre> <nuevo>`,");
             println!("  `hacer <programa>`, `evidencia <id>`,");
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
@@ -1621,6 +1635,11 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
     }
 
+    // The rust-analyzer this session may have started answers only questions
+    // this session asked. Nothing it holds is needed again — every answer was
+    // written into the knowledge store before it was returned — so it goes when
+    // the session does rather than lingering as a hundred resident megabytes.
+    crate::semantic::release(&crate::semantic::tree_of(&session.here));
     Ok(())
 }
 
@@ -2124,6 +2143,31 @@ fn dispatch_asking(
         }
         "buscar" | "symbol" => {
             crate::index::symbol(store.root(), here, "", face)?;
+        }
+        // The programming face: a description instead of a file, and a rename
+        // that resolves before it writes.
+        _ if starts_any(line, &["contexto ", "context "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::semantic::context(store.root(), here, rest, face)?;
+        }
+        "contexto" | "context" => {
+            crate::semantic::context(store.root(), here, "", face)?;
+        }
+        // `renombrar-simbolo` and not `renombrar`: `renombrar` has meant
+        // *move this file* since the file verbs existed, and stealing the word
+        // would silently change what an existing caller's line does. Two things
+        // that both "rename" something are two verbs, and the longer name is
+        // the new one's problem to carry.
+        _ if starts_any(
+            line,
+            &["renombrar-simbolo ", "renombrar-símbolo ", "rename "],
+        ) =>
+        {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::semantic::rename(store.root(), here, rest, face)?;
+        }
+        "renombrar-simbolo" | "renombrar-símbolo" | "rename" => {
+            crate::semantic::rename(store.root(), here, "", face)?;
         }
         // F2: what this machine did, said by the machine rather than
         // reconstructed from a conversation that ended.

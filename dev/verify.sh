@@ -713,6 +713,20 @@ SUITE_ENV+=(THALYX_REQUIRE_RACE_TESTS=1)
 # node apart from the partition behind it has no excuse to skip.
 SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 
+# The Rust semantic provider. Its own variable, because a machine can have
+# everything else and not this: rust-analyzer is a rustup component somebody has
+# to add, and a machine without it must be able to demand what it has. Looked
+# for the way `thalyx_rust::analyzer::find` looks — by running each candidate —
+# because `~/.cargo/bin/rust-analyzer` exists on every rustup install and is a
+# shim that answers `error: Unknown binary`. A search that stopped at the first
+# file it found would set this on a machine that cannot start one.
+HAVE_ANALYZER=0
+for candidate in "${THALYX_RUST_ANALYZER:-}" "$HOME"/.rustup/toolchains/*/bin/rust-analyzer; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if "$candidate" --version > /dev/null 2>&1; then HAVE_ANALYZER=1; break; fi
+done
+[ "$HAVE_ANALYZER" = 1 ] && SUITE_ENV+=(THALYX_REQUIRE_RUST_ANALYZER=1)
+
 # The seccomp filter, run over a real program rather than evaluated. Both halves
 # are read rather than assumed: a kernel built without CONFIG_SECCOMP_FILTER has
 # no `actions_avail` to show, and the test drives `chrt`, which is util-linux and
@@ -7633,7 +7647,304 @@ fi
 }
 
 
-parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56
+stage_57() {
+step "57. a name is resolved rather than matched, and the answer is not the file"
+
+# `vault/02-Arquitectura/Superficie-para-el-LLM.md`, the second cost. An agent
+# that wants to know what `Keystore` is reads the file it is in and pays for
+# every line of it. `contexto` answers the question instead of handing over the
+# haystack — and, on Rust, it answers it with a compiler frontend, so it knows
+# the difference between the name and the word.
+#
+# **Two columns, and the second is the point.** The tree below spells `Keystore`
+# four ways: the declaration, an import that renames it to `Keys`, a comment
+# that mentions it, and a string literal that contains it. A text substitution
+# changes all four. A rename that resolved the name changes exactly the two that
+# are the name — and the way to tell them apart is to run both.
+
+CTX_STORE="$WORK/ctx-store"
+CTX_TREE="$WORK/ctx-tree"
+rm -rf "$CTX_STORE" "$CTX_TREE"
+mkdir -p "$CTX_STORE" "$CTX_TREE/src"
+
+CTX_GAP=""
+if [ ! -x "$THALYX" ]; then
+    CTX_GAP="there is no thalyx binary, so nothing could be asked"
+elif [ "$HAVE_ANALYZER" != 1 ]; then
+    CTX_GAP="there is no rust-analyzer on this machine, so nothing could resolve a name. Add it with: rustup component add rust-analyzer"
+fi
+
+if [ -n "$CTX_GAP" ]; then
+    if [ "${THALYX_REQUIRE_RUST_ANALYZER:-0}" = 1 ]; then failed "$CTX_GAP"; else unproven "$CTX_GAP"; fi
+else
+    cat > "$CTX_TREE/Cargo.toml" <<'CTXEOF'
+[workspace]
+
+[package]
+name = "verify-context"
+version = "0.1.0"
+edition = "2021"
+CTXEOF
+    printf 'pub mod boot;\npub mod keystore;\npub mod notes;\n' > "$CTX_TREE/src/lib.rs"
+    printf 'pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n' \
+        > "$CTX_TREE/src/keystore.rs"
+    printf 'use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n' \
+        > "$CTX_TREE/src/boot.rs"
+    # The two spellings that are not the name.
+    printf '// Keystore was the old name for all of this.\npub fn about() -> &%s {\n    "Keystore"\n}\n' "'static str" \
+        > "$CTX_TREE/src/notes.rs"
+    # Padding **in the file the symbol is in**, because the comparison below is
+    # between the answer and the file an agent would have opened to get it, and
+    # padding somewhere else would make that comparison flattering rather than
+    # true.
+    python3 -c '
+import sys
+with open(sys.argv[1], "a") as f:
+    for n in range(120):
+        f.write(f"\n/// Filler {n}, which is what most of a real file is.\npub fn filler{n}() -> u32 {{ {n} }}\n")
+' "$CTX_TREE/src/keystore.rs"
+
+    ctx_run() {
+        printf '%s\n' "structured on" "cd $CTX_TREE" "$1" salir | \
+            THALYX_ROOT="$CTX_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    ctx_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == sys.argv[3]:
+        here = value
+        for key in sys.argv[2].split("."):
+            if isinstance(here, list):
+                here = here[int(key)]
+            else:
+                here = here.get(key, "absent")
+                if here == "absent":
+                    break
+        print(here)
+        break
+else:
+    print("none")
+' "$1" "$2" context
+    }
+
+    ctx_run "contexto Keystore" > "$WORK/ctx-symbol.log"
+    CTX_SOURCE=$(ctx_field "$WORK/ctx-symbol.log" source)
+    CTX_FRESH=$(ctx_field "$WORK/ctx-symbol.log" fresh)
+    CTX_FILE=$(ctx_field "$WORK/ctx-symbol.log" entries.0.file)
+    CTX_KIND=$(ctx_field "$WORK/ctx-symbol.log" entries.0.kind)
+    CTX_HANDLE=$(ctx_field "$WORK/ctx-symbol.log" entries.0.handle)
+    CTX_BYTES=$(ctx_field "$WORK/ctx-symbol.log" returned_bytes)
+    CTX_HELD=$(ctx_field "$WORK/ctx-symbol.log" held_bytes)
+    CTX_WHOLE=$(wc -c < "$CTX_TREE/src/keystore.rs" | tr -d ' ')
+
+    ctx_run "contexto expandir=$CTX_HANDLE" > "$WORK/ctx-expand.log"
+    CTX_TEXT=$(ctx_field "$WORK/ctx-expand.log" text)
+
+    # Column one: the rename that knows what a name is.
+    ctx_run "renombrar-simbolo Keystore KeyVault" > "$WORK/ctx-rename.log"
+    RESOLVED_NOTES=$(cat "$CTX_TREE/src/notes.rs")
+    RESOLVED_BOOT=$(head -1 "$CTX_TREE/src/boot.rs")
+
+    # Column two: the same intention as a text substitution, on the same tree
+    # put back. Without it, "it renamed two files" is a sentence about a number.
+    printf 'pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n' \
+        > "$CTX_TREE/src/keystore.rs"
+    printf 'use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n' \
+        > "$CTX_TREE/src/boot.rs"
+    printf '// Keystore was the old name for all of this.\npub fn about() -> &%s {\n    "Keystore"\n}\n' "'static str" \
+        > "$CTX_TREE/src/notes.rs"
+    ctx_run "editar src/notes.rs sustituir Keystore KeyVault" > "$WORK/ctx-text.log"
+    TEXTUAL_NOTES=$(cat "$CTX_TREE/src/notes.rs")
+
+    if [ "$CTX_SOURCE" = "rust-analyzer" ] \
+       && [ "$CTX_FRESH" = "current" ] \
+       && [ "$CTX_KIND" = "struct" ] \
+       && [ "$CTX_FILE" = "src/keystore.rs" ] \
+       && [ "$CTX_BYTES" -gt 0 ] && [ $((CTX_BYTES * 10)) -lt "$CTX_WHOLE" ] \
+       && [ "$CTX_HELD" = "$CTX_WHOLE" ] \
+       && printf '%s' "$CTX_TEXT" | grep -q 'pub struct Keystore' \
+       && printf '%s' "$RESOLVED_BOOT" | grep -q 'KeyVault as Keys' \
+       && printf '%s' "$RESOLVED_NOTES" | grep -q 'Keystore was the old name' \
+       && printf '%s' "$RESOLVED_NOTES" | grep -q '"Keystore"' \
+       && printf '%s' "$TEXTUAL_NOTES" | grep -q 'KeyVault was the old name'; then
+        proven "a symbol came back in $CTX_BYTES bytes against a $CTX_WHOLE-byte file, resolved by rust-analyzer, with a handle that fetched exactly its declaration; and the rename changed the import three files away while leaving the comment and the string literal alone — which the text substitution beside it did not"
+    elif [ "$CTX_SOURCE" != "rust-analyzer" ]; then
+        failed "the answer came from '$CTX_SOURCE' rather than from a compiler frontend; see $WORK/ctx-symbol.log"
+        excerpt "$WORK/ctx-symbol.log"
+    elif [ "$CTX_FILE" != "src/keystore.rs" ]; then
+        failed "the symbol was placed in '$CTX_FILE'; see $WORK/ctx-symbol.log"
+        excerpt "$WORK/ctx-symbol.log"
+    elif [ "$CTX_BYTES" -ge $((CTX_WHOLE / 10)) ]; then
+        failed "the answer was $CTX_BYTES bytes against a $CTX_WHOLE-byte file; this verb is supposed to be an order of magnitude cheaper than reading it"
+    elif [ "$CTX_HELD" != "$CTX_WHOLE" ]; then
+        failed "the answer says it is holding $CTX_HELD bytes back and the file is $CTX_WHOLE; a measurement that does not match what it measures is decoration"
+    elif ! printf '%s' "$RESOLVED_NOTES" | grep -q '"Keystore"'; then
+        failed "the rename changed a string literal that merely contains the word: notes.rs is now '$RESOLVED_NOTES'; see $WORK/ctx-rename.log"
+        excerpt "$WORK/ctx-rename.log"
+    elif ! printf '%s' "$RESOLVED_BOOT" | grep -q 'KeyVault as Keys'; then
+        failed "the renaming import three files away was not rewritten: boot.rs begins '$RESOLVED_BOOT'; see $WORK/ctx-rename.log"
+        excerpt "$WORK/ctx-rename.log"
+    else
+        failed "the handle expanded to '$CTX_TEXT', or the control column did not behave as a text substitution ('$TEXTUAL_NOTES'); see $WORK/ctx-expand.log"
+        excerpt "$WORK/ctx-expand.log"
+    fi
+    rm -rf "$CTX_TREE" "$CTX_STORE"
+fi
+}
+
+stage_58() {
+step "58. one call resolves a symbol, rewrites every real use, compiles what the change reaches, and keeps it or undoes it"
+
+# The vertical, and the only place it can be established: the boundary is a real
+# Btrfs snapshot, the compiler runs under a kernel that is actually denying, and
+# nothing between the resolution and the commit is a round trip to a model.
+#
+# Three columns:
+#
+#   - it holds up: a rename resolved by a compiler frontend, two files rewritten,
+#     the crates the change reaches compiled, committed.
+#   - it is asked again: the same bytes, and the compiler does **not** run —
+#     `process_launches` is the count that says so, because a cache that quietly
+#     recompiled would pass every assertion about the verdict.
+#   - it does not hold up: a check that cannot pass, and a real subvolume comes
+#     back byte for byte with the diagnosis still in the store.
+
+VERT_STORE="$WORK/vertical-store"
+VERT_TREE="$BTRFS_SCRATCH/.thalyx-verify-vertical"
+mkdir -p "$VERT_STORE"
+rm -rf "$VERT_TREE" 2>/dev/null || btrfs subvolume delete "$VERT_TREE" > /dev/null 2>&1 || true
+
+VERT_GAP=""
+if [ ! -x "$THALYX" ]; then
+    VERT_GAP="there is no thalyx binary, so a program could not be run"
+elif [ "$HAVE_ANALYZER" != 1 ]; then
+    VERT_GAP="there is no rust-analyzer on this machine, so nothing could resolve a name. Add it with: rustup component add rust-analyzer"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    VERT_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif ! btrfs subvolume create "$VERT_TREE" > "$WORK/vertical-subvol.log" 2>&1; then
+    VERT_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/vertical-subvol.log"
+fi
+
+if [ -n "$VERT_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ] && [ "${THALYX_REQUIRE_RUST_ANALYZER:-0}" = 1 ]; then
+        failed "$VERT_GAP"
+    else
+        unproven "$VERT_GAP"
+    fi
+else
+    mkdir -p "$VERT_TREE/src"
+    vertical_tree() {
+        cat > "$VERT_TREE/Cargo.toml" <<'VERTEOF'
+[workspace]
+
+[package]
+name = "verify-vertical"
+version = "0.1.0"
+edition = "2021"
+VERTEOF
+        printf 'pub mod boot;\npub mod keystore;\n' > "$VERT_TREE/src/lib.rs"
+        printf 'pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n' \
+            > "$VERT_TREE/src/keystore.rs"
+        printf 'use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n' \
+            > "$VERT_TREE/src/boot.rs"
+    }
+    vertical_run() {
+        printf '%s\n' "structured on" "cd $VERT_TREE" "hacer $1" salir | \
+            THALYX_ROOT="$VERT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    vertical_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "exec":
+        print(value.get(sys.argv[2], "absent"))
+        break
+else:
+    print("none")
+' "$1" "$2"
+    }
+
+    vertical_tree
+    GOOD_V='{"label":"resolve and rename","steps":[{"verb":"rename","arguments":["Keystore","KeyVault"]}],"validate":[{"check":"text","text":"Keystore","expect":"none"},{"check":"rust","mode":"check"}]}'
+    vertical_run "'$GOOD_V'" > "$WORK/vertical-good.log"
+    V_STATUS=$(vertical_field "$WORK/vertical-good.log" status)
+    V_EXTERNAL=$(vertical_field "$WORK/vertical-good.log" external_requests)
+    V_QUERIES=$(vertical_field "$WORK/vertical-good.log" semantic_queries)
+    V_STARTS=$(vertical_field "$WORK/vertical-good.log" analyzer_starts)
+    V_PACKAGES=$(vertical_field "$WORK/vertical-good.log" affected_packages)
+    V_MISSES=$(vertical_field "$WORK/vertical-good.log" validation_cache_misses)
+    V_LAUNCHES=$(vertical_field "$WORK/vertical-good.log" process_launches)
+    V_BOOT=$(head -1 "$VERT_TREE/src/boot.rs" 2>/dev/null || echo unreadable)
+
+    # Asked again, over bytes this machine has now compiled: a change and its
+    # reverse, so the tree at check time is the one already known good. This is
+    # the reversible task the benchmark is made of, and it is exactly where an
+    # identity made of timestamps would say "a different tree".
+    AGAIN='{"label":"there and back","steps":[{"verb":"edit","arguments":["src/keystore.rs","sustituir","KeyVault","Interim"]},{"verb":"edit","arguments":["src/keystore.rs","sustituir","Interim","KeyVault"]}],"validate":[{"check":"rust","mode":"check"}]}'
+    vertical_run "'$AGAIN'" > "$WORK/vertical-again.log"
+    A_STATUS=$(vertical_field "$WORK/vertical-again.log" status)
+    A_HITS=$(vertical_field "$WORK/vertical-again.log" validation_cache_hits)
+    A_LAUNCHES=$(vertical_field "$WORK/vertical-again.log" process_launches)
+
+    # And the column that makes the first two safe to use.
+    vertical_tree
+    BAD_V='{"label":"a rename nobody wanted","steps":[{"verb":"rename","arguments":["Keystore","KeyVault"]}],"validate":[{"check":"text","text":"Keystore","expect":"some"}]}'
+    vertical_run "'$BAD_V'" > "$WORK/vertical-bad.log"
+    B_STATUS=$(vertical_field "$WORK/vertical-bad.log" status)
+    B_KEYSTORE=$(head -1 "$VERT_TREE/src/keystore.rs" 2>/dev/null || echo unreadable)
+    B_BOOT=$(head -1 "$VERT_TREE/src/boot.rs" 2>/dev/null || echo unreadable)
+    B_EVIDENCE=$(vertical_field "$WORK/vertical-bad.log" evidence)
+
+    if [ "$V_STATUS" = "committed" ] \
+       && [ "$V_EXTERNAL" = "1" ] && [ "$V_QUERIES" -ge 1 ] && [ "$V_STARTS" = "1" ] \
+       && [ "$V_PACKAGES" -ge 1 ] && [ "$V_MISSES" = "1" ] && [ "$V_LAUNCHES" -ge 1 ] \
+       && [ "$V_BOOT" = "use crate::keystore::KeyVault as Keys;" ] \
+       && [ "$A_STATUS" = "committed" ] && [ "$A_HITS" = "1" ] && [ "$A_LAUNCHES" = "0" ] \
+       && [ "$B_STATUS" = "rolled_back" ] \
+       && [ "$B_KEYSTORE" = "pub struct Keystore;" ] \
+       && [ "$B_BOOT" = "use crate::keystore::Keystore as Keys;" ] \
+       && [ -n "$B_EVIDENCE" ] && [ "$B_EVIDENCE" != "none" ]; then
+        proven "one request resolved a symbol, rewrote the aliased import three files away, compiled the $V_PACKAGES crate(s) the change reaches and committed — with 1 external request and 1 rust-analyzer start; asked again over the same bytes it reused the answer and started no compiler at all; and the variant whose check fails put a real Btrfs subvolume back byte for byte with the diagnosis kept as $B_EVIDENCE"
+    elif [ "$V_STATUS" != "committed" ]; then
+        failed "the request that should have committed answered '$V_STATUS'; see $WORK/vertical-good.log"
+        excerpt "$WORK/vertical-good.log"
+    elif [ "$V_BOOT" != "use crate::keystore::KeyVault as Keys;" ]; then
+        failed "the aliased import was not rewritten: boot.rs begins '$V_BOOT'; see $WORK/vertical-good.log"
+        excerpt "$WORK/vertical-good.log"
+    elif [ "$V_STARTS" != "1" ]; then
+        failed "the request started $V_STARTS rust-analyzers; one per request is the whole reason the provider is kept, and each is about 25 seconds"
+        excerpt "$WORK/vertical-good.log"
+    elif [ "$A_HITS" != "1" ] || [ "$A_LAUNCHES" != "0" ]; then
+        failed "the second request over the same bytes reported $A_HITS cache hit(s) and started $A_LAUNCHES process(es); a compiler ran for bytes this machine had already compiled. See $WORK/vertical-again.log"
+        excerpt "$WORK/vertical-again.log"
+    elif [ "$B_STATUS" != "rolled_back" ] || [ "$B_KEYSTORE" != "pub struct Keystore;" ]; then
+        failed "the failing request answered '$B_STATUS' and left keystore.rs as '$B_KEYSTORE'; see $WORK/vertical-bad.log"
+        excerpt "$WORK/vertical-bad.log"
+    else
+        failed "the request reported $V_QUERIES semantic quer(ies), $V_PACKAGES affected package(s), $V_MISSES validation miss(es) and $V_LAUNCHES launch(es); see $WORK/vertical-good.log"
+        excerpt "$WORK/vertical-good.log"
+    fi
+    rm -rf "$VERT_TREE" 2>/dev/null || btrfs subvolume delete "$VERT_TREE" > /dev/null 2>&1 || true
+fi
+}
+
+
+parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56 stage_57 stage_58
 
 # ------------------------------------------------- the machine, as it is left
 #
