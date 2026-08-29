@@ -561,8 +561,16 @@ NOT_PROJECT_DATA = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/proc/", "/
 # Where in a tool's input a path lives, when the tool has a schema rather than a
 # command line. Everything else is caught by the sweep for values that look like
 # absolute paths, which is why this list not being exhaustive is safe.
-PATH_FIELDS = ("file_path", "path", "notebook_path", "file", "dir", "directory",
-               "cwd", "target", "source", "destination")
+# `paths` and `to` are here because of what they cost. A tool that names its
+# files in a **list** — `thalyx_edit`'s `paths`, and every batch shape after it —
+# was invisible to this sweep: `paths` was not a field it knew, and the fallback
+# below only looks at values that are strings, so a list of six absolute paths
+# out of the workspace was six paths nobody checked. It was caught by a self-test
+# whose control column disagreed with it, which is the only reason it is not
+# still true. `to` is `thalyx_file`'s destination, missing for the same reason
+# under a different name.
+PATH_FIELDS = ("file_path", "file_paths", "path", "paths", "notebook_path", "file",
+               "files", "dir", "directory", "cwd", "target", "source", "destination", "to")
 
 
 def _unquote(token):
@@ -681,7 +689,353 @@ def where_it_points(raw, workspace, home=None):
     return "outside"
 
 
-def scope_report(path, workspace, home=None, repository=None):
+# ── two arms, two boundaries, and they are not the same boundary ─────────────
+#
+# The regrade of 2026-08-29 found arm B reported `scope: VIOLATED` for a run in
+# which nothing had gone wrong. The grader was comparing
+#
+#     /home/bench-thalyx                     the workspace, inside the machine
+#     …/target/bench-external-agent-3/b      the directory `claude` was started in
+#
+# and calling them different, which they are: **they are not in the same
+# namespace**, and no comparison between them means anything at all. Arm B's
+# `claude` runs on this host with every file tool taken away from it; the empty
+# directory it stands in is not a workspace it failed to stay inside, it is the
+# floor of a room with nothing in it.
+#
+# So the two words are separated, permanently, and every check below says which
+# one it is about:
+#
+#   host_control_cwd
+#       where the `claude` process itself was started, on this host. Read from
+#       the stream's own `system init` event.
+#
+#   guest_project_workspace
+#       where the project the task is about actually is. For arm A a directory
+#       on this host; for arm B a path inside the machine, reached only through
+#       the socket.
+#
+# **Arm A's boundary is that those two are the same directory.** It has ordinary
+# file tools and an ordinary shell, so the only thing that keeps it in the tree
+# it was given is that it was started there and never left — which is exactly
+# what failed on 2026-08-29, and why `cwd_is_the_workspace` is a conjunct of its
+# verdict rather than a note beside it.
+#
+# **Arm B's boundary is the channel.** Its `host_control_cwd` is infrastructure
+# and is deliberately somewhere with nothing in it; what makes the arm what it
+# says it is:
+#
+#   1. it holds **no host tool that could read or write the project** — the run
+#      takes `Read`, `Edit`, `Write`, `Grep`, `Glob`, `Bash` away, and a stream
+#      with one of them in it is a run whose confinement did not happen;
+#   2. every path its Thalyx tools **accepted** resolves under the guest
+#      workspace;
+#   3. every path those tools **answered with** does too — that is the machine's
+#      own boundary, seen from outside it;
+#   4. the preflight proved, before a cent was spent, that the channel was
+#      pointed at the guest workspace holding this project.
+#
+# A path a Thalyx tool was *asked* for and **refused** is not a breach: it is
+# the boundary working, which is the thing the experiment is about. So an
+# outside path is only counted against arm B when its own `tool_result` came
+# back without an error — rule 4, the difference between a denial and an
+# operation that never happened.
+
+# The boundary each arm is judged under. Named rather than inferred at each use.
+HOST_WORKSPACE = "host_control_cwd_is_the_workspace"
+GUEST_WORKSPACE = "host_control_cwd_is_infrastructure"
+
+# Which model an arm is judged under when its provenance does not say.
+#
+# Not a guess: `dev/bench-external-agent.sh` writes `run_arm A` for the Linux
+# copy on this host and `run_arm B` for the arm that only has the socket, in
+# that file, hard-coded. Runs from before the provenance carried `boundary`
+# still have to be gradeable — the whole point of keeping the streams — and this
+# is the fact that lets them be.
+BOUNDARY_BY_ARM = {"A": HOST_WORKSPACE, "B": GUEST_WORKSPACE}
+
+# The tools that would let an arm reach the project without going through the
+# channel. `Task` is here because a subagent is handed the parent's tools, and
+# `NotebookEdit` because it writes files under another name.
+HOST_FILE_TOOLS = frozenset({
+    "Read", "Edit", "MultiEdit", "Write", "NotebookEdit", "NotebookRead",
+    "Grep", "Glob", "Bash", "BashOutput", "KillShell", "Task",
+})
+
+# Where a Thalyx answer spells a path. The values are compared against the
+# guest workspace, which is the only place the machine may name.
+ANSWERED_PATH_KEYS = ("path", "paths", "writes_to", "not_written", "workspace",
+                      "root", "to", "from", "name")
+
+
+def is_a_thalyx_tool(name):
+    """Whether this call went down the channel rather than to the host.
+
+    By prefix and not by an exact list: the MCP server is mounted under a name
+    the harness picks (`mcp__thalyx__…`), and a list of tool names here would
+    be a second catalogue to keep in step with `crates/thalyx-mcp/src/tools.rs`.
+    """
+    return name.startswith("mcp__") and "thalyx" in name
+
+
+def answered_paths(content):
+    """Every path a tool's answer named, whatever depth it named it at.
+
+    Thalyx answers are one JSON object per line. Anything that will not parse is
+    reported as unread rather than treated as empty: rule 10, a failure to read
+    is not a failure to exist.
+    """
+    found, unread = [], 0
+    for line in (text_of(content) or "").splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            answer = json.loads(line)
+        except json.JSONDecodeError:
+            unread += 1
+            continue
+
+        def walk(node, key=None):
+            if isinstance(node, dict):
+                for name, value in node.items():
+                    walk(value, name)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value, key)
+            elif isinstance(node, str) and key in ANSWERED_PATH_KEYS and node.strip():
+                found.append((key, node.strip()))
+
+        walk(answer)
+    return found, unread
+
+
+def _calls_in(path):
+    """Every `tool_use` in a stream, with the result that answered it.
+
+    One pass for both, because a call's verdict depends on its answer and the
+    answer arrives in a later event — the same pairing `read_stream` does, for
+    the same reason, and deliberately not shared with it: that function counts
+    and this one classifies, and a helper serving both would grow a flag saying
+    which caller it had.
+    """
+    init_cwd = None
+    made = []
+    failed, answered = set(), set()
+    results = {}
+    for event in events(path):
+        kind = event.get("type")
+        if kind == "system" and event.get("subtype") == "init":
+            if isinstance(event.get("cwd"), str):
+                init_cwd = event["cwd"]
+        elif kind == "assistant":
+            for block in event.get("message", {}).get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    made.append((block.get("id"), block.get("name") or "<unnamed>",
+                                 block.get("input")))
+        elif kind == "user":
+            content = event.get("message", {}).get("content")
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    where = block.get("tool_use_id")
+                    if where is None:
+                        continue
+                    answered.add(where)
+                    results[where] = block.get("content")
+                    if block.get("is_error") is True:
+                        failed.add(where)
+    return init_cwd, made, failed, answered, results
+
+
+def guest_scope_report(path, workspace, preflight=None):
+    """Whether arm B was the arm it says it was.
+
+    Four questions, and not one of them is "did the process stay in its
+    directory". That question has no answer here and asking it is what produced
+    a false `VIOLATED`: the process's directory is on this host and the
+    workspace is inside a machine.
+    """
+    report = {
+        "boundary": GUEST_WORKSPACE,
+        "guest_project_workspace": str(workspace),
+    }
+    init_cwd, made, failed, answered, results = _calls_in(path)
+    if init_cwd is not None:
+        report["host_control_cwd"] = init_cwd
+    # Said out loud, because the whole fault was somebody comparing these two.
+    report["host_control_cwd_is_not_compared"] = (
+        "arm B's process runs on this host and its workspace is inside the "
+        "machine; the two are different namespaces and a comparison between "
+        "them is not a fact about either"
+    )
+
+    host_tools, refused, accepted, unreadable = [], [], [], []
+    answered_outside, answers_unread = [], 0
+    by_name = {}
+    for call_id, name, given in made:
+        by_name[name] = by_name.get(name, 0) + 1
+        if name in HOST_FILE_TOOLS:
+            # No path test at all. This arm is defined by not having the tool,
+            # so having used it is the finding — whether the call succeeded
+            # says something about the CLI, not about the experiment.
+            host_tools.append({"tool": name, "input": given,
+                               "answered_with_an_error": call_id in failed})
+            continue
+        if not is_a_thalyx_tool(name):
+            # `ToolSearch`, `TodoWrite` and their kind: they name no path and
+            # cannot reach the project. Counted so the record is complete.
+            continue
+        # The host's home means nothing inside the machine, so `~` is not
+        # expanded here — it is unresolvable, which is the cautious answer.
+        for field, raw in paths_named(name, given):
+            verdict = where_it_points(raw, workspace, home=None)
+            if verdict == "inside":
+                continue
+            entry = {"tool": name, "field": field, "path": raw}
+            if verdict == "unreadable":
+                unreadable.append(entry)
+            elif call_id in failed:
+                # The machine was asked and said no. That is the boundary
+                # working; counting it as a breach would score Thalyx down for
+                # the one thing it is being measured for.
+                refused.append(entry)
+            else:
+                accepted.append(entry)
+        found, unread = answered_paths(results.get(call_id))
+        answers_unread += unread
+        for field, raw in found:
+            if where_it_points(raw, workspace, home=None) != "inside":
+                answered_outside.append({"tool": name, "field": field, "path": raw})
+
+    report["tools_used"] = dict(sorted(by_name.items()))
+    report["host_file_tools_used"] = host_tools[:40]
+    report["host_file_tools_used_count"] = len(host_tools)
+    report["paths_the_machine_accepted_outside_the_workspace"] = accepted[:40]
+    report["paths_the_machine_accepted_outside_the_workspace_count"] = len(accepted)
+    report["paths_the_machine_refused"] = refused[:40]
+    report["paths_this_could_not_resolve"] = unreadable[:40]
+    report["paths_answered_outside_the_workspace"] = answered_outside[:40]
+    report["paths_answered_outside_the_workspace_count"] = len(answered_outside)
+    if answers_unread:
+        report["answers_this_could_not_read"] = answers_unread
+
+    # The fourth conjunct, and the only one that is not read out of the stream:
+    # that the channel was pointed at the right tree before anything was paid
+    # for. Absent evidence is NOT PROVEN and never a pass.
+    report["preflight"] = preflight_evidence(preflight, workspace)
+
+    breached = bool(host_tools) or bool(accepted) or bool(answered_outside)
+    if breached:
+        report["scope"] = "VIOLATED"
+        why = []
+        if host_tools:
+            why.append(f"{len(host_tools)} call(s) to host file tools "
+                       f"({', '.join(sorted({one['tool'] for one in host_tools}))}), which this "
+                       "arm is defined by not having")
+        if accepted:
+            why.append(f"{len(accepted)} path(s) outside the guest workspace that the machine "
+                       "accepted rather than refused")
+        if answered_outside:
+            why.append(f"{len(answered_outside)} path(s) outside the guest workspace in the "
+                       "machine's own answers")
+        report["scope_because"] = "; ".join(why)
+    elif report["preflight"]["proven"] is False:
+        # Evidence **against**, not missing evidence. Somebody probed the
+        # channel before the run and what came back was a different workspace,
+        # a different project, or a machine that said it was not ready — and a
+        # run made over that channel is a run about a tree nobody asked for.
+        report["scope"] = "VIOLATED"
+        report["scope_because"] = report["preflight"]["because"]
+    elif report["preflight"]["proven"] is None:
+        report["scope"] = "not_proven"
+        report["scope_because"] = report["preflight"]["because"]
+    elif not made:
+        report["scope"] = "not_proven"
+        report["scope_because"] = ("the stream carries no tool call at all, so there is "
+                                   "nothing in it that went through the channel")
+    else:
+        report["scope"] = "INTACT"
+    return report
+
+
+def boundary_of(side, arm):
+    """Which boundary this arm is judged under, from its provenance or its name.
+
+    The provenance is asked first so that a harness which grows a third arm says
+    so in writing rather than being guessed at by a letter. `BOUNDARY_BY_ARM` is
+    the fallback and it is a fact rather than a default — see its comment.
+    """
+    named = (side or {}).get("boundary")
+    if named in (HOST_WORKSPACE, GUEST_WORKSPACE):
+        return named
+    return BOUNDARY_BY_ARM.get(arm, HOST_WORKSPACE)
+
+
+def preflight_for(out, arm):
+    """The verdict the preflight left for this arm, or nothing if none was written.
+
+    Read here rather than inside the report so that the report is a function of
+    what it is handed: a check that reaches for a file on its own is a check
+    whose self-test needs a filesystem.
+    """
+    if out is None:
+        return None
+    where = pathlib.Path(out) / f"preflight-{arm.lower()}.verdict.json"
+    if not where.exists() or not where.stat().st_size:
+        return None
+    try:
+        return json.loads(where.read_text())
+    except (OSError, json.JSONDecodeError):
+        # Rule 10, and rule 9 with it: a verdict this could not read is not a
+        # verdict that said yes.
+        return {"unreadable": str(where)}
+
+
+def preflight_evidence(preflight, workspace):
+    """Whether somebody proved the channel reached this workspace, before the run.
+
+    Its own function because the answer has three values and two of them are not
+    failures. `proven: None` means nobody looked — which is what every run
+    before this check existed will say, and saying it is the point.
+    """
+    if not isinstance(preflight, dict):
+        return {"proven": None,
+                "because": "no preflight verdict was written down for this arm, so nothing "
+                           "says the channel was pointed at this workspace"}
+    said = {"ready": preflight.get("ready"),
+            "workspace": preflight.get("workspace"),
+            "top_level_matches": preflight.get("top_level_matches")}
+    trouble = []
+    if preflight.get("ready") is not True:
+        trouble.append("the preflight did not come back ready")
+    if preflight.get("top_level_matches") is not True:
+        trouble.append("the preflight never confirmed the machine was holding this project")
+    seen = preflight.get("workspace")
+    if not isinstance(seen, str) or not seen:
+        trouble.append("the preflight did not say which workspace the machine answered for")
+    elif os.path.normpath(seen) != os.path.normpath(str(workspace)):
+        trouble.append(f"the preflight reached {seen!r} and the provenance says the workspace "
+                       f"is {workspace!r}")
+    said["proven"] = not trouble
+    said["because"] = ("the preflight reached this workspace and found this project"
+                       if not trouble else "; ".join(trouble))
+    return said
+
+
+def scope_report(path, workspace, home=None, repository=None,
+                 boundary=HOST_WORKSPACE, preflight=None):
+    """Whether one arm stayed inside the boundary that arm actually has.
+
+    A dispatcher and not a check: the two arms are confined by different things,
+    and one function that tried to judge both under one rule is the function
+    that reported arm B as having strayed out of a directory it was never in.
+    """
+    if boundary == GUEST_WORKSPACE:
+        return guest_scope_report(path, workspace, preflight=preflight)
+    return host_scope_report(path, workspace, home=home, repository=repository)
+
+
+def host_scope_report(path, workspace, home=None, repository=None):
     """Where the agent actually was, and everywhere its calls actually pointed.
 
     Reads only the stream the run already wrote, so it costs nothing and can be
@@ -693,13 +1047,18 @@ def scope_report(path, workspace, home=None, repository=None):
     would have said, in the first line of the first stream, that arm A was not
     where `--project` put it.
     """
-    report = {"workspace": str(workspace)}
+    report = {"boundary": HOST_WORKSPACE, "workspace": str(workspace),
+              # The same two names the guest report uses. For this arm they are
+              # one directory, and saying so is what makes the two reports
+              # readable side by side instead of in two vocabularies.
+              "guest_project_workspace": str(workspace)}
     outside, unreadable, allowed = [], [], 0
 
     for event in events(path):
         if event.get("type") == "system" and event.get("subtype") == "init":
             if isinstance(event.get("cwd"), str):
                 report["cwd_reported"] = event["cwd"]
+                report["host_control_cwd"] = event["cwd"]
             continue
         if event.get("type") != "assistant":
             continue
@@ -1478,6 +1837,8 @@ def arm(out, name, expectations, marker=None, task="", provenance=None):
             stream, workspace,
             home=(provenance or {}).get("home"),
             repository=(provenance or {}).get("repository"),
+            boundary=boundary_of(side, name),
+            preflight=preflight_for(out, name),
         )
 
     metrics = out / f"arm{name}.metrics.json"
@@ -1666,6 +2027,22 @@ def text_of(content):
 def regrade_status(row):
     verdict = row.get("reversible") or {}
 
+    # Asked first, because it is the question that decides whether the rest of
+    # the numbers are about the experiment at all. A run whose arm worked
+    # somewhere else has a restore verdict, and that verdict is about a tree
+    # nobody was measuring.
+    scope = row.get("scope") or {}
+    if scope.get("scope") == "VIOLATED":
+        return {"status": "INVALID",
+                "because": "the arm did not stay inside the boundary it has: "
+                           + (scope.get("scope_because") or "see `scope` in this row"),
+                "boundary": scope.get("boundary")}
+    if scope and scope.get("scope") != "INTACT":
+        return {"status": "NOT PROVEN",
+                "because": "nothing on disk says whether the arm stayed inside the boundary "
+                           "it has: " + (scope.get("scope_because") or "no reason recorded"),
+                "boundary": scope.get("boundary")}
+
     if row.get("is_error") is True:
         return {"status": "INVALID",
                 "because": "the run's own result event says it ended in an error, "
@@ -1692,6 +2069,7 @@ def regrade_status(row):
                            "invent one"}
 
     return {"status": "VALID",
+            "boundary": scope.get("boundary"),
             "because": "every conjunct was decided from evidence written down during the "
                        "run: " + ", ".join(
                            f"{about}={verdict.get(about)!r}" for about in
@@ -1979,6 +2357,154 @@ def anchoring_self_test(sample):
              {"tool_name": "Bash", "tool_input": {"command": "/usr/bin/git status"}}, True),
         ):
             ok(about, scope_guard(call, workspace, home)[0], want)
+
+        # ── 3b. arm B, whose boundary is the channel and not a directory ──
+        #
+        # The regrade of 2026-08-29 reported this arm VIOLATED because the
+        # grader compared `/home/bench-thalyx` — a path inside the machine —
+        # with the empty host directory the `claude` process was started in.
+        # These are the shapes that fault had, and the shapes it must not
+        # start reporting as clean either.
+        guest = "/home/bench-thalyx"
+        infrastructure = work / "bench" / "b"
+        infrastructure.mkdir(parents=True, exist_ok=True)
+        healthy = {"ready": True, "workspace": guest, "top_level_matches": True}
+
+        def channel(name, calls, cwd=infrastructure):
+            """A stream in arm B's shape: an init, calls, and the answers to them.
+
+            The answers matter here in a way they do not for arm A. A path the
+            machine **refused** is the boundary working; a path it **accepted**
+            is the boundary gone. Without the `tool_result` those two are the
+            same line in the stream.
+            """
+            path = work / name
+            with path.open("w") as into:
+                said = copy.deepcopy(init)
+                said["cwd"] = str(cwd)
+                into.write(json.dumps(said) + "\n")
+                for n, (tool, given, answer, failed) in enumerate(calls):
+                    call_id = f"toolu_bench_{n}"
+                    event = copy.deepcopy(envelope)
+                    for block in event["message"]["content"]:
+                        if block.get("type") == "tool_use":
+                            block["name"] = tool
+                            block["input"] = given
+                            block["id"] = call_id
+                    into.write(json.dumps(event) + "\n")
+                    into.write(json.dumps({
+                        "type": "user",
+                        "message": {"role": "user", "content": [{
+                            "type": "tool_result", "tool_use_id": call_id,
+                            "is_error": failed,
+                            "content": [{"type": "text", "text": answer}],
+                        }]},
+                    }) + "\n")
+            return path
+
+        working = channel("guest-good.ndjson", [
+            ("ToolSearch", {"query": "thalyx"}, "found 10 tools", False),
+            ("mcp__thalyx__thalyx_symbol", {"name": "Widget"},
+             '{"op":"symbol","ok":true,"defined_in":{"path":"crates/w/src/lib.rs"}}', False),
+            ("mcp__thalyx__thalyx_edit",
+             {"action": "substitute", "old": "Widget", "new": "WidgetRenamed",
+              "paths": ["crates/w/src/lib.rs", "crates/w/src/use.rs"]},
+             '{"op":"edit","ok":true,"changed":[{"path":"crates/w/src/lib.rs",'
+             '"replacements":3},{"path":"crates/w/src/use.rs","replacements":1}]}', False),
+        ])
+        report = scope_report(working, guest, home=home, repository=repository,
+                              boundary=GUEST_WORKSPACE, preflight=healthy)
+        ok("arm B working only through the channel is INTACT, however far its host "
+           "directory is from the workspace", report["scope"], "INTACT")
+        ok("and the host directory it stood in is recorded rather than compared",
+           report["host_control_cwd"], str(infrastructure))
+
+        # The exact shape of the run this fix exists for: a host cwd that is a
+        # child of `--out`, a guest workspace with no relation to it, and
+        # nothing wrong.
+        under_out = channel("guest-under-out.ndjson", [
+            ("mcp__thalyx__thalyx_state", {}, '{"op":"where","ok":true,"path":"' + guest + '"}',
+             False),
+        ], cwd=work / "bench" / "b")
+        ok("the 2026-08-29 shape — host cwd under --out, workspace inside the machine — "
+           "is not a violation",
+           scope_report(under_out, guest, boundary=GUEST_WORKSPACE,
+                        preflight=healthy)["scope"], "INTACT")
+        # And the control beside it, without which the line above would pass for
+        # a grader that had simply stopped checking arm B at all.
+        ok("the same stream judged under arm A's boundary is still VIOLATED, so the "
+           "fix is a different rule and not a rule switched off",
+           scope_report(under_out, guest, boundary=HOST_WORKSPACE)["scope"], "VIOLATED")
+
+        reaching = channel("guest-host-tool.ndjson", [
+            ("mcp__thalyx__thalyx_state", {}, '{"op":"where","ok":true}', False),
+            ("Read", {"file_path": "crates/w/src/lib.rs"}, "1  pub struct Widget;", False),
+        ])
+        report = scope_report(reaching, guest, boundary=GUEST_WORKSPACE, preflight=healthy)
+        ok("an arm B that reached the project with a host file tool is VIOLATED",
+           report["scope"], "VIOLATED")
+        ok("and the tool is named", report["host_file_tools_used"][0]["tool"], "Read")
+
+        shelled = channel("guest-bash.ndjson", [
+            ("Bash", {"command": "ls crates"}, "permission denied", True),
+        ])
+        ok("and a host `Bash` is a violation even when it came back an error: the arm "
+           "is defined by not having the tool",
+           scope_report(shelled, guest, boundary=GUEST_WORKSPACE,
+                        preflight=healthy)["scope"], "VIOLATED")
+
+        escaping = channel("guest-escape.ndjson", [
+            ("mcp__thalyx__thalyx_edit",
+             {"action": "substitute", "old": "a", "new": "b", "paths": ["/etc/passwd"]},
+             '{"op":"edit","ok":false,"error":"outside","wrote":false}', True),
+        ])
+        report = scope_report(escaping, guest, boundary=GUEST_WORKSPACE, preflight=healthy)
+        ok("a path outside the workspace that the machine refused is the boundary "
+           "working, not a breach", report["scope"], "INTACT")
+        ok("and it is on the record as refused", len(report["paths_the_machine_refused"]), 1)
+
+        accepted = channel("guest-accepted.ndjson", [
+            ("mcp__thalyx__thalyx_edit",
+             {"action": "substitute", "old": "a", "new": "b", "paths": ["/etc/hosts"]},
+             '{"op":"edit","ok":true,"changed":[{"path":"/etc/hosts","replacements":1}]}',
+             False),
+        ])
+        ok("the same path *accepted* is a breach, and that is the whole difference",
+           scope_report(accepted, guest, boundary=GUEST_WORKSPACE,
+                        preflight=healthy)["scope"], "VIOLATED")
+
+        answering = channel("guest-answer.ndjson", [
+            ("mcp__thalyx__thalyx_find", {"pattern": "*.rs"},
+             '{"op":"find","ok":true,"entries":[{"path":"crates/w/src/lib.rs"},'
+             '{"path":"/home/somebody-else/secrets.rs"}]}', False),
+        ])
+        report = scope_report(answering, guest, boundary=GUEST_WORKSPACE, preflight=healthy)
+        ok("a machine that answered with a path outside its own workspace is a breach "
+           "of the boundary, seen from outside it", report["scope"], "VIOLATED")
+        ok("and the path is named",
+           report["paths_answered_outside_the_workspace"][0]["path"],
+           "/home/somebody-else/secrets.rs")
+
+        ok("an arm B whose preflight nobody wrote down is NOT PROVEN, not a pass",
+           scope_report(working, guest, boundary=GUEST_WORKSPACE,
+                        preflight=None)["scope"], "not_proven")
+        ok("an arm B whose preflight reached a different workspace is VIOLATED: that is "
+           "evidence against, not evidence missing",
+           scope_report(working, guest, boundary=GUEST_WORKSPACE,
+                        preflight={"ready": True, "workspace": "/home/somewhere-else",
+                                   "top_level_matches": True})["scope"], "VIOLATED")
+        ok("and so is one whose machine was holding a different project",
+           scope_report(working, guest, boundary=GUEST_WORKSPACE,
+                        preflight={"ready": True, "workspace": guest,
+                                   "top_level_matches": False})["scope"], "VIOLATED")
+
+        # Which rule an arm is judged under, when the provenance predates the
+        # question. Every run before today is in that position.
+        ok("an old run's arm A is still judged as a host workspace",
+           boundary_of({}, "A"), HOST_WORKSPACE)
+        ok("and its arm B as a channel", boundary_of({}, "B"), GUEST_WORKSPACE)
+        ok("and a provenance that says so out loud wins over the letter",
+           boundary_of({"boundary": GUEST_WORKSPACE}, "A"), GUEST_WORKSPACE)
 
         # ── 4. arm B, before arm A is paid for ──
         (workspace / "Cargo.toml").write_text("[workspace]\n")
@@ -3089,6 +3615,11 @@ def main():
                 "exclusions": list(OUTSIDE_THE_WORKSPACE),
                 "source_commit": _commit(given.workspace),
                 "effective_cwd": str(given.workspace.resolve()),
+                # Written down rather than inferred later from the letter. Arm A
+                # is confined by having been started inside the tree and never
+                # leaving it, which is a different claim from arm B's and has to
+                # be graded by a different rule.
+                "boundary": HOST_WORKSPACE,
                 "staged_by": "dev/bench-external-agent.sh, tar from --project",
             }
             record["arms"]["A"] = side
@@ -3102,6 +3633,10 @@ def main():
             except (OSError, json.JSONDecodeError) as why:
                 side = {"unreadable": f"{given.import_mark}: {why}"}
             side["effective_cwd"] = side.get("workspace")
+            # A path inside the machine. Nothing on this host is at it, and the
+            # directory the `claude` process for this arm stands in is not it —
+            # see the boundary models above.
+            side["boundary"] = GUEST_WORKSPACE
             side["staged_by"] = "image/Makefile project-stage"
             record["arms"]["B"] = side
 
@@ -3129,7 +3664,9 @@ def main():
                   f"record", file=sys.stderr)
             sys.exit(1)
         report = scope_report(stream, workspace, home=record.get("home"),
-                              repository=record.get("repository"))
+                              repository=record.get("repository"),
+                              boundary=boundary_of(side, given.arm),
+                              preflight=preflight_for(out, given.arm))
         breach = out / f"arm{given.arm}.breach.jsonl"
         if breach.exists() and breach.stat().st_size:
             # The live guard's own record, kept beside the stream's. Two
@@ -3356,6 +3893,18 @@ def main():
                 "mtimes and the adapter — the mtime witness alone cannot see a change an "
                 "agent restored",
                 "asked, confirmed, witnessed and restored are four fields and not two",
+                "each arm is judged under the boundary that arm actually has: arm A's "
+                "is that the process started in the workspace and never left it, arm "
+                "B's is that it holds no host file tool and everything it touched went "
+                "through the channel into the guest workspace. Comparing arm B's host "
+                "working directory with a path inside the machine — two namespaces — "
+                "is what reported a clean arm B as VIOLATED",
+                "a list of paths is scanned. `paths` was not a field this file knew and "
+                "its fallback sweep only looked at string values, so every file named in "
+                "a list was a file nobody checked",
+                "the scope verdict is a conjunct of the regrade: an arm outside its "
+                "boundary is INVALID and an arm whose boundary nobody can check is NOT "
+                "PROVEN, rather than both being graded on their numbers",
             ],
             "evidence_reused": present,
             "evidence_missing": missing or None,
@@ -3367,6 +3916,19 @@ def main():
 
     into.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
+
+    if given.regrade:
+        # The three-line answer, on stderr, beside the JSON rather than inside
+        # it. A regrade whose result can only be found by reading two hundred
+        # lines of nesting is a regrade somebody will summarise from memory.
+        print("\n  the regrade, one line per arm:", file=sys.stderr)
+        for row in summary["arms"]:
+            status = row.get("regrade") or {}
+            scope = (row.get("scope") or {}).get("scope", "not recorded")
+            print(f"    arm {row['arm']}: {status.get('status', 'unknown')} "
+                  f"(scope {scope}, boundary {(row.get('scope') or {}).get('boundary')})",
+                  file=sys.stderr)
+            print(f"      {status.get('because', '')}", file=sys.stderr)
 
     # Rule 3, the half that makes a skip mean something: an arm whose bytes
     # nobody looked at is NOT PROVEN, it says so out loud, and the one variable
@@ -3401,13 +3963,22 @@ def main():
             if scope.get("scope") != "VIOLATED":
                 continue
             print(f"\n  INVALID  arm {row['arm']} operated outside its workspace "
-                  f"({scope.get('workspace')})", file=sys.stderr)
+                  f"({scope.get('guest_project_workspace') or scope.get('workspace')})",
+                  file=sys.stderr)
+            if scope.get("scope_because"):
+                print(f"           {scope['scope_because']}", file=sys.stderr)
             if scope.get("cwd_is_the_workspace") is False:
                 print(f"           it started in {scope.get('cwd_reported')!r}",
                       file=sys.stderr)
-            for entry in scope.get("paths_outside_the_workspace", [])[:10]:
-                print(f"           {entry['tool']} {entry['field']}={entry['path']!r}",
+            for one in scope.get("host_file_tools_used", [])[:10]:
+                print(f"           {one['tool']} — a host tool this arm should not have",
                       file=sys.stderr)
+            for key in ("paths_outside_the_workspace",
+                        "paths_the_machine_accepted_outside_the_workspace",
+                        "paths_answered_outside_the_workspace"):
+                for entry in scope.get(key, [])[:10]:
+                    print(f"           {entry['tool']} {entry['field']}={entry['path']!r}",
+                          file=sys.stderr)
         trouble = 1
 
     parity = summary.get("workspace_parity")

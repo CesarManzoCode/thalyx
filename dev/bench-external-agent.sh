@@ -271,6 +271,63 @@ say() { printf '  %s\n' "$*"; }
 # over the same output directory.
 [ "$ARMS" = none ] && ARMS=""
 
+# ── every path this harness was given becomes absolute, once, here ───────────
+#
+# The run of 2026-08-29 was given `--out target/bench-external-agent-3` and arm
+# A came back with **`Settings file not found.`** — because `--settings
+# $OUT/armA.settings.json` was handed to a `claude` that this script had
+# deliberately started somewhere else. `run_arm` does `cd "$cwd"` before it
+# execs, and a relative `--out` means every path derived from it is resolved
+# against *the agent's* working directory rather than against the shell's. Arm
+# A's is the staged workspace; arm B's is an empty directory inside `$OUT`
+# itself. Neither of them is where the caller was standing when they typed it.
+#
+# So it is fixed in exactly one place. Not at each use — a fix repeated at
+# eleven call sites is a fix that will be missing from the twelfth — and not by
+# refusing a relative path either, which would be this harness telling its
+# caller how to type instead of doing the one thing it needs to do to the
+# argument.
+#
+# `Path.resolve()` and not `pwd -P` because `bench-summary.py` writes the
+# provenance with `Path.resolve()`, and the comparison that decides whether arm
+# A stayed in its workspace is between a path this file passed and a path that
+# file resolved. Two normalisations that disagree about a symlinked `/tmp` is
+# rule 5 again: the instrument disagreeing with itself.
+absolute() {
+    python3 -c 'import pathlib, sys
+print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$1"
+}
+
+# The globals, in one function, so the self-test can run it from a directory
+# that is not this one and check that the answer does not depend on where it
+# was standing.
+normalise_paths() {
+    OUT="$(absolute "$OUT")"
+    WORKSPACE_A="$(absolute "$WORKSPACE_A")"
+    SOCKET="$(absolute "$SOCKET")"
+    IMPORT_MARK="$(absolute "$IMPORT_MARK")"
+    if [ -n "$PROJECT" ]; then
+        PROJECT="$(absolute "$PROJECT")"
+    fi
+    if [ -n "$EXPECT" ]; then
+        EXPECT="$(absolute "$EXPECT")"
+    fi
+    if [ -n "$RESTORED_B" ]; then
+        RESTORED_B="$(absolute "$RESTORED_B")"
+    fi
+}
+
+# Only `OUT`, for the self-test's two-directories check. Its own function
+# because a subshell that ran the whole of `normalise_paths` would also resolve
+# a socket and an import mark that this particular check has nothing to say
+# about, and a check that asserts more than it means is a check that fails for
+# reasons nobody wrote down.
+normalise_paths_out() {
+    absolute "$OUT"
+}
+
+normalise_paths
+
 # What a tree is, for the purpose of "put it back exactly".
 #
 # **There is one implementation and it is in `dev/bench-summary.py`.** Until
@@ -539,6 +596,62 @@ self_test() {
     else
         ok "an unknown task refuses rather than inventing a prompt"
     fi
+
+    # ── a relative --out is not a fact about where the caller was standing ──
+    #
+    # The failure this reproduces: `--out target/bench-external-agent-3`, and
+    # arm A answering `Settings file not found.` because `run_arm` had `cd`ed
+    # into the staged workspace before handing `claude` a `--settings` that was
+    # still relative to somewhere else. Every derived path had the same fault;
+    # the settings file is only the one that says so out loud.
+    #
+    # Checked from a directory that is neither the checkout nor the target, so
+    # that a normalisation which happened to resolve against `$ROOT` would fail
+    # here rather than pass by coincidence.
+    local relative_from; relative_from=$(mktemp -d)
+    (
+        cd "$relative_from"
+        mkdir -p "here/there"
+        OUT="here/there"
+        WORKSPACE_A="here/../elsewhere"
+        SOCKET="s.sock"
+        IMPORT_MARK="m.json"
+        PROJECT=""
+        EXPECT=""
+        RESTORED_B=""
+        normalise_paths
+        printf '%s\n%s\n%s\n' "$OUT" "$WORKSPACE_A" "$SOCKET"
+    ) > "$relative_from/answers"
+    local wanted; wanted=$(cd "$relative_from" && pwd -P)
+    local n=0
+    while read -r line; do
+        n=$((n + 1))
+        case "$line" in
+            /*) ;;
+            *) bad "normalise_paths left \`$line\` relative" ;;
+        esac
+        case "$line" in
+            "$wanted"/*) ;;
+            *) bad "\`$line\` did not resolve against the directory the caller was in" ;;
+        esac
+    done < "$relative_from/answers"
+    [ "$n" = 3 ] || bad "normalise_paths answered $n paths and should have answered 3"
+    if [ "$(sed -n 2p "$relative_from/answers")" = "$wanted/elsewhere" ]; then
+        ok "a relative --out and its siblings become absolute, from wherever they were typed"
+    else
+        bad "normalise_paths did not normalise \`..\` out of a path"
+    fi
+    # The same argument twice from two directories is the same path, which is
+    # the property the settings file needed and did not have.
+    local twice_a twice_b
+    twice_a=$( cd "$relative_from"       && OUT="here/there" normalise_paths_out )
+    twice_b=$( cd "$relative_from/here"  && OUT="../here/there" normalise_paths_out )
+    if [ "$twice_a" = "$twice_b" ] && [ -n "$twice_a" ]; then
+        ok "the same output directory named from two places is one path"
+    else
+        bad "the same output directory named from two places came out as $twice_a and $twice_b"
+    fi
+    rm -rf "$relative_from"
 
     # ── the wiring to the one implementation ──
     local work
