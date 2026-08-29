@@ -428,6 +428,13 @@ fn call(
     };
     let text = answer.to_string();
     metrics.call(tool.name, &arguments, text.len(), false, false);
+    // The one place this process reads a *value* out of an answer, and it
+    // decides nothing: how much work the machine did between two model
+    // inferences is the quantity this experiment exists to measure, and it is
+    // only knowable from inside the machine. See `metrics::Metrics::program`.
+    if tool.name == "thalyx_exec" {
+        metrics.program(&answer);
+    }
     Ok(json!({"content": [{"type": "text", "text": text}]}))
 }
 

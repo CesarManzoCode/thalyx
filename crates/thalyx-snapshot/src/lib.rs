@@ -686,6 +686,134 @@ impl Difference {
     }
 }
 
+/// Exactly what a tree held at one moment, as one comparable string.
+///
+/// ## Why counting was not enough, and what it cost
+///
+/// Until 2026-08-29 the one-call abandon was authorised by a *claim about the
+/// counts* — how many files the caller believed it had added and how many it
+/// believed it had modified. The argument was that a person writing in the
+/// shared tree while an attempt was open would move one of those numbers, so a
+/// stale claim would stop matching and nothing would be destroyed.
+///
+/// That argument has a hole big enough to lose somebody's work through. A
+/// third party who edits a file the agent had **already** modified moves
+/// neither number: it was one modified file before and it is one modified file
+/// after. The claim still matches, the abandon proceeds, and their edit is
+/// replaced by the snapshot. Counts are a summary, and a summary is not an
+/// identity.
+///
+/// So this is the identity: a digest over **every** path in the tree together
+/// with its size, its modification time, its change time and its inode number.
+/// Any write to any file moves at least the modification time and the change
+/// time of that file, whether or not it was already modified, and whether or
+/// not it changes the file's length. A path that appears, disappears or is
+/// replaced moves the set or the inode.
+///
+/// ## What it is not
+///
+/// It is not a content hash. Reading every byte of a subvolume to answer
+/// "is this still the tree I was looking at" would cost more than the restore
+/// it guards, and this crate's own comparison — the one a restore is planned
+/// with — has always been by size and time for exactly that reason. What is
+/// claimed here is therefore precise and bounded: **this is the same set of
+/// inodes, with the same lengths, last written and last changed at the same
+/// instants.** A writer that produced a byte-different file of the same length
+/// and then forged both timestamps back to the nanosecond would defeat it; a
+/// writer that merely wrote would not.
+///
+/// The timestamps are read from the kernel at nanosecond resolution. On a
+/// filesystem whose timestamp granularity is coarser than the interval between
+/// two writes, two different states could hash the same — which is why the
+/// change time and the inode are in there beside the modification time, and
+/// why the version prefix exists: a witness whose prefix this build does not
+/// know is refused rather than compared, which is rule 9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Witness {
+    /// The comparable string. Carries its version so that a witness made by
+    /// another build of Thalyx is refused rather than silently compared under
+    /// rules it was not made under.
+    pub id: String,
+    /// How many files it covers. Reported so an answer can say what was
+    /// weighed, never used to decide anything.
+    pub files: usize,
+    /// How many paths could not be read while walking. A witness with any of
+    /// these describes a tree part of which nobody looked at, and the callers
+    /// that authorise a destruction with it must refuse it — see
+    /// [`Witness::is_complete`].
+    pub unreadable: usize,
+}
+
+/// The rules the current witness is made under, named in the witness itself.
+pub const WITNESS_VERSION: &str = "w1";
+
+impl Witness {
+    /// Whether every path under the tree was actually looked at.
+    ///
+    /// Rule 9 and rule 10 together: a directory that could not be opened is not
+    /// a directory that is empty, and a witness that quietly treated it as
+    /// empty would authorise replacing a tree nobody had compared.
+    pub fn is_complete(&self) -> bool {
+        self.unreadable == 0
+    }
+
+    /// Whether this witness and that string describe the same tree.
+    ///
+    /// A string and not another `Witness`, because the other side of this
+    /// comparison always arrives as text a caller sent. Incomplete witnesses
+    /// never match anything, including themselves.
+    pub fn matches(&self, claimed: &str) -> bool {
+        self.is_complete() && self.id == claimed
+    }
+}
+
+/// The witness of a tree as it is right now.
+pub fn witness(live: &Path) -> Witness {
+    let mut scratch = Difference::default();
+    let mut here = std::collections::BTreeMap::new();
+    collect(live, live, &mut here, &mut scratch);
+    witness_of(&here, &scratch.unreadable)
+}
+
+/// Turn a walk into a witness.
+///
+/// Separate from [`witness`] so that [`difference_and_witness`] can produce both
+/// answers from one walk of the live tree — the walk is the expensive half, and
+/// a rollback that walked twice would be paying for the same directory entries
+/// to be read again between the moment it decides and the moment it acts.
+fn witness_of(here: &std::collections::BTreeMap<String, Stat>, unreadable: &[String]) -> Witness {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(WITNESS_VERSION.as_bytes());
+    hasher.update(b"\n");
+    for (path, stat) in here {
+        // Nul-separated, so that a file called `a\nb` cannot be spelled as two
+        // files — a separator that can appear in what it separates is not a
+        // separator. A nul cannot appear in a path on any Unix.
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(stat.size.to_le_bytes());
+        hasher.update(stat.mtime_ns.to_le_bytes());
+        hasher.update(stat.ctime_ns.to_le_bytes());
+        hasher.update(stat.ino.to_le_bytes());
+        hasher.update(b"\n");
+    }
+    // In the digest and not only in the count, so two trees that could not be
+    // read at different places never hash the same.
+    for path in unreadable {
+        hasher.update(b"?");
+        hasher.update(path.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    Witness {
+        id: format!("{WITNESS_VERSION}-{}", hex::encode(digest)),
+        files: here.len(),
+        unreadable: unreadable.len(),
+    }
+}
+
 /// Compare a live tree against a snapshot of it.
 ///
 /// By size and modification time, not by content. Reading every byte of a
@@ -694,11 +822,25 @@ impl Difference {
 /// check makes, so a file Thalyx would call changed is a file this calls
 /// changed.
 pub fn difference(live: &Path, snapshot: &Path) -> Difference {
+    difference_and_witness(live, snapshot).0
+}
+
+/// The same comparison, and the live tree's witness, from one walk of it.
+///
+/// The pair rather than two calls, because a rollback needs both and they must
+/// be **of the same instant**: a plan made against one state and authorised by
+/// a witness of another is the race the witness exists to close.
+pub fn difference_and_witness(live: &Path, snapshot: &Path) -> (Difference, Witness) {
     let mut difference = Difference::default();
     let mut here = std::collections::BTreeMap::new();
     let mut there = std::collections::BTreeMap::new();
 
     collect(live, live, &mut here, &mut difference);
+    // Taken before the snapshot is walked, so that what the witness covers is
+    // the live tree and only the live tree. An unreadable path in the snapshot
+    // is a fact about the snapshot; folding it in here would make the witness
+    // of a workspace depend on something outside it.
+    let live_unreadable = difference.unreadable.clone();
     collect(snapshot, snapshot, &mut there, &mut difference);
 
     for (path, stat) in &here {
@@ -709,7 +851,14 @@ pub fn difference(live: &Path, snapshot: &Path) -> Difference {
                     difference.added.push(path.clone());
                 }
             }
-            Some(other) if other != stat => {
+            // By size and time only, deliberately, and never by the two fields
+            // the witness adds. A real snapshot shares the inode and a copied
+            // one does not, so comparing inodes here would report every file of
+            // a directory-backed snapshot as modified — and the change time of
+            // a copy is the moment it was copied. Those two fields say *this
+            // tree moved*, which is a different question from *this file must
+            // be put back*.
+            Some(other) if stat.differs_in_content_from(other) => {
                 difference.modified_total += 1;
                 if difference.modified.len() < Difference::SHOWN {
                     difference.modified.push(path.clone());
@@ -728,13 +877,42 @@ pub fn difference(live: &Path, snapshot: &Path) -> Difference {
         }
     }
 
-    difference
+    let witness = witness_of(&here, &live_unreadable);
+    (difference, witness)
+}
+
+/// What one file looked like when the tree was walked.
+///
+/// Four fields where the comparison needs two, and the extra pair is the whole
+/// of what [`Witness`] adds over a count: the change time moves on any write to
+/// the inode, including one that keeps the length and is followed by a
+/// modification time being set back, and the inode number moves when a path is
+/// replaced by a different file of the same size at the same instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stat {
+    size: u64,
+    mtime_ns: i64,
+    ctime_ns: i64,
+    ino: u64,
+}
+
+impl Stat {
+    /// Whether a restore would have to put this file back.
+    ///
+    /// Size and modification time, which is exactly the comparison this crate
+    /// has always made and the one the index's freshness check makes. Written
+    /// as its own question so that adding a field to [`Stat`] cannot silently
+    /// change what "modified" means — which it would have, since deriving
+    /// `PartialEq` and comparing whole values is what this replaced.
+    fn differs_in_content_from(&self, other: &Self) -> bool {
+        self.size != other.size || self.mtime_ns != other.mtime_ns
+    }
 }
 
 fn collect(
     root: &Path,
     directory: &Path,
-    into: &mut std::collections::BTreeMap<String, (u64, i64)>,
+    into: &mut std::collections::BTreeMap<String, Stat>,
     difference: &mut Difference,
 ) {
     let entries = match std::fs::read_dir(directory) {
@@ -762,13 +940,29 @@ fn collect(
         match entry.metadata() {
             Ok(metadata) if metadata.is_dir() => collect(root, &path, into, difference),
             Ok(metadata) => {
+                use std::os::unix::fs::MetadataExt;
+
                 let mtime = metadata
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_nanos() as i64)
                     .unwrap_or(0);
-                into.insert(relative(root, &path).to_string(), (metadata.len(), mtime));
+                into.insert(
+                    relative(root, &path).to_string(),
+                    Stat {
+                        size: metadata.len(),
+                        mtime_ns: mtime,
+                        // Whole seconds and nanoseconds, kept as one number, so
+                        // that a second write inside the same second is not
+                        // rounded into the first one.
+                        ctime_ns: metadata
+                            .ctime()
+                            .saturating_mul(1_000_000_000)
+                            .saturating_add(i64::from(metadata.ctime_nsec() as i32)),
+                        ino: metadata.ino(),
+                    },
+                );
             }
             Err(_) => difference
                 .unreadable

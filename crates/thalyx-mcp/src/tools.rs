@@ -432,11 +432,13 @@ Begin one before any multi-file or risky change, so that being wrong costs a \
 call instead of a reconstruction — thalyx_edit and thalyx_file can open one \
 around their first change with `attempt: begin`, which saves a call. \
 `abandon` in one call: pass back the `snapshot` that `begin` answered with, \
-together with `delete` and `revert` — how many files you expect to be \
-deleted and reverted. It goes ahead only if those are exactly what the \
-workspace holds, so somebody else's work cannot be thrown away by a claim that \
-is out of date. Get them wrong, or leave them out, and it destroys nothing and \
-answers with the true cost and the exact line that would do it.",
+together with `state` — the workspace state id from the most recent answer that \
+carried one. It goes ahead only if the workspace is still exactly that state, so \
+work somebody else did while you were busy cannot be thrown away by a claim that \
+is out of date. Get it wrong, or leave it out, and it destroys nothing and \
+answers with the true cost and the exact line that would do it. \
+For a whole task at once — change, check, and keep-or-undo without coming back \
+here between the steps — use thalyx_exec instead.",
         schema: || {
             json!({
                 "type": "object",
@@ -458,15 +460,13 @@ answers with the true cost and the exact line that would do it.",
                         "description": "For abandon in one call: the `snapshot` this \
                                         tool answered with when it began."
                     },
-                    "delete": {
-                        "type": "integer",
-                        "description": "For abandon in one call: how many files you \
-                                        expect to lose — ones made since it began."
-                    },
-                    "revert": {
-                        "type": "integer",
-                        "description": "For abandon in one call: how many files you \
-                                        expect to go back to their older version."
+                    "state": {
+                        "type": "string",
+                        "description": "For abandon in one call: the `state` id of the \
+                                        workspace you are authorising the undo of, copied \
+                                        from the most recent answer that carried one. Any \
+                                        write by anybody since then makes it stale and the \
+                                        undo is refused rather than done."
                     }
                 },
                 "required": ["action"]
@@ -484,17 +484,15 @@ answers with the true cost and the exact line that would do it.",
                     let mut given = vec!["abandonar".to_string()];
                     match (
                         optional(arguments, "snapshot"),
-                        arguments.get("delete").and_then(Value::as_u64),
-                        arguments.get("revert").and_then(Value::as_u64),
+                        optional(arguments, "state"),
                     ) {
-                        // All three or none of them. A half-stated claim is a
-                        // call the machine answers with the cost object, which
-                        // is what a caller that stated nothing gets anyway —
-                        // so there is nothing for this to decide.
-                        (Some(named), Some(delete), Some(revert)) => {
+                        // Both or neither. A half-stated claim is a call the
+                        // machine answers with the cost object, which is what a
+                        // caller that stated nothing gets anyway — so there is
+                        // nothing for this to decide.
+                        (Some(named), Some(state)) => {
                             given.push(format!("snapshot={named}"));
-                            given.push(format!("delete={delete}"));
-                            given.push(format!("revert={revert}"));
+                            given.push(format!("state={state}"));
                         }
                         // And `si` is **not** added beside them. A caller that
                         // said both would otherwise have its stale claim waved
@@ -515,6 +513,191 @@ answers with the true cost and the exact line that would do it.",
                 }
             };
             Ok(vec![("attempt", given)])
+        },
+    },
+    Tool {
+        name: "thalyx_exec",
+        verbs: &["exec"],
+        description: "\
+Do a whole deterministic stretch of work in ONE call. Give Thalyx the list of \
+operations you already know you want, plus what must be true afterwards, and it \
+opens a reversible boundary, runs every operation in order, observes what really \
+changed, runs the checks, and then keeps the work or puts the workspace back \
+exactly as it was — without coming back to you in between. \
+Reach for this whenever the next several steps do not need you to think between \
+them: a rename across files then a search proving the old name is gone; an edit \
+then a compile; make files, change them, verify, and undo it all if the \
+verification fails. That is the normal case, not the exotic one. \
+`steps` are ordinary Thalyx requests — the same verbs and arguments the other \
+tools send, so anything you could do in five calls you can do here in one. They \
+run in order and stop at the first refusal. `validate` decides the outcome: if \
+every check passes the work is committed, and otherwise the whole thing is \
+rolled back and the workspace is byte-for-byte what it was. A check that could \
+not be run counts as failure, never as success. \
+The answer is deliberately small — status, what changed, how each check went, \
+and an `evidence` id. Every answer, every search hit and every line of compiler \
+output stays inside the machine; thalyx_evidence fetches any of it if you \
+actually need it. \
+Do not use it for exploring: if you need to read an answer before choosing the \
+next step, that is a real decision and belongs in its own call.",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "What this piece of work is about, for the journal."
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": "The operations, in order. Each is a Thalyx verb and \
+                                        its arguments — exactly what the single-purpose \
+                                        tools send. They stop at the first refusal.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "verb": {
+                                    "type": "string",
+                                    "description": "One of: edit, make_file, make_directory, \
+                                                    copy, move, remove, read, list, grep, \
+                                                    find, symbol, depends_on, \
+                                                    depended_on_by, index_build, where, \
+                                                    state, describe, rehearse."
+                                },
+                                "arguments": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "The verb's arguments, in order. For \
+                                                    `edit`: [path, action, …] where action \
+                                                    is sustituir | sustituir-lote | poner | \
+                                                    cambiar | borrar."
+                                }
+                            },
+                            "required": ["verb"]
+                        }
+                    },
+                    "validate": {
+                        "type": "array",
+                        "description": "What must be true for the work to be kept. An empty \
+                                        list commits whatever the steps did.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "check": {
+                                    "type": "string",
+                                    "enum": ["text", "parses", "rust", "program"],
+                                    "description": "`text`: a string must be absent from (or \
+                                                    present in) the workspace — the way to \
+                                                    prove a rename left nothing behind. \
+                                                    `parses`: every changed source file \
+                                                    still has balanced brackets, strings and \
+                                                    comments, which is what a mechanical \
+                                                    edit breaks. `rust`: cargo over the \
+                                                    packages the changed files belong to. \
+                                                    `program`: run an absolute path, \
+                                                    confined, and require exit 0."
+                                },
+                                "text": {"type": "string", "description": "For `text`."},
+                                "expect": {
+                                    "type": "string",
+                                    "enum": ["none", "some"],
+                                    "description": "For `text`: whether it must be gone \
+                                                    (default) or must still be there."
+                                },
+                                "in": {
+                                    "type": "string",
+                                    "description": "For `text`: a folder to look in. \
+                                                    Defaults to the whole workspace."
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["check", "test"],
+                                    "description": "For `rust`: `cargo check` (default) or \
+                                                    `cargo test`."
+                                },
+                                "program": {
+                                    "type": "string",
+                                    "description": "For `program`: an absolute path."
+                                },
+                                "arguments": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "For `program`: its arguments."
+                                }
+                            },
+                            "required": ["check"]
+                        }
+                    },
+                    "on_failure": {
+                        "type": "string",
+                        "enum": ["rollback", "keep"],
+                        "description": "What to do when a step is refused or a check does \
+                                        not hold. `rollback` is the default and is almost \
+                                        always what you want; `keep` leaves the failed tree \
+                                        in place for you to look at."
+                    }
+                },
+                "required": ["steps"]
+            })
+        },
+        // The whole program travels as **one** argument, and that is the shape
+        // rather than an encoding trick: a request is a verb and a list of
+        // strings, and a program is structured. Serialised here, read by the
+        // verb, and every step inside it then checked by the machine against
+        // the same table a single request is checked against.
+        calls: |arguments| {
+            let mut program = serde_json::Map::new();
+            let Some(steps) = arguments.get("steps") else {
+                return Err(
+                    "`thalyx_exec` needs `steps`, the operations to run in order".to_string(),
+                );
+            };
+            if steps.as_array().is_none_or(Vec::is_empty) {
+                return Err(
+                    "`steps` is empty; there is nothing to do and nothing to be \
+                            transactional about"
+                        .to_string(),
+                );
+            }
+            program.insert("steps".to_string(), steps.clone());
+            for name in ["label", "validate", "on_failure"] {
+                if let Some(value) = arguments.get(name) {
+                    program.insert(name.to_string(), value.clone());
+                }
+            }
+            Ok(vec![("exec", vec![Value::Object(program).to_string()])])
+        },
+    },
+    Tool {
+        name: "thalyx_evidence",
+        verbs: &["evidence"],
+        description: "\
+Everything a thalyx_exec run did and did not send back: each step's full answer, \
+each check's full output, every line a program printed. Ask for it only when the \
+summary was not enough — that is the point of the summary. Pass the `evidence` \
+id from the run; add `step` to get one step's answer whole.",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "evidence": {
+                        "type": "string",
+                        "description": "The `evidence` id thalyx_exec answered with."
+                    },
+                    "step": {
+                        "type": "integer",
+                        "description": "1-based. Without it, the shape of the whole run."
+                    }
+                },
+                "required": ["evidence"]
+            })
+        },
+        calls: |arguments| {
+            let mut given = vec![text(arguments, "evidence")?];
+            if let Some(step) = arguments.get("step").and_then(Value::as_u64) {
+                given.push(format!("paso={step}"));
+            }
+            Ok(vec![("evidence", given)])
         },
     },
     Tool {
@@ -756,8 +939,16 @@ mod tests {
         // Pinned as a claim, not a guess. Every tool added is a branch the model
         // takes on every turn, and the decree is that a verb which cannot make
         // an agent program better is reachable and not advertised.
+        // Raised from twelve to thirteen on 2026-08-29, deliberately and once:
+        // `thalyx_exec` is the tool the other twelve are steps of, and
+        // `thalyx_evidence` is the half of it that keeps its answers out of the
+        // context window. The reason this is not simply "one more branch to
+        // consider" is that a turn spent choosing `thalyx_exec` replaces
+        // several turns spent choosing the others — which is the only argument
+        // that has ever justified adding one here, and the next tool needs its
+        // own.
         assert!(
-            TOOLS.len() <= 12,
+            TOOLS.len() <= 14,
             "{} tools is a menu rather than a surface",
             TOOLS.len()
         );
@@ -1125,13 +1316,85 @@ mod tests {
                 "thalyx_attempt",
                 json!({
                     "action": "abandon",
-                    "attempt": "2026-08-29T11-04-02Z-rename",
-                    "delete": 0,
-                    "revert": 1,
+                    "snapshot": "2026-08-29T11-04-02Z-rename",
+                    "state": "w1-0f3c",
                 }),
             ),
         ]);
         assert_eq!((before, after), (4, 2), "{before} calls became {after}");
+    }
+
+    #[test]
+    fn the_same_reversible_change_is_one_round_trip_through_the_program() {
+        // The next step of the same measurement, and the one this session is
+        // about. Two calls become one — and the one is doing *more*: the
+        // rename, the search that proves it landed, and the decision to keep it
+        // or undo it, none of which comes back here.
+        let through_the_program = round_trips(&[(
+            "thalyx_exec",
+            json!({
+                "label": "rename",
+                "steps": [{
+                    "verb": "edit",
+                    "arguments": [
+                        "core/src/slots.rs", "sustituir", "SlotTable", "SlotTableRenamed"
+                    ]
+                }],
+                "validate": [{"check": "text", "text": "SlotTable", "expect": "none"}],
+            }),
+        )]);
+        assert_eq!(through_the_program, 1);
+    }
+
+    #[test]
+    fn a_program_travels_as_one_request_however_many_steps_it_holds() {
+        // The property the whole hypothesis rests on: what the machine is asked
+        // does not grow with what the machine does. If this ever fails, the
+        // adapter has started making a round trip per step and the tool is a
+        // loop wearing a transaction's name.
+        let exec = TOOLS.iter().find(|t| t.name == "thalyx_exec").unwrap();
+        for how_many in [1usize, 8, 40] {
+            let steps: Vec<Value> = (0..how_many)
+                .map(|n| json!({"verb": "make_file", "arguments": [format!("f{n}.rs")]}))
+                .collect();
+            let sent = (exec.calls)(&json!({"steps": steps})).expect("composed");
+            assert_eq!(
+                sent.len(),
+                1,
+                "{how_many} steps became {} requests",
+                sent.len()
+            );
+            assert_eq!(sent[0].0, "exec");
+            assert_eq!(sent[0].1.len(), 1, "a program is one argument");
+        }
+    }
+
+    #[test]
+    fn a_program_with_no_steps_is_refused_here_rather_than_in_the_machine() {
+        let exec = TOOLS.iter().find(|t| t.name == "thalyx_exec").unwrap();
+        for wrong in [json!({}), json!({"steps": []})] {
+            assert!((exec.calls)(&wrong).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn the_program_reaches_the_machine_with_everything_the_caller_said_in_it() {
+        // The adapter composes and never decides. A field dropped here would be
+        // a validation the caller asked for and never got, and the run would
+        // commit having checked nothing — silently, and looking like a success.
+        let exec = TOOLS.iter().find(|t| t.name == "thalyx_exec").unwrap();
+        let sent = (exec.calls)(&json!({
+            "label": "rename",
+            "steps": [{"verb": "edit", "arguments": ["a.rs", "sustituir", "A", "B"]}],
+            "validate": [{"check": "text", "text": "A", "expect": "none"}],
+            "on_failure": "keep",
+        }))
+        .expect("composed");
+        let program: Value = serde_json::from_str(&sent[0].1[0]).expect("a JSON program");
+        assert_eq!(program["label"], json!("rename"));
+        assert_eq!(program["on_failure"], json!("keep"));
+        assert_eq!(program["validate"][0]["check"], json!("text"));
+        assert_eq!(program["steps"][0]["arguments"][3], json!("B"));
     }
 
     #[test]
@@ -1141,8 +1404,7 @@ mod tests {
             (attempt.calls)(&json!({
                 "action": "abandon",
                 "snapshot": "2026-08-29T11-04-02Z-rename",
-                "delete": 0,
-                "revert": 3,
+                "state": "w1-0f3cbe11",
             }))
             .unwrap(),
             vec![(
@@ -1150,8 +1412,7 @@ mod tests {
                 vec![
                     "abandonar".to_string(),
                     "snapshot=2026-08-29T11-04-02Z-rename".to_string(),
-                    "delete=0".to_string(),
-                    "revert=3".to_string(),
+                    "state=w1-0f3cbe11".to_string(),
                 ]
             )]
         );
@@ -1165,7 +1426,7 @@ mod tests {
         let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
         let sent = (attempt.calls)(&json!({
             "action": "abandon", "confirm": true,
-            "snapshot": "2026-08-29T11-04-02Z-rename", "delete": 0, "revert": 3,
+            "snapshot": "2026-08-29T11-04-02Z-rename", "state": "w1-0f3cbe11",
         }))
         .unwrap();
         assert!(!sent[0].1.iter().any(|word| word == "si"), "{sent:?}");
@@ -1179,9 +1440,8 @@ mod tests {
         // caller that said nothing gets.
         let attempt = TOOLS.iter().find(|t| t.name == "thalyx_attempt").unwrap();
         for half in [
-            json!({"action": "abandon", "snapshot": "x", "delete": 0}),
-            json!({"action": "abandon", "snapshot": "x", "revert": 3}),
-            json!({"action": "abandon", "delete": 0, "revert": 3}),
+            json!({"action": "abandon", "snapshot": "x"}),
+            json!({"action": "abandon", "state": "w1-0f3cbe11"}),
         ] {
             let sent = (attempt.calls)(&half).expect("composed");
             assert_eq!(sent[0].1, vec!["abandonar".to_string()], "{half}");

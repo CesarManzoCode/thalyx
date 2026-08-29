@@ -399,6 +399,12 @@ fn every_verb_the_session_offers_answers_with_exactly_one_object() {
             "move" => vec!["scratch.txt", "moved.txt"],
             "remove" => vec!["doomed.txt"],
             "rehearse" => vec!["rm", "moved.txt"],
+            // A whole program as one argument. Here it can only reach
+            // `not_a_subvolume` — this container has no Btrfs — and that is
+            // still the thing this test is about: one line in, exactly one
+            // object out, through the real bridge.
+            "exec" => vec![r#"{"steps":[{"verb":"list","arguments":["."]}]}"#],
+            "evidence" => vec!["t-0"],
             other => panic!("`{other}` is offered and this test does not know how to call it"),
         };
         let answer = wire.ask(verb, &arguments);
