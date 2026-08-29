@@ -243,22 +243,53 @@ fn btrfs_scratch(label: &str) -> Option<std::path::PathBuf> {
     // The name carries the caller's label and not only the pid, and rule 11 is
     // why: `cargo test` runs every test in this file as a **thread of one
     // process**, so a name made of the pid alone is one name shared by all of
-    // them — and this helper starts by deleting it. On 2026-08-29 that turned
-    // one subvolume into two failures on Cesar's machine: whichever test got
-    // there second deleted the tree the first was working in and then could not
-    // create what was already there, so it reported "no Btrfs subvolume could
-    // be made" on a machine that has one.
-    let subvolume = Path::new(&base).join(format!("thalyx-{label}-{}", std::process::id()));
-    let _ = std::process::Command::new("btrfs")
-        .args(["subvolume", "delete"])
-        .arg(&subvolume)
-        .output();
+    // them. On 2026-08-29 that turned one subvolume into two failures on Cesar's
+    // machine: whichever test got there second deleted the tree the first was
+    // working in and then could not create what was already there, so it
+    // reported "no Btrfs subvolume could be made" on a machine that has one.
+    //
+    // The label was not enough, and the second half of the same day says why: an
+    // attempt snapshots the work tree, `thalyx_snapshot::Snapshots` puts snapshots
+    // in the source's **parent**, and a subvolume made directly in
+    // `THALYX_BTRFS_SCRATCH` therefore snapshots into one
+    // `THALYX_BTRFS_SCRATCH/.thalyx-snapshots` shared with `thalyx-snapshot`'s own
+    // Btrfs tests — which `cargo test` runs as a separate binary at the same time,
+    // and one of which used to remove that directory outright. So each test gets a
+    // private root and the work tree lives inside it.
+    let root = Path::new(&base).join(format!("thalyx-{label}-{}", std::process::id()));
+    // Nothing is deleted first: a path this helper did not make is not a path it
+    // may remove, and `create_dir` refusing an existing one is the guarantee.
+    std::fs::create_dir(&root).ok()?;
+
+    let subvolume = root.join("work");
     let made = std::process::Command::new("btrfs")
         .args(["subvolume", "create"])
         .arg(&subvolume)
         .output()
         .ok()?;
     made.status.success().then_some(subvolume)
+}
+
+/// Take away the arena [`btrfs_scratch`] made, and nothing outside it.
+///
+/// The snapshots go one at a time and by `btrfs subvolume delete`, because
+/// `remove_dir_all` cannot take a read-only subvolume away: it begins by
+/// unlinking the files inside.
+fn discard(work: &Path) {
+    let root = work.parent().expect("the arena holding the work tree");
+    if let Ok(entries) = std::fs::read_dir(root.join(thalyx_snapshot::SNAPSHOT_DIR)) {
+        for entry in entries.flatten() {
+            let _ = std::process::Command::new("btrfs")
+                .args(["subvolume", "delete"])
+                .arg(entry.path())
+                .output();
+        }
+    }
+    let _ = std::process::Command::new("btrfs")
+        .args(["subvolume", "delete"])
+        .arg(work)
+        .output();
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -337,10 +368,7 @@ fn abandoning_an_attempt_takes_back_a_substitution_across_files_byte_for_byte() 
         "abandoning the attempt did not put the substitution back"
     );
 
-    let _ = std::process::Command::new("btrfs")
-        .args(["subvolume", "delete"])
-        .arg(&work)
-        .output();
+    discard(&work);
 }
 
 #[test]
@@ -434,8 +462,5 @@ fn abandoning_an_attempt_takes_back_a_whole_batch_and_not_only_its_last_operatio
         "abandoning the attempt did not put the whole batch back"
     );
 
-    let _ = std::process::Command::new("btrfs")
-        .args(["subvolume", "delete"])
-        .arg(&work)
-        .output();
+    discard(&work);
 }

@@ -44,6 +44,26 @@
 //! kernel distinguishes with `EINVAL` and `ENOTTY`. Without them a backend that
 //! failed closed on everything would look identical to one that works.
 //!
+//! ## The interference
+//!
+//! On 2026-08-29 `restoring_makes_a_writable_copy_and_deleting_takes_it_away_again`
+//! failed on Cesar's machine and passed with `--test-threads=1`, which is the
+//! shape of rule 11 and not of a Btrfs defect: the four tests below each made a
+//! *differently named* subvolume, but [`thalyx_snapshot::Snapshots::directory`]
+//! puts the snapshots beside the source — in **the parent** — so all four wrote
+//! into one `THALYX_BTRFS_SCRATCH/.thalyx-snapshots`, took snapshots under names
+//! that collided, and each tore that directory down while the others were still
+//! working in it. A unique source name isolates nothing when the thing under
+//! test derives its own location from the parent.
+//!
+//! What replaced it is [`Arena`]: a private plain directory per fixture, with the
+//! source subvolume *inside* it, so `directory()` lands inside that arena too and
+//! two fixtures share no path at all. Nothing is serialised — the product is
+//! meant to hold several trees at once, and a test suite that can only hold one
+//! is measuring the suite. And nothing is deleted that the arena did not make,
+//! which is the other half: the old helper began by deleting the path it was
+//! about to create, so a fixture's first act was to destroy whatever was there.
+//!
 //! ## The skip
 //!
 //! It needs a writable Btrfs filesystem, named by `THALYX_BTRFS_SCRATCH`. Where
@@ -54,25 +74,156 @@ use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use thalyx_snapshot::{Native, Snapshots, Volumes, name_for};
 
-/// A throwaway subvolume on a real Btrfs filesystem, or nothing.
-///
-/// Made with the ioctl and not with `btrfs subvolume create`, which is not
-/// tidiness: this file has to be able to run on the machine it was written for,
-/// and that machine is the one with no btrfs-progs on it.
-fn scratch(label: &str) -> Option<PathBuf> {
-    let base = PathBuf::from(std::env::var("THALYX_BTRFS_SCRATCH").ok()?);
-    // The caller's label is in the name, and rule 11 is why: `cargo test` runs
-    // the four tests in this file as threads of **one** process, so a name made
-    // of the pid alone is one subvolume shared by all of them — and this
-    // function starts by deleting it. Each one would then be tearing down the
-    // tree the others were measuring.
-    let name = format!("thalyx-native-{label}-{}", std::process::id());
-    let subvolume = base.join(&name);
+use std::sync::atomic::{AtomicU64, Ordering};
 
-    let _ = Native.delete(&subvolume);
-    let directory = std::fs::File::open(&base).ok()?;
-    thalyx_syscall::btrfs_subvolume_create(directory.as_fd(), &name).ok()?;
-    Some(subvolume)
+/// How many arenas this process has handed out.
+///
+/// The whole of what makes two arenas in one process distinct. The label cannot
+/// be: two fixtures are allowed to want the same one, and the pid cannot either,
+/// because `cargo test` runs this file's tests as threads of **one** process.
+static HANDED_OUT: AtomicU64 = AtomicU64::new(0);
+
+/// The name of one arena, and nothing on any filesystem.
+///
+/// Separated from making one so that *two arenas never collide* can be graded on
+/// a machine with no Btrfs — the container this file is written in. It is the
+/// claim the whole fixture rests on, and it should not be provable only where
+/// everything else already is.
+fn arena_name(label: &str) -> String {
+    format!(
+        "thalyx-native-{label}-{}-{}",
+        std::process::id(),
+        HANDED_OUT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A Btrfs arena that belongs to one test: a private directory, and a subvolume
+/// in it.
+///
+/// The directory is the point. [`thalyx_snapshot::Snapshots::directory`] puts
+/// snapshots in the source's **parent**, so giving each test its own parent is
+/// what stops two of them from meeting — in the snapshot directory, in the names
+/// of the snapshots inside it, or in the writable copies a restore leaves there.
+/// A private *source* name, which is what this file used to have, does none of
+/// that.
+struct Arena {
+    root: PathBuf,
+    source: PathBuf,
+    torn_down: bool,
+}
+
+impl Arena {
+    /// Make one, or nothing where there is no Btrfs to make it on.
+    ///
+    /// With the ioctl and not with `btrfs subvolume create`: this file has to be
+    /// able to run on the machine it was written for, and that machine is the one
+    /// with no btrfs-progs on it.
+    fn make(label: &str) -> Option<Arena> {
+        let base = PathBuf::from(std::env::var("THALYX_BTRFS_SCRATCH").ok()?);
+        let root = base.join(arena_name(label));
+
+        // `create_dir` and not `create_dir_all`, and nothing is deleted first:
+        // an arena either made its own root or there is no arena. The helper this
+        // replaced opened by deleting the path it wanted, which is how one test
+        // came to tear down the tree another was measuring.
+        std::fs::create_dir(&root).ok()?;
+
+        // Where the scratch is not on Btrfs the ioctl says `ENOTTY`, and the root
+        // just made would otherwise stay behind — a skip that litters is a skip
+        // that will be blamed for the next run's debris.
+        let made = std::fs::File::open(&root).ok().and_then(|directory| {
+            thalyx_syscall::btrfs_subvolume_create(directory.as_fd(), "source").ok()
+        });
+        if made.is_none() {
+            let _ = std::fs::remove_dir(&root);
+            return None;
+        }
+
+        Some(Arena {
+            source: root.join("source"),
+            root,
+            torn_down: false,
+        })
+    }
+
+    /// The subvolume under test.
+    fn source(&self) -> &Path {
+        &self.source
+    }
+
+    /// Everything this arena owns, snapshot directory included.
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn snapshots(&self) -> Snapshots<Native> {
+        Snapshots::of(Native, &self.source)
+    }
+
+    /// Take away what this arena made, and say so if something would not go.
+    ///
+    /// Asserting rather than printing: a subvolume left behind is debris the next
+    /// run cannot `rmdir`, and a fixture that quietly fails to clean up is how a
+    /// suite starts depending on the order it ran in.
+    fn clean(&mut self) {
+        let failures = self.tear_down();
+        assert!(
+            failures.is_empty(),
+            "the fixture could not take back what it made: {}",
+            failures.join("; ")
+        );
+    }
+
+    /// The removal itself, idempotent, reporting rather than panicking.
+    ///
+    /// Only paths under [`Arena::root`], which is the ownership rule: a shared
+    /// directory is never removed here, because the arena that would remove it
+    /// cannot know whether another one is still inside.
+    fn tear_down(&mut self) -> Vec<String> {
+        if self.torn_down {
+            return Vec::new();
+        }
+        self.torn_down = true;
+
+        let mut failures = Vec::new();
+        let snapshots = self.snapshots().directory();
+
+        // Each snapshot by the ioctl, because `remove_dir_all` cannot take one
+        // away: it starts by unlinking the files inside, and a read-only
+        // subvolume refuses that. What is left over is swept by the recursive
+        // remove at the end.
+        if let Ok(entries) = std::fs::read_dir(&snapshots) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if Native.is_subvolume(&path).unwrap_or(false)
+                    && let Err(error) = Native.delete(&path)
+                {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+
+        if let Err(error) = Native.delete(&self.source) {
+            failures.push(format!("{}: {error}", self.source.display()));
+        }
+        if let Err(error) = std::fs::remove_dir_all(&self.root) {
+            failures.push(format!("{}: {error}", self.root.display()));
+        }
+
+        failures
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        // The path where a test failed: it never reached its `clean()`, and what
+        // it leaves behind is a subvolume. Reported and not asserted, because a
+        // panic while unwinding aborts the process and takes the real failure's
+        // message with it.
+        for failure in self.tear_down() {
+            eprintln!("the fixture could not take back what it made: {failure}");
+        }
+    }
 }
 
 /// What to say when there is nowhere to run.
@@ -125,27 +276,12 @@ fn names(path: &Path) -> (u64, u64) {
     (about.ino(), about.dev())
 }
 
-fn clean(subvolume: &Path) {
-    let snapshots = Snapshots::of(Native, subvolume);
-    if let Ok(taken) = snapshots.list() {
-        for snapshot in taken {
-            let _ = Native.delete(&snapshot.path);
-        }
-    }
-    if let Ok(entries) = std::fs::read_dir(snapshots.directory()) {
-        for entry in entries.flatten() {
-            let _ = Native.delete(&entry.path());
-        }
-    }
-    let _ = std::fs::remove_dir_all(snapshots.directory());
-    let _ = Native.delete(subvolume);
-}
-
 #[test]
 fn the_kernel_is_asked_whether_something_is_a_subvolume_and_no_binary_is_run() {
-    let Some(subvolume) = scratch("is-subvolume") else {
+    let Some(mut arena) = Arena::make("is-subvolume") else {
         return unproven("the_kernel_is_asked_whether_something_is_a_subvolume");
     };
+    let subvolume = arena.source().to_path_buf();
 
     let plain = subvolume.join("an-ordinary-directory");
     std::fs::create_dir_all(&plain).expect("a directory inside it");
@@ -174,7 +310,7 @@ fn the_kernel_is_asked_whether_something_is_a_subvolume_and_no_binary_is_run() {
         _ => "no btrfs-progs here to ask",
     };
 
-    clean(&subvolume);
+    arena.clean();
 
     assert!(
         yes.expect("the kernel answered"),
@@ -197,11 +333,12 @@ fn the_kernel_is_asked_whether_something_is_a_subvolume_and_no_binary_is_run() {
 
 #[test]
 fn a_native_snapshot_is_read_only_by_the_flag_the_kernel_reports() {
-    let Some(subvolume) = scratch("read-only") else {
+    let Some(mut arena) = Arena::make("read-only") else {
         return unproven("a_native_snapshot_is_read_only");
     };
+    let subvolume = arena.source().to_path_buf();
 
-    let snapshots = Snapshots::of(Native, &subvolume);
+    let snapshots = arena.snapshots();
     std::fs::write(subvolume.join("notes.txt"), "as it was\n").expect("a file to snapshot");
 
     let taken = snapshots
@@ -215,7 +352,7 @@ fn a_native_snapshot_is_read_only_by_the_flag_the_kernel_reports() {
     let refused = std::fs::write(taken.path.join("notes.txt"), "tampered").is_err();
     let is_one = Native.is_subvolume(&taken.path);
 
-    clean(&subvolume);
+    arena.clean();
 
     assert_eq!(
         held, "as it was\n",
@@ -236,11 +373,12 @@ fn a_native_snapshot_is_read_only_by_the_flag_the_kernel_reports() {
 
 #[test]
 fn restoring_makes_a_writable_copy_and_deleting_takes_it_away_again() {
-    let Some(subvolume) = scratch("restoring") else {
+    let Some(mut arena) = Arena::make("restoring") else {
         return unproven("restoring_makes_a_writable_copy");
     };
+    let subvolume = arena.source().to_path_buf();
 
-    let snapshots = Snapshots::of(Native, &subvolume);
+    let snapshots = arena.snapshots();
     std::fs::write(subvolume.join("notes.txt"), "as it was\n").expect("a file to snapshot");
     let taken = snapshots
         .take(&name_for("native", "2026-08-28T05:00:00Z"))
@@ -285,7 +423,7 @@ fn restoring_makes_a_writable_copy_and_deleting_takes_it_away_again() {
     let deleted = Native.delete(&copy);
     let gone = !copy.exists();
 
-    clean(&subvolume);
+    arena.clean();
 
     assert_eq!(copied, "as it was\n", "the copy is not of the snapshot");
     assert_eq!(
@@ -332,18 +470,18 @@ fn taking_a_snapshot_of_something_that_is_not_a_subvolume_refuses_rather_than_co
     // Btrfs filesystem a plain directory is snapshottable-looking in every way
     // except the one that matters, and a backend that quietly copied it would
     // hand back something `intento abandonar` could not put back atomically.
-    let Some(subvolume) = scratch("not-a-subvolume") else {
+    let Some(mut arena) = Arena::make("not-a-subvolume") else {
         return unproven("taking_a_snapshot_of_something_that_is_not_a_subvolume");
     };
 
-    let plain = subvolume.join("an-ordinary-directory");
+    let plain = arena.source().join("an-ordinary-directory");
     std::fs::create_dir_all(&plain).expect("a directory inside it");
     std::fs::write(plain.join("notes.txt"), "as it was\n").expect("something in it");
 
     let refused = Snapshots::of(Native, &plain).take("2026-08-28T06-00-00Z-native");
     let outcome = format!("{refused:?}");
 
-    clean(&subvolume);
+    arena.clean();
 
     assert!(
         matches!(
@@ -351,5 +489,88 @@ fn taking_a_snapshot_of_something_that_is_not_a_subvolume_refuses_rather_than_co
             Err(thalyx_snapshot::SnapshotError::NotASubvolume(_))
         ),
         "a plain directory was snapshotted instead of refused: {outcome}"
+    );
+}
+
+/// Two arenas never collide, graded where there is no Btrfs at all.
+///
+/// The claim every test above rests on, and it is deliberately not the same
+/// claim as the one below: this one is about the naming, so it runs everywhere —
+/// including the container, which has no Btrfs and therefore proves nothing else
+/// in this file. A label is not what separates two arenas, and neither is the
+/// pid: `cargo test` runs this file as threads of one process, and two fixtures
+/// asking for the same label is exactly what the test below does on purpose.
+#[test]
+fn two_arenas_asked_for_under_one_label_are_never_given_the_same_name() {
+    let first = arena_name("the-same-label");
+    let second = arena_name("the-same-label");
+
+    assert_ne!(
+        first, second,
+        "two arenas were given one name, so a fixture would adopt another's tree"
+    );
+    assert!(
+        first.contains("the-same-label") && first.contains(&std::process::id().to_string()),
+        "the name says nothing about who made it, which is what debris is read by: {first}"
+    );
+}
+
+/// Cleaning one arena leaves the other whole, on a real Btrfs.
+///
+/// The control for the interference this file's fixture exists to stop, and it
+/// is deterministic rather than timed: no threads, no sleeps, no waiting to see
+/// whether two tests happen to overlap. Both arenas ask for **the same label**
+/// and both snapshots are taken under **the same name** — the exact collision
+/// that a shared `.thalyx-snapshots` turned into a failure — and then one arena
+/// is torn down while the other is still holding its snapshot. Under the old
+/// fixture the two names were one path and this could not even be written.
+#[test]
+fn cleaning_one_arena_leaves_the_other_arenas_snapshot_untouched() {
+    let (Some(mut first), Some(mut second)) =
+        (Arena::make("side-by-side"), Arena::make("side-by-side"))
+    else {
+        return unproven("cleaning_one_arena_leaves_the_other_arenas_snapshot_untouched");
+    };
+
+    let name = name_for("native", "2026-08-29T04:00:00Z");
+    std::fs::write(first.source().join("notes.txt"), "the first\n").expect("a file to snapshot");
+    std::fs::write(second.source().join("notes.txt"), "the second\n").expect("a file to snapshot");
+
+    let one = first.snapshots().take(&name).expect("the first snapshot");
+    let two = second.snapshots().take(&name).expect("the second snapshot");
+
+    let separate = first.snapshots().directory() != second.snapshots().directory();
+    // Neither arena may sit inside the other, or tearing one down by its root
+    // would take the other with it however different their names are.
+    let nested = first.snapshots().directory().starts_with(second.root())
+        || second.snapshots().directory().starts_with(first.root());
+
+    first.clean();
+
+    let survived = std::fs::read_to_string(two.path.join("notes.txt"));
+    let held = second.snapshots().list().map(|taken| taken.len());
+    let gone = !one.path.exists() && !first.root().exists();
+
+    second.clean();
+
+    assert!(
+        separate,
+        "two arenas share a snapshot directory, so one test's `clean` is another's teardown"
+    );
+    assert!(!nested, "one arena is inside the other");
+    assert_eq!(
+        survived.expect("the other arena's snapshot is still readable"),
+        "the second\n",
+        "cleaning one arena changed what the other's snapshot holds"
+    );
+    assert_eq!(
+        held.expect("the other arena's snapshot directory is still there"),
+        1,
+        "cleaning one arena emptied the other's snapshot directory"
+    );
+    assert!(
+        gone,
+        "the arena that was cleaned is still on disk, so cleanup is not ownership-based \
+         in the direction that matters either"
     );
 }
