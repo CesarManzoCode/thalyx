@@ -226,19 +226,31 @@ fn btrfs_takes_a_real_snapshot() {
     );
 
     snapshots.forget(&taken.name).unwrap();
+    // Only what this test made: the source, and then the root holding it and the
+    // snapshot directory the product put beside it.
     let _ = snapshots.volumes().delete(&subvolume);
-    let _ = std::fs::remove_dir_all(snapshots.directory());
+    let _ = std::fs::remove_dir_all(subvolume.parent().expect("the arena holding it"));
 }
 
-/// A throwaway subvolume on a real Btrfs filesystem, or nothing.
+/// A throwaway subvolume on a real Btrfs filesystem, inside a directory of its
+/// own, or nothing.
+///
+/// The private directory is not tidiness. [`Snapshots::directory`] puts snapshots
+/// in the source's **parent**, so a subvolume made directly in
+/// `THALYX_BTRFS_SCRATCH` snapshots into `THALYX_BTRFS_SCRATCH/.thalyx-snapshots`
+/// — one path shared with `tests/natively.rs` and with `thalyx-cli`'s attempt
+/// tests, which `cargo test` runs as **separate binaries at the same time**. This
+/// test used to finish by removing that directory outright, which is another
+/// suite's teardown. Now it owns a root and takes away only that.
+///
+/// The old helper also began by deleting the path it was about to create; nothing
+/// here does, because a name it did not make is not a name it may remove.
 fn btrfs_scratch() -> Option<std::path::PathBuf> {
     let base = std::env::var("THALYX_BTRFS_SCRATCH").ok()?;
-    let base = Path::new(&base);
+    let root = Path::new(&base).join(format!("thalyx-test-{}", std::process::id()));
+    std::fs::create_dir(&root).ok()?;
 
-    let subvolume = base.join(format!("thalyx-test-{}", std::process::id()));
-    let btrfs = thalyx_snapshot::Btrfs::new();
-    let _ = btrfs.delete(&subvolume);
-
+    let subvolume = root.join("source");
     let made = std::process::Command::new("btrfs")
         .args(["subvolume", "create"])
         .arg(&subvolume)

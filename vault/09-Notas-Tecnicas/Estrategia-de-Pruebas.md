@@ -5361,3 +5361,86 @@ la que ese ioctl es necesario es más angosta y sigue siendo cierta: se lleva un
 subvolumen **poblado** de una sola operación, donde `std::fs` tendría que
 caminarlo desenlazando archivo por archivo y no podría con un subvolumen anidado
 adentro.
+
+---
+
+## Regla derivada: un nombre único no aísla lo que el producto deriva del padre — 2026-08-29
+
+La regla de arriba —«un recurso compartido que una prueba crea y borra se nombra
+por la prueba, no por el proceso»— se aplicó a `natively.rs` el mismo día, y no
+alcanzó. Cada una de las cuatro pruebas pasó a hacer su subvolumen con un nombre
+propio:
+
+```
+THALYX_BTRFS_SCRATCH/thalyx-native-<etiqueta>-<pid>
+```
+
+y `restoring_makes_a_writable_copy_and_deleting_takes_it_away_again` siguió
+fallando en paralelo y pasando con `--test-threads=1`. El control que lo cerró
+fue exactamente ese par: en serie, cuatro pasan en 0.06 s, y `btrfs` estuvo de
+acuerdo con el kernel en todo lo que se le preguntó. **La lógica Btrfs
+funcionaba**; lo que fallaba era el fixture.
+
+La razón es que el nombre del subvolumen no es el único recurso que la prueba
+usa. `Snapshots::directory()` no pregunta cómo se llama la fuente: la pone
+**junto a ella**, en el padre.
+
+```rust
+self.subvolume.parent().unwrap_or(Path::new("/")).join(SNAPSHOT_DIR)
+```
+
+Cuatro fuentes con nombres distintos hechas en el mismo directorio tienen **el
+mismo padre**, así que las cuatro escribían en un solo
+`THALYX_BTRFS_SCRATCH/.thalyx-snapshots`, tomaban snapshots bajo nombres que
+chocaban, dejaban ahí sus copias escribibles, y cada `clean()` se llevaba ese
+directorio entero mientras las otras seguían trabajando adentro. Y lo mismo
+cruzaba binarios: `taking.rs` terminaba con `remove_dir_all` sobre ese mismo
+directorio, y las pruebas de `intento` en `thalyx-cli` snapshotean ahí — y
+`cargo test` corre los binarios de prueba **a la vez**.
+
+**La regla:** aislar una prueba es aislar *el recurso que el código bajo prueba
+va a tocar*, no el que la prueba nombra. Cuando el producto deriva una ruta de la
+que se le dio —el padre, un directorio hermano, un nombre fijo adentro— el
+aislamiento tiene que estar **un nivel más arriba**, o el nombre único es una
+etiqueta sobre un recurso compartido. La pregunta que hay que hacerse no es «¿mi
+nombre es único?» sino «¿qué rutas va a calcular el producto a partir de éste, y
+las comparte alguien?».
+
+La forma que quedó es una arena por prueba: un directorio ordinario privado, con
+la fuente adentro, de modo que `directory()` caiga adentro también.
+
+```
+THALYX_BTRFS_SCRATCH/thalyx-native-<etiqueta>-<pid>-<n>/
+    source
+    .thalyx-snapshots/
+```
+
+Tres cosas la sostienen, y ninguna es serializar —el producto está hecho para
+tener varios árboles a la vez, y una suite que sólo puede con uno está midiendo
+la suite:
+
+- **`<n>` es un contador atómico del proceso**, no la etiqueta ni el pid. La
+  etiqueta no puede ser el discriminador porque dos fixtures tienen derecho a
+  pedir la misma, y el pid ya se sabe que no distingue hilos.
+- **La limpieza es por propiedad.** Una arena borra los subvolúmenes que hay bajo
+  su raíz, su fuente, y su raíz — y nunca una ruta compartida. Se hace explícita
+  al final de cada prueba (donde falla ruidosamente si algo no se fue) y otra vez
+  en `Drop`, que es la ruta donde la prueba se cayó antes de llegar a la primera.
+  En `Drop` reporta en vez de afirmar: entrar en pánico mientras se desenrolla
+  aborta el proceso y se lleva el mensaje de la falla real.
+- **Nada se borra antes de crearse.** El ayudante viejo empezaba borrando la ruta
+  que iba a usar, que es el acto que destruía el árbol ajeno. Ahora es
+  `create_dir` —no `create_dir_all`—, y que se niegue ante algo que ya existe es
+  la garantía: una arena o hizo su raíz o no hay arena.
+
+Y el control, que es la parte que faltaba las dos veces anteriores:
+`cleaning_one_arena_leaves_the_other_arenas_snapshot_untouched` hace dos arenas
+**con la misma etiqueta**, toma en las dos un snapshot **con el mismo nombre**
+—la colisión exacta que rompía— limpia una y comprueba que la otra sigue entera.
+Es determinista: no hay hilos, no hay `sleep`, no hay esperar a ver si dos
+pruebas se cruzan. Con el fixture viejo esa prueba no se podía ni escribir,
+porque los dos nombres eran una sola ruta. Al lado va
+`two_arenas_asked_for_under_one_label_are_never_given_the_same_name`, que es puro
+nombre y por eso corre **también en el contenedor**, donde no hay Btrfs: la
+afirmación sobre la que descansa todo el archivo no debería ser demostrable sólo
+en la máquina donde ya todo lo demás lo es.

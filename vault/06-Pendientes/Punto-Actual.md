@@ -14,9 +14,73 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## El único `FAILED` de la corrida real: una prueba que medía `rmdir` — 2026-08-29
+> ## El fixture de Btrfs, aislado de verdad: una arena por prueba — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió el control que cierra el diagnóstico anterior, en su Fedora, con
+> Btrfs de verdad:
+>
+> ```
+> THALYX_REQUIRE_BTRFS_TESTS=1 THALYX_BTRFS_SCRATCH=/home/cesarmanzocode \
+>   cargo test -p thalyx-snapshot --test natively -- --test-threads=1 --nocapture
+> ```
+>
+> **4 passed, 0 failed, en 0.06 s**, y `btrfs` estuvo de acuerdo con el kernel en
+> todo lo que se le preguntó. La misma prueba que fallaba en paralelo pasa en
+> serie: **la lógica Btrfs funciona y el fallo era interferencia entre las pruebas
+> paralelas.**
+>
+> El recurso que compartían no era el nombre del subvolumen —eso ya se había
+> arreglado— sino el que el producto **deriva** de él: `Snapshots::directory()`
+> pone los snapshots en el **padre** de la fuente, así que cuatro fuentes con
+> nombres distintos hechas en el mismo directorio compartían un solo
+> `THALYX_BTRFS_SCRATCH/.thalyx-snapshots`, con nombres de snapshot que chocaban,
+> y cada `clean()` se lo llevaba entero mientras las otras trabajaban adentro.
+>
+> Lo que quedó es **una arena por prueba**: un directorio ordinario privado con la
+> fuente adentro, de modo que `directory()` caiga adentro también.
+>
+> ```
+> THALYX_BTRFS_SCRATCH/thalyx-native-<etiqueta>-<pid>-<n>/
+>     source
+>     .thalyx-snapshots/
+> ```
+>
+> Nada se serializa: el producto está hecho para tener varios árboles a la vez.
+> `<n>` es un contador atómico del proceso; la limpieza es por propiedad —sólo lo
+> que hay bajo la raíz de la arena, explícita al final de cada prueba y otra vez
+> en `Drop` para la ruta donde la prueba se cayó—; y nada se borra antes de
+> crearse, porque el ayudante viejo empezaba borrando la ruta que iba a usar, que
+> es el acto que destruía el árbol ajeno.
+>
+> Lo mismo se aplicó a `taking.rs` y a las pruebas de `intento` en `thalyx-cli`,
+> que escribían en ese mismo directorio compartido desde **otros binarios que
+> `cargo test` corre a la vez**; `taking.rs` incluso terminaba haciéndole
+> `remove_dir_all`.
+>
+> El control nuevo es determinista, sin hilos y sin `sleep`:
+> `cleaning_one_arena_leaves_the_other_arenas_snapshot_untouched` hace dos arenas
+> con la misma etiqueta, toma en las dos un snapshot con el mismo nombre, limpia
+> una y comprueba que la otra sigue entera. Al lado,
+> `two_arenas_asked_for_under_one_label_are_never_given_the_same_name` es puro
+> nombre y corre **también en este contenedor**, que no tiene Btrfs. La regla
+> quedó escrita en [[Estrategia-de-Pruebas]].
+>
+> **Lo que falta comprobar:** aquí las cinco pruebas que necesitan Btrfs sólo
+> dicen `NOT PROVEN`. En la máquina de Cesar, primero en serie y después en
+> paralelo —que es lo que estaba roto—:
+>
+> ```
+> cargo test -p thalyx-snapshot --test natively -- --test-threads=1 --nocapture
+> cargo test -p thalyx-snapshot --test natively -- --nocapture
+> ```
+>
+> con `THALYX_REQUIRE_BTRFS_TESTS=1` y `THALYX_BTRFS_SCRATCH=/home/cesarmanzocode`.
+> `sudo ./dev/verify.sh` va **después**, una sola vez, cuando el paralelo pase
+> repetido.
+
+> ## El único `FAILED` de la corrida real: una prueba que medía `rmdir` — 2026-08-29
 >
 > La corrida de Fedora sobre `cffb4f8` quedó en **202 PROVEN, 13 NOT PROVEN, 1
 > FAILED**. El único fallo era
