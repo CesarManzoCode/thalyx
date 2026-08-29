@@ -363,6 +363,10 @@ pub struct Text {
     /// the file it pointed at still says the old thing, and on a machine where
     /// `/etc` is full of links that is a configuration change nobody made.
     target: PathBuf,
+    /// The name the file was actually opened by, when that is not the name it
+    /// is reported under. `None` for every ordinary open. See
+    /// [`Text::open_anchored`].
+    opened_as: Option<PathBuf>,
     lines: Vec<String>,
     ending: Ending,
     /// Whether the file on disk ended with a line ending.
@@ -385,7 +389,28 @@ pub struct Text {
 impl Text {
     /// Read a file, or say precisely why it will not be edited.
     pub fn open(path: &Path) -> Result<Self, EditError> {
-        let meta = path.symlink_metadata().map_err(|e| classify(path, e))?;
+        Self::open_named(path, None)
+    }
+
+    /// The same, opened through one name and reported under another.
+    ///
+    /// The caller with two names is `crate::confine`'s anchor: a confined
+    /// session opens `/proc/self/fd/9/main.rs`, which is a descriptor the
+    /// kernel resolved inside the workspace and therefore a name nothing can
+    /// redirect, and the agent asked about `src/main.rs`. Every path this type
+    /// hands back has to be the second one — a refusal naming a file descriptor
+    /// describes a filesystem the caller may not see.
+    ///
+    /// What is *written* stays the first: [`Self::save`] stages beside the file
+    /// and renames, and the staging has to happen in the pinned directory or it
+    /// is a different directory.
+    pub fn open_anchored(open_as: &Path, shown: &Path) -> Result<Self, EditError> {
+        Self::open_named(open_as, Some(shown))
+    }
+
+    fn open_named(path: &Path, shown: Option<&Path>) -> Result<Self, EditError> {
+        let named = shown.unwrap_or(path);
+        let meta = path.symlink_metadata().map_err(|e| classify(named, e))?;
 
         // Followed deliberately: a person editing a symlink means the file it
         // points at, which is what every editor does and what makes `editar`
@@ -393,30 +418,30 @@ impl Text {
         // `symlink_metadata` for the size and mode below, for the same reason.
         let (meta, target) = if meta.file_type().is_symlink() {
             (
-                path.metadata().map_err(|e| classify(path, e))?,
-                path.canonicalize().map_err(|e| classify(path, e))?,
+                path.metadata().map_err(|e| classify(named, e))?,
+                path.canonicalize().map_err(|e| classify(named, e))?,
             )
         } else {
             (meta, path.to_path_buf())
         };
 
         if meta.is_dir() {
-            return Err(EditError::IsDirectory(path.to_path_buf()));
+            return Err(EditError::IsDirectory(named.to_path_buf()));
         }
         // Asked before reading. A ceiling checked after the read has already
         // spent the memory it exists to protect.
         if meta.len() > CEILING {
             return Err(EditError::TooLarge {
-                path: path.to_path_buf(),
+                path: named.to_path_buf(),
                 bytes: meta.len(),
                 ceiling: CEILING,
             });
         }
 
-        let raw = std::fs::read(path).map_err(|e| classify(path, e))?;
+        let raw = std::fs::read(path).map_err(|e| classify(named, e))?;
         if let Some(why) = not_text(&raw) {
             return Err(EditError::NotText {
-                path: path.to_path_buf(),
+                path: named.to_path_buf(),
                 why,
             });
         }
@@ -424,12 +449,17 @@ impl Text {
         // understand into `U+FFFD` and then writes them back over the original,
         // which destroys the file it was asked to fix.
         let body = String::from_utf8(raw).map_err(|_| EditError::NotText {
-            path: path.to_path_buf(),
+            path: named.to_path_buf(),
             why: "not valid UTF-8",
         })?;
 
-        let mut text = Self::from_str(path, &body, mode_of(&meta));
+        let mut text = Self::from_str(named, &body, mode_of(&meta));
         text.target = target;
+        // Only when the two differ. `through_link` compares the reported path
+        // with the written one, and for an anchored open those differ for a
+        // reason that is not a symlink — so the comparison is made against what
+        // was opened rather than against what is said.
+        text.opened_as = shown.map(|_| path.to_path_buf());
         Ok(text)
     }
 
@@ -464,6 +494,7 @@ impl Text {
         Self {
             path: path.to_path_buf(),
             target: path.to_path_buf(),
+            opened_as: None,
             lines,
             ending,
             final_newline,
@@ -485,8 +516,14 @@ impl Text {
     }
 
     /// Whether what was named and what gets written are two different paths.
+    ///
+    /// Compared against the name that was *opened*, which for an anchored open
+    /// is a descriptor path and not what the caller said. Comparing against the
+    /// reported name would make every confined edit look like an edit through a
+    /// symlink, which is a true-sounding sentence about something that did not
+    /// happen.
     pub fn through_link(&self) -> bool {
-        self.path != self.target
+        self.opened_as.as_deref().unwrap_or(&self.path) != self.target
     }
 
     pub fn lines(&self) -> &[String] {

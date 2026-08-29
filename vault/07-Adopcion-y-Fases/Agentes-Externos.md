@@ -363,6 +363,77 @@ Mientras no se haga, el resumen dice `restore_check: not_proven` y no supone
 nada. `THALYX_REQUIRE_RESTORE_CHECK=1` convierte ese salto en falla — regla 3,
 una variable por requisito.
 
+### Revisión — 2026-08-28: la frontera del espacio de trabajo era una comparación, no una frontera
+
+La comprobación de contención era:
+
+```
+canonicalize(el nombre)  →  ¿empieza con el espacio de trabajo?  →  el verbo abre el nombre original
+```
+
+Todos los pasos correctos, y la secuencia mal — porque es una secuencia. Entre
+la comparación y la apertura hay un momento, y cualquier cosa que pueda escribir
+adentro del espacio de trabajo puede gastar ese momento cambiando un directorio
+por un symlink a otro lado. Thalyx —que no está adentro del sandbox de nadie—
+abre entonces el destino nuevo con el alcance de Thalyx.
+
+No era teórico. La prueba que lo encontró cambia `src` entre un directorio real
+y un enlace a otro árbol mientras un agente lee `src/main.rs` en un ciclo:
+**57 de 4000 lecturas devolvieron el contenido de un archivo fuera del espacio de
+trabajo.** Con `editar`, `rm`, `cp` y `mv` la misma ventana escribe y borra
+afuera.
+
+Y era exactamente la secuencia que `crates/thalyx-core/src/api.rs` fue reescrito
+para dejar de usar, en la superficie de módulos, hace semanas. Dos filosofías
+distintas adentro del mismo sistema para la misma pregunta.
+
+**Ahora hay una.** `crates/thalyx-cli/src/confine.rs`: `openat2` con
+`RESOLVE_BENEATH` contra un descriptor del espacio de trabajo, abierto una vez
+cuando la sesión abre. El kernel se niega a resolver fuera de ese directorio
+*durante* la resolución, así que no hay respuesta intermedia que nadie pueda
+invalidar — la comprobación y la apertura son la misma llamada.
+
+Los verbos siguen recibiendo una ruta, porque reescribirlos todos para tomar
+descriptores sería una segunda capa de sistema de archivos al lado de la
+primera. Lo que reciben es `/proc/self/fd/N`: el descriptor que el kernel
+resolvió, que apunta al inodo y no al nombre. La ruta que la *respuesta* lleva
+no cambia — el agente sigue viendo `src/main.rs`. Son dos argumentos en la misma
+función, no una forma nueva para cada verbo.
+
+Dos anclajes, y cuál se usa lo decide sobre qué actúa la llamada al sistema:
+
+- **la cosa** — `leer`, `ls`, la lectura de `editar`: un descriptor *es* la cosa;
+- **la entrada de directorio** — `crear`, `rm`, `mv`, el destino de `cp`:
+  `unlink` y `rename` actúan sobre un nombre adentro de un directorio, y no hay
+  nombre adentro de un enlace de procfs. El padre queda fijado y el último
+  componente se busca adentro de él.
+
+**Lo que se perdió, dicho claro.** `RESOLVE_BENEATH` rechaza **todo symlink
+absoluto**, incluido uno que habría caído adentro del mismo espacio de trabajo.
+Un proyecto con `código → /home/proyecto/src` deja de funcionar; con
+`código → src` sigue funcionando, porque el kernel contiene un enlace relativo
+por construcción. Es la misma pérdida que `api.rs` aceptó y por la misma razón:
+decidir si un enlace absoluto cae adentro exige resolverlo en espacio de usuario
+primero, que es la comprobación de dos pasos que todo esto existe para eliminar.
+Y la dirección de la pérdida es la correcta — a un agente se le niega algo que
+debía permitírsele, que alguien nota y reporta, en vez de permitírsele algo que
+debía negársele, que no nota nadie.
+
+**Lo que sigue abierto.** Una ruta que se está *creando* no existe, así que no
+hay nada que anclar: se fija el padre y el último componente se busca adentro.
+Un symlink plantado en ese último componente entre la comprobación y la creación
+todavía se seguiría. Es más angosto que lo que reemplaza por cada directorio de
+la ruta, y está escrito en `confine.rs` en vez de quedar como diferencia entre lo
+que ese módulo afirma y lo que hace.
+
+Lo prueban cuatro tests adversariales en `external.rs`, uno por verbo
+—`leer`, `editar`, `rm`, `ls`— que corren el intercambio contra 4000 peticiones.
+Son de un solo lado, regla 7: una corrida donde el hilo que intercambia nunca
+ganó la carrera no prueba nada, así que la afirmación es sobre la dirección a la
+que el ruido no llega —**cero** escapes— y al lado va el control, el conteo de
+rechazos, sin el cual una corrida donde no pasó nada se vería igual. Se
+comprobaron quitando el confinamiento de la sesión: los cuatro fallan.
+
 ### Lo que todavía no está controlado, y hay que decidir
 
 El brazo A trabaja *dentro* de la copia, así que Claude Code le carga el

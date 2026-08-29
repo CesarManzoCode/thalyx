@@ -284,8 +284,14 @@ fn a_symlink_out_of_the_workspace_is_refused_and_one_that_stays_in_is_not() {
     // both are inside the workspace.
     let bridge = Bridge::open();
     std::os::unix::fs::symlink("/etc", bridge.workspace.join("out")).expect("symlink");
-    std::os::unix::fs::symlink(bridge.workspace.join("src"), bridge.workspace.join("code"))
-        .expect("symlink");
+    std::os::unix::fs::symlink("src", bridge.workspace.join("code")).expect("symlink");
+    // Absolute, and pointing at a directory inside this very workspace. Since
+    // 2026-08-28 that is refused too — see the narrowing below.
+    std::os::unix::fs::symlink(
+        bridge.workspace.join("src"),
+        bridge.workspace.join("spelled_out"),
+    )
+    .expect("symlink");
     let mut wire = bridge.connect();
 
     assert_eq!(
@@ -293,9 +299,27 @@ fn a_symlink_out_of_the_workspace_is_refused_and_one_that_stays_in_is_not() {
         "outside_workspace"
     );
     // The control beside it, without which a guard that refused every link
-    // would look exactly like one that works.
+    // would look exactly like one that works. It is a **relative** link now:
+    // the boundary resolves with `RESOLVE_BENEATH`, and the kernel contains a
+    // relative link by construction.
     let inside = wire.ask("read", &["code/greeting.rs"]);
     assert_eq!(answered(&inside)["ok"], serde_json::json!(true), "{inside}");
+
+    // The narrowing, asserted rather than left as a surprise. An **absolute**
+    // symlink is resolved against the host's root, and deciding whether it
+    // lands inside the workspace means resolving it in userspace first — which
+    // is the two-step check the anchor exists to get rid of. So the kernel
+    // refuses all of them, including ones that would have landed inside.
+    //
+    // The direction of the loss is the one to accept, and it is the same
+    // trade `crates/thalyx-core/src/api.rs` made for modules: an agent is
+    // refused something it should have been allowed, which somebody notices
+    // and reports, rather than allowed something it should have been refused,
+    // which nobody notices at all.
+    assert_eq!(
+        refused(&wire.ask("read", &["spelled_out/greeting.rs"])),
+        "outside_workspace"
+    );
 }
 
 #[test]

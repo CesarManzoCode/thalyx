@@ -142,7 +142,31 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
     let action = words.next().unwrap_or("").trim();
     let argument = words.next().unwrap_or("").trim();
 
-    let mut text = match Text::open(&path) {
+    // Two anchors and both are needed. The first proves the *file* resolves
+    // inside the workspace — `RESOLVE_BENEATH` refuses a link that leaves, and
+    // that is the check `Text::open`'s deliberate symlink-following would
+    // otherwise walk straight past. The second is what gets opened: the file's
+    // *parent*, pinned, with the name appended, because `Text::save` stages a
+    // temporary beside the file and renames it — and a descriptor path with no
+    // usable parent has nowhere to stage.
+    //
+    // For the person's session both are the path itself and this costs a clone.
+    let opened = match here
+        .anchor(&path)
+        .and_then(|_| here.anchor_parent(&path))
+        .map_err(|error| {
+            thalyx_edit::EditError::Absent(
+                error
+                    .path()
+                    .unwrap_or(std::path::Path::new(""))
+                    .to_path_buf(),
+            )
+        }) {
+        Ok(anchored) => anchored,
+        Err(error) => return refuse(op_of(rehearsing), &error, face).map(|()| Opens::Nothing),
+    };
+
+    let mut text = match Text::open_anchored(opened.path(), &path) {
         Ok(text) => text,
         Err(error) => return refuse(op_of(rehearsing), &error, face).map(|()| Opens::Nothing),
     };

@@ -335,7 +335,21 @@ impl ExternalAgentSession {
                 format!("{} is not a directory", real.display()),
             ));
         }
+        // The kernel's copy of the boundary, opened once and held for the life
+        // of the session. Everything below is still checked as a name — that is
+        // what produces a legible refusal — but the *opens* go through this,
+        // which is what makes the boundary a boundary rather than a comparison
+        // somebody can invalidate. See `crate::confine`.
+        let confinement = crate::confine::Confinement::of(&real).map_err(|error| {
+            Refusal::new(
+                "unreadable",
+                "import_a_project",
+                format!("{} could not be held open: {error}", real.display()),
+            )
+        })?;
+
         let mut here = Where::start();
+        here.confine(confinement);
         // Not `Where::start()`'s /home: the agent stands in its workspace, and
         // it is `here` that decides which subvolume `intento` is about and which
         // tree `encontrar` walks when nobody named one.
@@ -719,49 +733,63 @@ fn inside(here: &Where, workspace: &Path, named: &str) -> Result<PathBuf, Refusa
         ));
     }
 
-    // Now the real one. Walk up to the deepest thing that exists and ask the
-    // kernel where it really is.
+    // Now the real one, and it is the kernel's rather than this program's.
+    //
+    // Until 2026-08-28 this walked up to the deepest existing component,
+    // `canonicalize`d it, compared the answer against the workspace and let the
+    // verb open the original name all over again. Every step was right and the
+    // sequence was still wrong, because between the comparison and the open
+    // there is a moment: a test that swapped `src` for a link to another tree
+    // while an agent read `src/main.rs` got 57 files from outside the workspace
+    // in 4000 reads.
+    //
+    // So the answer comes from `openat2` with `RESOLVE_BENEATH` against a
+    // descriptor for the workspace, held open since the session opened, and the
+    // same anchor is what the verb opens — `crate::confine`. What this call is
+    // for now is the *refusal*: the anchor knows a path is outside and does not
+    // know how to say so with a remedy, and an agent handed "is not there"
+    // about a file that is there would go looking for the wrong thing.
+    // A path being created names something that is not there — often several
+    // levels of it, `crear src/new/deep/file.rs` — so the question is asked of
+    // the deepest **existing** prefix, exactly as the walk it replaces did. What
+    // changed is who answers: `openat2` and not `canonicalize`.
+    // `locate` and not `anchor`, because this is the one place that has to tell
+    // *outside* from *not there*. A walk that could not would climb straight
+    // past a symlink pointing out — `out` is refused, so ask about the
+    // workspace root, which is fine — and answer that `out/passwd` is inside.
     let mut probe = asked.clone();
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let real = loop {
-        match std::fs::canonicalize(&probe) {
-            Ok(real) => break real,
-            Err(_) => match probe.file_name() {
-                Some(name) => {
-                    tail.push(name.to_os_string());
-                    probe.pop();
-                }
-                // Reached `/` without finding anything that exists, which cannot
-                // happen on a running machine. Refused rather than assumed.
-                None => {
-                    return Err(Refusal::new(
-                        "unreadable",
-                        "cannot",
-                        format!("nothing along {} could be resolved", asked.display()),
-                    ));
-                }
-            },
+    loop {
+        match here.locate(&probe) {
+            Ok(()) => return Ok(asked),
+            // Not there. Ask about its parent, which is what a path being made
+            // requires to be inside and all it requires.
+            Err(crate::confine::NotAnchored::Absent) => {}
+            Err(crate::confine::NotAnchored::Outside) => break,
+            Err(crate::confine::NotAnchored::Unreadable(error)) => {
+                return Err(Refusal::new("unreadable", "cannot", error.to_string()));
+            }
         }
-    };
-
-    if !real.starts_with(workspace) {
-        return Err(Refusal::new(
-            "outside_workspace",
-            "name_a_path_inside",
-            format!(
-                "{} really is {}, which is outside {}",
-                asked.display(),
-                real.display(),
-                workspace.display()
-            ),
-        ));
+        // The workspace root itself is asked about like any other prefix — it
+        // is what `crear made.txt` needs to be inside, and stopping one step
+        // short of it refused every file made at the top of a workspace.
+        if !probe.pop() || !probe.starts_with(workspace) {
+            break;
+        }
     }
 
-    let mut resolved = real;
-    for name in tail.iter().rev() {
-        resolved.push(name);
-    }
-    Ok(resolved)
+    Err(Refusal::new(
+        "outside_workspace",
+        "name_a_path_inside",
+        format!(
+            "{asked_display} does not resolve inside {workspace_display}. \
+             A symlink pointing out of the workspace — and an absolute symlink of \
+             any kind, including one that would have landed inside — is refused by \
+             the kernel during resolution rather than followed and checked \
+             afterwards, because a check that is not the open is not a check",
+            asked_display = asked.display(),
+            workspace_display = workspace.display()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -781,6 +809,130 @@ mod tests {
     fn refuse(session: &ExternalAgentSession, named: &str) -> Refusal {
         inside(&session.here, &session.real_workspace, named)
             .expect_err(&format!("`{named}` should not be reachable"))
+    }
+
+    /// A component of the path becomes a link somewhere else, mid-request.
+    ///
+    /// This is the test that found the defect, and it found it because it is
+    /// the only shape that can: every static check in this file passed on every
+    /// one of those requests. `src` is a real directory when the boundary looks
+    /// and a symlink to another tree when the verb opens, and before the
+    /// session was anchored **57 of 4000 reads came back with a file from
+    /// outside the workspace**.
+    ///
+    /// One-sided on purpose, which is rule 7. A run where the swapper never won
+    /// the race proves nothing, so the assertion is on the direction ambient
+    /// noise cannot reach: **zero** escapes, ever. The refusal count beside it
+    /// is the control — a run where the swapper did nothing would also score
+    /// zero escapes, and would score zero refusals with it.
+    fn a_swapped_component_never_reaches_outside(verb: &str, arguments: &[&str]) -> (usize, usize) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir_all(outside.path().join("src")).unwrap();
+        std::fs::write(outside.path().join("src/main.rs"), "SECRET FROM OUTSIDE\n").unwrap();
+        // The same words in a *name*, not only in a file's contents. Without
+        // this the detector below is blind to `list`, whose answer carries
+        // names and never bytes — and a leak that only `list` can produce would
+        // pass a test that only looks for contents.
+        std::fs::write(outside.path().join("src/SECRET FROM OUTSIDE"), "x\n").unwrap();
+        let sentinel = outside.path().join("src/main.rs");
+
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut session = ExternalAgentSession::open(root.path()).expect("open");
+        let store = Store::open(root.path().join(".store")).expect("store");
+
+        let real_src = root.path().join("src");
+        let away = outside.path().join("src");
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let swapper = std::thread::spawn(move || {
+            let spare = real_src.with_file_name("src.real");
+            while !flag.load(Ordering::Relaxed) {
+                let _ = std::fs::rename(&real_src, &spare);
+                let _ = std::os::unix::fs::symlink(&away, &real_src);
+                let _ = std::fs::remove_file(&real_src);
+                let _ = std::fs::rename(&spare, &real_src);
+            }
+        });
+
+        let arguments: Vec<String> = arguments.iter().map(|a| a.to_string()).collect();
+        let mut refusals = 0;
+        let mut answers = 0;
+        let mut read_from_outside = 0;
+        for _ in 0..4000 {
+            match session.answer(&store, verb, &arguments) {
+                Ok(value) => {
+                    answers += 1;
+                    if serde_json::to_string(&value)
+                        .unwrap()
+                        .contains("SECRET FROM OUTSIDE")
+                    {
+                        read_from_outside += 1;
+                    }
+                }
+                Err(_) => refusals += 1,
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+
+        assert_eq!(
+            read_from_outside, 0,
+            "`{verb}` read {read_from_outside} files from outside the workspace"
+        );
+        // The other half, and the one a read-only check would miss: whatever
+        // the verb did, it did not do it to the file outside.
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "SECRET FROM OUTSIDE\n",
+            "`{verb}` changed a file outside the workspace"
+        );
+        assert!(
+            sentinel.exists(),
+            "`{verb}` deleted a file outside the workspace"
+        );
+        (answers, refusals)
+    }
+
+    #[test]
+    fn reading_through_a_component_being_swapped_never_leaves_the_workspace() {
+        let (answers, refusals) =
+            a_swapped_component_never_reaches_outside("read", &["src/main.rs"]);
+        // The control. Without it this passes on a machine where the swapper
+        // thread never got scheduled, which is a test of nothing.
+        assert!(
+            refusals > 0,
+            "no request was ever refused, so the swap never happened and this measured nothing"
+        );
+        assert!(
+            answers > 0,
+            "every request was refused, so a boundary that refuses everything would pass this"
+        );
+    }
+
+    #[test]
+    fn editing_through_a_component_being_swapped_never_leaves_the_workspace() {
+        // Worse than a read if it leaks: this one writes. The edit itself is a
+        // no-op replacement of line 1, so what is being measured is where the
+        // write lands and not what it says.
+        a_swapped_component_never_reaches_outside(
+            "edit",
+            &["src/main.rs", "replace", "1", "fn main() {}"],
+        );
+    }
+
+    #[test]
+    fn removing_through_a_component_being_swapped_never_leaves_the_workspace() {
+        a_swapped_component_never_reaches_outside("remove", &["src/main.rs"]);
+    }
+
+    #[test]
+    fn listing_through_a_component_being_swapped_never_leaves_the_workspace() {
+        a_swapped_component_never_reaches_outside("list", &["src"]);
     }
 
     #[test]
@@ -880,7 +1032,22 @@ mod tests {
         std::os::unix::fs::symlink("/etc", root.path().join("out")).expect("symlink");
         let refusal = refuse(&session, "out/passwd");
         assert_eq!(refusal.word, "outside_workspace");
-        assert!(refusal.message.contains("/etc"), "{}", refusal.message);
+        // The message names what the agent asked for and the workspace, and
+        // deliberately not what the link pointed at. Since the boundary became
+        // `openat2` there is nothing to name: the kernel refused during
+        // resolution and never told anybody where it would have gone. Telling
+        // an agent that its link led to `/etc` would be handing it a fact about
+        // a filesystem it may not see, in the refusal for trying to see it.
+        assert!(
+            refusal.message.contains("out/passwd"),
+            "{}",
+            refusal.message
+        );
+        assert!(
+            !refusal.message.contains("/etc/passwd"),
+            "the refusal told the agent where its link pointed: {}",
+            refusal.message
+        );
     }
 
     #[test]
@@ -888,10 +1055,22 @@ mod tests {
         // The control. Without it a guard that refused everything would look
         // exactly like one that works — rule 4 of `CLAUDE.md`.
         let (root, session) = workspace();
-        std::os::unix::fs::symlink(root.path().join("src"), root.path().join("code"))
-            .expect("symlink");
+        std::os::unix::fs::symlink("src", root.path().join("code")).expect("symlink");
         inside(&session.here, &session.real_workspace, "code/main.rs")
             .expect("a link that stays inside is inside");
+
+        // And the narrowing that came with the kernel doing the resolving: the
+        // same link, spelled absolutely, is refused. `RESOLVE_BENEATH` refuses
+        // every absolute symlink, because deciding whether one lands inside
+        // means resolving it in userspace first — which is the two-step check
+        // this boundary exists to stop making. Asserted so that the loss is a
+        // decision on the record rather than a surprise in somebody's project.
+        std::os::unix::fs::symlink(root.path().join("src"), root.path().join("spelled_out"))
+            .expect("symlink");
+        assert_eq!(
+            refuse(&session, "spelled_out/main.rs").word,
+            "outside_workspace"
+        );
     }
 
     #[test]
