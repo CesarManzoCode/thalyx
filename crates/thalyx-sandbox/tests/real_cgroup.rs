@@ -206,6 +206,68 @@ fn reusing_a_module_cgroup_keeps_the_same_identity() {
     first.remove().expect("remove");
 }
 
+/// The race, against a real cgroup, with a real process in it.
+///
+/// The unit test in `lib.rs` holds the state a fake can hold: two confinements
+/// established, nothing in the cgroup. This one holds the state that matters on
+/// a machine — one run's module **actually running** while another run of the
+/// same module ends — and asks whether the policy enforcing it survives.
+///
+/// It is the interleaving the audit of 2026-08-28 described, and the reason it
+/// is worth a real cgroup: the emptiness check that used to decide is a
+/// question about the kernel, and on a fake it is a question about a text file.
+#[test]
+fn a_run_ending_does_not_strip_the_policy_from_a_module_another_run_is_running() {
+    let Some(arena) = arena("concurrent-release") else {
+        return;
+    };
+    let store = MemoryStore::new();
+
+    let establish = || {
+        Confinement::establish(
+            &store,
+            &arena.0,
+            "org.thalyx.demo",
+            profile::resolve(profile::DIAGNOSTIC).unwrap(),
+            &[permission("net", "outbound")],
+            0,
+            0,
+        )
+        .expect("establish")
+    };
+
+    let first = establish();
+    let id = first.cgroup_id();
+    let second = establish();
+
+    // The second run's module, in the cgroup and alive — which is what makes
+    // this different from the unit test and from the empty-cgroup case.
+    let mut module = sleeper();
+    second
+        .cgroup()
+        .join(module.id())
+        .expect("the module joins its cgroup");
+
+    assert!(
+        !first.release().expect("release"),
+        "the first run tore down a confinement enforcing a running module"
+    );
+    assert!(
+        store.get(id).expect("read").is_some(),
+        "the policy was withdrawn from under a module that is running under it"
+    );
+
+    let _ = module.kill();
+    let _ = module.wait();
+
+    assert!(
+        second.release().expect("release"),
+        "the last run out did not tear down"
+    );
+    assert!(store.get(id).expect("read").is_none());
+    assert!(!arena.0.join("org.thalyx.demo").exists());
+}
+
 fn inode(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).expect("metadata").ino()
