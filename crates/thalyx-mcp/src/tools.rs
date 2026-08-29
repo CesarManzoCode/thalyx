@@ -71,6 +71,30 @@ fn optional(arguments: &Value, name: &str) -> Option<String> {
     }
 }
 
+/// The files a substitution names, from `paths` or from the single `path`.
+///
+/// Both spellings are read because both are natural to write and refusing one
+/// of them would cost a whole turn to learn. What is not accepted is neither:
+/// an empty list is a call that names no file, and answering it with a
+/// substitution across nothing would be this adapter inventing a meaning the
+/// machine does not have.
+fn paths(arguments: &Value) -> Result<Vec<String>, String> {
+    if let Some(Value::Array(listed)) = arguments.get("paths") {
+        let named: Vec<String> = listed
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_string))
+            .collect();
+        if named.len() != listed.len() {
+            return Err("every entry of `paths` must be a string".to_string());
+        }
+        if !named.is_empty() {
+            return Ok(named);
+        }
+        return Err("`paths` is empty; name at least one file to change".to_string());
+    }
+    Ok(vec![text(arguments, "path")?])
+}
+
 /// A window flag, when the caller asked for one.
 fn limit(arguments: &Value) -> Option<String> {
     arguments
@@ -358,18 +382,40 @@ with none, it answers that none is open.",
         name: "thalyx_edit",
         verbs: &["edit"],
         description: "\
-Change a file by line. `insert` puts text before a line, `replace` swaps a line \
-or a range of lines, `delete` removes them, `show` returns numbered lines. \
-Line numbers are 1-based and a range is `3-7`. Use \\n in the text for more \
-than one line. Every answer carries the exact call that undoes it.",
+Change a file. Use `substitute` for anything repeated or mechanical — a rename, \
+a changed constant, a moved import: it replaces an exact string everywhere it \
+occurs, across every file you name, in one call, and it tells you how many \
+places in each. It matches text and not symbols, so confirm the name with \
+thalyx_symbol first. The line actions are for surgical changes: `insert` puts \
+text before a line, `replace` swaps a line or a range (`3-7`), `delete` removes \
+them, `show` returns numbered lines; use \\n in the text for more than one \
+line. Nothing is written unless every named file passes, so a file the text is \
+not in refuses the whole call and changes nothing. Every answer carries its undo.",
         schema: || {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Relative to the workspace root."},
+                    "path": {
+                        "type": "string",
+                        "description": "Relative to the workspace root. For the line actions."
+                    },
                     "action": {
                         "type": "string",
-                        "enum": ["show", "insert", "replace", "delete"]
+                        "enum": ["substitute", "show", "insert", "replace", "delete"]
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For substitute: every file to change. Each must \
+                                        contain the text, or nothing is written."
+                    },
+                    "old": {
+                        "type": "string",
+                        "description": "For substitute: the exact text to find. One line."
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "For substitute: what replaces it. One line."
                     },
                     "at": {
                         "type": "string",
@@ -380,11 +426,28 @@ than one line. Every answer carries the exact call that undoes it.",
                         "description": "What goes in. \\n for a line break, \\t for a tab."
                     }
                 },
-                "required": ["path", "action"]
+                "required": ["action"]
             })
         },
         calls: |arguments| {
-            let mut given = vec![text(arguments, "path")?, text(arguments, "action")?];
+            let action = text(arguments, "action")?;
+            // The one action whose arguments are not a line and a body. Composed
+            // here and nowhere else: this is still only a translation — the
+            // machine decides what a substitution is, refuses it, and counts it.
+            if action == "substitute" {
+                let named = paths(arguments)?;
+                let (first, rest) = named.split_first().expect("`paths` is never empty here");
+                let mut given = vec![
+                    first.clone(),
+                    action,
+                    text(arguments, "old")?,
+                    text(arguments, "new")?,
+                ];
+                given.extend(rest.iter().cloned());
+                return Ok(vec![("edit", given)]);
+            }
+
+            let mut given = vec![text(arguments, "path")?, action];
             if let Some(at) = optional(arguments, "at") {
                 given.push(at);
             }
@@ -526,6 +589,77 @@ mod tests {
                 ]
             )]
         );
+    }
+
+    #[test]
+    fn a_substitution_becomes_one_edit_call_naming_every_file() {
+        // The adapter's whole job, and the shape that matters: **one** request,
+        // whatever the file count. If this ever became one request per file the
+        // measurement that motivated the operation would be back where it was,
+        // with the loop moved from the model into this process.
+        let calls = (TOOLS
+            .iter()
+            .find(|t| t.name == "thalyx_edit")
+            .unwrap()
+            .calls)(&json!({
+            "action": "substitute",
+            "old": "UidRegistry",
+            "new": "UidRegistryRenamed",
+            "paths": ["core/src/uids.rs", "core/src/run.rs", "cli/src/render.rs"],
+        }))
+        .expect("a substitution");
+
+        assert_eq!(
+            calls,
+            vec![(
+                "edit",
+                vec![
+                    "core/src/uids.rs".to_string(),
+                    "substitute".to_string(),
+                    "UidRegistry".to_string(),
+                    "UidRegistryRenamed".to_string(),
+                    "core/src/run.rs".to_string(),
+                    "cli/src/render.rs".to_string(),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_substitution_that_names_no_file_is_refused_here_rather_than_invented() {
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        // An empty list is a call that means nothing, and an adapter that
+        // quietly turned it into "every file" or into "no files, ok" would be
+        // deciding something the machine never said.
+        assert!(
+            (edit.calls)(&json!({
+                "action": "substitute", "old": "a", "new": "b", "paths": []
+            }))
+            .is_err()
+        );
+        // And the single-file spelling still works, because both are natural to
+        // write and refusing one costs a whole turn to find out which.
+        let calls = (edit.calls)(&json!({
+            "action": "substitute", "old": "a", "new": "b", "path": "src/x.rs"
+        }))
+        .expect("one file is enough");
+        assert_eq!(calls[0].1[0], "src/x.rs");
+        assert_eq!(calls[0].1[1], "substitute");
+    }
+
+    #[test]
+    fn the_edit_tool_tells_the_model_which_of_its_two_shapes_to_reach_for() {
+        // Point 8 of the delivery this came from: a better operation the model
+        // never picks buys nothing. The description is the only thing that
+        // decides, so it has to name the case — repeated, mechanical, many
+        // files — and it has to warn that this matches text and not symbols.
+        let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
+        for taught in ["substitute", "mechanical", "one call", "thalyx_symbol"] {
+            assert!(
+                edit.description.contains(taught),
+                "the edit description never mentions `{taught}`"
+            );
+        }
     }
 
     #[test]

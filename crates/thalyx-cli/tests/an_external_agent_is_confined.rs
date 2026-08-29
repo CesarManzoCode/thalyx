@@ -594,3 +594,144 @@ fn what_the_external_agent_changed_is_in_the_journal_and_says_where_it_came_from
         "a read that changed nothing was journalled:\n{after}"
     );
 }
+
+#[test]
+fn one_substitution_through_the_bridge_changes_every_file_it_named() {
+    // What the whole delivery is for, driven the way the host drives it. The
+    // fixture's two files are in two directories and the name is in both, which
+    // is the shape `dev/bench-external-agent.sh --task reversible` measures.
+    let bridge = Bridge::open();
+    let mut wire = bridge.connect();
+
+    let answer = wire.ask(
+        "edit",
+        &[
+            "src/main.rs",
+            "substitute",
+            "greet",
+            "salute",
+            "src/greeting.rs",
+        ],
+    );
+    let said = answered(&answer);
+    assert_eq!(said["ok"], serde_json::json!(true), "{said}");
+    assert_eq!(said["did"], serde_json::json!("substituted"));
+    assert_eq!(said["files"], serde_json::json!(2));
+    assert_eq!(said["replacements"], serde_json::json!(4));
+
+    // Read with something that is not Thalyx — and read as the demonstration
+    // that this matches text and not symbols. `greet` is inside `greeting`, so
+    // the module name moved too. That is what was asked for, and it is why the
+    // tool description sends a caller to `thalyx_symbol` first.
+    let main = std::fs::read_to_string(bridge.workspace.join("src/main.rs")).unwrap();
+    assert!(main.contains("mod saluteing;"), "{main}");
+    assert!(main.contains("saluteing::salute("), "{main}");
+    assert!(
+        std::fs::read_to_string(bridge.workspace.join("src/greeting.rs"))
+            .unwrap()
+            .contains("pub fn salute(")
+    );
+}
+
+#[test]
+fn a_second_file_outside_the_workspace_is_refused_the_way_the_first_one_is() {
+    // The repeating slot is guarded exactly as the leading one. Without this
+    // the operation would have added a way to name a file outside the workspace
+    // that the boundary had never been asked about — every path after the first.
+    let bridge = Bridge::open();
+    let mut wire = bridge.connect();
+    let outside = bridge
+        .workspace
+        .parent()
+        .unwrap()
+        .join("secret.txt")
+        .display()
+        .to_string();
+
+    let answer = wire.ask(
+        "edit",
+        &["src/main.rs", "substitute", "greeting", "x", &outside],
+    );
+    assert_eq!(refused(&answer), "outside_workspace");
+    // And the file it *was* allowed to touch is untouched, because the refusal
+    // happened before the verb ran at all.
+    let main = std::fs::read_to_string(bridge.workspace.join("src/main.rs")).unwrap();
+    assert!(main.contains("mod greeting;"), "{main}");
+    assert_eq!(
+        std::fs::read_to_string(bridge.workspace.parent().unwrap().join("secret.txt")).unwrap(),
+        "not the agent's\n"
+    );
+}
+
+#[test]
+fn a_relative_path_that_climbs_out_is_refused_wherever_it_sits_in_the_call() {
+    let bridge = Bridge::open();
+    let mut wire = bridge.connect();
+    let answer = wire.ask(
+        "edit",
+        &[
+            "src/main.rs",
+            "substitute",
+            "greeting",
+            "x",
+            "../secret.txt",
+        ],
+    );
+    assert_eq!(refused(&answer), "outside_workspace");
+}
+
+#[test]
+fn texts_with_spaces_in_them_arrive_as_two_arguments_and_not_as_four() {
+    // The composition, checked where it is actually composed. `editar` puts the
+    // rest of its line on unquoted for the line subverbs — which is what a body
+    // with leading spaces needs — and this subverb is the exception. If it were
+    // not, `fn greet` would arrive as `fn` and `greet` and the machine would
+    // substitute the wrong thing without anybody being told.
+    let bridge = Bridge::open();
+    let mut wire = bridge.connect();
+
+    let answer = wire.ask(
+        "edit",
+        &[
+            "src/greeting.rs",
+            "substitute",
+            "pub fn greet",
+            "pub fn say_hello",
+        ],
+    );
+    let said = answered(&answer);
+    assert_eq!(said["ok"], serde_json::json!(true), "{said}");
+    assert_eq!(said["replacements"], serde_json::json!(1));
+    assert!(
+        std::fs::read_to_string(bridge.workspace.join("src/greeting.rs"))
+            .unwrap()
+            .contains("pub fn say_hello(who: &str)")
+    );
+}
+
+#[test]
+fn a_substitution_the_bridge_refuses_leaves_every_file_it_named_alone() {
+    let bridge = Bridge::open();
+    let mut wire = bridge.connect();
+    let before = std::fs::read_to_string(bridge.workspace.join("src/main.rs")).unwrap();
+
+    // `src/greeting.rs` has no `mod ` in it, so the whole call has to refuse.
+    let answer = wire.ask(
+        "edit",
+        &[
+            "src/main.rs",
+            "substitute",
+            "mod ",
+            "module ",
+            "src/greeting.rs",
+        ],
+    );
+    let said = answered(&answer);
+    assert_eq!(said["ok"], serde_json::json!(false), "{said}");
+    assert_eq!(said["error"], serde_json::json!("no_occurrences"));
+    assert_eq!(said["wrote"], serde_json::json!(false));
+    assert_eq!(
+        std::fs::read_to_string(bridge.workspace.join("src/main.rs")).unwrap(),
+        before
+    );
+}

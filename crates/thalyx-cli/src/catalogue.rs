@@ -213,7 +213,18 @@ pub const VERBS: &[Verb] = &[
         // The file first, then what to do to it. A caller reading this table
         // learns that `editar <path>` alone is a legal line, which is the form
         // that opens a screen and the one a program must not use.
-        takes: &["path", "ver|poner|cambiar|borrar", "line|line-line", "text"],
+        //
+        // The last two slots are read differently by the last subverb, and this
+        // is the honest way to say so in a table of positions: for `sustituir`
+        // they are the text to find and the text to put in its place, and every
+        // name after them is another file to do the same thing in.
+        takes: &[
+            "path",
+            "ver|poner|cambiar|borrar|sustituir",
+            "line|line-line|old-text",
+            "text|new-text",
+            "path...",
+        ],
         flags: &[],
         answers: Some("edit"),
         changes: true,
@@ -231,8 +242,19 @@ pub const VERBS: &[Verb] = &[
             // something about: it asked for the screen, and there is none.
             "no_screen",
             "unknown_action",
+            // The six a substitution can produce, and every one of them means
+            // nothing was written. `no_occurrences` is the one a caller meets
+            // most: it named a file the text is not in, and the answer says
+            // which file.
+            "bad_text",
+            "same_text",
+            "no_occurrences",
+            "too_much",
+            "repeated_path",
+            "incomplete",
         ],
-        summary: "Change the text in a file, by line for a program or on a screen for a person.",
+        summary: "Change the text in a file: by line, by exact substitution across several \
+                  files, or on a screen for a person.",
     },
     Verb {
         id: "structured",

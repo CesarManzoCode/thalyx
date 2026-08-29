@@ -82,8 +82,28 @@ pub enum Opens {
 
 /// The subverbs, in both spellings, and the order they are offered in.
 pub const ACTIONS: &[&str] = &[
-    "ver", "show", "poner", "insert", "cambiar", "replace", "borrar", "delete",
+    "ver",
+    "show",
+    "poner",
+    "insert",
+    "cambiar",
+    "replace",
+    "borrar",
+    "delete",
+    // The one that is not addressed by line. It is last because it is the
+    // newest and not because it is the least used — for a mechanical change it
+    // is the one to reach for, and `describe` says so.
+    "sustituir",
+    "substitute",
 ];
+
+/// The two spellings of the subverb that addresses text instead of a line.
+///
+/// Its own constant because three places have to agree about it — the parser
+/// here, the external boundary's decision about how to put the arguments on the
+/// line, and the tests — and three copies of two strings is how one of them
+/// keeps the old spelling after a rename.
+pub const SUBSTITUTE: &[&str] = &["sustituir", "substitute"];
 
 /// How many lines one `ver` answers with when nobody said.
 ///
@@ -137,10 +157,46 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
         return which_file(face).map(|()| Opens::Nothing);
     }
 
+    // The subverb is read as a *word* and the rest of the line is not.
+    //
+    // It used to be a raw split on the first space, which is nearly the same
+    // thing and is wrong in exactly one place: the external boundary composes
+    // this line, and for `sustituir` it has to quote what follows — two exact
+    // strings, either of which may hold a space. Quoting them means the subverb
+    // arrives quoted too, and a raw split would look for a subverb called
+    // `'sustituir'`, which no machine has. Reading it with the same scanner
+    // that read the file name costs nothing and makes both spellings work.
+    //
+    // What must **not** become words is everything after it: the third part is
+    // content going into a file, and `words.rs` calls that the one carve-out.
+    let taken = match crate::words::first(after) {
+        Ok(taken) => taken,
+        Err(why) => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    op_of(rehearsing),
+                    why.word(),
+                    why.remedy(),
+                    &why.to_string(),
+                ));
+            } else {
+                println!("\n  {why}\n");
+            }
+            return Ok(Opens::Nothing);
+        }
+    };
+    let action = taken.as_ref().map(|(word, _)| word.as_str()).unwrap_or("");
+    let argument = taken.as_ref().map(|(_, rest)| rest.trim()).unwrap_or("");
+
+    // Answered before the file is opened, because this subverb has no *one*
+    // file: the name before it is the first of a list, and opening it here
+    // would mean opening it twice and refusing the second as a repeat.
+    if SUBSTITUTE.contains(&action) {
+        return substitute(here, named.as_str(), argument, face, rehearsing)
+            .map(|()| Opens::Nothing);
+    }
+
     let path = thalyx_files::resolve(here.at(), named.as_str());
-    let mut words = after.splitn(2, char::is_whitespace);
-    let action = words.next().unwrap_or("").trim();
-    let argument = words.next().unwrap_or("").trim();
 
     // Two anchors and both are needed. The first proves the *file* resolves
     // inside the workspace — `RESOLVE_BENEATH` refuses a link that leaves, and
@@ -359,6 +415,279 @@ fn change(
             );
         }
         println!("  To take this back, it had to have been inside an `intento`.\n");
+    }
+    Ok(())
+}
+
+/// `editar <archivo> sustituir <viejo> <nuevo> [más archivos…]` — one exact
+/// substitution, everywhere it occurs, across every file named.
+///
+/// ## Why this exists, and what it is not
+///
+/// It comes out of a measurement rather than a wish.
+/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md` records what the same
+/// model did to the same mechanical rename on Linux and on Thalyx: on Linux one
+/// call per file, because its editor can replace every occurrence in a file at
+/// once; here sixteen calls, one per place, each carrying the whole new text of
+/// a line. Every property Thalyx was being measured for held — the workspace
+/// boundary, the reversibility, the structured answers — and the *granularity*
+/// of the write surface cost a third of the wall clock and half again as many
+/// tokens out of the model.
+///
+/// So this is the shape that was missing and nothing more. It is **not** a
+/// rename: nothing here knows what a symbol is, and the same characters in a
+/// comment, a string or a longer identifier are matched exactly as the
+/// definition is. Calling it `renombrar` would be a promise this machine's index
+/// cannot keep today — see `thalyx_edit::Text::substitute`.
+///
+/// ## Preflight, then write, and never the other order
+///
+/// Every file is opened, counted and checked **before** any of them is written.
+/// A file that is not there, is not text, is over the ceiling, was named twice,
+/// or does not contain the text at all stops the whole call with nothing
+/// changed. That is the answer that costs a caller one corrected call; the
+/// alternative — change four files and refuse the fifth — costs it a
+/// reconstruction, and rule 9 says which of those to pick.
+///
+/// What preflight cannot promise is the write itself: a disk that fills between
+/// the third save and the fourth leaves three files changed. Each save is
+/// atomic on its own, so nothing is half-written, and the answer then says
+/// exactly which files carry the new text and which do not. Nothing here builds
+/// a transaction to avoid that — `intento` is the transaction, it is proven on
+/// real hardware, and a second weaker one beside it is the thing
+/// `Principio-Doble-Ruta` calls drift.
+fn substitute(
+    here: &Where,
+    first_named: &str,
+    rest: &str,
+    face: Face,
+    rehearsing: bool,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let op = op_of(rehearsing);
+    let Some(words) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    if words.len() < 2 {
+        return refuse_substitution(
+            op,
+            &EditError::Incomplete {
+                needs: "`sustituir` needs the text to replace and the text to put in its \
+                        place: editar <archivo> sustituir <viejo> <nuevo> [más archivos…]",
+            },
+            face,
+        );
+    }
+    let old = words[0].as_str().to_string();
+    let new = words[1].as_str().to_string();
+
+    // Asked before a single file is opened. A caller that sent the same string
+    // twice, or one with a line break in it, has asked for something no file
+    // can answer, and opening sixty-four of them to find that out is sixty-four
+    // opens spent on a refusal that was decidable from the arguments.
+    if let Err(error) = thalyx_edit::substitutable(&old, &new) {
+        return refuse_substitution(op, &error, face);
+    }
+
+    let mut named: Vec<String> = Vec::with_capacity(words.len() - 1);
+    named.push(first_named.to_string());
+    named.extend(words[2..].iter().map(|word| word.as_str().to_string()));
+    if named.len() > thalyx_edit::MOST_FILES {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "files named in one substitution",
+                given: named.len(),
+                most: thalyx_edit::MOST_FILES,
+            },
+            face,
+        );
+    }
+
+    // Held open for the whole call, and that is load-bearing rather than tidy:
+    // for a confined session the anchor *is* the descriptor the kernel resolved
+    // inside the workspace, `Text::save` stages beside it, and dropping it after
+    // the preflight would mean saving through a path that has to be resolved a
+    // second time — which is the precise shape of the check-then-reopen this
+    // boundary was hardened to stop.
+    let mut held: Vec<(crate::confine::Anchored, Text)> = Vec::with_capacity(named.len());
+    let mut seen: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
+    let mut total = 0usize;
+
+    for name in &named {
+        let path = thalyx_files::resolve(here.at(), name);
+        let anchored = match here
+            .anchor(&path)
+            .and_then(|_| here.anchor_parent(&path))
+            .map_err(|error| {
+                EditError::Absent(
+                    error
+                        .path()
+                        .unwrap_or(std::path::Path::new(""))
+                        .to_path_buf(),
+                )
+            }) {
+            Ok(anchored) => anchored,
+            Err(error) => return refuse_substitution(op, &error, face),
+        };
+
+        let text = match Text::open_anchored(anchored.path(), &path) {
+            Ok(text) => text,
+            Err(error) => return refuse_substitution(op, &error, face),
+        };
+
+        // Identity and not the name. Two names for one file — a symlink, a hard
+        // link, `./src/x.rs` beside `src/x.rs` — would each be substituted
+        // against the text as it was before the call, and the second save would
+        // silently throw the first away.
+        match std::fs::metadata(anchored.path()) {
+            Ok(meta) => {
+                if !seen.insert((meta.dev(), meta.ino())) {
+                    return refuse_substitution(op, &EditError::RepeatedPath { path }, face);
+                }
+            }
+            Err(error) => {
+                return refuse_substitution(
+                    op,
+                    &EditError::Unreadable {
+                        path,
+                        detail: error.to_string(),
+                    },
+                    face,
+                );
+            }
+        }
+
+        let found = text.occurrences(&old);
+        if found == 0 {
+            return refuse_substitution(op, &EditError::NoOccurrences { path, old }, face);
+        }
+        total += found;
+        held.push((anchored, text));
+    }
+
+    if total > thalyx_edit::MOST_REPLACEMENTS {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "places to change in one substitution",
+                given: total,
+                most: thalyx_edit::MOST_REPLACEMENTS,
+            },
+            face,
+        );
+    }
+
+    let mut done: Vec<thalyx_edit::Substituted> = Vec::with_capacity(held.len());
+    for index in 0..held.len() {
+        let outcome = {
+            let (_, text) = &mut held[index];
+            match text.substitute(&old, &new) {
+                // The save is what makes this the same transaction shape every
+                // other structured edit has: nothing is left open between one
+                // typed line and the next.
+                Ok(one) if !rehearsing => text.save().map(|_| one),
+                other => other,
+            }
+        };
+        match outcome {
+            Ok(one) => done.push(one),
+            Err(error) => {
+                let left: Vec<std::path::PathBuf> = held[index..]
+                    .iter()
+                    .map(|(_, text)| text.path().to_path_buf())
+                    .collect();
+                return half_done(op, &old, &new, &done, &left, &error, face);
+            }
+        }
+    }
+
+    if face.is_machine() {
+        face.say(if rehearsing {
+            thalyx_edit::machine::would_substitute(&old, &new, &done)
+        } else {
+            thalyx_edit::machine::substituted(&old, &new, &done)
+        });
+        return Ok(());
+    }
+
+    let places: usize = done.iter().map(|one| one.replacements).sum();
+    let what = if rehearsing {
+        "would change"
+    } else {
+        "changed"
+    };
+    println!(
+        "\n  {what} {places} place(s) in {} file(s), `{old}` -> `{new}`:",
+        done.len()
+    );
+    for one in &done {
+        println!(
+            "    {} — {} place(s) on {} line(s), from line {}",
+            one.path.display(),
+            one.replacements,
+            one.lines,
+            one.first_line
+        );
+    }
+    if rehearsing {
+        println!("  Nothing was written.\n");
+    } else {
+        println!("  To take this back, it had to have been inside an `intento`.\n");
+    }
+    Ok(())
+}
+
+/// A substitution that refused before it wrote anything.
+///
+/// Its own function so that `wrote: false` cannot be forgotten on one of the
+/// eight paths that reach it. That field is the whole difference between a
+/// workspace nobody touched and one halfway through a rename, and a caller
+/// cannot get it from `ok`.
+fn refuse_substitution(op: &str, error: &EditError, face: Face) -> std::io::Result<()> {
+    if face.is_machine() {
+        face.say(thalyx_edit::machine::not_substituted(op, error));
+    } else {
+        println!("\n  {error}.");
+        println!("  Nothing was written.\n");
+    }
+    Ok(())
+}
+
+/// A substitution that passed its preflight and then could not finish.
+fn half_done(
+    op: &str,
+    old: &str,
+    new: &str,
+    done: &[thalyx_edit::Substituted],
+    left: &[std::path::PathBuf],
+    error: &EditError,
+    face: Face,
+) -> std::io::Result<()> {
+    // Nothing written yet means this is an ordinary refusal, and saying
+    // otherwise would send a caller to abandon an attempt it never needed.
+    if done.is_empty() {
+        return refuse_substitution(op, error, face);
+    }
+    if face.is_machine() {
+        face.say(thalyx_edit::machine::half_substituted(
+            old, new, done, left, error,
+        ));
+    } else {
+        println!("\n  {error}.");
+        println!(
+            "  {} file(s) were already changed and {} were not:",
+            done.len(),
+            left.len()
+        );
+        for one in done {
+            println!("    changed: {}", one.path.display());
+        }
+        for path in left {
+            println!("    left alone: {}", path.display());
+        }
+        println!("  Only an `intento` puts all of them back.\n");
     }
     Ok(())
 }

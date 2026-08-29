@@ -78,7 +78,7 @@ pub struct Exposed {
     /// The slot every argument past `slots` must match, if any are allowed.
     pub repeating: Option<Slot>,
     /// The slot from which arguments are put on the line **unquoted**, joined by
-    /// single spaces.
+    /// single spaces — decided per call, from the arguments themselves.
     ///
     /// One verb needs it and the reason is the verb's own, written above
     /// `edit::act`: only the file name is split as words, and everything after
@@ -90,8 +90,23 @@ pub struct Exposed {
     /// It costs nothing in safety here: the quoted half is the only half that
     /// names a path, and an unquoted argument past it cannot become a verb —
     /// `editar` has already consumed the line by the time it looks.
-    pub verbatim_from: Option<usize>,
+    ///
+    /// A function and not a number, because one verb's answer depends on which
+    /// of its subverbs was asked for. `editar … sustituir <viejo> <nuevo>` sends
+    /// **two exact strings**, either of which may hold a space, and joining
+    /// those unquoted is how `viejo con espacios` arrives as three arguments and
+    /// substitutes something nobody asked for. That subverb is therefore quoted
+    /// all through — which is lossless where the unquoted join is not — and
+    /// `edit::act` reads its subverb as a word so the quoting reaches it intact.
+    pub verbatim_from: fn(&[String]) -> Option<usize>,
 }
+
+/// Every argument single-quoted, which is what all but one verb want.
+///
+/// A named constant rather than a closure per entry, so that the table below
+/// still reads as a table: the one verb that is different is visibly the one
+/// that is different.
+const QUOTED: fn(&[String]) -> Option<usize> = |_| None;
 
 /// The whole of what an external agent may ask for.
 ///
@@ -104,63 +119,63 @@ pub const EXPOSED: &[Exposed] = &[
         verb: "state",
         slots: &[],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "describe",
         slots: &[Slot::Text],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "where",
         slots: &[],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "list",
         slots: &[Slot::Path],
         repeating: Some(Slot::Option),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "read",
         slots: &[Slot::Path],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     // ── the index, which is the reason any of this is worth doing ─────────
     Exposed {
         verb: "index_build",
         slots: &[Slot::Path],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "symbol",
         slots: &[Slot::Text],
         repeating: Some(Slot::Option),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "depends_on",
         slots: &[Slot::Path],
         repeating: Some(Slot::Option),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "depended_on_by",
         slots: &[Slot::Path],
         repeating: Some(Slot::Option),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     // ── searching the bytes, for the questions the index cannot answer ────
     Exposed {
         verb: "find",
         slots: &[Slot::Pattern],
         repeating: Some(Slot::Option),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "grep",
@@ -169,7 +184,7 @@ pub const EXPOSED: &[Exposed] = &[
         // this order and not the catalogue's reading order.
         slots: &[],
         repeating: Some(Slot::Text),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     // ── changing the workspace ────────────────────────────────────────────
     Exposed {
@@ -187,38 +202,50 @@ pub const EXPOSED: &[Exposed] = &[
             Slot::Text,
             Slot::Text,
         ],
-        repeating: None,
-        verbatim_from: Some(1),
+        // Only `sustituir` uses it, and what it repeats is more files to make
+        // the same substitution in. Guarded as paths, which is the strictest
+        // slot there is, so naming a seventh file costs the same check the
+        // first one got. For the line-addressed subverbs there is never a fifth
+        // argument: `editar` takes the rest of the line as one text.
+        repeating: Some(Slot::Path),
+        verbatim_from: |arguments| match arguments.get(1) {
+            // Two exact strings and a list of names. Every one of them is
+            // lossless inside single quotes and none of them is content with
+            // meaningful leading spaces, so there is nothing here for the
+            // carve-out to protect.
+            Some(action) if crate::edit::SUBSTITUTE.contains(&action.as_str()) => None,
+            _ => Some(1),
+        },
     },
     Exposed {
         verb: "make_file",
         slots: &[],
         repeating: Some(Slot::Path),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "make_directory",
         slots: &[],
         repeating: Some(Slot::Path),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "copy",
         slots: &[Slot::Path, Slot::Path],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "move",
         slots: &[Slot::Path, Slot::Path],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     Exposed {
         verb: "remove",
         slots: &[],
         repeating: Some(Slot::Path),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     // ── the boundary around a change, which is the whole pitch ────────────
     Exposed {
@@ -238,7 +265,7 @@ pub const EXPOSED: &[Exposed] = &[
             Slot::Text,
         ],
         repeating: None,
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
     // ── what a verb would do, without doing any of it ─────────────────────
     //
@@ -249,7 +276,7 @@ pub const EXPOSED: &[Exposed] = &[
         verb: "rehearse",
         slots: &[],
         repeating: Some(Slot::Text),
-        verbatim_from: None,
+        verbatim_from: QUOTED,
     },
 ];
 
@@ -504,10 +531,14 @@ fn tail(shape: &Exposed, arguments: &[String]) -> String {
         return format!(" {}{}", wrapped_verb.names[0], tail(wrapped, rest));
     }
 
+    // Asked once for the whole line rather than once per argument: the answer
+    // is a property of the call, and a function consulted per argument could in
+    // principle answer differently halfway through.
+    let verbatim = (shape.verbatim_from)(arguments);
     let mut out = String::new();
     for (position, argument) in arguments.iter().enumerate() {
         out.push(' ');
-        if shape.verbatim_from.is_some_and(|from| position >= from) {
+        if verbatim.is_some_and(|from| position >= from) {
             out.push_str(argument);
             continue;
         }
