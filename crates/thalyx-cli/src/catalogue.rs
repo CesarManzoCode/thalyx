@@ -463,6 +463,41 @@ pub const VERBS: &[Verb] = &[
         ],
         summary: "Open something that can be taken back whole, then keep it or undo all of it.",
     },
+    // The programming face. `context` sits with the index verbs because it
+    // answers the same *question* — where is this thing — and differs in what
+    // it costs the caller: `buscar` hands back every use, and this hands back a
+    // description small enough that reading it is not itself a decision.
+    Verb {
+        id: "context",
+        names: &["contexto", "context"],
+        takes: &["symbol|file", "presupuesto=N", "expandir=handle"],
+        flags: &["presupuesto=N", "budget=N", "expandir=…", "expand=…"],
+        answers: Some("context"),
+        changes: false,
+        errors: &["incomplete", "unreadable", "outside", "no_such_handle"],
+        summary: "What a name is — kind, crate, signature, where, how many uses — small \
+                  enough to read, with a handle that fetches the exact lines on demand.",
+    },
+    Verb {
+        id: "rename",
+        names: &["renombrar-simbolo", "renombrar-símbolo", "rename"],
+        takes: &["symbol|file:line:column", "new-name"],
+        flags: &[],
+        // It writes. Every file rust-analyzer says the rename reaches, through
+        // the session's own boundary and no other path.
+        changes: true,
+        answers: Some("rename"),
+        errors: &[
+            "incomplete",
+            "not_a_name",
+            "unresolved",
+            "nothing_to_do",
+            "outside",
+            "unwritable",
+        ],
+        summary: "Rename a Rust symbol everywhere it is really used, resolved by a compiler \
+                  frontend rather than by matching text. Put it inside `hacer`.",
+    },
     Verb {
         id: "exec",
         names: &["hacer", "do"],
@@ -894,7 +929,15 @@ mod tests {
         // They are reachable in every other way: typed at the prompt, in the
         // banner, in `describe`, and on the external agent's list — which is
         // whose verbs they are.
-        const NOT_A_SENTENCE: [&str; 2] = ["exec", "evidence"];
+        // `context` and `rename` join them, and for a related reason: both
+        // take a **symbol**, which is a name that exists only in code and that
+        // a spoken sentence spells approximately. «renombra el keystore» does
+        // not say whether the identifier is `Keystore`, `KeyStore` or
+        // `keystore`, and a local model guessing would rename nothing and say
+        // it had. They are the frontier agent's verbs — typed, or sent over the
+        // external surface, where the caller has already read the exact name
+        // out of an answer this machine gave it.
+        const NOT_A_SENTENCE: [&str; 4] = ["exec", "evidence", "context", "rename"];
 
         let unaskable: Vec<&&str> = ops
             .difference(&proposable)
@@ -984,6 +1027,9 @@ mod tests {
             BTreeSet::from([
                 "make_directory",
                 "make_file",
+                // It writes every file a rename reaches, which is usually
+                // several and is never a list the caller wrote out.
+                "rename",
                 // Several of the others inside one boundary, which is more
                 // consequential than any of them and is why it is here rather
                 // than being read as "it only calls things that already say so".

@@ -74,6 +74,7 @@ pub type Result<T> = std::result::Result<T, RustError>;
 pub const KIND_WORKSPACE: &str = "rust.workspace";
 pub const KIND_SYMBOL: &str = "rust.symbol";
 pub const KIND_IDENTITY: &str = "rust.identity";
+pub const KIND_OUTLINE: &str = "rust.outline";
 pub const KIND_VALIDATION: &str = "rust.validation";
 
 /// Where something is, in the form an answer carries it.
@@ -101,6 +102,18 @@ impl At {
             column: spot.character + 1,
         }
     }
+}
+
+/// One declaration of a file, and how far it reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outlined {
+    pub name: String,
+    pub kind: String,
+    pub container: Option<String>,
+    /// Where it starts, one-based.
+    pub at: At,
+    /// The last line it occupies, one-based and inclusive.
+    pub through: u32,
 }
 
 /// What is known about one name.
@@ -137,6 +150,13 @@ pub struct Tally {
 /// can learn more.
 pub struct Provider {
     root: PathBuf,
+    /// Where the tools this provider runs are told to put build output.
+    ///
+    /// Outside the workspace, always, when the caller can name a place: see
+    /// [`Analyzer::start`]. `None` means Cargo's default, which is inside the
+    /// tree — right for a test with nowhere else to put it, wrong for a
+    /// workspace anybody snapshots.
+    build_into: Option<PathBuf>,
     knowledge: Knowledge,
     workspace: Option<Workspace>,
     analyzer: Option<Analyzer>,
@@ -151,12 +171,19 @@ impl Provider {
     pub fn open(root: &Path, knowledge: Knowledge) -> Self {
         Self {
             root: root.to_path_buf(),
+            build_into: None,
             knowledge,
             workspace: None,
             analyzer: None,
             analyzer_refused: None,
             tally: Tally::default(),
         }
+    }
+
+    /// The same, told where to put anything it builds.
+    pub fn building_into(mut self, target: &Path) -> Self {
+        self.build_into = Some(target.to_path_buf());
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -188,12 +215,13 @@ impl Provider {
                 }
                 None => {
                     let root = self.root.clone();
+                    let build_into = self.build_into.clone();
                     let (text, identity) = self.steady(
                         |provider| Ok(provider.manifest_witness()),
                         |provider| {
                             provider.tally.cargo_calls += 1;
                             provider.tally.misses += 1;
-                            raw_metadata(&root)
+                            raw_metadata(&root, build_into.as_deref())
                         },
                     )?;
                     let workspace = Workspace::parse(&text)?;
@@ -376,6 +404,57 @@ impl Provider {
         Ok(found)
     }
 
+    /// Everything one file declares, with the whole extent of each declaration.
+    ///
+    /// The extent is what makes progressive disclosure possible: a repo map
+    /// entry is a name and a signature, and expanding it means handing back
+    /// *exactly* the lines the declaration occupies rather than the file it is
+    /// in. Without a real end line an expansion is a guess with a window
+    /// around it.
+    pub fn outline(&mut self, file: &Path) -> Result<Vec<Outlined>> {
+        self.tally.queries += 1;
+        let witness = self.source_witness()?;
+        let relative = file
+            .strip_prefix(&self.root)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        if let Some(held) = self
+            .knowledge
+            .recall_current(KIND_OUTLINE, &relative, &witness)?
+            && let Ok(found) = serde_json::from_str::<Vec<Outlined>>(&held.value)
+        {
+            self.tally.hits += 1;
+            return Ok(found);
+        }
+        self.tally.misses += 1;
+        let root = self.root.clone();
+        let file = file.to_path_buf();
+        let (found, identity) = self.steady(
+            |provider| provider.source_witness(),
+            |provider| {
+                let analyzer = provider.analyzer()?;
+                Ok(analyzer
+                    .symbols_in(&file)?
+                    .iter()
+                    .map(|symbol| Outlined {
+                        name: symbol.name.clone(),
+                        kind: symbol.kind.to_string(),
+                        container: symbol.container.clone(),
+                        at: At::of(&symbol.at, &root),
+                        through: symbol.at.end_line + 1,
+                    })
+                    .collect::<Vec<Outlined>>())
+            },
+        )?;
+        if let Some(identity) = identity {
+            let value = serde_json::to_string(&found).unwrap_or_else(|_| "[]".into());
+            self.knowledge
+                .remember(KIND_OUTLINE, &relative, &identity, "rust-analyzer", &value)?;
+        }
+        Ok(found)
+    }
+
     /// What renaming the symbol at this place would change, described.
     ///
     /// Never cached: it is asked once, immediately before it is applied inside
@@ -452,7 +531,7 @@ impl Provider {
                 return Err(RustError::NoAnalyzer(why));
             };
             self.tally.analyzer_starts += 1;
-            match Analyzer::start(&self.root, &binary) {
+            match Analyzer::start(&self.root, &binary, self.build_into.as_deref()) {
                 Ok(analyzer) => self.analyzer = Some(analyzer),
                 Err(error) => {
                     self.analyzer_refused = Some(error.to_string());
@@ -464,8 +543,12 @@ impl Provider {
     }
 }
 
-fn raw_metadata(root: &Path) -> Result<String> {
-    let output = std::process::Command::new(metadata::cargo())
+fn raw_metadata(root: &Path, build_into: Option<&Path>) -> Result<String> {
+    let mut command = std::process::Command::new(metadata::cargo());
+    if let Some(target) = build_into {
+        command.env("CARGO_TARGET_DIR", target);
+    }
+    let output = command
         .arg("metadata")
         .arg("--format-version")
         .arg("1")

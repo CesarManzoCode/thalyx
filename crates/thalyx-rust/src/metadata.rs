@@ -33,7 +33,7 @@ pub struct Package {
 }
 
 /// The workspace as Cargo describes it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub root: PathBuf,
     pub packages: Vec<Package>,

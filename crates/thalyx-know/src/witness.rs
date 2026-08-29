@@ -103,6 +103,22 @@ pub fn witness(over: &Over<'_>) -> Witness {
         for entry in walk {
             let entry = match entry {
                 Ok(entry) => entry,
+                // **Rule 10, and it is the whole rule.** A path that is not
+                // there is not a path nobody could read: a caller naming
+                // `Cargo.lock` among the things a check depends on is right to
+                // name it, and a workspace that has not got one yet is a
+                // workspace with no lockfile — not a tree part of which is a
+                // mystery. Counting it as unreadable made every witness
+                // incomplete, and an incomplete witness matches nothing, so the
+                // validation cache silently never hit. Found by a test that
+                // asserted a hit and got a compiler.
+                Err(error)
+                    if error
+                        .io_error()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    continue;
+                }
                 Err(error) => {
                     unreadable.push(
                         error
@@ -126,7 +142,10 @@ pub fn witness(over: &Over<'_>) -> Witness {
                     let digest: [u8; 32] = Sha256::digest(&contents).into();
                     found.insert(path.display().to_string(), digest);
                 }
-                // Rule 10: this is a failure to read, and it is said as one.
+                // A file that was walked and then could not be opened is a
+                // real failure to read, and is said as one — unlike a name
+                // that was never there.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => unreadable.push(path.display().to_string()),
             }
         }

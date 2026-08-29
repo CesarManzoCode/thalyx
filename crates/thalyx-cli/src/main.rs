@@ -37,6 +37,7 @@ mod restore;
 mod run;
 mod screen;
 mod search;
+mod semantic;
 mod session;
 mod snapshot;
 mod store_disk;

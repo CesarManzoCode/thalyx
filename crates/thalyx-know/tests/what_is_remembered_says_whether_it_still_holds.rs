@@ -195,3 +195,34 @@ fn what_is_held_can_be_counted_without_printing_any_of_it() {
         vec![("validation".to_string(), 1)]
     );
 }
+
+#[test]
+fn a_name_that_is_not_there_is_absence_and_not_a_failure_to_read() {
+    // The defect this test exists for. `Cargo.lock` is a legitimate thing to
+    // name among a check's inputs, and a workspace that has not got one yet is
+    // a workspace with no lockfile. Counting the name as *unreadable* made
+    // every witness incomplete, and an incomplete witness matches nothing — so
+    // the validation cache never hit once, silently, and the compiler ran every
+    // time. Rule 10: a failure to read is not a failure to exist, and this is
+    // the same sentence read in the other direction.
+    let (_held, root) = tree();
+    let with_a_ghost = witness(&Over {
+        roots: &[root.join("src"), root.join("Cargo.lock")],
+        suffixes: &[".rs"],
+        skip: &[],
+    });
+    assert!(
+        with_a_ghost.is_complete(),
+        "naming a file that does not exist made the witness authorise nothing"
+    );
+    assert_eq!(with_a_ghost.files, 2);
+
+    // And when it appears, it is a different set of contents.
+    std::fs::write(root.join("Cargo.lock"), "version = 4\n").expect("a lockfile");
+    let with_it = witness(&Over {
+        roots: &[root.join("src"), root.join("Cargo.lock")],
+        suffixes: &[".rs", "Cargo.lock"],
+        skip: &[],
+    });
+    assert_ne!(with_a_ghost.id, with_it.id);
+}

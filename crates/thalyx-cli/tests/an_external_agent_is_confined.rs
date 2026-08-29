@@ -411,6 +411,13 @@ fn every_verb_the_session_offers_answers_with_exactly_one_object() {
             // refused the word, so the only caller this verb exists for could
             // not reach it while it worked perfectly at a prompt.
             "evidence" => vec!["t-0", "paso=1"],
+            // A name the fixture declares. Whether a rust-analyzer answers or
+            // the index does is not this test's question — one line in, exactly
+            // one object out is.
+            "context" => vec!["greet"],
+            // A name and a new name, which on a tree with no Cargo manifest
+            // reaches `unresolved`. Still one object, which is the claim.
+            "rename" => vec!["greet", "salute"],
             other => panic!("`{other}` is offered and this test does not know how to call it"),
         };
         let answer = wire.ask(verb, &arguments);

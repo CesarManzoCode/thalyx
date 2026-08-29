@@ -129,8 +129,20 @@ pub struct Analyzer {
 
 impl Analyzer {
     /// Start one, rooted at the workspace, and wait until it has indexed.
-    pub fn start(root: &Path, binary: &Path) -> Result<Self> {
-        let mut child = Command::new(binary)
+    ///
+    /// `build_into` is where its Cargo is told to put build output. Not a
+    /// tidiness preference: rust-analyzer runs `cargo metadata` and builds
+    /// build scripts, and with no `CARGO_TARGET_DIR` that lands **inside the
+    /// workspace** — which means a snapshot taken around a transaction
+    /// contains a build tree, a rollback destroys the build cache, and a run
+    /// that changed two files reports twenty-nine. It was found by a test
+    /// asserting the count.
+    pub fn start(root: &Path, binary: &Path, build_into: Option<&Path>) -> Result<Self> {
+        let mut command = Command::new(binary);
+        if let Some(target) = build_into {
+            command.env("CARGO_TARGET_DIR", target);
+        }
+        let mut child = command
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
