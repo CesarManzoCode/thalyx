@@ -4829,3 +4829,136 @@ lo motivaron está probado contra su propio autor. El repositorio es el corpus
 adversario que nadie escribió, es gratis, y hay que correrlo **y leer las filas**
 — no contarlas. Los tres defectos estaban en la lista desde la primera corrida;
 lo que faltaba era mirarla.
+
+## Regla derivada: un testigo que el éxito de la tarea apaga no es un testigo — 2026-08-29
+
+La corrida REVERSIBLE #1 se pagó, terminó, y el instrumento la reprobó dos veces
+por razones que no tenían nada que ver con lo que hizo el agente. Es la
+decimoquinta vez que el problema resulta ser el instrumento, y la primera en la
+que el instrumento se equivocó **porque la tarea salió bien**.
+
+### El testigo
+
+La tarea reversible pide cinco cosas y la quinta es **dejar el árbol
+exactamente como estaba**. Contra eso el arnés tenía una trampa conocida —un
+agente que no hace nada restaura el árbol perfecto— y contra la trampa tenía un
+testigo: los `mtime` del espacio de trabajo, caminados antes y después. Un
+agente que cambió seis archivos y los devolvió deja seis `mtime` movidos; uno
+que sólo leyó, no.
+
+Salvo que el `mtime` es lo único de esa lista que **se puede volver a poner**.
+`utimensat` existe. Un agente que guarda una copia con `cp -a` y restaura desde
+ella devuelve el contenido y devuelve la fecha, y el testigo no ve nada. El
+brazo A hizo seis llamadas `Edit`, terminó con el árbol restaurado, y el resumen
+dijo `intermediate_state: false` — que es la frase «aquí nunca pasó nada», dicha
+sobre una corrida que quizá hizo todo el trabajo.
+
+Y lo peor no es el falso negativo: es que **el falso negativo y el verdadero son
+el mismo renglón**. Seis `Edit` que fallaron todas, seis `Edit` que nadie
+contestó y seis `Edit` que funcionaron y se deshicieron producen exactamente el
+mismo `mutating_tool_calls: 6` con `files_touched_on_disk: 0`. El resumen no
+distinguía cuatro hechos distintos:
+
+1. **lo que el modelo pidió** — una llamada que sólo puede mutar, contada de la
+   petición;
+2. **lo que la herramienta contestó** — el `tool_result`, escrito por Claude
+   Code después de escribir, no por el modelo;
+3. **lo que vio algo fuera del agente** — que el espacio de trabajo tuvo otro
+   estado;
+4. **cómo quedó al final** — el árbol contra la línea base.
+
+Los cuatro ahora son cuatro campos. Y el testigo son tres instrumentos, no uno,
+porque cada uno se equivoca en una dirección distinta:
+
+| testigo | prueba que sí | no puede probar que no | lo apaga |
+| --- | --- | --- | --- |
+| `mtime` | el archivo se escribió | — | una restauración con `cp -a` |
+| `ctime` | el inodo cambió | — | nada en espacio de usuario |
+| la respuesta de la herramienta | `Edit` escribió | `sed -i` dentro de `Bash` | nada: el stream ya se escribió |
+| el contador del adaptador | hubo mutación por MCP | — | nada, y en el brazo B sí es de dos caras |
+
+El `ctime` es la mitad que faltaba: **no hay llamada que lo ponga para atrás.**
+Escribir lo mueve, `utimensat` lo mueve, `chmod` lo mueve, y restaurar la fecha
+lo mueve otra vez. Sólo sirve cuando las dos caminatas son del **mismo** árbol —
+un `cp -a` le da `ctime` nuevo a todo, y el brazo B se exporta con `cp -a`— así
+que la caminata escribe de qué raíz salió y la comparación usa el `ctime` nada
+más cuando las dos raíces coinciden.
+
+La respuesta de la herramienta es la que sirve **hacia atrás**: está en el
+stream de una corrida que ya terminó, y ninguna restauración posterior la
+alcanza. Es la que permitió arreglar el grader sin volver a pagar la corrida.
+
+### La frontera
+
+El otro falso negativo de la misma corrida. El brazo B reportó una sola
+diferencia entre el árbol del que salió y el que volvió:
+
+```
+-s140000  0755  -  -  image/build/agent.sock
+```
+
+Es el socket que **QEMU** abre para que `thalyx-mcp` hable con la máquina.
+Existe en el anfitrión porque el banco está corriendo; no está en la copia del
+store porque no existía cuando `project-stage` empaquetó el proyecto. Ningún
+agente pudo crearlo y ninguno pudo borrarlo.
+
+La regla: **el árbol lógico de una medición no incluye la maquinaria que
+transporta la medición.** `image/build` es lo que construye `make -C image` —el
+kernel, el initramfs, el disco del store y ese socket— y `.gitignore` lo dice
+desde antes de que el banco existiera. Estaba fuera de la lista de exclusiones
+por descuido, no por criterio.
+
+Y la parte que la hace segura, porque una exclusión es un lugar donde esconder
+cosas: **excluido no es no medido.** `set_aside()` recorre cada raíz de
+maquinaria y reporta cuántas entradas tiene y un digest de sus tipos, modos y
+tamaños, de los dos lados, dentro del resumen. Lo que cambia ahí sigue en el
+registro; lo único que deja de hacer es decidir `restored`. Las cuatro pruebas
+que lo fijan están en `dev/bench-summary.py --self-test`: que el socket aparezca
+y la restauración siga en pie, y que un archivo real cambiado **al lado** del
+socket, un archivo no listado en cualquier parte, y un modo, un enlace o un byte
+movidos sigan reprobando.
+
+### Lo que hay que hacer con esto
+
+1. **Un testigo que la tarea correcta puede apagar necesita un segundo testigo
+   que no.** No es redundancia: son instrumentos con debilidades distintas, y
+   la regla 5 dice que si se contradicen hay que escribir la contradicción, no
+   promediarla. `witnesses_disagree` la escribe.
+2. **«Lo pidió» no es «lo hizo».** Contar peticiones y llamarlas mutaciones es
+   el mismo error que contar pruebas y llamarlas verdad.
+3. **La evidencia que se puede releer vale más que la que hay que volver a
+   producir.** El manifiesto en renglones estaba en disco al lado del digest, y
+   por eso una corrida caminada bajo una frontera equivocada se pudo volver a
+   leer bajo la correcta sin caminar nada otra vez. Un arnés que sólo hubiera
+   guardado el digest habría tenido que pagar otra corrida para averiguar lo que
+   ya sabía.
+4. **Una exclusión se reporta o es un escondite.**
+
+## Regla derivada: dos números con el mismo nombre no son la misma medida — 2026-08-29
+
+La misma corrida reportó `turns: 37` bajo `--max-turns 30`, y nadie podía decir
+si la habían cortado. La respuesta no es que el límite no funcione: es que
+**cuentan cosas distintas.**
+
+- `turns` es el `num_turns` del propio Claude Code, y ahí va el número de
+  **mensajes de usuario** de la conversación: el prompt más uno por cada tanda
+  de resultados de herramienta. En la sesión capturada de `dev/samples/` —una
+  sola llamada `Read`— hay un mensaje de usuario y `num_turns: 2`.
+- `--max-turns` acota el contador del ciclo agéntico: los **viajes de ida y
+  vuelta a la API**, o sea los mensajes del asistente que pidieron herramientas.
+  El ciclo se detiene cuando `turnCount + 1 > max_turns`.
+
+Son iguales mientras el modelo pida una herramienta a la vez. En cuanto pide dos
+en un mismo mensaje, un viaje produce dos resultados: `turns` sube dos y el
+contador acotado sube uno. Por eso `turns` puede pasar de `--max-turns` sin que
+el límite haya estado cerca, y **`turns > max_turns` no es evidencia de una
+corrida cortada.** Lo que sí lo es: el `stop_reason` de la corrida y su propio
+`is_error`.
+
+`dev/bench-summary.py` ya no tiene un solo número ambiguo. Deja `turns` tal como
+lo imprimió el agente —regla 10— y pone al lado los tres que puede contar solo:
+`assistant_messages`, `assistant_messages_with_a_tool_use` (el que `--max-turns`
+acota) y `most_tool_calls_in_one_message`. `turns_mean` lo dice dentro del
+resumen, y el `--self-test` lo fija contra la sesión capturada, para que un
+cambio en lo que Claude Code pone en `num_turns` se vea como una falla y no como
+un número que nadie puede nombrar.

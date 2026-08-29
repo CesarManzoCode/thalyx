@@ -14,9 +14,64 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Los cuatro P0 de la auditoría, cerrados, y ninguno se arregló por lectura — 2026-08-29
+> ## El banco reversible se corrió, y el instrumento estaba mal — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `--task reversible` sobre `UidRegistry`. La corrida terminó, los
+> dos brazos contestaron bien, y el resumen los reprobó a los dos por razones
+> que no tenían que ver con lo que hicieron. **El veredicto de esa corrida no
+> vale y la corrida no está perdida**: los dos defectos eran del grader y los
+> dos se arreglaron leyendo el grader, sin volver a pagar nada.
+>
+> **1. El socket de QEMU contaba como espacio de trabajo.** La única diferencia
+> que el brazo B reportó entre el árbol del que salió y el que volvió fue
+> `image/build/agent.sock`, que abre QEMU para el canal del agente y que ningún
+> agente pudo crear ni borrar. `image/build` es maquinaria del banco —lo dice
+> `.gitignore` desde antes de que el banco existiera— y faltaba en la lista de
+> exclusiones. Ahora está, en un solo lugar que usan la caminata inicial y la
+> final, y **lo que se deja afuera se reporta** (`set_aside`) para que una
+> exclusión no pueda ser un escondite.
+>
+> **2. El testigo del estado intermedio era el único que la tarea correcta
+> apaga.** Era el `mtime`, y la quinta parte de la tarea es *devolver todo
+> exactamente*; un agente que restaura desde una copia con `cp -a` devuelve el
+> contenido **y la fecha**. El brazo A hizo seis `Edit` y quedó registrado como
+> si nunca hubiera pasado nada. Ahora son tres testigos —el `ctime`, que nada en
+> espacio de usuario puede poner para atrás; la respuesta de la herramienta, que
+> ya está escrita en el stream y ninguna restauración alcanza; y el contador del
+> adaptador para el brazo B— y cuatro campos donde había dos: **pidió**,
+> **la herramienta contestó**, **algo de afuera lo vio**, **así quedó el árbol**.
+>
+> Y `turns: 37` bajo `--max-turns 30` no era una corrida cortada: `turns` cuenta
+> mensajes de usuario, `--max-turns` acota viajes a la API, y se separan en
+> cuanto el modelo pide dos herramientas en un mismo mensaje. Queda documentado
+> y fijado con `--self-test`.
+>
+> **Lo que falta, y es de Cesar porque los artefactos están en su máquina:**
+> volver a leer esa corrida con el grader corregido. No corre ningún agente, no
+> cuesta nada, y no toca el `summary.json` original:
+>
+> ```sh
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+>     --out target/bench-external-agent --regrade
+> ```
+>
+> Escribe `summary-regraded.json`, y cada brazo sale `VALID`, `NOT PROVEN` o
+> `INVALID` con la razón. Antes de eso, `--forensics` imprime qué contestó cada
+> herramienta a cada una de las seis `Edit` del brazo A, que es lo único que
+> puede distinguir «seis ediciones que se deshicieron» de «seis ediciones que
+> fallaron». El incidente entero está en [[Evidencia-de-Agentes]] y la regla en
+> [[Estrategia-de-Pruebas]].
+>
+> **La corrida NO está registrada como resultado válido.** No hay número de esta
+> corrida en ninguna nota como si fuera evidencia; lo que hay es lo que imprimió,
+> marcado como lo que es.
+
+> ## Los cuatro P0 de la auditoría, cerrados, y ninguno se arregló por lectura — 2026-08-29
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > Una auditoría había señalado cuatro defectos. Los cuatro eran reales, y **tres
 > eran el mismo defecto** en tres subsistemas que nadie habría puesto juntos:
@@ -74,8 +129,8 @@ tags: [continuidad, punto-actual, sesiones]
 > adivinar— así que quedó **una propuesta concreta** en
 > [[Validacion-Confiable]] en vez de arquitectura a medio construir.
 >
-> **El benchmark sigue sin correrse.** Eso no cambió y es deliberado: lo corre
-> Cesar.
+> **El benchmark sigue sin correrse.** *(Se corrió el mismo día; ver el bloque
+> de hasta arriba.)*
 >
 
 > ## La prioridad de la etapa se reordena: demostrar y medir la ventaja para agentes — 2026-08-28
@@ -123,9 +178,8 @@ tags: [continuidad, punto-actual, sesiones]
 > central sea el puente o el índice roto **no sirve** para esa comparación.
 >
 > **Lo que sigue pendiente y es de Cesar:** correr
-> `dev/bench-external-agent.sh --task reversible` sobre `UidRegistry`, que sigue
-> **PREPARADO / NO EJECUTADO** — el bloque de abajo dice cómo y qué decidir antes
-> del `CLAUDE.md`.
+> `dev/bench-external-agent.sh --task reversible` sobre `UidRegistry`. *(Se
+> corrió el 2026-08-29; ver el bloque de hasta arriba.)*
 
 > ## El arnés tiene la tarea que sí ejercita la frontera reversible, y no se ha corrido — 2026-08-28
 >

@@ -100,6 +100,46 @@
 # tool call at all, and `reversible.passed` is a conjunction — it really changed
 # things, the tree came back, and the answer named the files the ground truth
 # says it had to.
+#
+# ## What the first real reversible run cost, and it was not an agent
+#
+# 2026-08-29. It ran, both arms answered correctly, and the summary failed both
+# of them for reasons that were not the agent's. Two faults, both in the grader,
+# both found by reading it against numbers the run had already printed:
+#
+#   - **The workspace boundary did not include `image/build`.** Arm B's only
+#     reported difference between the tree it started from and the tree that came
+#     back was `image/build/agent.sock` — the socket QEMU opens for the agent
+#     channel. It is on this host because the benchmark is running and it is not
+#     on the store because it did not exist when the project was staged. No agent
+#     could have made it and none could have removed it. The machinery that
+#     carries a measurement is not the thing measured, and the list of what is
+#     machinery now lives in one place in `dev/bench-summary.py` — with what it
+#     sets aside **reported** rather than dropped, so an exclusion cannot become
+#     a hiding place.
+#
+#   - **The witness of the intermediate state was the one thing a correct answer
+#     erases.** It was the mtimes, and step five of the task is *put everything
+#     back exactly*. An agent that restores from a `cp -a` copy puts the contents
+#     back and the mtimes back; arm A made six `Edit` calls and was recorded as a
+#     workspace nothing had ever happened to. There are three witnesses now, with
+#     different weaknesses on purpose: the `ctime`, which nothing in userspace can
+#     set backwards; the answering tool's own `tool_result`, which is already
+#     written in the stream and which no later restore reaches; and the adapter's
+#     count for arm B. And four fields where there were two — what the model
+#     asked for, what the tool answered, what an instrument outside the agent
+#     saw, and how the tree ended up.
+#
+# Because the manifest lines are kept beside the digest, a run graded under the
+# old boundary can be graded again under the new one without being run again:
+#
+#     dev/bench-external-agent.sh --task reversible --symbol <Name> \
+#         --expect-file dev/bench-expect/<file>.txt --out <dir> --regrade
+#
+# writes `summary-regraded.json` and never touches `summary.json`, and
+# `--forensics` prints every mutating call in each arm with the answer its tool
+# gave it — which is the table that says whether six `Edit` calls edited
+# anything.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,6 +160,13 @@ MARKER="${THALYX_BENCH_MARKER:-}"
 # Arm B's workspace after the run, exported off the store. See `restore_note`.
 RESTORED_B=""
 SELFTEST=""
+# Read a run that is already over with today's grader, without running an agent.
+# Writes `summary-regraded.json` and never touches `summary.json`: the original
+# grader's output is the record of what was believed at the time, and a run whose
+# instrument turned out to be wrong is worth more with both readings kept than
+# with the wrong one quietly replaced.
+REGRADE=""
+FORENSICS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -134,6 +181,8 @@ while [ $# -gt 0 ]; do
         --expect-file) EXPECT="$2"; shift 2 ;;
         --marker)  MARKER="$2";  shift 2 ;;
         --restored-b) RESTORED_B="$2"; shift 2 ;;
+        --regrade) REGRADE=1; shift ;;
+        --forensics) FORENSICS=1; shift ;;
         --self-test) SELFTEST=1; shift ;;
         *) echo "  unknown argument: $1"; exit 1 ;;
     esac
@@ -175,21 +224,33 @@ tree_hash() {
 }
 
 # Everything about one tree that a restore check needs, written beside the arm
-# it belongs to: the digest, the manifest the digest is of, and — separately,
-# because it is a different question — when each file was last written.
+# it belongs to: the digest, the manifest the digest is of, when each file was
+# last written, and what the machinery roots the manifest leaves out are holding.
 #
-# The mtimes are the external witness. Nothing else on this host can answer
-# *did the workspace ever hold something other than what it started with?*
-# without asking the agent, and the agent's account of itself is exactly what
-# the verdict may not rest on. An agent that renamed a symbol in six files and
-# put them back leaves six files whose contents match and whose mtimes moved;
-# an agent that read six files and said it had renamed them leaves six files
-# whose mtimes did not.
+# **The manifest is the record and the digest is a summary of it.** That order
+# is not a detail: on 2026-08-29 the exclusion list turned out to be missing
+# `image/build`, and because the manifest lines were on disk the run could be
+# graded again under the corrected boundary without being run again. A harness
+# that had only kept the digest would have had to spend another run to find out
+# what it already knew.
+#
+# The mtimes are one witness of three and the weakest of them, and it is worth
+# saying why here as well as in the parser: it answers *is the workspace
+# different now*, and the task's last step is **put it back**. An agent that
+# restores from a `cp -a` copy restores the mtimes with the bytes and this
+# witness sees nothing at all. The other two — a mutating tool's own answer in
+# the stream, and `thalyx-mcp --metrics` for arm B — are the ones a correct
+# restore cannot erase.
+#
+# `.setaside` is what makes the boundary honest: it says how many entries each
+# machinery root held and a digest of their shapes, on both sides, so setting
+# something aside is on the record instead of out of sight.
 walk() {
     local tree="$1" into="$2"
     python3 "$ROOT/dev/bench-summary.py" --manifest       "$tree" > "$into"
     python3 "$ROOT/dev/bench-summary.py" --manifest-lines "$tree" > "$into.manifest"
     python3 "$ROOT/dev/bench-summary.py" --mtimes         "$tree" > "$into.mtimes"
+    python3 "$ROOT/dev/bench-summary.py" --set-aside      "$tree" > "$into.setaside"
 }
 
 # ── the three prompts, which are one prompt ──────────────────────────────────
@@ -345,13 +406,36 @@ self_test() {
         && ok ".git, target and node_modules are outside the question" \
         || bad "something outside the workspace's content moved the hash"
 
-    # And that `walk` writes all three, because the witness is the one the
+    # The machinery boundary, wired the same way as the exclusions above: the
+    # socket QEMU opens for the agent channel lives under `image/build`, and on
+    # 2026-08-29 it was the *only* difference arm B's restore check reported.
+    # The full battery — a real file changed beside it, an unlisted file, a
+    # mode, a symlink, a byte — is in `dev/bench-summary.py --self-test`, where
+    # the one implementation is. What is checked here is that this file reaches
+    # it, and the control beside it so a boundary that swallowed the workspace
+    # would not look like a boundary that works.
+    mkdir -p "$work/t/image/build"
+    printf 'a kernel\n' > "$work/t/image/build/bzImage"
+    baseline=$(tree_hash "$work/t")
+    printf 'a socket, as far as this test needs one\n' > "$work/t/image/build/agent.sock"
+    [ "$(tree_hash "$work/t")" = "$baseline" ] \
+        && ok "what make -C image builds is machinery, not the workspace" \
+        || bad "the agent channel under image/build moved the workspace's hash"
+    printf 'CHANGED\n' > "$work/t/src/a.txt"
+    [ "$(tree_hash "$work/t")" != "$baseline" ] \
+        && ok "a real file changed beside the machinery still fails the restore" \
+        || bad "a real change hid behind the machinery boundary"
+    printf 'one\n' > "$work/t/src/a.txt"
+    rm -rf "$work/t/image"
+
+    # And that `walk` writes all four, because each of them is something the
     # summary silently does without if the file is missing.
     walk "$work/t" "$work/walked"
-    if [ -s "$work/walked" ] && [ -s "$work/walked.manifest" ] && [ -s "$work/walked.mtimes" ]; then
-        ok "a walk leaves the digest, the manifest and the mtimes beside each other"
+    if [ -s "$work/walked" ] && [ -s "$work/walked.manifest" ] \
+            && [ -s "$work/walked.mtimes" ] && [ -s "$work/walked.setaside" ]; then
+        ok "a walk leaves the digest, the manifest, the mtimes and the set-aside report"
     else
-        bad "a walk did not leave all three of the digest, the manifest and the mtimes"
+        bad "a walk did not leave all four of the digest, manifest, mtimes and set-aside"
     fi
 
     # ── the two halves fit together ──
@@ -409,10 +493,26 @@ self_test() {
             bad "a workspace nothing wrote to did not come back as an unchanged witness"
         fi
 
-        # And absence, which is what arm B looks like when nobody exported it
-        # or when the export lost the mtimes: NOT PROVEN, with its own switch,
-        # because an arm can have a perfectly hashed tree and no witness at all.
-        rm -f "$bench/armB.after.mtimes"
+        # Losing the mtimes is no longer losing the witness, and that is the
+        # whole of the 2026-08-29 repair: the tools' own answers are in the
+        # stream, and no restore reaches back into it. An arm whose walks are
+        # gone is still witnessed by what its tools said.
+        rm -f "$bench/armB.after.mtimes" "$bench/armB.before.mtimes"
+        "${BASH_SOURCE[0]}" --project "$work/project" --symbol Widget --task reversible \
+            --arms none --out "$bench" --restored-b "$work/exported" > "$work/log" 2>&1
+        if grep -q '"intermediate_state": "not_proven"' "$bench/summary.json"; then
+            bad "an arm with a stream on disk lost its witness when the mtimes went"
+        else
+            ok "losing the mtimes does not lose the witness: the stream still has the tools' answers"
+        fi
+
+        # And absence, which is what an arm measured by the older
+        # `--output-format json` looks like: a hashed tree, no per-tool detail,
+        # and therefore no witness at all. NOT PROVEN, with its own switch,
+        # because an arm can have a perfect tree and nothing that saw it change.
+        mv "$bench/armB.ndjson" "$bench/armB.ndjson.kept"
+        printf '{"is_error":false,"num_turns":2,"duration_ms":1,"total_cost_usd":0.1,"result":"done"}\n' \
+            > "$bench/armB.json"
         if THALYX_REQUIRE_MUTATION_WITNESS=1 "${BASH_SOURCE[0]}" \
                 --project "$work/project" --symbol Widget --task reversible \
                 --arms none --out "$bench" > "$work/log" 2>&1; then
@@ -421,6 +521,43 @@ self_test() {
             grep -q 'NOT PROVEN' "$work/log" \
                 && ok "an unwitnessed arm is NOT PROVEN, and its own switch makes it a failure" \
                 || bad "an unwitnessed arm failed without saying it was NOT PROVEN"
+        fi
+        rm -f "$bench/armB.json"
+        mv "$bench/armB.ndjson.kept" "$bench/armB.ndjson"
+
+        # ── reading a run that is already over ──
+        #
+        # No agent, no project walked again: `--regrade` reads what is in the
+        # output directory and writes a second summary beside the first. The
+        # first must survive, because a run whose instrument turned out to be
+        # wrong is worth more with both readings kept.
+        cp "$bench/summary.json" "$work/summary-before-regrade.json"
+        walk "$work/project" "$bench/armB.before"
+        "${BASH_SOURCE[0]}" --task reversible --symbol Widget --out "$bench" \
+            --regrade > "$work/log" 2>&1 || true
+        if [ -s "$bench/summary-regraded.json" ] \
+                && cmp -s "$bench/summary.json" "$work/summary-before-regrade.json"; then
+            ok "a regrade writes its own summary and leaves the original untouched"
+        else
+            bad "a regrade did not write summary-regraded.json, or wrote over summary.json"
+        fi
+        if grep -q '"claude_was_not_called": true' "$bench/summary-regraded.json" \
+                && grep -q '"the_grader_changed_after_the_run": true' "$bench/summary-regraded.json"; then
+            ok "the regraded summary says on its face that no agent was run for it"
+        else
+            bad "the regraded summary does not say where its numbers came from"
+        fi
+        # Into a file and then grepped, never piped into `grep -q`: this file
+        # runs under `pipefail` and `grep -q` closes the pipe on its first
+        # match, so the pipeline reports the SIGPIPE and a passing check reads
+        # as a failure. That is the fifth entry in `Estrategia-de-Pruebas.md`'s
+        # list of times the instrument was the thing that was wrong.
+        "${BASH_SOURCE[0]}" --task reversible --symbol Widget --out "$bench" \
+            --forensics > "$work/forensics" 2>&1 || true
+        if grep -q 'arm B' "$work/forensics"; then
+            ok "the forensic table can be read out of a run that is over"
+        else
+            bad "the forensic table said nothing about a stream that is on disk"
         fi
 
         # And the control, without which "restored" and "never looked" are the
@@ -449,6 +586,28 @@ self_test() {
 if [ -n "$SELFTEST" ]; then
     self_test
     exit $?
+fi
+
+# Neither of these runs an agent, and neither needs a project on disk: they read
+# what a finished run left in `--out`. `--forensics` is the table that answers
+# "did those six `Edit` calls do anything" without a second run, which on
+# 2026-08-29 was a question three different summaries could not tell apart.
+if [ -n "$FORENSICS" ] || [ -n "$REGRADE" ]; then
+    [ -d "$OUT" ] || { say "no run to read at $OUT"; exit 1; }
+    [ -n "$MARKER" ] || [ -z "$SYMBOL" ] || MARKER="${SYMBOL}Renamed"
+    READ_ARGS=(--out "$OUT" --task "$TASK" --symbol "$SYMBOL" --model "$MODEL" --turns "$TURNS")
+    [ -n "$EXPECT" ] && READ_ARGS+=(--expect-file "$EXPECT")
+    [ "$TASK" = reversible ] && READ_ARGS+=(--marker "$MARKER")
+    if [ -n "$FORENSICS" ]; then
+        python3 "$ROOT/dev/bench-summary.py" "${READ_ARGS[@]}" --forensics
+        exit $?
+    fi
+    python3 "$ROOT/dev/bench-summary.py" "${READ_ARGS[@]}" --regrade
+    STATUS=$?
+    say
+    say "regraded: $OUT/summary-regraded.json"
+    say "original: $OUT/summary.json  (not written to)"
+    exit $STATUS
 fi
 
 [ -n "$PROJECT" ] || { say "which project: --project <dir>"; exit 1; }
@@ -588,6 +747,14 @@ python3 "$ROOT/dev/bench-summary.py" "${SUMMARY_ARGS[@]}" || SUMMARISED=$?
 say
 say "streams:  $OUT/armA.ndjson  $OUT/armB.ndjson"
 say "summary:  $OUT/summary.json"
+
+if [ "$TASK" = reversible ]; then
+    say
+    say "If the grader changes after this run, read it again without paying for another:"
+    say
+    say "    $0 --task $TASK --symbol $SYMBOL --out $OUT --regrade"
+    say "    $0 --task $TASK --symbol $SYMBOL --out $OUT --forensics"
+fi
 
 if [ "$TASK" = reversible ] && [ ! -s "$OUT/armB.after" ]; then
     say

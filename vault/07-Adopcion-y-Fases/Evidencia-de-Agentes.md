@@ -217,9 +217,16 @@ Y lo que hay que decir junto a esa tabla, con todas las letras:
 
 ---
 
-## Banco reversible: PREPARADO / NO EJECUTADO
+## Banco reversible: CORRIDO / PENDIENTE DE REGRADAR
 
-**No se ha corrido. No hay ningún resultado, ni parcial, ni estimado.**
+**Se corrió el 2026-08-29 y el instrumento estaba mal.** El resultado bruto de
+esa corrida dice `reversible.passed: false` en los dos brazos, y **ese veredicto
+no vale**: dos de sus partes las decidió un defecto del grader y no el agente.
+La corrida no se ha vuelto a leer con el grader corregido —los artefactos están
+en la máquina de Cesar, no en el repositorio— así que hasta que se lea **no hay
+resultado válido, ni a favor ni en contra**. El incidente completo está abajo,
+en «El instrumento estaba mal», y la regla que sale de él en
+[[Estrategia-de-Pruebas]].
 
 Existe desde el commit `cb05b05` (merge sobre `d5bee37`):
 
@@ -295,6 +302,95 @@ una variable por requisito.
   directorio vacío y no lo ve. Eso le suma tokens al brazo A por algo que no es
   la tarea, o sea **al lado que favorece a Thalyx**, que es justo el sesgo que
   no se vale tener. Se evita apuntando `--project` a una copia sin `CLAUDE.md`.
+
+### Lo que la corrida imprimió, tal cual
+
+Se conserva como se observó, con el veredicto equivocado incluido, porque
+borrarlo sería esconder el incidente. **Ninguna de estas cifras es un
+resultado**: el veredicto está en disputa y las descriptivas no se han vuelto a
+derivar del stream con el lector corregido.
+
+| | brazo A (Linux) | brazo B (Thalyx) |
+| --- | --- | --- |
+| costo | $0.2597362 | $0.2255152 |
+| pared | 47.909 s | 63.805 s |
+| API | 48.485 s | 57.801 s |
+| `turns` reportados | 17 | 37 |
+| llamadas a herramientas | 16 | 36 |
+| desglose | `Edit` 6, `Read` 7, `Grep` 1, `Bash` 2 | `thalyx_edit` 29, `thalyx_attempt` 2, `thalyx_changed` 1, `thalyx_find` 2, `thalyx_symbol` 1 |
+| bytes devueltos al modelo | 19 774 | 14 365 |
+| `mutating_tool_calls` | 6 | 16 |
+| `attempt` | — | 1 abierto, 1 abandonado, 0 confirmado |
+| `task_success` | true | true |
+| árbol final igual | true | **una diferencia:** `image/build/agent.sock` |
+| `intermediate_state` | false | true |
+| `restored` | true | false |
+| `reversible.passed` | false | false |
+
+### El instrumento estaba mal, en dos lugares y de dos maneras
+
+Los dos defectos están arreglados en `dev/bench-summary.py` y
+`dev/bench-external-agent.sh`, cada uno con sus pruebas propias. Ninguno de los
+dos se descubrió corriendo otra vez: se descubrieron leyendo el grader contra
+las cifras que la corrida ya había impreso.
+
+**1. La frontera del espacio de trabajo incluía la maquinaria del banco.**
+`image/build/agent.sock` es el socket que QEMU abre para el canal del agente.
+Existe en el anfitrión porque el banco está corriendo y no está en la copia del
+store porque no existía cuando se empaquetó el proyecto. Ningún agente pudo
+crearlo ni borrarlo, y era **la única** diferencia que el brazo B reportó. Ahora
+`image/build` es maquinaria declarada, junto con `.git`, `target` y
+`node_modules`, en un solo lugar que usan la caminata inicial y la final; y lo
+que se deja afuera se **reporta** —cuántas entradas y un digest de sus formas,
+de los dos lados— para que una exclusión no pueda ser un escondite.
+
+**2. El testigo del estado intermedio era el único que la tarea correcta
+apaga.** Era el `mtime`, y la quinta parte de la tarea es *devolver todo*. Un
+agente que restaura desde una copia con `cp -a` devuelve el contenido y la
+fecha. El brazo A hizo seis `Edit` y quedó como si no hubiera pasado nada.
+Ahora son tres testigos —el `ctime`, que nada en espacio de usuario puede poner
+para atrás; la respuesta de la herramienta, que ya está escrita en el stream y
+ninguna restauración alcanza; y el contador del adaptador para el brazo B— y
+cuatro campos separados donde había dos: lo que el modelo pidió, lo que la
+herramienta contestó, lo que vio un instrumento de afuera y cómo quedó el árbol.
+
+**Y una tercera cosa, que no era un defecto sino una ambigüedad.** `turns: 37`
+bajo `--max-turns 30` no es una corrida cortada: `turns` cuenta mensajes de
+usuario y `--max-turns` acota viajes a la API, y se separan en cuanto el modelo
+pide dos herramientas en un mismo mensaje. Está explicado en
+[[Estrategia-de-Pruebas]] y fijado con `--self-test` contra la sesión capturada.
+
+### Lo que falta para cerrar REVERSIBLE #1
+
+Una sola orden, en la máquina donde están los artefactos, sin agente y sin
+gastar nada:
+
+```sh
+dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+    --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+    --out target/bench-external-agent --regrade
+```
+
+Escribe `summary-regraded.json` al lado del `summary.json` original, que **no**
+se toca, y el nuevo dice en su cara de dónde salió: de la corrida original, sin
+llamar a Claude, con el grader corregido después, qué evidencia se pudo reusar y
+cuál falta. Cada brazo sale como `VALID`, `NOT PROVEN` o `INVALID`, y si falta
+evidencia **no hay veredicto forzado**.
+
+Antes de eso, la tabla que dice qué hicieron de verdad esas seis `Edit` —cada
+llamada mutante con la respuesta que la herramienta le dio— sale de:
+
+```sh
+dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+    --out target/bench-external-agent --forensics
+```
+
+Lo que se sabe hoy sin correr nada: el brazo A **no** puede regradarse por
+`ctime`, porque sus dos caminatas se hicieron cuando el archivo de tiempos
+todavía traía una sola columna. Su evidencia retroactiva es la respuesta de la
+herramienta, que sí está en `armA.ndjson`. Si esas seis `Edit` vinieron con
+`is_error: true`, el `passed: false` del brazo A era correcto por accidente y
+seguirá siendo `false` — por la razón de verdad esta vez.
 
 ---
 

@@ -7032,7 +7032,7 @@ step "50. the benchmark harness reads what the agent printed, and nothing else"
 # half that matters more: that a field the agent never printed is **absent**
 # from the summary rather than zero.
 if python3 "$ROOT/dev/bench-summary.py" --self-test > "$WORK/bench-summary.log" 2>&1; then
-    proven "the benchmark summary parses a real captured session and invents nothing, counts writes without crediting a read as one, and refuses to score a run that did nothing as a restore"
+    proven "the benchmark summary parses a real captured session and invents nothing, counts writes without crediting a read as one, keeps asked/confirmed/witnessed/restored apart, sets the benchmark's own machinery aside without hiding it, and refuses to score a run that did nothing as a restore"
 else
     failed "the benchmark summary does not read a real session correctly; see $WORK/bench-summary.log"
     excerpt "$WORK/bench-summary.log" 20
@@ -7044,7 +7044,7 @@ fi
 # that did *not* come back, without which a hash function returning a constant
 # would pass every restore anybody ever ran.
 if bash "$ROOT/dev/bench-external-agent.sh" --self-test > "$WORK/bench-harness.log" 2>&1; then
-    proven "the benchmark prompt is one string for both arms and names no tool, and a restored tree is told from a tree that only looks restored"
+    proven "the benchmark prompt is one string for both arms and names no tool, a restored tree is told from a tree that only looks restored, and a finished run can be graded again without being run again"
 else
     failed "the benchmark harness does not hold its own claims; see $WORK/bench-harness.log"
     excerpt "$WORK/bench-harness.log" 25

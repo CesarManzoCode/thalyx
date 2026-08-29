@@ -471,18 +471,33 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
 Prioridad de la etapa: [[Prioridad-Operativa]]. Todo lo medido, y el protocolo
 con el que se mide, en [[Evidencia-de-Agentes]].
 
-- [ ] **Correr el banco reversible.** `dev/bench-external-agent.sh --task
-      reversible` con `--symbol UidRegistry` y
-      `dev/bench-expect/reversible-UidRegistry.txt`. **PREPARADO / NO
-      EJECUTADO** desde `cb05b05`. Es de Cesar: cuesta corridas de Claude y
-      cuesta su hierro, porque el hash de después del brazo B va con la máquina
-      apagada (`sudo make -C image agent-export`, y una segunda pasada con
-      `--arms none --restored-b`).
-      **El oráculo se arregló el 2026-08-28** y hasta entonces no se podía
-      creer: daba `passed: true` a una corrida que sólo leyó, a una edición que
-      falló, y a una que murió en su límite de turnos. Corriendo hoy conviene
-      pedir las dos garantías, que son dos variables porque son dos requisitos:
+- [x] **Correr el banco reversible.** Corrido el 2026-08-29 sobre `UidRegistry`.
+      Los dos brazos contestaron bien y el resumen los reprobó a los dos por
+      defectos del grader, no del agente. Ver [[Evidencia-de-Agentes]].
+- [ ] **Volver a leer REVERSIBLE #1 con el grader corregido.** No corre ningún
+      agente y no cuesta nada; es de Cesar sólo porque los artefactos están en su
+      máquina, en `target/bench-external-agent/`:
+
+      ```sh
+      dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+          --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+          --out target/bench-external-agent --regrade
+      ```
+
+      Escribe `summary-regraded.json` sin tocar el `summary.json` original, y
+      cada brazo sale `VALID`, `NOT PROVEN` o `INVALID` con la razón. Si primero
+      quiere ver qué contestó cada herramienta a cada una de las seis `Edit` del
+      brazo A —lo único que distingue seis ediciones deshechas de seis ediciones
+      que fallaron—, la misma orden con `--forensics` en vez de `--regrade`.
+- [ ] **Repetir el banco reversible una sola vez, si el regradado sale
+      `NOT PROVEN`.** El arnés ya deja las tres cosas que faltaban: el `ctime`
+      en la caminata, el reporte de lo que se dejó afuera, y los cuatro campos
+      separados de mutación. Corriendo conviene pedir las dos garantías, que son
+      dos variables porque son dos requisitos:
       `THALYX_REQUIRE_RESTORE_CHECK=1` y `THALYX_REQUIRE_MUTATION_WITNESS=1`.
+      El hash de después del brazo B sigue yendo con la máquina apagada
+      (`sudo make -C image agent-export`, y una segunda pasada con
+      `--arms none --restored-b`).
 - [ ] **Decidir si se construye `validar`.** El agente externo puede entender,
       leer y modificar, y no puede compilar ni probar lo que cambió — la mitad
       del ciclo que falta. La propuesta concreta, con las cuatro piezas medidas
