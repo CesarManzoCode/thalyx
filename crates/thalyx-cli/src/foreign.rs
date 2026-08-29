@@ -18,7 +18,6 @@
 use crate::files::Face;
 use serde_json::json;
 use std::ffi::OsString;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use thalyx_core::Store;
 use thalyx_manifest::{Permission, PermissionKind};
@@ -161,13 +160,11 @@ pub fn execute(store: &Store, rest: &str, face: Face) -> Fallible {
         return Ok(());
     }
 
-    if !std::io::stdin().is_terminal() {
-        println!();
-        println!("  There is no terminal to confirm on, so I will not run this.");
-        println!("  Silence is not consent.");
-        println!();
-        return Ok(());
-    }
+    // The terminal is no longer checked for here. `crate::ask` checks it, and
+    // it checks it **after** the context below has been printed — which is the
+    // whole difference between this verb working on the display and refusing
+    // there. Under the screen the context is what the confirmation is drawn
+    // from, so a refusal issued before it exists refuses with nothing to show.
 
     // Drawn by Thalyx, from the resolved path rather than from what was typed:
     // the human is being asked about the file that will run, and `bin/tool` and
@@ -208,23 +205,30 @@ pub fn execute(store: &Store, rest: &str, face: Face) -> Fallible {
         println!("    and nothing else on this machine");
     }
     println!();
-    print!("  Run it? [y/N] ");
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-
     // A read that failed is not a yes, and it is not an empty answer either.
-    let Ok(Some(answer)) = crate::term::read_answer() else {
-        println!();
-        println!("  Could not read the answer; refusing.");
-        println!();
-        return Ok(());
-    };
-
-    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        println!();
-        println!("  Not run.");
-        println!();
-        return Ok(());
+    // The four outcomes are four sentences, because *nobody answered* and *the
+    // answer could not be read* send a person to look in different places.
+    match crate::ask::confirm("  Run it? [y/N] ", &crate::ask::Accepts::Yes) {
+        crate::ask::Answered::Yes => {}
+        crate::ask::Answered::No => {
+            println!();
+            println!("  Not run.");
+            println!();
+            return Ok(());
+        }
+        crate::ask::Answered::NoOneToAsk => {
+            println!();
+            println!("  There is no terminal to confirm on, so I will not run this.");
+            println!("  Silence is not consent.");
+            println!();
+            return Ok(());
+        }
+        crate::ask::Answered::Unreadable => {
+            println!();
+            println!("  Could not read the answer; refusing.");
+            println!();
+            return Ok(());
+        }
     }
 
     let policies = thalyx_permd::KernelStore::default_map();

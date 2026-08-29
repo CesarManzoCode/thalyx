@@ -17,6 +17,7 @@
 //! disk, because a path is not language.
 
 use serde_json::json;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -46,14 +47,61 @@ impl Face {
         self.machine()
     }
 
-    /// Print a line of the structured face.
+    /// Say one line of the structured face.
     ///
     /// Kept as a method so no caller has to remember that these go out without
     /// the blank lines and two-space indent the human face uses. Whitespace a
     /// person reads as breathing room is noise a parser has to strip.
+    ///
+    /// **Where it goes is a property of the thread, not of the process.** By
+    /// default it is descriptor 1, which is what a person piping `estructurado`
+    /// into a program gets. When [`caught`] is running on this thread the line
+    /// is collected instead — which is how the external agent bridge reads an
+    /// answer without touching a descriptor.
+    ///
+    /// The distinction is rule 11 of `CLAUDE.md`, met in the one place it would
+    /// have bitten hardest. `thalyx-capture` moves descriptors 0, 1 and 2, and
+    /// those belong to the **process**: the screen redirects them while it runs
+    /// a verb, so a bridge thread printing at the same moment would have its
+    /// answer swallowed into the screen's buffer and the screen would draw the
+    /// agent's JSON. A thread-local sink has an owner; a descriptor does not.
     pub fn say(self, line: String) {
-        println!("{line}");
+        let caught = SINK.with(|sink| match sink.borrow_mut().as_mut() {
+            Some(lines) => {
+                lines.push(line);
+                None
+            }
+            None => Some(line),
+        });
+        if let Some(line) = caught {
+            println!("{line}");
+        }
     }
+}
+
+thread_local! {
+    /// Where [`Face::say`] puts a line on this thread, when it is not stdout.
+    ///
+    /// `RefCell<Option<…>>` and not a channel, because the only reader is the
+    /// same thread once the body has returned, and a nested [`caught`] must not
+    /// be able to steal the outer one's lines — see the `set`/restore below.
+    static SINK: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Run something and collect what the structured face said on this thread.
+///
+/// The one seam that lets the external agent bridge reuse the verbs rather than
+/// grow a second set of them. It catches only [`Face::say`] — the human face
+/// still prints, which is deliberate: a caller of this is asking a *program's*
+/// question, and prose arriving on a socket would be a second version of events.
+///
+/// Restores whatever was there rather than clearing, so that a verb which
+/// somehow re-entered this could not silently swallow the outer answer.
+pub fn caught<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
+    let outer = SINK.with(|sink| sink.replace(Some(Vec::new())));
+    let outcome = body();
+    let mine = SINK.with(|sink| sink.replace(outer));
+    (outcome, mine.unwrap_or_default())
 }
 
 /// Where the person is, carried by the session across one line and the next.
@@ -65,6 +113,13 @@ impl Face {
 /// wrong.
 pub struct Where {
     at: PathBuf,
+    /// The workspace this session may not leave, when it has one.
+    ///
+    /// A person's session has none and is unchanged by everything it does. An
+    /// external agent's session has one, and it is what turns the verbs'
+    /// `resolve` — which is lexical, and therefore a name — into an open the
+    /// kernel contains. See [`crate::confine`].
+    confined_to: Option<std::sync::Arc<crate::confine::Confinement>>,
 }
 
 impl Where {
@@ -73,11 +128,59 @@ impl Where {
     pub fn start() -> Self {
         Self {
             at: PathBuf::from(thalyx_files::HOME),
+            confined_to: None,
         }
     }
 
     pub fn at(&self) -> &Path {
         &self.at
+    }
+
+    /// Confine this session to a workspace, from now on.
+    pub fn confine(&mut self, to: std::sync::Arc<crate::confine::Confinement>) {
+        self.confined_to = Some(to);
+    }
+
+    /// A path this session may open, held open by the kernel while it is used.
+    ///
+    /// **This is the containment check, and it is the open.** For an unconfined
+    /// session it is the path itself and costs nothing. For a confined one it is
+    /// `openat2` with `RESOLVE_BENEATH` against the workspace descriptor, so a
+    /// component that becomes a symlink between the call and the caller's open
+    /// cannot redirect it — there is no second resolution to redirect.
+    ///
+    /// The caller keeps its own path for the answer. What comes back is only
+    /// what to open.
+    pub fn anchor(&self, target: &Path) -> Result<crate::confine::Anchored, FileError> {
+        match &self.confined_to {
+            None => Ok(crate::confine::Anchored::wherever(target)),
+            Some(workspace) => workspace.anchor(target).map_err(|why| why.about(target)),
+        }
+    }
+
+    /// The same, for a caller that has to tell *outside* from *not there*.
+    ///
+    /// [`Where::anchor`] deliberately answers "is not there" to both, because a
+    /// verb reporting to an agent must not describe a filesystem the agent may
+    /// not see. The boundary in `crate::external` is the one place that needs
+    /// the difference: it walks up to the deepest existing prefix, and a walk
+    /// that could not tell a missing directory from a link out of the workspace
+    /// would climb straight past the link and answer that the path is inside.
+    pub fn locate(&self, target: &Path) -> Result<(), crate::confine::NotAnchored> {
+        match &self.confined_to {
+            None => Ok(()),
+            Some(workspace) => workspace.anchor(target).map(|_| ()),
+        }
+    }
+
+    /// The same, for a path that does not exist yet because it is being made.
+    pub fn anchor_parent(&self, target: &Path) -> Result<crate::confine::Anchored, FileError> {
+        match &self.confined_to {
+            None => Ok(crate::confine::Anchored::wherever(target)),
+            Some(workspace) => workspace
+                .anchor_parent(target)
+                .map_err(|why| why.about(target)),
+        }
     }
 
     /// The location as it goes in the prompt, short enough to leave room to type.
@@ -149,7 +252,7 @@ impl Where {
 /// library, for the same reason as the cpio and the Btrfs writer — the image
 /// holds the kernel and one program.
 pub fn clear(face: Face) {
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
 
     // A program gets an answer and not an escape sequence, and it gets one for
     // the reason `machine.rs` gives for `cd`: **silence is never an answer.** A
@@ -165,6 +268,16 @@ pub fn clear(face: Face) {
         return;
     }
 
+    // Only onto a real terminal, and this is the same reason the machine face
+    // gets an answer instead: `ESC[2J` means something to a console and is
+    // nothing but bytes anywhere else. Under the screen, stdout is the pipe
+    // `thalyx-capture` put there, so without this check the escape came back as
+    // *what the verb said* and was drawn on the screen as the literal text
+    // `[2J[H` — which is what Cesar photographed on a booted machine. The screen
+    // empties itself on `Flow::Emptied`; there is nothing to print for it.
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     print!("\x1b[2J\x1b[H");
     // Flushed here because what follows is a prompt printed with `print!` and no
     // newline of its own; leaving this in the buffer would put the prompt on
@@ -244,10 +357,17 @@ pub fn where_am_i(here: &Where, face: Face) {
 
 /// `cd [ruta]` — with nothing after it, back to `/home`.
 pub fn go(here: &mut Where, rest: &str, face: Face) {
-    let named = if rest.is_empty() {
+    // Quoted the same way `leer` now is, and for the same reason: a folder whose
+    // name has a space in it was unreachable from a session that could copy into
+    // it.
+    let Some(given) = crate::words::asked(face, "go", rest) else {
+        return;
+    };
+    let joined = crate::words::phrase(&given);
+    let named = if joined.is_empty() {
         thalyx_files::HOME
     } else {
-        rest
+        &joined
     };
 
     match here.go(named) {
@@ -427,9 +547,19 @@ pub fn look(here: &Where, rest: &str, face: Face) {
     // same fallback, which they did not before — the machine face would have
     // reported "not there" for something that is there.
     let mut single = false;
-    let found = match thalyx_files::list(&target) {
+    let anchored = match here.anchor(&target) {
+        Ok(anchored) => anchored,
+        // Not there, or not inside. Either way there is nothing to list, and
+        // the fallback below would ask the same question about the same path.
+        Err(error) => {
+            say_the_listing_failed(face, &target, error);
+            return;
+        }
+    };
+    let opened = anchored.path();
+    let found = match thalyx_files::list(opened) {
         Ok(listing) => Ok(listing),
-        Err(error) => match thalyx_files::list_one(&target) {
+        Err(error) => match thalyx_files::list_one(opened) {
             Ok(one) => {
                 single = true;
                 Ok(one)
@@ -478,6 +608,38 @@ pub fn look(here: &Where, rest: &str, face: Face) {
         Err(error) => println!("  {error}"),
     }
     println!();
+}
+
+/// Report a listing that could not be started, in whichever face is asking.
+fn say_the_listing_failed(face: Face, target: &Path, error: thalyx_files::FileError) {
+    if face.machine() {
+        face.say(machine::failure("list", &error));
+    } else {
+        println!();
+        println!("  {error}");
+        println!();
+    }
+    let _ = target;
+}
+
+/// Put the caller's own path back into an error raised against the anchor.
+///
+/// Without this every refusal from a confined session would name
+/// `/proc/self/fd/9`, which is true, useless, and describes a filesystem the
+/// agent may not see. The failure is the anchor's; the name belongs to the
+/// caller.
+fn named_as(error: thalyx_files::FileError, target: &Path) -> thalyx_files::FileError {
+    use thalyx_files::FileError as E;
+    let path = target.to_path_buf();
+    match error {
+        E::Absent(_) => E::Absent(path),
+        E::IsDirectory(_) => E::IsDirectory(path),
+        E::NotText { why, .. } => E::NotText { path, why },
+        E::Unreadable { detail, .. } => E::Unreadable { path, detail },
+        E::Exists(_) => E::Exists(path),
+        E::NotADirectory(_) => E::NotADirectory(path),
+        other => other,
+    }
 }
 
 fn print_listing(target: &Path, listing: &Listing, asked: &Asked) {
@@ -589,8 +751,25 @@ pub fn read(here: &Where, rest: &str, face: Face) {
         return;
     }
 
-    let target = thalyx_files::resolve(here.at(), rest);
-    let found = thalyx_files::read(&target);
+    // Split into words rather than taken as the rest of the line, which is what
+    // it used to be. `Palabras.md` decreed quoting on 2026-08-23 and `cp`, `mv`
+    // and `rm` were given it; `leer` was not, so a file whose name held a space
+    // could be listed, copied and deleted and never read. The external agent
+    // bridge is what made it visible — it quotes every argument it composes, and
+    // this verb was the one that answered `'src/main.rs' is not there`.
+    let Some(given) = crate::words::asked(face, "read", rest) else {
+        return;
+    };
+    let named = crate::words::phrase(&given);
+    let target = thalyx_files::resolve(here.at(), &named);
+    // Two paths and they are different things: `target` is what the answer
+    // says, and the anchor is what is opened. For a person's session they are
+    // the same path; for a confined one the anchor is a descriptor the kernel
+    // resolved inside the workspace, which is the only reason a name cannot be
+    // swapped for a link between here and the open. See `crate::confine`.
+    let found = here.anchor(&target).and_then(|anchored| {
+        thalyx_files::read(anchored.path()).map_err(|error| named_as(error, &target))
+    });
 
     if face.machine() {
         face.say(match &found {
@@ -966,6 +1145,18 @@ pub fn rehearse(here: &Where, store: &thalyx_core::Store, rest: &str, face: Face
             })?;
             return Ok(());
         }
+        // The keyboard. Worth rehearsing more than most: this is the one verb
+        // whose failure mode is a machine that looks perfectly healthy and
+        // types the wrong letters, and the rehearsal is the only way to see
+        // what a layout does to a key **before** the key stops doing it.
+        //
+        // It reads the tables, which are data and need no console, and it reads
+        // the console only to say what is there now — so on a machine with no
+        // console it still answers, saying which half it could not read.
+        "keyboard" => {
+            crate::keyboard::foresee(arguments, face);
+            return Ok(());
+        }
         // Unreachable as of 2026-08-26: every verb whose `changes` is true has
         // an arm above, and a test asserts that set. Kept because the match is
         // on a string and the compiler cannot say so — and because the way a
@@ -1003,6 +1194,94 @@ fn destination(from: &Path, mut to: PathBuf) -> PathBuf {
     to
 }
 
+/// Which anchor an operation needs, which is decided by what a syscall acts on.
+///
+/// Not a preference. `read` and `list` act on the *thing*, and a descriptor is
+/// exactly the thing — `/proc/self/fd/9` opens the inode that was resolved.
+/// `unlink`, `rename` and `create` act on a **directory entry**, and there is
+/// no entry to act on inside a procfs link: `remove` on `/proc/self/fd/9`
+/// answers `EPERM`, which is the kernel saying the same thing.
+///
+/// So those get the parent pinned and the last component appended, which is
+/// the same containment minus the last lookup — see `crate::confine` for what
+/// that last lookup still leaves open.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// The thing itself, for operations that read or write its contents.
+    Thing,
+    /// The name inside its directory, for operations that create, remove or
+    /// rename it.
+    Entry,
+}
+
+fn anchored(
+    here: &Where,
+    target: &Path,
+    which: Anchor,
+) -> Result<crate::confine::Anchored, thalyx_files::FileError> {
+    match which {
+        Anchor::Thing => here.anchor(target),
+        // Both, and the order matters. The parent anchor alone would let a
+        // last component that is a link out of the workspace through, because
+        // nothing resolves it; asking for the thing first is what makes the
+        // kernel refuse that — and its answer is thrown away, because what the
+        // syscall needs is the entry.
+        Anchor::Entry => match here.anchor(target) {
+            Ok(_) | Err(thalyx_files::FileError::Absent(_)) => here.anchor_parent(target),
+            Err(error) => Err(error),
+        },
+    }
+}
+
+/// Do one thing to one path, with the kernel holding the path still.
+///
+/// The two paths are the whole idea and they are not interchangeable: `target`
+/// is what the caller asked about and what every answer says, and the anchor is
+/// what the operation is actually performed on — a descriptor `openat2`
+/// resolved inside the workspace, so that nothing between this call and the
+/// syscall inside it can make the name mean somewhere else.
+///
+/// For an unconfined session — the person's — this is `act(target)` and a clone.
+fn on_anchored(
+    here: &Where,
+    target: &Path,
+    which: Anchor,
+    act: impl FnOnce(&Path) -> Result<thalyx_files::Done, thalyx_files::FileError>,
+) -> Result<thalyx_files::Done, thalyx_files::FileError> {
+    let held = anchored(here, target, which)?;
+    match act(held.path()) {
+        Ok(mut done) => {
+            done.path = target.to_path_buf();
+            Ok(done)
+        }
+        Err(error) => Err(named_as(error, target)),
+    }
+}
+
+/// The two-path version, for `cp` and `mv`.
+///
+/// `cp` reads its source and makes its destination; `mv` renames both, so both
+/// of its paths are entries. Getting that wrong is not subtle — the operation
+/// answers `EPERM` — which is the good kind of wrong.
+fn between_anchored(
+    here: &Where,
+    from: &Path,
+    to: &Path,
+    source_is: Anchor,
+    act: impl FnOnce(&Path, &Path) -> Result<thalyx_files::Done, thalyx_files::FileError>,
+) -> Result<thalyx_files::Done, thalyx_files::FileError> {
+    let source = anchored(here, from, source_is).map_err(|error| named_as(error, from))?;
+    let sink = anchored(here, to, Anchor::Entry).map_err(|error| named_as(error, to))?;
+    match act(source.path(), sink.path()) {
+        Ok(mut done) => {
+            done.path = from.to_path_buf();
+            done.to = Some(to.to_path_buf());
+            Ok(done)
+        }
+        Err(error) => Err(named_as(error, from)),
+    }
+}
+
 /// `mkdir <carpeta>` / `crear <archivo>`.
 pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
     let op = if directory {
@@ -1022,11 +1301,13 @@ pub fn make(here: &Where, rest: &str, directory: bool, face: Face) -> Fallible {
         .iter()
         .map(|word| {
             let path = thalyx_files::resolve(here.at(), word.as_str());
-            if directory {
-                thalyx_files::make_directory(&path)
-            } else {
-                thalyx_files::make_file(&path)
-            }
+            on_anchored(here, &path, Anchor::Entry, |at| {
+                if directory {
+                    thalyx_files::make_directory(at)
+                } else {
+                    thalyx_files::make_file(at)
+                }
+            })
         })
         .collect();
 
@@ -1053,11 +1334,19 @@ pub fn transfer(here: &Where, rest: &str, moving: bool, face: Face) -> Fallible 
     let from = thalyx_files::resolve(here.at(), words[0].as_str());
     let to = destination(&from, thalyx_files::resolve(here.at(), words[1].as_str()));
 
-    let outcome = if moving {
-        thalyx_files::move_to(&from, &to)
-    } else {
-        thalyx_files::copy(&from, &to)
-    };
+    let outcome = between_anchored(
+        here,
+        &from,
+        &to,
+        if moving { Anchor::Entry } else { Anchor::Thing },
+        |from, to| {
+            if moving {
+                thalyx_files::move_to(from, to)
+            } else {
+                thalyx_files::copy(from, to)
+            }
+        },
+    );
 
     speak(face, op, &vec![outcome], Tense::Happened);
     Ok(())
@@ -1096,7 +1385,7 @@ pub fn erase(here: &Where, rest: &str, face: Face) -> Fallible {
 
     let outcomes: Outcomes = chosen
         .iter()
-        .map(|path| thalyx_files::remove(path))
+        .map(|path| on_anchored(here, path, Anchor::Entry, thalyx_files::remove))
         .collect();
     speak(face, "remove", &outcomes, Tense::Happened);
     Ok(())

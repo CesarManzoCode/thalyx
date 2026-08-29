@@ -379,9 +379,37 @@ enum Scratch {
 }
 
 impl Scratch {
-    fn open(keep: Option<&Path>, named: &str) -> Result<Scratch, std::io::Error> {
+    /// `under` is where a disposable directory is made, when the engine can
+    /// only read from somewhere in particular.
+    ///
+    /// It exists because the module engine reads the prompt from inside a
+    /// sandbox: the only paths that exist in there are the ones the human
+    /// granted, and the system temporary directory is not one of them. A
+    /// prompt written to `/tmp` is a prompt the engine is told to read and
+    /// cannot see — which arrives as "the tool never completed the prompt",
+    /// naming llama.cpp for a mistake made here.
+    fn open(
+        keep: Option<&Path>,
+        under: Option<&Path>,
+        named: &str,
+    ) -> Result<Scratch, std::io::Error> {
         match keep {
-            None => Ok(Scratch::Discarded(tempfile::tempdir()?)),
+            None => match under {
+                None => Ok(Scratch::Discarded(tempfile::tempdir()?)),
+                Some(root) => {
+                    std::fs::create_dir_all(root)?;
+                    let dir = tempfile::tempdir_in(root)?;
+                    // `tempdir_in` makes it 0700, owned by whoever is running
+                    // Thalyx — root. A module runs as a user of its own
+                    // (`module_standard` gives it one), so a 0700 directory is
+                    // one it cannot enter: the bind is there, the file is
+                    // there, and `open` says EACCES. What comes back from that
+                    // is llama.cpp failing to read the prompt, which reads as
+                    // the engine's fault and is this line's.
+                    make_readable(dir.path(), 0o755)?;
+                    Ok(Scratch::Discarded(dir))
+                }
+            },
             Some(root) => {
                 let dir = root.join(named);
                 std::fs::create_dir_all(&dir)?;
@@ -396,6 +424,21 @@ impl Scratch {
             Scratch::Kept(dir) => dir,
         }
     }
+}
+
+/// Let a program that is not this one read it.
+///
+/// Only ever used on the scratch a confined engine has to read, and only there:
+/// widening anything else would be handing out access nobody asked for.
+#[cfg(unix)]
+fn make_readable(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn make_readable(_path: &Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// How many tokens the probe is given.
@@ -445,15 +488,215 @@ pub enum GrammarCheck {
     },
 }
 
+/// Everything one inference needs, with its two files already on disk.
+///
+/// The whole argument vector is derived from this in one place, so the command
+/// a person can paste into a terminal and the command an engine is actually
+/// handed cannot drift apart. That drift is not hypothetical here: the free arm
+/// of the grammar probe differs from the constrained one by exactly one flag,
+/// and a second place building the arguments is a second place to get that
+/// wrong.
+#[derive(Debug, Clone, Copy)]
+pub struct EngineCall<'a> {
+    pub weights: &'a Path,
+    pub prompt_file: &'a Path,
+    /// [`None`] only for the free arm of the grammar probe. See [`Constrained`].
+    pub grammar_file: Option<&'a Path>,
+    pub predict: u32,
+    pub seed: u64,
+    pub extra_args: &'a [String],
+    pub timeout: Duration,
+}
+
+impl EngineCall<'_> {
+    /// The arguments, in the order every launcher passes them.
+    pub fn args(&self) -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = vec![
+            "-m".into(),
+            self.weights.into(),
+            "-f".into(),
+            self.prompt_file.into(),
+        ];
+        if let Some(grammar) = self.grammar_file {
+            args.push("--grammar-file".into());
+            args.push(grammar.into());
+        }
+        args.push("-n".into());
+        args.push(self.predict.to_string().into());
+        args.push("--seed".into());
+        args.push(self.seed.to_string().into());
+        args.push("--temp".into());
+        args.push("0".into());
+        args.extend(self.extra_args.iter().map(Into::into));
+        args
+    }
+}
+
+/// What an engine printed, and what it cost.
+#[derive(Debug, Default)]
+pub struct EngineRun {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// How it ended, when it did not end well. [`None`] is a clean exit.
+    pub failed: Option<String>,
+    /// Peak resident set size, when the launcher was in a position to sample it.
+    pub peak_rss: Option<u64>,
+}
+
+/// Whatever actually runs llama.cpp.
+///
+/// The seam Cesar decreed on 2026-08-28: **the engine is a module**, not a
+/// program found on `PATH`. Everything this crate knows about inference — the
+/// prompt, the marker, the grammar, where an answer stops, what a broken one
+/// looks like — is above this line and unchanged by which side of it runs.
+/// Below it there are two implementations and they answer one question
+/// differently: who starts the process.
+///
+/// - [`ProcessEngine`] starts it here, with [`std::process::Command`]. It is
+///   what `thalyx agent bench` uses on a development machine, where there is a
+///   llama.cpp on `PATH` and no store to install anything into.
+/// - The machine's engine runs it as an installed, signed module under
+///   `module_standard`, through `thalyx_core::run`. It lives in the CLI,
+///   because that is where the store and the sandbox are, and because a crate
+///   the model's output passes through must not be able to start confined
+///   processes.
+///
+/// The trait is deliberately narrow: an argument vector in, bytes out. An
+/// engine that could see the prompt's structure would be an engine that could
+/// be wrong about it in a second place.
+pub trait Engine: std::fmt::Debug + Send + Sync {
+    /// What to name in an error. A binary path, or a module id.
+    fn describe(&self) -> PathBuf;
+
+    /// Whether the engine is there at all, without loading any weights.
+    fn preflight(&self) -> Result<(), LlamaError>;
+
+    /// Where the prompt and grammar must be written for this engine to read
+    /// them. [`None`] means anywhere.
+    fn scratch_root(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn complete(&self, call: EngineCall<'_>) -> Result<EngineRun, LlamaError>;
+}
+
+/// llama.cpp as a child process of this one.
+#[derive(Debug, Clone)]
+pub struct ProcessEngine {
+    /// A bare name is looked up on `PATH`.
+    pub binary: PathBuf,
+}
+
+impl ProcessEngine {
+    pub fn new(binary: impl Into<PathBuf>) -> ProcessEngine {
+        ProcessEngine {
+            binary: binary.into(),
+        }
+    }
+
+    /// Wait for the process, killing it if it outstays the deadline.
+    ///
+    /// A token cap already bounds a model that will not stop generating. This
+    /// bounds the other one — a process that is not generating anything and is
+    /// also not exiting, which produces no output to be suspicious of.
+    fn wait_or_kill(
+        &self,
+        child: &mut Child,
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<std::process::ExitStatus, LlamaError> {
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if started.elapsed() > timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(LlamaError::TimedOut(timeout));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Engine for ProcessEngine {
+    fn describe(&self) -> PathBuf {
+        self.binary.clone()
+    }
+
+    fn preflight(&self) -> Result<(), LlamaError> {
+        if !resolves_to_a_program(&self.binary) {
+            return Err(LlamaError::NotInstalled(self.binary.clone()));
+        }
+        Ok(())
+    }
+
+    fn complete(&self, call: EngineCall<'_>) -> Result<EngineRun, LlamaError> {
+        let started = Instant::now();
+        let mut command = Command::new(&self.binary);
+        command
+            .args(call.args())
+            // Closed, not inherited. See the module docs: an inherited stdin is
+            // how llama-cli decides there is a person to chat with.
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|source| LlamaError::Spawn {
+            binary: self.binary.clone(),
+            source,
+        })?;
+
+        let peak = Arc::new(AtomicU64::new(0));
+        let sampler = sample_peak_rss(child.id(), Arc::clone(&peak));
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+
+        let status = self.wait_or_kill(&mut child, started, call.timeout)?;
+
+        // Joined after the wait, never before: a reader thread ends when its
+        // pipe closes, and the pipe closes when the child goes.
+        let out = stdout.join().unwrap_or_default();
+        let err = stderr.join().unwrap_or_default();
+        sampler.stop();
+
+        Ok(EngineRun {
+            stdout: out,
+            stderr: err,
+            failed: (!status.success()).then(|| status.to_string()),
+            peak_rss: match peak.load(Ordering::Relaxed) {
+                0 => None,
+                bytes => Some(bytes),
+            },
+        })
+    }
+}
+
 /// The model the decree describes.
 #[derive(Debug, Clone)]
 pub struct LlamaModel {
     invocation: Invocation,
+    /// What starts llama.cpp. See [`Engine`].
+    engine: Arc<dyn Engine>,
 }
 
 impl LlamaModel {
+    /// A model that starts llama.cpp here, as a child process.
     pub fn new(invocation: Invocation) -> LlamaModel {
-        LlamaModel { invocation }
+        let engine = Arc::new(ProcessEngine::new(invocation.binary.clone()));
+        LlamaModel { invocation, engine }
+    }
+
+    /// The same model, run by something else — in practice the engine module.
+    ///
+    /// Everything about what a good answer is stays where it was. Only who
+    /// starts the process changes, which is the whole point of the seam.
+    pub fn through(mut self, engine: Arc<dyn Engine>) -> LlamaModel {
+        self.engine = engine;
+        self
+    }
+
+    pub fn engine(&self) -> &dyn Engine {
+        self.engine.as_ref()
     }
 
     pub fn invocation(&self) -> &Invocation {
@@ -481,10 +724,7 @@ impl LlamaModel {
         if !self.invocation.weights.is_file() {
             return Err(LlamaError::WeightsMissing(self.invocation.weights.clone()));
         }
-        if !resolves_to_a_program(&self.invocation.binary) {
-            return Err(LlamaError::NotInstalled(self.invocation.binary.clone()));
-        }
-        Ok(())
+        self.engine.preflight()
     }
 
     /// Run one inference and report what it cost.
@@ -535,7 +775,7 @@ impl LlamaModel {
         // It did not even open where `root` opens. A constrained decode cannot
         // do that, so the grammar is not being applied.
         Err(LlamaError::GrammarNotInForce {
-            binary: self.invocation.binary.clone(),
+            binary: self.engine.describe(),
             answer: sample_of(&run.answer),
         })
     }
@@ -713,11 +953,23 @@ impl LlamaModel {
             .filter(char::is_ascii_alphanumeric)
             .chain(arm.suffix().chars())
             .collect();
-        let scratch = Scratch::open(self.invocation.keep_prompt.as_deref(), &named)?;
+        let scratch = Scratch::open(
+            self.invocation.keep_prompt.as_deref(),
+            self.engine.scratch_root().as_deref(),
+            &named,
+        )?;
         let prompt_file = scratch.path().join("prompt.txt");
         let grammar_file = scratch.path().join("proposal.gbnf");
         std::fs::write(&prompt_file, prompt.text())?;
         std::fs::write(&grammar_file, crate::grammar::gbnf())?;
+
+        // Same reason as the directory above, one level down. An engine that
+        // runs as its own user has to be able to open both of these.
+        if self.engine.scratch_root().is_some() {
+            make_readable(scratch.path(), 0o755)?;
+            make_readable(&prompt_file, 0o644)?;
+            make_readable(&grammar_file, 0o644)?;
+        }
 
         // Written beside the files it names, rather than printed: this is a
         // library, and a command line naming two paths is worth nothing away
@@ -735,32 +987,31 @@ impl LlamaModel {
         }
 
         let started = Instant::now();
-        let mut child = self.spawn(&prompt_file, &grammar_file, constrained)?;
+        let run = self.engine.complete(EngineCall {
+            weights: &self.invocation.weights,
+            prompt_file: &prompt_file,
+            grammar_file: match constrained {
+                Constrained::Yes => Some(grammar_file.as_path()),
+                Constrained::No => None,
+            },
+            predict: self.invocation.predict,
+            seed: self.invocation.seed,
+            extra_args: &self.invocation.extra_args,
+            timeout: self.invocation.timeout,
+        })?;
 
-        let peak = Arc::new(AtomicU64::new(0));
-        let sampler = sample_peak_rss(child.id(), Arc::clone(&peak));
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-
-        let status = self.wait_or_kill(&mut child, started)?;
-
-        // Joined after the wait, never before: a reader thread ends when its
-        // pipe closes, and the pipe closes when the child goes.
-        let out = stdout.join().unwrap_or_default();
-        let err = stderr.join().unwrap_or_default();
-        sampler.stop();
-
-        if out.len() > MAX_OUTPUT_BYTES {
+        if run.stdout.len() > MAX_OUTPUT_BYTES {
             return Err(LlamaError::Runaway);
         }
-        if !status.success() {
+        if let Some(status) = run.failed {
             return Err(LlamaError::Exited {
-                status: status.to_string(),
-                stderr: String::from_utf8_lossy(&err).trim().to_string(),
+                status,
+                stderr: String::from_utf8_lossy(&run.stderr).trim().to_string(),
             });
         }
 
-        let text = String::from_utf8_lossy(&out).into_owned();
+        let peak_rss = run.peak_rss;
+        let text = String::from_utf8_lossy(&run.stdout).into_owned();
 
         // The marker is gone, so the prompt was never completed. That is a tool
         // which does not do this job, not an answer that came out bad — and it
@@ -773,7 +1024,7 @@ impl LlamaModel {
         // has not answered the probe either.
         let Some(answer) = prompt.answer_in(&text) else {
             return Err(LlamaError::NotOneShot {
-                binary: self.invocation.binary.clone(),
+                binary: self.engine.describe(),
                 sample: sample_of(&text),
             });
         };
@@ -782,69 +1033,8 @@ impl LlamaModel {
         Ok(Run {
             answer,
             latency: started.elapsed(),
-            peak_rss: match peak.load(Ordering::Relaxed) {
-                0 => None,
-                bytes => Some(bytes),
-            },
+            peak_rss,
         })
-    }
-
-    fn spawn(
-        &self,
-        prompt_file: &Path,
-        grammar_file: &Path,
-        constrained: Constrained,
-    ) -> Result<Child, LlamaError> {
-        let mut command = Command::new(&self.invocation.binary);
-        command
-            .arg("-m")
-            .arg(&self.invocation.weights)
-            .arg("-f")
-            .arg(prompt_file);
-        if constrained == Constrained::Yes {
-            command.arg("--grammar-file").arg(grammar_file);
-        }
-        command
-            .arg("-n")
-            .arg(self.invocation.predict.to_string())
-            .arg("--seed")
-            .arg(self.invocation.seed.to_string())
-            .arg("--temp")
-            .arg("0")
-            .args(&self.invocation.extra_args)
-            // Closed, not inherited. See the module docs: an inherited stdin is
-            // how llama-cli decides there is a person to chat with.
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| LlamaError::Spawn {
-                binary: self.invocation.binary.clone(),
-                source,
-            })
-    }
-
-    /// Wait for the process, killing it if it outstays the deadline.
-    ///
-    /// A token cap already bounds a model that will not stop generating. This
-    /// bounds the other one — a process that is not generating anything and is
-    /// also not exiting, which produces no output to be suspicious of.
-    fn wait_or_kill(
-        &self,
-        child: &mut Child,
-        started: Instant,
-    ) -> Result<std::process::ExitStatus, LlamaError> {
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            if started.elapsed() > self.invocation.timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(LlamaError::TimedOut(self.invocation.timeout));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 }
 
@@ -954,6 +1144,112 @@ fn resolves_to_a_program(binary: &Path) -> bool {
 pub fn write_grammar(to: &Path) -> std::io::Result<()> {
     let mut file = std::fs::File::create(to)?;
     file.write_all(crate::grammar::gbnf().as_bytes())
+}
+
+#[cfg(test)]
+mod engine_seam {
+    use super::*;
+    use crate::transcript::{Segment, Transcript};
+    use std::sync::Mutex;
+
+    /// An engine that records where it was asked to read from, and answers.
+    #[derive(Debug)]
+    struct Recording {
+        under: Option<PathBuf>,
+        seen: Mutex<Vec<PathBuf>>,
+    }
+
+    impl Engine for Recording {
+        fn describe(&self) -> PathBuf {
+            PathBuf::from("module dev.thalyx.engine")
+        }
+        fn preflight(&self) -> Result<(), LlamaError> {
+            Ok(())
+        }
+        fn scratch_root(&self) -> Option<PathBuf> {
+            self.under.clone()
+        }
+        fn complete(&self, call: EngineCall<'_>) -> Result<EngineRun, LlamaError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(call.prompt_file.to_path_buf());
+            // What llama.cpp does: echo the prompt, then answer past the marker.
+            let mut stdout = std::fs::read(call.prompt_file).unwrap_or_default();
+            stdout
+                .extend_from_slice(br#"{ "operation": "make_directory", "targets": ["pruebas"] }"#);
+            Ok(EngineRun {
+                stdout,
+                ..EngineRun::default()
+            })
+        }
+    }
+
+    /// The one invariant the confined engine cannot survive without.
+    ///
+    /// A module sees only the directories its manifest was granted. The prompt
+    /// therefore has to be written *inside* one of them, and a scratch
+    /// directory in `/tmp` — which is what every run used before 2026-08-28 —
+    /// is a file the engine is told to read and cannot see. What comes back is
+    /// llama.cpp failing to complete a prompt, which reads as the model's
+    /// fault and is this line's.
+    #[test]
+    fn the_prompt_is_written_where_the_engine_can_read_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let granted = scratch.path().join("granted");
+        let weights = scratch.path().join("w.gguf");
+        std::fs::write(&weights, b"gguf").unwrap();
+
+        let engine = Arc::new(Recording {
+            under: Some(granted.clone()),
+            seen: Mutex::new(Vec::new()),
+        });
+        let model = LlamaModel::new(Invocation::new("unused", &weights))
+            .through(Arc::clone(&engine) as Arc<dyn Engine>);
+
+        let run = model
+            .run(&Transcript::new().with(Segment::typed("crea una carpeta llamada pruebas")))
+            .expect("the stand-in engine answers");
+        assert!(run.answer.contains("make_directory"), "{}", run.answer);
+
+        let seen = engine.seen.lock().unwrap();
+        let prompt = seen.first().expect("the engine was asked something");
+        assert!(
+            prompt.starts_with(&granted),
+            "the prompt was written to {}, which is outside the only directory the \
+             engine was granted ({})",
+            prompt.display(),
+            granted.display()
+        );
+    }
+
+    /// The control: with no granted directory, nothing is forced anywhere.
+    ///
+    /// Without it, an engine seam that always wrote under the first path it was
+    /// handed would pass the test above and quietly break `thalyx agent bench`
+    /// on a development machine.
+    #[test]
+    fn an_engine_that_can_read_anywhere_is_not_confined_to_a_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let weights = scratch.path().join("w.gguf");
+        std::fs::write(&weights, b"gguf").unwrap();
+
+        let engine = Arc::new(Recording {
+            under: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let model = LlamaModel::new(Invocation::new("unused", &weights))
+            .through(Arc::clone(&engine) as Arc<dyn Engine>);
+        model
+            .run(&Transcript::new().with(Segment::typed("crea una carpeta llamada pruebas")))
+            .expect("the stand-in engine answers");
+
+        let seen = engine.seen.lock().unwrap();
+        assert!(
+            !seen.first().unwrap().starts_with(scratch.path()),
+            "a scratch root nobody asked for"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1617,6 +1913,7 @@ esac"#,
             timeout_seconds: 180,
             weights_bytes: 1,
             weights_digest: "sha256:00".to_string(),
+            engine_module: None,
         };
 
         for line in toml::to_string(&settings)
@@ -1876,14 +2173,14 @@ esac"#,
         let root = tempfile::tempdir().unwrap();
 
         let discarded = {
-            let scratch = Scratch::open(None, "ignored").unwrap();
+            let scratch = Scratch::open(None, None, "ignored").unwrap();
             std::fs::write(scratch.path().join("prompt.txt"), "asked").unwrap();
             scratch.path().to_path_buf()
         };
         assert!(!discarded.exists(), "{discarded:?} survived the run");
 
         let kept = {
-            let scratch = Scratch::open(Some(root.path()), "THALYXdeadbeef").unwrap();
+            let scratch = Scratch::open(Some(root.path()), None, "THALYXdeadbeef").unwrap();
             std::fs::write(scratch.path().join("prompt.txt"), "asked").unwrap();
             scratch.path().to_path_buf()
         };

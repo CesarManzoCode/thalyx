@@ -563,3 +563,317 @@ fn a_rehearsal_that_cannot_be_done_still_answers_as_a_rehearsal() {
     assert_eq!(said["ok"], false);
     assert_eq!(said["error"], "no_such_line");
 }
+
+// ───────────────────────────────── substituting text across files, in one call
+//
+// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`: the reversible benchmark
+// found nothing wrong with what Thalyx *does* and something wrong with how many
+// calls it takes to say it. These are the tests of the operation that closes
+// that gap, and every one of them reads the files back with `std::fs` — rule 1,
+// because "the answer said six places" and "six places changed" are two claims.
+
+/// A crate-shaped tree with one name in several files, and the tree's paths.
+fn a_tree_with_a_name_in_it(root: &Path) -> Vec<std::path::PathBuf> {
+    std::fs::create_dir_all(root.join("core/src")).unwrap();
+    std::fs::create_dir_all(root.join("cli/src")).unwrap();
+    let files = [
+        (
+            "core/src/uids.rs",
+            "pub struct UidRegistry;\nimpl UidRegistry {\n    pub fn new() -> UidRegistry {\n        UidRegistry\n    }\n}\n",
+        ),
+        (
+            "core/src/run.rs",
+            "use crate::uids::UidRegistry;\nfn go(r: &UidRegistry) {}\n",
+        ),
+        (
+            "cli/src/render.rs",
+            "fn show(r: &crate::UidRegistry) {}\n// UidRegistry again\n",
+        ),
+    ];
+    files
+        .iter()
+        .map(|(name, body)| {
+            let path = root.join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        })
+        .collect()
+}
+
+#[test]
+fn one_call_substitutes_a_name_in_every_file_it_was_given_and_the_bytes_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = a_tree_with_a_name_in_it(tmp.path());
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!(
+                "editar {} sustituir UidRegistry UidRegistryRenamed {} {}",
+                files[0].display(),
+                files[1].display(),
+                files[2].display()
+            ),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "edit");
+    assert_eq!(said["ok"], true, "{said}");
+    assert_eq!(said["did"], "substituted");
+    assert_eq!(said["files"], 3);
+    // Four in the definition file, two in each of the others. Counted by hand
+    // from the fixture above rather than derived from it: a test that computes
+    // its expectation with the same walk the code makes proves nothing.
+    assert_eq!(said["replacements"], 8);
+    assert_eq!(said["undo"], "attempt");
+
+    for path in &files {
+        let body = std::fs::read_to_string(path).unwrap();
+        // Every mention of the old name is now part of the new one, which is
+        // the only way to say "none is left" about a name the new one starts
+        // with.
+        assert_eq!(
+            body.matches("UidRegistry").count(),
+            body.matches("UidRegistryRenamed").count(),
+            "{} still holds the old name on its own: {body}",
+            path.display()
+        );
+        assert!(body.contains("UidRegistryRenamed"), "{}", path.display());
+    }
+    // And it is a substitution and not a rewrite: the line that never mentioned
+    // the name is byte for byte what it was.
+    assert!(
+        std::fs::read_to_string(&files[1])
+            .unwrap()
+            .contains("use crate::uids::UidRegistryRenamed;")
+    );
+}
+
+#[test]
+fn a_file_the_text_is_not_in_refuses_the_whole_call_and_changes_nothing_anywhere() {
+    // **The property the preflight exists for.** Without it the first two files
+    // would be renamed and the third refused, leaving a workspace nobody asked
+    // for and a caller that has to work out which half happened.
+    let tmp = tempfile::tempdir().unwrap();
+    let files = a_tree_with_a_name_in_it(tmp.path());
+    let innocent = tmp.path().join("cli/src/other.rs");
+    std::fs::write(&innocent, "fn nothing() {}\n").unwrap();
+    let before: Vec<String> = files
+        .iter()
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!(
+                "editar {} sustituir UidRegistry UidRegistryRenamed {} {}",
+                files[0].display(),
+                files[1].display(),
+                innocent.display()
+            ),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "edit");
+    assert_eq!(said["ok"], false, "{said}");
+    assert_eq!(said["error"], "no_occurrences");
+    // The field that tells an untouched workspace from a half-renamed one.
+    assert_eq!(said["wrote"], false);
+    assert!(
+        said["path"].as_str().unwrap().ends_with("other.rs"),
+        "the refusal has to name which file: {said}"
+    );
+
+    for (path, was) in files.iter().zip(&before) {
+        assert_eq!(
+            &std::fs::read_to_string(path).unwrap(),
+            was,
+            "{} was changed by a call that refused",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_same_file_under_two_names_is_refused_rather_than_substituted_twice() {
+    // A link and the file it points at are one file. Substituting both would
+    // apply the change to the text as it was *before* the call twice, and the
+    // second save would throw the first away — which is invisible when the two
+    // results happen to agree and destructive when they do not.
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("uids.rs");
+    let link = tmp.path().join("link.rs");
+    std::fs::write(&real, "struct UidRegistry;\n").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!(
+                "editar {} sustituir UidRegistry Renamed {}",
+                real.display(),
+                link.display()
+            ),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "edit");
+    assert_eq!(said["ok"], false, "{said}");
+    assert_eq!(said["error"], "repeated_path");
+    assert_eq!(said["wrote"], false);
+    assert_eq!(
+        std::fs::read_to_string(&real).unwrap(),
+        "struct UidRegistry;\n"
+    );
+}
+
+#[test]
+fn text_with_spaces_in_it_survives_being_typed_as_one_argument() {
+    // The quoting the external boundary depends on, exercised where it can be
+    // seen. `editar` takes the rest of its line byte for byte for the line
+    // actions, so this subverb had to be the exception — and if it were not,
+    // `pub fn` would arrive as two arguments and the call would substitute
+    // something nobody asked for.
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a.rs");
+    std::fs::write(&file, "pub fn go() {}\npub fn stop() {}\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!(
+                "editar {} sustituir 'pub fn' 'pub const fn'",
+                file.display()
+            ),
+            "salir",
+        ],
+    );
+
+    assert_eq!(answer_to(&output, "edit")["replacements"], 2);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "pub const fn go() {}\npub const fn stop() {}\n"
+    );
+}
+
+#[test]
+fn a_rehearsed_substitution_counts_every_place_and_writes_none_of_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = a_tree_with_a_name_in_it(tmp.path());
+    let before = std::fs::read_to_string(&files[0]).unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!(
+                "ensayo editar {} sustituir UidRegistry UidRegistryRenamed {}",
+                files[0].display(),
+                files[1].display()
+            ),
+            "salir",
+        ],
+    );
+
+    let said = answer_to(&output, "rehearse");
+    assert_eq!(said["ok"], true, "{said}");
+    assert_eq!(said["would"], "substituted");
+    assert_eq!(said["files"], 2);
+    assert_eq!(said["replacements"], 6);
+    assert_eq!(said["wrote"], false);
+    assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), before);
+}
+
+#[test]
+fn a_person_is_told_what_moved_without_being_shown_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = a_tree_with_a_name_in_it(tmp.path());
+
+    let output = typed(
+        tmp.path(),
+        &[
+            &format!(
+                "editar {} sustituir UidRegistry UidRegistryRenamed {}",
+                files[0].display(),
+                files[1].display()
+            ),
+            "salir",
+        ],
+    );
+    let screen = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        screen.contains("changed 6 place(s) in 2 file(s)"),
+        "{screen}"
+    );
+    assert!(screen.contains("from line 1"), "{screen}");
+    assert!(screen.contains("intento"), "{screen}");
+}
+
+#[test]
+fn substituting_a_string_for_itself_is_refused_and_says_which_mistake_it_is() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a.rs");
+    std::fs::write(&file, "struct Uid;\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("editar {} sustituir Uid Uid", file.display()),
+            "salir",
+        ],
+    );
+    let said = answer_to(&output, "edit");
+    assert_eq!(said["error"], "same_text");
+    assert_eq!(said["wrote"], false);
+}
+
+#[test]
+fn a_substitution_with_only_one_text_is_told_what_it_is_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a.rs");
+    std::fs::write(&file, "struct Uid;\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("editar {} sustituir Uid", file.display()),
+            "salir",
+        ],
+    );
+    let said = answer_to(&output, "edit");
+    assert_eq!(said["error"], "incomplete");
+    assert_eq!(said["wrote"], false);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "struct Uid;\n");
+}
+
+#[test]
+fn a_quoted_subverb_reaches_the_same_operation_as_an_unquoted_one() {
+    // Not a nicety: the external boundary quotes every argument of this subverb,
+    // so the subverb itself arrives quoted. A parser that split the line on the
+    // first space would look for an action called `'cambiar'`, which no machine
+    // has — and this is the test that fails if that ever comes back.
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "uno\ndos\n").unwrap();
+
+    let output = typed(
+        tmp.path(),
+        &[
+            "structured on",
+            &format!("editar {} 'cambiar' 2 DOS", file.display()),
+            "salir",
+        ],
+    );
+    assert_eq!(answer_to(&output, "edit")["did"], "replaced");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "uno\nDOS\n");
+}

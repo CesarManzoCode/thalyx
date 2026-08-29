@@ -1,0 +1,17 @@
+{
+  "about": "A name written in a block comment, a line comment, a string, and a string that runs over two lines — none of which is a use.",
+  "category": "precision guard",
+  "why_it_matters": "This is what separates the index from `grep`. Every one of these four shapes produced a false use when the scan was done a line at a time, and each false use is now a false dependency, which is worse.",
+  "dependents": {
+    "src/target.rs": [
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/real.rs", "via": "symbol", "through": "beacon" }
+    ]
+  },
+  "symbols": {
+    "beacon": {
+      "definitions": ["src/target.rs:1 function"],
+      "uses": ["src/real.rs:2"]
+    }
+  }
+}

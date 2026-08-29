@@ -6,12 +6,17 @@
 
 mod agent;
 mod agent_model;
+mod ask;
 mod attempt;
+mod bridge;
 mod catalogue;
 mod changes;
+mod confine;
 mod dev;
 mod edit;
 mod enforce;
+mod engine_module;
+mod external;
 mod files;
 mod foreign;
 mod graph;
@@ -21,6 +26,7 @@ mod image;
 mod index;
 mod init;
 mod install;
+mod keyboard;
 mod memory;
 mod modules;
 mod net;
@@ -173,6 +179,29 @@ enum Command {
     /// Packaging tools for module publishers
     #[command(subcommand)]
     Dev(dev::DevCommand),
+
+    /// Serve the channel a programming agent outside this machine reaches it through
+    ///
+    /// Inside a Thalyx machine this runs by itself, on a thread of the session,
+    /// when QEMU gave the machine a virtio-serial port. This subcommand is the
+    /// same endpoint reachable from a host — which is what lets the confinement
+    /// and the answers be exercised somewhere that has no QEMU.
+    Bridge(BridgeArgs),
+}
+
+#[derive(clap::Args)]
+struct BridgeArgs {
+    /// The directory the agent is confined to. It cannot name anything outside it.
+    #[arg(long)]
+    workspace: PathBuf,
+
+    /// A character device to serve on — inside the machine, the virtio-serial port
+    #[arg(long, conflicts_with = "listen")]
+    port: Option<PathBuf>,
+
+    /// A UNIX socket to serve on, for a host
+    #[arg(long)]
+    listen: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -352,6 +381,26 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let store = Store::open(&root)?;
                 let mut session = session::Session::opening(&store);
                 screen::show(&mut session).map(|_| ()).map_err(Into::into)
+            }
+        }
+        Command::Bridge(args) => {
+            // Opened here and not inside the loop, so that a root that is not a
+            // store fails now — with the person watching — rather than on the
+            // first thing an agent asks, on the far side of a socket.
+            Store::open(&root)?;
+            match (&args.port, &args.listen) {
+                (Some(port), _) => {
+                    let read = std::fs::OpenOptions::new().read(true).open(port)?;
+                    let write = std::fs::OpenOptions::new().write(true).open(port)?;
+                    bridge::serve(read, write, &root, &args.workspace)?;
+                    Ok(())
+                }
+                (None, Some(socket)) => {
+                    bridge::listen(socket, &root, &args.workspace).map_err(Into::into)
+                }
+                (None, None) => Err("name where to serve: --port <device> inside a machine, or \
+                         --listen <socket> on a host"
+                    .into()),
             }
         }
         Command::Enforce(command) => enforce::run(&root, command),

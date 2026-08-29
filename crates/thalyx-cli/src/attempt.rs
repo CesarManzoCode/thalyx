@@ -25,23 +25,32 @@
 //! `si` to go ahead. It has seen the cost in the object it is answering, which
 //! is what makes it a confirmation rather than a rubber stamp.
 //!
+//! ## Why the native backend and not the `btrfs` command
+//!
+//! Because this verb runs inside Thalyx, where there is no `btrfs` to run. On
+//! 2026-08-28 `make -C image agent` created the workspace as a real subvolume
+//! and `thalyx_attempt` still answered `not_a_subvolume`: the spawn failed, and
+//! `thalyx_snapshot::Btrfs` has no way to say *I could not ask* — so a missing
+//! binary was reported as a fact about the filesystem, on the one verb the
+//! design leans on. `thalyx_snapshot::Native` asks the kernel instead, and every
+//! `Snapshots` built here uses it.
+//!
 //! ## What this container cannot check
 //!
 //! Btrfs. The policy — which attempt is open, what a second one does, what an
 //! abandon aims at, what happens when the snapshot is gone — is covered by
 //! `thalyx_core::attempt` against the directory fake. What only Cesar's machine
 //! can exercise is that the snapshot is atomic, that it costs nothing, and that
-//! the swap is a real `RENAME_EXCHANGE`. Here, `btrfs` is not installed at all,
-//! so what runs is the refusal — and that the refusal is a refusal, and not a
-//! copy pretending to be a snapshot, is itself worth a test.
+//! the swap is a real `RENAME_EXCHANGE`. Here there is no Btrfs at all, so what
+//! runs is the refusal — and that the refusal is a refusal, and not a copy
+//! pretending to be a snapshot, is itself worth a test.
 
 use crate::files::{Face, Where};
 use serde_json::json;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use thalyx_core::Store;
 use thalyx_core::attempt::{self, Open};
-use thalyx_snapshot::{Btrfs, Snapshots, Volumes};
+use thalyx_snapshot::{Native, Snapshots, Volumes};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -99,7 +108,7 @@ fn subvolume_to_attempt<V: Volumes>(volumes: &V, here: &Path) -> Result<PathBuf,
 
 fn declined(face: Face, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(OP, word, why));
+        face.say(thalyx_files::machine::declined(OP, word, why));
     } else {
         println!("\n  {why}\n");
     }
@@ -129,16 +138,27 @@ fn cost_fields(difference: &thalyx_snapshot::Difference) -> Vec<(&'static str, s
         ("uncomparable", json!(difference.unreadable.len())),
         ("would_delete_named", json!(difference.added)),
         ("would_revert_named", json!(difference.modified)),
+        // The third list, added on 2026-08-28 when the external agent bridge
+        // made this the answer to "what have I changed since I began". Two of
+        // the three kinds were named and the third was only counted, so an agent
+        // asking what it had done was told about the files it made and the files
+        // it edited and only *how many* it had deleted — which is the one of the
+        // three a reviewer most needs to see by name.
+        ("would_bring_back_named", json!(difference.removed)),
     ]
 }
 
 /// `intento [empezar <etiqueta> | confirmar | abandonar [si]]`.
 pub fn run(store: &Store, here: &Where, rest: &str, face: Face, request_id: &str) -> Fallible {
-    let rest = rest.trim();
-    let (word, tail) = match rest.split_once(char::is_whitespace) {
-        Some((word, tail)) => (word, tail.trim()),
-        None => (rest, ""),
+    // Words and not a split on the first space, so that `intento empezar 'dos
+    // palabras'` is one label. It also means the bridge can quote its arguments
+    // uniformly instead of knowing which verbs read a raw line.
+    let Some(given) = crate::words::asked(face, OP, rest) else {
+        return Ok(());
     };
+    let word = given.first().map(|w| w.as_str()).unwrap_or("");
+    let tail = crate::words::phrase(given.get(1..).unwrap_or(&[]));
+    let tail = tail.as_str();
 
     match word {
         "" => status(store, face),
@@ -171,10 +191,10 @@ fn status(store: &Store, face: Face) -> Fallible {
 
     let Some(open) = open else {
         if face == Face::Machine {
-            println!(
-                "{}",
-                thalyx_files::machine::answer(OP, vec![("open", json!(false))])
-            );
+            face.say(thalyx_files::machine::answer(
+                OP,
+                vec![("open", json!(false))],
+            ));
         } else {
             println!();
             println!("  No attempt is open. `intento empezar <etiqueta>` starts one,");
@@ -184,7 +204,7 @@ fn status(store: &Store, face: Face) -> Fallible {
         return Ok(());
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     let cost = attempt::what_abandoning_costs(store, &snapshots);
 
     if face == Face::Machine {
@@ -203,7 +223,7 @@ fn status(store: &Store, face: Face) -> Fallible {
                 carried.push(("why_not", json!(error.to_string())));
             }
         }
-        println!("{}", thalyx_files::machine::answer(OP, carried));
+        face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
     }
 
@@ -232,7 +252,7 @@ fn status(store: &Store, face: Face) -> Fallible {
 fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str) -> Fallible {
     let label = if label.is_empty() { "attempt" } else { label };
 
-    let volumes = Btrfs::new();
+    let volumes = Native;
     let subvolume = match subvolume_to_attempt(&volumes, here.at()) {
         Ok(subvolume) => subvolume,
         // Named rather than approximated, and never widened. A copy of a
@@ -273,7 +293,7 @@ fn begin(store: &Store, here: &Where, label: &str, face: Face, request_id: &str)
                 // will leave attempts open.
                 carried.push(("keep", json!("intento confirmar")));
                 carried.push(("abandon", json!("intento abandonar")));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!(
@@ -313,7 +333,7 @@ fn keep(store: &Store, face: Face, request_id: &str) -> Fallible {
         }
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     match attempt::keep(store, &snapshots, request_id) {
         Ok(open) => {
             if face == Face::Machine {
@@ -321,7 +341,7 @@ fn keep(store: &Store, face: Face, request_id: &str) -> Fallible {
                 carried.extend(open_fields(&open));
                 // Said plainly, because it is what the caller just gave up.
                 carried.push(("reversible", json!(false)));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!("  `{}` is closed and the work is kept.", open.label);
@@ -350,7 +370,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
         }
     };
 
-    let snapshots = Snapshots::of(Btrfs::new(), &open.subvolume);
+    let snapshots = Snapshots::of(Native, &open.subvolume);
     let (open, plan) = match attempt::what_abandoning_costs(store, &snapshots) {
         Ok(both) => both,
         Err(error) => {
@@ -375,7 +395,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
             ];
             carried.extend(open_fields(&open));
             carried.extend(cost_fields(&plan.difference));
-            println!("{}", thalyx_files::machine::answer(OP, carried));
+            face.say(thalyx_files::machine::answer(OP, carried));
             return Ok(());
         }
 
@@ -393,25 +413,28 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
         }
         println!();
 
-        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            // Silence is not consent, and this is the one verb in the session
-            // that can destroy a person's work.
-            println!("  There is no terminal to confirm on, so nothing was undone.");
-            println!("  `intento abandonar si` is the way to say yes without one.");
-            println!();
-            return Ok(());
-        }
-        print!("  Undo all of it? [y/N] ");
-        let _ = std::io::stdout().flush();
-        let answer = crate::term::read_answer()
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if !matches!(answer.trim(), "y" | "Y" | "s" | "S" | "si" | "sí") {
-            println!();
-            println!("  Nothing was undone. `{}` is still open.", open.label);
-            println!();
-            return Ok(());
+        // Silence is not consent, and this is the one verb in the session that
+        // can destroy a person's work.
+        match crate::ask::confirm("  Undo all of it? [y/N] ", &crate::ask::Accepts::Yes) {
+            crate::ask::Answered::Yes => {}
+            crate::ask::Answered::No => {
+                println!();
+                println!("  Nothing was undone. `{}` is still open.", open.label);
+                println!();
+                return Ok(());
+            }
+            crate::ask::Answered::NoOneToAsk => {
+                println!("  There is no terminal to confirm on, so nothing was undone.");
+                println!("  `intento abandonar si` is the way to say yes without one.");
+                println!();
+                return Ok(());
+            }
+            crate::ask::Answered::Unreadable => {
+                println!("  The answer could not be read, so nothing was undone.");
+                println!("  `intento abandonar si` is the way to say yes without a terminal.");
+                println!();
+                return Ok(());
+            }
         }
     }
 
@@ -430,7 +453,7 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
                 ];
                 carried.extend(open_fields(&open));
                 carried.extend(cost_fields(&plan.difference));
-                println!("{}", thalyx_files::machine::answer(OP, carried));
+                face.say(thalyx_files::machine::answer(OP, carried));
             } else {
                 println!();
                 println!("  {} is back as it was.", open.subvolume.display());
@@ -440,7 +463,20 @@ fn abandon(store: &Store, tail: &str, face: Face, request_id: &str) -> Fallible 
             Ok(())
         }
         Err(error) => {
-            declined(face, "unreadable", &error.to_string());
+            // The word matters to a caller that is a program. `superseded` is
+            // not a broken record and not a missing one: it is somebody else
+            // having settled this attempt between the plan and the yes, and an
+            // agent told `unreadable` would go looking for a corrupt file.
+            let word = match &error {
+                thalyx_core::CoreError::Attempt(
+                    thalyx_core::attempt::AttemptError::Superseded(_),
+                ) => "superseded",
+                thalyx_core::CoreError::Attempt(thalyx_core::attempt::AttemptError::NoneOpen) => {
+                    "none_open"
+                }
+                _ => "unreadable",
+            };
+            declined(face, word, &error.to_string());
             Ok(())
         }
     }

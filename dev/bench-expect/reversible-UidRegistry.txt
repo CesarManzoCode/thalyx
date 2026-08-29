@@ -1,0 +1,28 @@
+# The ground truth for `--task reversible --symbol UidRegistry`, run against a
+# copy of this repository. Every line is a string the agent's final answer has
+# to contain; `dev/bench-summary.py` greps for them and says which were missing.
+#
+# It is written by hand, from the tree, and it is checkable in one line — which
+# is the point of choosing a symbol whose name means one thing:
+#
+#     grep -rl UidRegistry . --exclude-dir=.git --exclude-dir=target
+#
+# On 2026-08-28 that was these six files and nothing else: seventeen mentions,
+# one definition (`crates/thalyx-core/src/uids.rs`, `pub struct UidRegistry`),
+# and no occurrence anywhere in `vault/`, `docs/` or `README.md`, so there is
+# nothing outside the code for the rename to be ambiguous about.
+#
+# The last of the six is why this symbol was chosen over a more central one:
+# `crates/thalyx-cli/src/render.rs` is in a different crate and reaches
+# `UidRegistry` without an import that names the file it lives in. That is
+# exactly the dependent `depende` used to miss and now finds as `via: symbol`
+# (see `vault/09-Notas-Tecnicas/FS-en-Grafo.md`), and it is the one an agent
+# working by `grep` has to find by searching rather than by following.
+#
+# Substrings, so an answer that prints absolute paths still matches.
+crates/thalyx-core/src/uids.rs
+crates/thalyx-core/src/rollback.rs
+crates/thalyx-core/src/install.rs
+crates/thalyx-core/src/run.rs
+crates/thalyx-core/src/foreign.rs
+crates/thalyx-cli/src/render.rs

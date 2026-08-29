@@ -77,6 +77,21 @@ pub struct Verb {
 /// cost once per verb instead of once.
 const WINDOW_FLAGS: &[&str] = &["limite=N", "limit=N", "cursor=…", "desde=…"];
 
+/// The window flags plus the one only the three index verbs take.
+///
+/// A separate constant rather than a fourth entry in the one above, because the
+/// catalogue is checked by running every verb it describes: a flag advertised on
+/// `ls` that `ls` does not read is the catalogue lying, and the whole point of
+/// `describe` is that it cannot.
+const INDEX_FLAGS: &[&str] = &[
+    "limite=N",
+    "limit=N",
+    "cursor=…",
+    "desde=…",
+    "refrescar=no",
+    "refresh=no",
+];
+
 /// The errors every verb that touches a path can produce.
 const PATH_ERRORS: &[&str] = &["absent", "unreadable", "incomplete"];
 /// The same, plus the refusal to write over something.
@@ -198,7 +213,23 @@ pub const VERBS: &[Verb] = &[
         // The file first, then what to do to it. A caller reading this table
         // learns that `editar <path>` alone is a legal line, which is the form
         // that opens a screen and the one a program must not use.
-        takes: &["path", "ver|poner|cambiar|borrar", "line|line-line", "text"],
+        //
+        // The last two slots are read differently by the last subverb, and this
+        // is the honest way to say so in a table of positions: for `sustituir`
+        // they are the text to find and the text to put in its place, and every
+        // name after them is another file to do the same thing in.
+        takes: &[
+            "path",
+            "ver|poner|cambiar|borrar|sustituir|sustituir-lote",
+            // For `sustituir-lote` the third slot is how many files its first
+            // substitution names, and everything past it is that operation's
+            // strings and files followed by the next operation's, each opened
+            // by its own count. Said as a position rather than as prose because
+            // that is what this table is; `describe edit` carries the sentence.
+            "line|line-line|old-text|how-many-files",
+            "text|new-text",
+            "path...",
+        ],
         flags: &[],
         answers: Some("edit"),
         changes: true,
@@ -216,8 +247,25 @@ pub const VERBS: &[Verb] = &[
             // something about: it asked for the screen, and there is none.
             "no_screen",
             "unknown_action",
+            // The six a substitution can produce, and every one of them means
+            // nothing was written. `no_occurrences` is the one a caller meets
+            // most: it named a file the text is not in, and the answer says
+            // which file.
+            "bad_text",
+            "same_text",
+            "no_occurrences",
+            "too_much",
+            "repeated_path",
+            "incomplete",
+            // The two only a batch can produce. `chained_substitution` is the
+            // interesting one: it is not a bad argument, it is two arguments
+            // that are each fine and cannot be composed — `A -> B` followed by
+            // `B -> C`, where every `A` would quietly become a `C`.
+            "bad_batch",
+            "chained_substitution",
         ],
-        summary: "Change the text in a file, by line for a program or on a screen for a person.",
+        summary: "Change the text in a file: by line, by exact substitution across several \
+                  files, by several substitutions at once, or on a screen for a person.",
     },
     Verb {
         id: "structured",
@@ -265,31 +313,34 @@ pub const VERBS: &[Verb] = &[
         id: "depends_on",
         names: &["depende", "depends"],
         takes: &["path"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("depends_on"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "What this file refers to, from the index rather than by reading it.",
+        summary: "What this file refers to, from the index rather than by reading it. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     Verb {
         id: "depended_on_by",
         names: &["usan", "dependents"],
         takes: &["path"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("depended_on_by"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "What refers to this file. No directory walk can answer this one.",
+        summary: "What refers to this file. No directory walk can answer this one. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     Verb {
         id: "symbol",
         names: &["buscar", "symbol"],
         takes: &["name"],
-        flags: WINDOW_FLAGS,
+        flags: INDEX_FLAGS,
         answers: Some("symbol"),
         changes: false,
         errors: &["unreadable", "incomplete", "bad_cursor"],
-        summary: "Where a name is defined and every place it is used. Exact, and never a comment.",
+        summary: "Where a name is defined and every place it is used. Exact, and never a comment. \
+                  Rebuilds a stale index first unless refrescar=no.",
     },
     // Point 6 of the usable terminal, and they sit here rather than with the
     // file verbs because the question above them is the one a caller has to get
@@ -597,6 +648,20 @@ pub const VERBS: &[Verb] = &[
         summary: "The disks this machine can see, and which one it booted from.",
     },
     Verb {
+        id: "keyboard",
+        names: &["teclado", "keyboard"],
+        takes: &["layout"],
+        flags: &[],
+        answers: Some("keyboard"),
+        // It changes the machine — and unlike every other verb that does, what
+        // it changes is how the machine can be told to change it back. That is
+        // why `teclado ingles` puts back the kernel's own table rather than
+        // something close to it.
+        changes: true,
+        errors: &["no_console", "no_such_layout", "not_loaded", "left_alone"],
+        summary: "Which keyboard layout the kernel holds, and which one to put on it.",
+    },
+    Verb {
         id: "network",
         names: &["red", "network"],
         takes: &[],
@@ -647,6 +712,17 @@ pub fn verb_named(word: &str) -> Option<&'static Verb> {
     VERBS.iter().find(|verb| verb.names.contains(&word.trim()))
 }
 
+/// The verb a stable machine name identifies.
+///
+/// The other direction from [`verb_named`], and it exists because the agent
+/// speaks in ids: `thalyx_agent::ProposedOperation::name` is `make_directory`,
+/// and what the session's dispatch matches is `mkdir`. One table answers both,
+/// so a verb the model can propose and a verb a person can type cannot come
+/// apart.
+pub fn verb_with_id(id: &str) -> Option<&'static Verb> {
+    VERBS.iter().find(|verb| verb.id == id)
+}
+
 /// Every spelling of every verb, for tab completion.
 ///
 /// Generated rather than listed, which removes the second of the three copies.
@@ -666,7 +742,11 @@ use serde_json::json;
 
 /// `describe [verbo]` — the machine reading itself out loud.
 pub fn describe(face: Face, rest: &str) {
-    let asked = rest.trim();
+    let Some(given) = crate::words::asked(face, "describe", rest) else {
+        return;
+    };
+    let asked = crate::words::phrase(&given);
+    let asked = asked.trim();
 
     let chosen: Vec<&Verb> = if asked.is_empty() {
         VERBS.iter().collect()
@@ -676,10 +756,11 @@ pub fn describe(face: Face, rest: &str) {
             None => {
                 let why = format!("`{asked}` is not a verb of this machine");
                 if face == Face::Machine {
-                    println!(
-                        "{}",
-                        thalyx_files::machine::declined("describe", "unknown_verb", &why)
-                    );
+                    face.say(thalyx_files::machine::declined(
+                        "describe",
+                        "unknown_verb",
+                        &why,
+                    ));
                 } else {
                     println!("\n  {why}. `describe` alone lists them all.\n");
                 }
@@ -690,13 +771,10 @@ pub fn describe(face: Face, rest: &str) {
 
     if face == Face::Machine {
         let verbs: Vec<serde_json::Value> = chosen.iter().map(|verb| as_object(verb)).collect();
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                "describe",
-                vec![("count", json!(verbs.len())), ("verbs", json!(verbs))],
-            )
-        );
+        face.say(thalyx_files::machine::answer(
+            "describe",
+            vec![("count", json!(verbs.len())), ("verbs", json!(verbs))],
+        ));
         return;
     }
 
@@ -861,6 +939,11 @@ mod tests {
                 "execute",
                 "rollback",
                 "install_onto",
+                // The one whose change is to the instrument a person would use
+                // to change it back: a layout loaded wrong is a machine that
+                // looks healthy and types the wrong letters, with no second
+                // terminal on the image to fix it from.
+                "keyboard",
                 "power_off",
                 // It changes the machine even though its purpose is that what
                 // it wraps can be undone: opening one takes a snapshot, and

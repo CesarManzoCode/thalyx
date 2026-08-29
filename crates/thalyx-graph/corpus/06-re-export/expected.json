@@ -1,0 +1,17 @@
+{
+  "about": "A type re-exported by the crate root and imported from there: `use crate::Engine`.",
+  "category": "re-export",
+  "why_it_matters": "The import points at a façade, so resolving it textually gives nothing at all — `crate::Engine` is not a file. The name, however, is declared in exactly one place.",
+  "dependents": {
+    "src/engine.rs": [
+      { "from": "src/garage.rs", "via": "symbol", "through": "Engine" },
+      { "from": "src/lib.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "ignite": {
+      "definitions": ["src/engine.rs:4 function"],
+      "uses": ["src/garage.rs:4"]
+    }
+  }
+}

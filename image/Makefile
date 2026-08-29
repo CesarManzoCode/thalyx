@@ -117,7 +117,18 @@ KSHA256  := 0d21cd11933f49f7151b7c9dbb8cc3fddc8c8abe506434b850feecf41fc28a76
 
 THALYX    := $(ROOT)/target/$(TARGET)/release/thalyx
 INITRAMFS := $(BUILD)/initramfs.cpio
-MEMORY    := 2048
+# Enough for the machine *and* a model. It was 2048, which is plenty for Thalyx
+# and not enough for the smallest tier: Qwen2.5-1.5B-Instruct-Q4_K_M is about
+# 1.1 GB of weights before any context, and the engine's manifest asks for 4 GiB
+# because that is the ceiling `module_standard` gives it. QEMU allocates this
+# lazily, so a machine that never loads a model pays nothing for it.
+MEMORY    ?= 6144
+
+# How many cores the machine gets. Four rather than two since 2026-08-28: the
+# engine picks its thread count from `available_parallelism`, so `-smp 2` was
+# not a smaller VM, it was a model running at half speed for no reason anybody
+# had decided. QEMU costs nothing for cores that idle.
+CPUS      ?= 4
 
 # The store disk. Raw and not qcow2: a raw image can be formatted and mounted
 # with mkfs.btrfs and a loop device, which every Linux has, while qcow2 needs
@@ -130,14 +141,84 @@ STAMP     := $(BUILD)/store-stage.done
 MNT       := $(BUILD)/store-mnt
 STOREDEV  := /dev/vda
 
+# ─────────────────────────────────────────── the machine an agent works in
+#
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. A project on this host, copied
+# onto the store as its own subvolume, and the socket a programming agent's MCP
+# adapter connects to.
+#
+# PROJECT is empty by default and everything below it is inert then: an ordinary
+# `make store-stage` builds an ordinary machine with no workspace and no channel,
+# and `make run` boots it exactly as it did before any of this existed.
+#
+# The copy is deliberate and it is the whole safety of the arrangement: an agent
+# inside the VM cannot touch the host's checkout, because the host's checkout is
+# not in the VM. Getting work back out is `make -C image agent-export`, which is
+# a thing somebody types.
+PROJECT     ?=
+PROJECTNAME := $(if $(PROJECT),$(notdir $(patsubst %/,%,$(PROJECT))))
+WORKSPACE   := $(if $(PROJECTNAME),/home/$(PROJECTNAME))
+AGENTSOCK   ?= $(BUILD)/agent.sock
+AGENTMARK   := $(BUILD)/agent-workspace
+# What was imported, recorded by the thing that imported it.
+#
+# `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md`. The benchmark compares two
+# arms and it has no way, from the host, to hash the copy inside a live Btrfs
+# image — so the only honest evidence that arm B is working on the same tree arm
+# A got is a stamp written **at import time, by the importer**. Anything worked
+# out afterwards would be the harness assuring itself.
+#
+# Under `$(BUILD)`, which the benchmark's own boundary already calls machinery,
+# so writing it cannot move a restore verdict.
+AGENTIMPORT := $(BUILD)/agent-import.json
+
 # The first module. It is not in the image and must not be: the image carries
 # the kernel and one program. A module lives on the store, which is the whole
 # distinction between what Thalyx *is* and what has been installed on it.
 GREETER   := $(ROOT)/target/$(TARGET)/release/greeter
 
+# ─────────────────────────────────────────────────────────────── the engine
+#
+# llama.cpp, as a module. Cesar's decree of 2026-08-28: the engine is not part
+# of Thalyx, it is the first real module — signed, installed, confined under
+# `module_standard`, with the memory its manifest asks for.
+#
+# The program inside it is `engine/thalyx-engine.cpp` since the same day: same
+# llama.cpp, same pinned tag, same flags, built by the same `cmake`, shaped as a
+# program that loads the GGUF once and then answers requests on a pipe. See
+# `dev/build-engine.sh` and `vault/05-Decisiones-y-Debates/Motor-Residente.md`.
+#
+# Neither the engine nor the weights go anywhere near the image. `make count`
+# says the image is the kernel and one program and it must keep saying that; a
+# thirteen-megabyte C++ program and a gigabyte of weights are *data on the
+# store*, which is the whole distinction between what Thalyx is and what has
+# been installed on it.
+#
+# Both are inputs rather than things this Makefile builds:
+#
+#     make -C image engine                     builds ENGINE, prints where
+#     make -C image store-stage MODEL=<gguf>   puts both on the stage
+#
+# MODEL is empty on purpose and there is no default. Thalyx never downloads
+# weights — `Gamas-de-Modelo.md` makes the tier a decision about the human's own
+# hardware — so the file is named by whoever is building the disk.
+ENGINE     ?= $(BUILD)/engine/llama.cpp/build/bin/thalyx-engine
+MODEL      ?=
+ENGINE_ID  := dev.thalyx.engine
+ENGINE_TIER ?= ligera
+# Where the two of them live inside the machine. Spelled the same way in
+# crates/thalyx-cli/src/engine_module.rs, which is what a grant has to name: a
+# confined module sees only the paths its manifest was granted, at the names
+# they already have.
+ENGINE_DATA   := /opt/thalyx/data/engine
+ENGINE_MODELS := $(ENGINE_DATA)/models
+ENGINE_RUN    := $(ENGINE_DATA)/run
+
 .PHONY: all kernel binary image run count clean toolchain config-check \
-        store store-stage greeter lsm doctor hook-check boot pin-kernel \
-        esp run-uefi initramfs-check installed run-installed run-hardware
+        store store-stage greeter engine engine-stage lsm doctor hook-check boot pin-kernel \
+        boot-graphical run-serial \
+        esp run-uefi initramfs-check installed run-installed run-hardware \
+        run-agent boot-agent agent agent-export
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -805,6 +886,8 @@ store-stage: binary greeter
 	    echo "the module is installed on the stage, and step 2 needs it not to be"; \
 	    exit 1; \
 	fi
+	@$(MAKE) --no-print-directory engine-stage
+	@$(MAKE) --no-print-directory project-stage
 	@# Written last, and only on success. `store` looks for this and not for
 	@# the directory: an interrupted stage leaves the directory sitting there
 	@# looking finished, and a disk built from it would be missing whatever
@@ -813,6 +896,63 @@ store-stage: binary greeter
 	@echo
 	@echo "  staged: $(STAGE)"
 	@echo "  now:    sudo make -C image store"
+
+# Build llama.cpp. Separate from everything else and never a prerequisite: it
+# is a C++ build of a foreign project that takes minutes, and a `make` that ran
+# it every time would make every other target unusable.
+engine:
+	@$(ROOT)/dev/build-engine.sh $(BUILD)/engine
+
+# The engine module, and the weights it runs, onto the stage.
+#
+# Called by `store-stage` and doing nothing when there is no engine or no model,
+# because a store with no agent is a supported machine rather than a broken one
+# — `Principio-Doble-Ruta.md` is the reason the whole system works without one.
+# What it must not do is fail *quietly*: a machine that boots with no agent
+# because MODEL was misspelled looks exactly like one built on purpose.
+#
+# Three things go on, and the third is the one that makes it usable:
+#
+#   1. the weights, at $(ENGINE_MODELS), on the `modules` subvolume;
+#   2. the engine, packed and **installed** into the stage's store;
+#   3. the agent's settings, naming the tier, the weights and the module.
+#
+# Installed rather than left in the repository, which is where the greeter
+# deliberately stays. The greeter is uninstalled because step 2 of
+# `Criterio-de-Salida-Fase-1.md` is a person installing it, and a machine that
+# booted with it already there would make that step unperformable. The engine is
+# not that: Cesar's decree of 2026-08-28 is that the machine **boots able to be
+# spoken to**, and an engine the human has to install first is five commands
+# standing between the power button and the first sentence. The .thmod stays in
+# the repository as well, so it can be reinstalled by hand.
+# A copy of a host project onto the stage, as the agent's workspace.
+#
+# Called by `store-stage` and doing nothing when PROJECT is empty, which is the
+# ordinary machine. The copy is what goes in — never the original — so nothing
+# an agent does inside the VM can reach the checkout it came from.
+#
+# `.git` comes along. It is not for running git inside the machine (there is no
+# git in there and there is not meant to be yet); it is so that when the work
+# comes back out, `git diff` on the host has something to diff against.
+project-stage:
+	@rm -f $(AGENTMARK) $(AGENTIMPORT)
+	@test -n "$(PROJECT)" || exit 0; \
+	 test -d "$(PROJECT)" || { \
+	    echo "  PROJECT=$(PROJECT) is not a directory"; \
+	    exit 1; \
+	 }; \
+	 rm -rf "$(STAGE)/user/$(PROJECTNAME)"; \
+	 mkdir -p "$(STAGE)/user/$(PROJECTNAME)"; \
+	 tar -C "$(PROJECT)" --exclude=./target --exclude=./node_modules -cf - . \
+	   | tar -C "$(STAGE)/user/$(PROJECTNAME)" -xf -; \
+	 echo "$(PROJECTNAME)" > $(AGENTMARK); \
+	 $(ROOT)/dev/bench-summary.py --import-stamp "$(PROJECT)" \
+	    --workspace "$(WORKSPACE)" > $(AGENTIMPORT); \
+	 echo "  workspace: $(WORKSPACE) — a copy of $(PROJECT), $$(du -sh "$(STAGE)/user/$(PROJECTNAME)" | cut -f1)"; \
+	 echo "  imported:  $(AGENTIMPORT)"
+
+engine-stage:
+	@$(ROOT)/dev/stage-engine.sh "$(STAGE)" "$(BUILD)" "$(THALYX)" "$(ENGINE)" "$(MODEL)" "$(ENGINE_ID)" "$(ENGINE_TIER)" "$(ENGINE_MODELS)" "$(ENGINE_RUN)"
 
 # The disk itself. Needs root, for the loop device and for the mount.
 #
@@ -849,6 +989,16 @@ store:
 	btrfs subvolume create $(MNT)/system
 	btrfs subvolume create $(MNT)/modules
 	btrfs subvolume create $(MNT)/user
+	@# The agent's workspace is a subvolume of its own, and that is not tidiness.
+	@# `intento` snapshots **exactly** the subvolume the session stands in and
+	@# never an ancestor — see `attempt::subvolume_to_attempt`, and the day in
+	@# August it walked upwards and offered to delete somebody's /boot. A
+	@# workspace that were a plain directory under `user` would make every
+	@# `thalyx_attempt` answer `not_a_subvolume`, which is the one tool this
+	@# whole delivery is for.
+	@if [ -f $(AGENTMARK) ]; then \
+	    btrfs subvolume create $(MNT)/user/"$$(cat $(AGENTMARK))"; \
+	fi
 	cp -a $(STAGE)/system/. $(MNT)/system/
 	cp -a $(STAGE)/modules/. $(MNT)/modules/
 	cp -a $(STAGE)/user/. $(MNT)/user/
@@ -905,7 +1055,21 @@ store:
 # reason — the same shape of mistake as grepping file(1) for a phrase: a proxy
 # for the property instead of the property.
 
+# The machine, with its screen — which is the machine.
+#
+# It used to be `boot`, which is `-nographic`: no display at all, the session on
+# a serial line. That was right when Thalyx had only a text session and wrong
+# from the day the framebuffer became the face it boots into, and it stayed
+# wrong for a while because `make run` still *worked* — a serial console is a
+# usable Thalyx, so nothing failed, it was just the wrong machine every time.
+#
+# `run-serial` is the old behaviour under a name that says what it is, and
+# `boot` is untouched because `dev/verify.sh` drives it and expects a serial
+# console it can read.
 run: $(BZIMAGE) $(INITRAMFS)
+	@$(MAKE) --no-print-directory boot-graphical
+
+run-serial: $(BZIMAGE) $(INITRAMFS)
 	@$(MAKE) --no-print-directory boot
 
 # The same boot, building nothing at all.
@@ -970,13 +1134,168 @@ boot:
 	@# that ships.
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -kernel $(BZIMAGE) \
 	    -initrd $(INITRAMFS) \
 	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
 	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
 	    -nographic \
 	    -append "console=ttyS0,115200 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+
+# The same boot, on the glass.
+#
+# Two differences from `boot` and both are the same difference: the display is
+# on, and the kernel's console is `tty0`, so `session::run` finds a framebuffer
+# and lands on the screen instead of on a serial line. `-serial mon:stdio` keeps
+# the kernel's messages in the terminal at the same time, which is what makes a
+# boot that dies before the framebuffer is up diagnosable — the same reason
+# `WATCH` does it for the firmware path.
+#
+# It builds nothing, for the reason `boot` builds nothing: see above.
+boot-graphical:
+	@test -f $(BZIMAGE) && test -f $(INITRAMFS) || { \
+	    echo "  nothing to boot: the kernel or the image is not built."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    echo; \
+	    exit 1; \
+	}
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp $(CPUS) \
+	    -kernel $(BZIMAGE) \
+	    -initrd $(INITRAMFS) \
+	    $$(test -z "$(STORELESS)" && test -w $(STORE) \
+	        && echo "-drive file=$(STORE),if=virtio,format=raw") \
+	    -serial mon:stdio \
+	    -append "console=tty0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV)"
+
+# ────────────────────────────────────── the machine with an agent channel
+#
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. The same machine `make run`
+# boots — the same kernel, the same image, the same screen on the same glass —
+# with **one** device added and one word on the command line.
+#
+#   -device virtio-serial-pci   the bus
+#   -chardev socket,…,server=on,wait=off   a UNIX socket on this host that QEMU
+#                               holds open and does not wait for anybody on
+#   -device virtserialport,name=org.thalyx.agent   the named port inside
+#
+# `wait=off` matters: with `wait=on` QEMU does not start until something
+# connects, so `make run-agent` would look like a machine that will not boot.
+#
+# No network, no port forward and no `-netdev`. The decree is that the machine
+# is reachable without ever having an address, and this is the whole of how.
+#
+# `thalyx.workspace=` is read by `session::agent_workspace`. Without it the
+# machine comes up with a port nobody serves, which is a machine somebody would
+# wait on forever — so it is an error here rather than a surprise there.
+run-agent: $(BZIMAGE) $(INITRAMFS)
+	@$(MAKE) --no-print-directory boot-agent
+
+boot-agent:
+	@test -f $(AGENTMARK) || { \
+	    echo "  no workspace on the store, so an agent would have nothing to work in."; \
+	    echo; \
+	    echo "      make -C image store-stage PROJECT=/path/to/your/project"; \
+	    echo "      sudo make -C image store"; \
+	    echo "      make -C image run-agent"; \
+	    echo; \
+	    echo "  Or in one line, which does all three:"; \
+	    echo; \
+	    echo "      make -C image agent PROJECT=/path/to/your/project"; \
+	    exit 1; \
+	}
+	@test -f $(BZIMAGE) && test -f $(INITRAMFS) || { \
+	    echo "  nothing to boot: the kernel or the image is not built."; \
+	    echo; \
+	    echo "      make -C image"; \
+	    exit 1; \
+	}
+	@test -w $(STORE) || { \
+	    echo "  $(STORE) is not writable by this user, and QEMU opens it read-write."; \
+	    echo "      sudo chown $$(id -un):$$(id -gn) $(STORE)"; \
+	    exit 1; \
+	}
+	@rm -f $(AGENTSOCK)
+	@echo
+	@echo "  agent channel: $(AGENTSOCK)"
+	@echo "  workspace:     /home/$$(cat $(AGENTMARK))"
+	@echo
+	@echo "  In another terminal, once the machine is up:"
+	@echo
+	@echo "      $(ROOT)/dev/agent-connect.sh $(AGENTSOCK)"
+	@echo
+	qemu-system-x86_64 \
+	    -m $(MEMORY) \
+	    -smp $(CPUS) \
+	    -kernel $(BZIMAGE) \
+	    -initrd $(INITRAMFS) \
+	    -drive file=$(STORE),if=virtio,format=raw \
+	    -device virtio-serial-pci \
+	    -chardev socket,path=$(AGENTSOCK),server=on,wait=off,id=thalyxagent \
+	    -device virtserialport,chardev=thalyxagent,name=org.thalyx.agent \
+	    -serial mon:stdio \
+	    -append "console=tty0 lsm=capability,bpf panic=-1 thalyx.store=$(STOREDEV) thalyx.workspace=/home/$$(cat $(AGENTMARK))"
+
+# Import a project, build the disk and boot it, in one command.
+#
+#   make -C image agent PROJECT=~/code/mi-proyecto
+#
+# The one that needs root is `store`, and it is the only one — same rule as
+# everywhere else here: the privilege boundary is the target boundary, and a
+# `make` that quietly asked for a password is a `make` nobody can put in a
+# script. So this asks for it once, out loud, with the reason.
+agent:
+	@test -n "$(PROJECT)" || { \
+	    echo "  which project. This copies it into the machine and boots:"; \
+	    echo; \
+	    echo "      make -C image agent PROJECT=/path/to/your/project"; \
+	    echo; \
+	    echo "  The copy is what the agent works in. Your checkout is not"; \
+	    echo "  touched, and never reachable from inside the machine."; \
+	    exit 1; \
+	}
+	$(MAKE) --no-print-directory store-stage PROJECT=$(PROJECT)
+	@echo
+	@echo "  the disk needs root: it formats a loop device and mounts it."
+	sudo $(MAKE) --no-print-directory store
+	$(MAKE) --no-print-directory run-agent
+
+# Bring the agent's work back out of the machine.
+#
+# A copy again, and into a directory this names rather than over the original.
+# `Rollback-vs-Restore.md` is the same rule in a different place: something that
+# destroys work asks first, and the cheapest way to never have to ask is to
+# never write over anything.
+#
+# It needs root for the same reason `store` does — the store is a filesystem in
+# a file, and reading it means mounting it.
+agent-export:
+	@test -f $(AGENTMARK) || { echo "  no workspace on this store"; exit 1; }
+	@test "$$(id -u)" = 0 || { \
+	    echo "  reading the store means mounting it, which needs root:"; \
+	    echo "      sudo make -C image agent-export INTO=/somewhere"; \
+	    exit 1; \
+	}
+	@test -n "$(INTO)" || { \
+	    echo "  where to. sudo make -C image agent-export INTO=/somewhere-new"; \
+	    exit 1; \
+	}
+	@test ! -e "$(INTO)" || { \
+	    echo "  $(INTO) already exists, and this will not write over it."; \
+	    exit 1; \
+	}
+	mkdir -p $(MNT)
+	mount -o loop,subvol=user $(STORE) $(MNT)
+	mkdir -p "$(INTO)"
+	cp -a $(MNT)/"$$(cat $(AGENTMARK))"/. "$(INTO)"/
+	umount $(MNT)
+	@if [ -n "$(SUDO_UID)" ]; then chown -R $(SUDO_UID):$(SUDO_GID) "$(INTO)"; fi
+	@echo
+	@echo "  out: $(INTO)"
+	@echo "  Nothing on the store was changed, and your original is untouched."
+	@echo '  diff -ru or git diff --no-index is how to see what the agent did.' 
 
 # ──────────────────────────────────────────────── booting with no bootloader
 
@@ -1081,7 +1400,7 @@ run-uefi: esp
 	cp $(OVMF_VARS) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars.fd \
 	    -drive format=raw,file=fat:rw:$(ESP) \
@@ -1196,7 +1515,7 @@ run-installed:
 	cp $(OVMF_VARS) $(BUILD)/ovmf-vars-installed.fd
 	qemu-system-x86_64 \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-installed.fd \
 	    -drive format=raw,file=$(INSTALLED) \
@@ -1317,7 +1636,7 @@ run-hardware:
 	qemu-system-x86_64 \
 	    -machine $(HWMACHINE) \
 	    -m $(MEMORY) \
-	    -smp 2 \
+	    -smp $(CPUS) \
 	    -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
 	    -drive if=pflash,format=raw,unit=1,file=$(BUILD)/ovmf-vars-hardware.fd \
 	    -device qemu-xhci,id=xhci \

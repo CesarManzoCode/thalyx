@@ -81,6 +81,20 @@ pub struct InstallOutcome {
 }
 
 /// Install a module from a `.thmod` bundle.
+/// The largest amount of memory this manifest asks for, in bytes.
+///
+/// The largest and not the sum: `memory.max` is one number, so two requests are
+/// two ways of saying what the module needs at once, and adding them would
+/// approve more than either asked for.
+fn memory_asked_for(manifest: &Manifest) -> Option<u64> {
+    manifest
+        .permissions
+        .iter()
+        .filter(|permission| permission.resource == "memory")
+        .filter_map(|permission| thalyx_manifest::memory_asked_for(&permission.action))
+        .max()
+}
+
 pub fn install(
     store: &Store,
     request: InstallRequest<'_>,
@@ -234,6 +248,28 @@ fn install_inner(
             module_id: manifest.id.clone(),
             declared: manifest.artifact.size,
             actual: bundle.artifact.len() as u64,
+        });
+    }
+
+    // Before the confirmation, and not after it: a module asking for more memory
+    // than the machine has would be a question whose yes cannot be honoured, and
+    // asking it anyway teaches a person that saying yes does not mean much.
+    //
+    // Refused rather than clamped. A module clamped to what fits would run
+    // confined to a limit it did not ask for and did not agree to, and would
+    // die at it in a way nobody could trace back to this moment. Rule 9.
+    // Rule 10 decides the third case: a machine whose memory cannot be read is
+    // not a machine that has none. The install goes on — the kernel applies the
+    // limit either way, and a module asking for more than there is fails to
+    // start rather than taking the machine with it — and what could not be
+    // checked is not turned into a refusal nobody could explain.
+    if let (Some(asked), Some(have)) = (memory_asked_for(manifest), crate::machine_memory())
+        && asked > have
+    {
+        return Err(CoreError::MoreMemoryThanTheMachineHas {
+            module_id: manifest.id.clone(),
+            asked,
+            have,
         });
     }
 

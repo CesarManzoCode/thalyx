@@ -530,12 +530,27 @@ fn init(spec: &LaunchSpec, args: &[OsString]) -> SandboxError {
 /// same reason. **The caller must drain both pipes while the module runs**: a
 /// pipe whose reader never empties it blocks the module forever on its first
 /// write, which is what the null device was avoiding.
-pub fn spawn(helper: &Path, spec: &LaunchSpec, args: &[OsString]) -> Result<std::process::Child> {
+/// `stdin` is [`crate::Stdin::Closed`] for everything but a resident module.
+/// The paragraph above is about the *terminal*, not about descriptor 0 as such:
+/// what must never happen is a module reading what the human types, because a
+/// module that can do that can answer a confirmation on the human's behalf. A
+/// pipe whose only writer is Thalyx is not that — it is the same arrangement
+/// the channel on descriptor 3 already has — and it is how a module that stays
+/// alive is sent the next request instead of a new argv.
+pub fn spawn(
+    helper: &Path,
+    spec: &LaunchSpec,
+    args: &[OsString],
+    stdin: crate::Stdin,
+) -> Result<std::process::Child> {
     use std::process::Stdio;
 
     std::process::Command::new(helper)
         .args(argv(ENTER_MARKER, spec, args)?)
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            crate::Stdin::Closed => Stdio::null(),
+            crate::Stdin::Piped => Stdio::piped(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

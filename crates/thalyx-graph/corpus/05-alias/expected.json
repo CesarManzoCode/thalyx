@@ -1,0 +1,24 @@
+{
+  "about": "A type imported under another name and used under that name.",
+  "category": "alias / import",
+  "why_it_matters": "The file-to-file dependency is stated by the import, so it is answered exactly. What is not answered is the *name*: `Keys` is `Keystore`, and only a compiler knows that.",
+  "dependents": {
+    "src/keystore.rs": [
+      { "from": "src/boot.rs", "via": "import" },
+      { "from": "src/lib.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "Keystore": {
+      "definitions": ["src/keystore.rs:1 type"],
+      "uses": ["src/boot.rs:1", "src/keystore.rs:3", "src/keystore.rs:4"]
+    }
+  },
+  "known_limits": [
+    {
+      "about": "`Keys` at src/boot.rs:3 is a use of `Keystore` and the index does not say so. Following an alias means tracking a binding, which is a compiler and not a scan.",
+      "symbol": "Keystore",
+      "uses_missing": ["src/boot.rs:3"]
+    }
+  ]
+}

@@ -141,9 +141,67 @@ without any risk of being left with a black display — and if it does come up
 black, Ctrl-C on an empty line gives the text console back blind, while
 `thalyx.pantalla=no` on the kernel command line boots straight into it.
 
-**Built and covered by over 1,300 tests**, including fault injection that kills
+**New, 2026-08-28: a real programming agent, on the host, working through
+Thalyx's own primitives.** Claude Code runs on Fedora and reaches a Thalyx VM
+over one local virtio-serial channel — no network, no TCP, no address. On the
+host, `thalyx-mcp` translates MCP into Thalyx's protocol and does nothing else:
+it holds no filesystem, no graph and no rollback, because **MCP is an adapter
+and Thalyx's own surface is the authority**. Inside the machine the endpoint is
+a thread of the session, not a second program on the disk, so
+`make -C image count` still says `1`. An external agent gets one workspace and
+cannot name anything outside it — every path is resolved twice, the way the verb
+resolves it and the way the kernel does, and both have to land inside; `apagar`,
+`instalar-en`, `correr`, `ejecutar` and `matar` are not reachable at all. What
+it changes, and every attempt to leave, land in the journal marked
+`untrusted_content`. On its first real run, asked to find where a symbol is
+defined and what depends on it, it answered in **four calls** — one index, two
+symbol lookups, one dependents query — without opening a single file. The same
+model with `Read` and `grep` took eight turns and twice the wall time. That is
+**one run of one task, which is an anecdote and not a result**; the harness is
+`dev/bench-external-agent.sh`, which since 2026-08-28 reads the agent's own
+`stream-json` and so measures **both** arms in the same units — tools called by
+name, bytes handed back to the model, files read, text searches, turns, wall
+time, tokens and cost. That run also found a real hole and it is closed: the
+Linux arm found a dependent the index missed, because the code was reached
+through a field and the file never names it. A dependency edge is no longer only
+an import — a name that exactly one file in the tree declares, exports, and the
+using file neither binds nor declares, is one too, and every row says which kind
+it is. `crates/thalyx-graph/corpus/` is twelve small trees with the right answers
+written beside them, 44 exact checks in milliseconds, and it is what says where
+the index still stops. The decree is
+`vault/07-Adopcion-y-Fases/Agentes-Externos.md`; how to run it is
+**[docs/AGENT.md](docs/AGENT.md)**. **virtio-serial itself has not
+carried a byte yet** — everything above the transport ran over a UNIX socket,
+which is the same code on a different pair of descriptors.
+
+**Built and covered by over 1,600 tests**, including fault injection that kills
 the real binary at each point of the atomic commit, and end-to-end runs of the
 whole six-step walkthrough. `cargo test --workspace` runs all of it.
+
+**New, 2026-08-28.** The engine is a module, and it stays alive. `llama.cpp`
+built static, packed into a signed `.thmod`, installed on the store and run by
+the same launcher every other module goes through — its own cgroup, its own
+user, a pivoted root, the same syscall filter, and the memory its manifest asks
+for. It **loads the weights once**: `llama-completion` answers once and dies, so
+a second sentence used to read two gigabytes off disk again, which is most of
+what a local model costs spent on work the first sentence had already done. The
+module's program is now `engine/thalyx-engine.cpp` — same llama.cpp, same pinned
+tag, same flags, built by the same `cmake` — which loads the GGUF once and then
+answers length-prefixed requests on a pipe. No daemon, no server, no HTTP, no
+TCP: granting `net/outbound` to the least trusted program on the machine so that
+two local processes could talk would be weakening the isolation for
+convenience. There is still exactly one launcher — `run::start` hands back a
+`RunningModule` that owns the cgroup, the policy and the process, and `run()` is
+that same `start` followed by `wait`. The weights are data on the store, so
+changing the model is copying a file, and the image is still the kernel and one
+program. On the screen a sentence that is not a verb goes to a worker thread
+while the frame keeps composing, so the machine says `pensando…` with the clock
+still moving instead of freezing; the worker proposes and the session acts.
+Under every proposal the machine prints `motor <pid> ▪ frío|tibio ▪ <s>`, and
+the same pid twice is two sentences answered by one process. What a container
+cannot check — the run actually confined, and whether a real Qwen2.5 gets an
+ordinary sentence right — is §45 and §46 of `dev/verify.sh` and `thalyx agent
+bench`.
 
 **Partly proven.** The conversational agent has a model — `llama.cpp` invoked as
 a process, four decreed tiers — and three of the four were measured on one
@@ -294,6 +352,8 @@ crates/
   thalyx-edit/      changing text in a file, for a screen and for a program
   thalyx-proc/      what runs, what memory is left, and stopping one
   thalyx-syscall/   the only crate where `unsafe` is permitted
+  thalyx-bridge/    the wire an agent outside the machine reaches it through
+  thalyx-mcp/       the host-side MCP adapter — it adapts, and holds no state
 
 lsm/      BPF LSM programs: enforcement, and the filesystem watcher
 image/    the machine: kernel configuration, initramfs, store disk
@@ -316,6 +376,12 @@ commit messages, CLI output — is in English.
   Closed on 2026-08-07, when a PC booted it from USB and installed it to a disk.
 - **Phase 2** — empirical validation. Benchmarks decide whether primitives move
   into the kernel. The predictive scheduler lives here; it is design, not code.
+  The first measurement of the founding bet — does the same model do better work
+  here than with POSIX tools? — began on 2026-08-28, with a real programming
+  agent on the host and Thalyx as the machine it works in.
+- **Developer runtime** — Node, git, a linker and a libc inside the guest, so
+  the agent can move in rather than reach in. Deliberately after Phase 2's first
+  numbers: there is no point building it until the primitives are known to help.
 - **Phase 3** — kernel migration, if the numbers justify it.
 - **Phase 4** — ecosystem.
 

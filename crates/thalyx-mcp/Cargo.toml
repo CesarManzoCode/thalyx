@@ -1,0 +1,24 @@
+[package]
+name = "thalyx-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "An MCP adapter that lets a programming agent on the host work inside a Thalyx machine"
+
+[[bin]]
+name = "thalyx-mcp"
+path = "src/main.rs"
+
+[dependencies]
+thalyx-bridge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

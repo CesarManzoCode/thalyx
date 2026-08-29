@@ -48,6 +48,19 @@ Esto corrige un error de secuencia detectado durante el diseño: inicialmente se
 
 ## Revisiones
 
+### 2026-08-28 — La fricción que se ataca primero es la de un agente, no la de un usuario
+**Antes:** las tres condiciones apuntaban a que un usuario pudiera *probar* el
+sistema sin fricción, con tres demostraciones dramáticas.
+**Ahora:** siguen vigentes enteras, y durante esta etapa la que se persigue
+primero es una versión más chica y más medible de la #1: **proyecto → VM de
+Thalyx → el mismo Claude/Codex/agente → trabajar**, sin instalar nada nuevo del
+lado del agente. Las demostraciones 2 y 3 —memoria entre sesiones, orquestación
+entre módulos— quedan **diferidas**, no retiradas. La #1, el rollback de una
+refactorización compleja, **es** la tarea `reversible` del banco de agentes.
+**Motivo:** ver [[Prioridad-Operativa]] y la evidencia que la provocó en
+[[Evidencia-de-Agentes]]. El costo de probar sigue teniendo que ser cero; lo que
+cambia es quién prueba primero.
+
 ### 2026-08-01 — Se precisa qué comando usa la demostración #1
 **Antes:** la demostración hablaba de `rollback last` para revertir trabajo del usuario, mezclando dos operaciones distintas bajo una sola palabra.
 **Ahora:** usa `thalyx restore`, con la advertencia de qué implica.

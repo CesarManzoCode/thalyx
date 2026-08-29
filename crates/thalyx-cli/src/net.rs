@@ -36,16 +36,13 @@ pub fn interfaces(face: Face) -> Fallible {
         Ok(every) => every,
         Err(error) => {
             if face.is_machine() {
-                println!(
-                    "{}",
-                    thalyx_files::machine::refused_with(
-                        OP,
-                        "no_sysfs",
-                        "mount_sysfs",
-                        &error.to_string(),
-                        Vec::new(),
-                    )
-                );
+                face.say(thalyx_files::machine::refused_with(
+                    OP,
+                    "no_sysfs",
+                    "mount_sysfs",
+                    &error.to_string(),
+                    Vec::new(),
+                ));
             } else {
                 println!("\n  {error}\n");
             }
@@ -55,27 +52,24 @@ pub fn interfaces(face: Face) -> Fallible {
 
     if face.is_machine() {
         let rows: Vec<Value> = every.iter().map(object).collect();
-        println!(
-            "{}",
-            thalyx_files::machine::answer(
-                OP,
-                vec![
-                    ("interfaces", json!(rows)),
-                    ("count", json!(every.len())),
-                    // Counted for the caller rather than left to be derived: a
-                    // program that filtered on `kind == "ethernet"` would miss a
-                    // wireless card, and one that counted everything would find
-                    // a card on a machine that has only loopback.
-                    (
-                        "cards",
-                        json!(every.iter().filter(|one| one.is_a_card()).count())
-                    ),
-                    // The whole point of the verb, said where a program reads it
-                    // and not only in the human sentence.
-                    ("addressable", json!(false)),
-                ],
-            )
-        );
+        face.say(thalyx_files::machine::answer(
+            OP,
+            vec![
+                ("interfaces", json!(rows)),
+                ("count", json!(every.len())),
+                // Counted for the caller rather than left to be derived: a
+                // program that filtered on `kind == "ethernet"` would miss a
+                // wireless card, and one that counted everything would find
+                // a card on a machine that has only loopback.
+                (
+                    "cards",
+                    json!(every.iter().filter(|one| one.is_a_card()).count()),
+                ),
+                // The whole point of the verb, said where a program reads it
+                // and not only in the human sentence.
+                ("addressable", json!(false)),
+            ],
+        ));
         return Ok(());
     }
 

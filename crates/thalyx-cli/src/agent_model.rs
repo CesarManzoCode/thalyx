@@ -53,6 +53,25 @@ pub(crate) fn configured(store: &Store) -> Result<Option<Settings>, Box<dyn std:
     Ok(Settings::load(&settings_path(store))?)
 }
 
+/// The model as it will actually be run — through the engine module when the
+/// settings name one.
+///
+/// Every place that says "ready" or "NOT READY" goes through this. The version
+/// that did not was checking a `llama-completion` on `PATH` on a machine whose
+/// engine is a module, which is a check of something nobody was going to run.
+pub(crate) fn engine_of(
+    store: &Store,
+    settings: &Settings,
+) -> Result<thalyx_agent::LlamaModel, Box<dyn std::error::Error>> {
+    let model = settings.model()?;
+    Ok(
+        match crate::engine_module::ModuleEngine::for_settings(store, settings)? {
+            Some(engine) => model.through(engine),
+            None => model,
+        },
+    )
+}
+
 #[derive(Subcommand)]
 pub enum ModelCommand {
     /// Show the tiers, and which one is configured
@@ -75,6 +94,22 @@ pub enum ModelCommand {
         /// prompt file by opening a session on it.
         #[arg(long, default_value = thalyx_agent::llama::COMPLETION_BINARY)]
         binary: PathBuf,
+        /// Read this file instead, and record `--weights` as the path
+        ///
+        /// For building a store on a machine that is not the one that will boot
+        /// it: the weights are in a staging directory here and will be at
+        /// `/opt/thalyx/data/engine/models/…` there. The size and the digest
+        /// still come from the bytes — only the path recorded is the other one.
+        #[arg(long)]
+        reading: Option<PathBuf>,
+        /// Run the engine as this installed module, instead of as a program
+        ///
+        /// This is what the machine itself uses: there is no `PATH` inside it
+        /// and no libc, so the engine is a signed module that runs confined
+        /// under `module_standard`, like every other one. `--binary` is then
+        /// only a record of which tool the module carries.
+        #[arg(long)]
+        module: Option<String>,
     },
 
     /// Forget the configured model, leaving the machine with none
@@ -121,7 +156,9 @@ pub fn model(store: &Store, command: ModelCommand) -> Fallible {
             tier,
             weights,
             binary,
-        } => choose(store, &tier, &weights, &binary),
+            reading,
+            module,
+        } => choose(store, &tier, &weights, reading.as_deref(), &binary, module),
         ModelCommand::Forget => forget(store),
         ModelCommand::Check {
             utterance,
@@ -157,6 +194,18 @@ fn show(store: &Store) -> Fallible {
             println!("still use for all of it, just not by describing things loosely.");
             println!();
             println!("  thalyx agent model use media --weights <file.gguf>");
+            println!();
+            println!("On the machine itself the engine is a module, not a program on a");
+            println!(
+                "PATH there is none of. It reads its weights from {}:",
+                crate::engine_module::models_dir().display()
+            );
+            println!();
+            println!(
+                "  thalyx agent model use ligera --weights {}/model.gguf --module {}",
+                crate::engine_module::models_dir().display(),
+                crate::engine_module::ENGINE_MODULE_ID
+            );
         }
         Some(settings) => {
             println!(
@@ -170,7 +219,10 @@ fn show(store: &Store) -> Fallible {
                 settings.weights_bytes, settings.weights_digest
             );
             println!("  flags    {}", settings.extra_args.join(" "));
-            match settings.model() {
+            if let Some(module) = &settings.engine_module {
+                println!("  engine   module {module}, confined under module_standard");
+            }
+            match engine_of(store, &settings) {
                 Ok(model) => match model.preflight() {
                     Ok(()) => println!("  ready"),
                     Err(error) => println!("  NOT READY: {error}"),
@@ -190,12 +242,20 @@ fn show(store: &Store) -> Fallible {
     Ok(())
 }
 
-fn choose(store: &Store, tier: &str, weights: &Path, binary: &Path) -> Fallible {
+fn choose(
+    store: &Store,
+    tier: &str,
+    weights: &Path,
+    reading: Option<&Path>,
+    binary: &Path,
+    module: Option<String>,
+) -> Fallible {
     let tier = Tier::parse(tier)
         .ok_or_else(|| format!("`{tier}` is not a tier. They are: ligera, media, alta, maxima"))?;
 
-    println!("reading {} to record what it is...", weights.display());
-    let settings = Settings::record(tier, weights, binary)?;
+    let reading = reading.unwrap_or(weights);
+    println!("reading {} to record what it is...", reading.display());
+    let settings = Settings::record_reading(tier, weights, reading, binary)?.through_module(module);
     let path = settings_path(store);
     settings.save(&path)?;
 
@@ -214,7 +274,12 @@ fn choose(store: &Store, tier: &str, weights: &Path, binary: &Path) -> Fallible 
     // Said now rather than at the first sentence somebody types. A tier that
     // turns out to be unusable an hour later is one they will have built plans
     // on top of.
-    match settings.model()?.preflight() {
+    // The `?` this used to carry made recording a choice fail outright when the
+    // weights were not there *yet* — which is the ordinary case for
+    // `image/Makefile`, recording the path the file will have inside the
+    // machine. A choice is a choice whether or not the machine can act on it
+    // today; what must never happen is recording it and saying nothing.
+    match engine_of(store, &settings).and_then(|model| Ok(model.preflight()?)) {
         Ok(()) => {
             if let Some(warning) = wrong_tool_warning(&settings.binary) {
                 println!("{warning}");
@@ -297,7 +362,7 @@ fn forget(store: &Store) -> Fallible {
 
 fn check(store: &Store, utterance: &str, keep_prompt: Option<PathBuf>) -> Fallible {
     let settings = configured(store)?.ok_or("no model is configured; `thalyx agent model use`")?;
-    let model = settings.model()?.keeping_prompt(keep_prompt);
+    let model = engine_of(store, &settings)?.keeping_prompt(keep_prompt);
 
     let transcript = Transcript::new().with(Segment::typed(utterance));
     if matches!(
@@ -351,7 +416,7 @@ fn check(store: &Store, utterance: &str, keep_prompt: Option<PathBuf>) -> Fallib
 /// and `Gamas-de-Modelo.md` rests four tiers on the grammar doing real work.
 fn grammar_check(store: &Store, keep_prompt: Option<PathBuf>) -> Fallible {
     let settings = configured(store)?.ok_or("no model is configured; `thalyx agent model use`")?;
-    let model = settings.model()?.keeping_prompt(keep_prompt);
+    let model = engine_of(store, &settings)?.keeping_prompt(keep_prompt);
 
     println!("tier    {} ▪ {}", settings.tier, settings.weights.display());
     println!(
@@ -632,7 +697,7 @@ pub fn bench(
         "no model is configured, so there is nothing to measure. \
          `thalyx agent model use <tier> --weights <file>`",
     )?;
-    let model = settings.model()?.keeping_prompt(keep_prompt);
+    let model = engine_of(store, &settings)?.keeping_prompt(keep_prompt);
     model.preflight()?;
 
     let text = match cases {
@@ -847,7 +912,7 @@ pub fn grammar_effect(
         "no model is configured, so there is nothing to ask. \
          `thalyx agent model use <tier> --weights <file>`",
     )?;
-    let model = settings.model()?.keeping_prompt(keep_prompt);
+    let model = engine_of(store, &settings)?.keeping_prompt(keep_prompt);
     model.preflight()?;
 
     let text = match cases {

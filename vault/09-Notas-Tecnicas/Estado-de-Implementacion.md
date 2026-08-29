@@ -45,7 +45,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | La pantalla | `crates/thalyx-screen` | **Pura: estado adentro, pixeles afuera.** Lienzo, cuatro tipos de letra compilados adentro (OFL), acomodo de las regiones, la conversación desde abajo, el prompt, y la confirmación que **toma la pantalla entera**. El empaquetado de pixel del display se convierte aquí y se niega si no se entiende, en vez de aproximarse. 45 pruebas, ninguna necesita un display. Una respuesta más alta que el display **se dibuja**: la conversación se aplana a renglones y se ancla abajo, con AvPág/RePág para lo anterior — antes se saltaba el turno entero y `describe` dibujaba nada. Ver [[La-Pantalla]] |
 | La pantalla como cara del arranque | `thalyx-cli/src/session.rs` y `screen.rs` | **Es lo que se ve al arrancar.** `session::run` entra a la pantalla antes de imprimir un prompt, si esta sesión es la de la máquina y la línea de comandos del kernel no dice `thalyx.pantalla=no`; si el display no se puede dibujar, la sesión de texto sigue y dice por qué. Los verbos corren ahí: `session::dispatch` es uno solo para las dos caras, y lo que imprimen se atrapa en el descriptor con `thalyx-capture` — que también atrapa lo que imprime un módulo, porque `correr` y `ejecutar` arrancan otros procesos. **Nadie lo ha corrido sobre hierro.** Ver [[La-Pantalla]] |
 | Atrapar lo que un verbo imprime | `crates/thalyx-capture` | Mueve los descriptores 0, 1 y 2 mientras corre un verbo: la salida a un archivo en memoria, la entrada a `/dev/null`. Lo segundo es lo que evita que un verbo que pregunta cuelgue la máquina con una foto encima — sin terminal, cada confirmación toma el camino de rechazo que ya tenía. Crate propio porque los descriptores son del proceso: adentro de `thalyx-cli` la prueba medía a las otras ciento treinta y cuatro |
-| El display | `thalyx-syscall` y `thalyx screen` | El `ioctl` que pregunta la geometría, el `mmap`, y `GraphicsMode`, que quita la consola de texto y la devuelve en `Drop`. `thalyx screen --describe` recorre todo el camino **sin tocar la consola**, para que una máquina donde no se pueda dibujar lo diga con la pantalla intacta. **Nadie lo ha corrido sobre hierro** |
+| El display | `thalyx-syscall` y `thalyx screen` | El `ioctl` que pregunta la geometría, el `mmap`, y `GraphicsMode`, que quita la consola de texto y la devuelve en `Drop`. `thalyx screen --describe` recorre todo el camino **sin tocar la consola**, para que una máquina donde no se pueda dibujar lo diga con la pantalla intacta. **Nadie lo ha corrido sobre hierro**, y la corrida del 2026-08-28 tampoco pudo: la máquina que verifica **no tiene `/dev/fb0`**, así que esa mitad de la etapa 40 dice `NOT PROVEN` y sólo arrancar la imagen puede contestarla |
 | Un cuadro como imagen | `thalyx-screen/png.rs` y `thalyx dev screen` | El mismo camino de composición que usa el display, escrito a un PNG. Es cómo se mira la pantalla en una máquina que no tiene ninguna |
 | El instalador | `crates/thalyx-install` y `thalyx install` | Particiona, escribe el arranque y hace el store en un acto. Las particiones se reciben **ya abiertas** y se sostienen abiertas hasta el final: cerrar el disco entero hace que el kernel lo reexamine por su cuenta, y ese segundo barrido borra y rehace cada partición — abrir un nodo dentro de esa ventana da `ENXIO`. **El arranque del disco instalado no lo ha ejercido nadie** |
 | Controladores de una PC de verdad | `image/thalyx.config` | Framebuffer, teclado USB y PS/2, NVMe y AHCI, y `console=tty0`. **Ninguna de esas opciones se ha compilado ni arrancado** |
@@ -57,18 +57,20 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Contador de mutaciones del kernel | `crates/thalyx-watch` | Diez hooks, acotado al árbol; 5000 escrituras dentro, 0 fuera |
 | Memoria persistente | `crates/thalyx-memory` | Dos capas, fechado por rutas, base vectorial propia |
 | `rollback` | `crates/thalyx-core/rollback.rs` | Deshace un commit; se niega cuando la entrada ya no describe el disco |
-| Snapshots de Btrfs | `crates/thalyx-snapshot` | Tomar, listar, olvidar y **restaurar**; intercambio atómico |
+| Snapshots de Btrfs | `crates/thalyx-snapshot` | Tomar, listar, olvidar y **restaurar**; intercambio atómico; backend nativo por ioctl, sin el binario `btrfs` |
 | `restore` | `crates/thalyx-core/restore.rs` | Diff de lo que se pierde, camino confiable, intención antes de mover |
 | Límites de cgroup | `crates/thalyx-sandbox/limits.rs` | `memory.max`, `pids.max`, `cpu.max` |
 | Syscalls crudas | `crates/thalyx-syscall` | **El único crate con `unsafe` del workspace** |
 | Un uid por módulo | `crates/thalyx-core/uids.rs` | Asignado al instalar, retirado al quitar, nunca reciclado |
 | Montajes idmapped para lo concedido | `crates/thalyx-sandbox/idmap.rs` | Verificado: escritura concedida funciona y aterriza a nombre del dueño |
-| Motor de edición de texto | `crates/thalyx-edit` | Direcciones por renglón, guardado atómico, deshacer acotado. Conserva finales de renglón, salto final y permisos; un enlace se edita como el archivo al que apunta |
+| Motor de edición de texto | `crates/thalyx-edit` | Direcciones por renglón, **sustitución de una cadena exacta en varios archivos en una llamada** y **varias sustituciones distintas en una sola llamada** (`sustituir-lote`, en el orden dado, cada una sobre lo que dejó la anterior, con la composición ambigua —`A -> B` y luego `B -> C`— rechazada por nombre), guardado atómico, deshacer acotado. Conserva finales de renglón, salto final y permisos; un enlace se edita como el archivo al que apunta. La sustitución precomprueba todos los archivos antes de escribir uno —y el lote los abre una vez por inodo y aplica todo en memoria antes de guardar nada, así que un patrón que no encuentra su texto no deja escrito ninguno de los otros—, rechaza un salto de línea en cualquiera de los dos textos —así nunca cambia cuántos renglones tiene un archivo— y dice `wrote: false` en cada rechazo |
 | Procesos, memoria y detener uno | `crates/thalyx-proc`, `thalyx-cli/src/proc.rs` | `procesos [patrón]`, `memoria` y `matar <numero> [forzar]` sobre `/proc`. La señal va por un **pidfd**, así que no puede caer en un número reciclado; primero el descriptor, después la descripción, después la señal. `TERM` por omisión y `KILL` sólo con `forzar`, comprobado con una shell que ignora `TERM` de línea base. Se niegan PID 1, la propia sesión, el `0` y los negativos, y también los dos sujetos que aceptan la señal y la tiran —un hilo del kernel y un proceso que ya terminó—, porque contestar que se detuvieron es peor que un error. `memoria` mantiene `libre` y `disponible` separados. Etapas 31 y 32. Ver [[Procesos]] |
 | Búsqueda por nombre y por contenido | `crates/thalyx-files/src/search.rs`, `thalyx-cli/src/search.rs` | `encontrar <patrón>` camina el árbol y compara contra el **nombre**, `contenido <texto>` lee y compara **literalmente**. Techo de 20 000 archivos revisado al caminar, binarios y archivos de más de 4 MiB contados aparte de lo ilegible, renglones largos cortados y avisados, y las banderas sólo adelante para que el sujeto sea el resto del renglón sin inventar comillas. Etapa 30 con `find(1)` y `sed(1)` de controles. Ver [[Busqueda]] |
 | Editor de pantalla | `crates/thalyx-edit/src/screen.rs` y `thalyx-cli/src/edit.rs` | Aritmética de cursor y viewport pura, dibujado en el CLI. `Ctrl-O` guarda, `Ctrl-X` sale, `Ctrl-U` deshace, `Ctrl-K` corta |
-| Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go. Importaciones **y declaraciones**; identificadores fuera de comentarios y cadenas |
-| Símbolos en el índice | `crates/thalyx-graph`, verbo `buscar` | Dónde se declara un nombre y dónde se usa. 3 869 nombres sobre las fuentes de este repo |
+| Parser mecánico | `crates/thalyx-parser` | Rust, Python, JS/TS, C, Go. Importaciones **y declaraciones**; identificadores fuera de comentarios y cadenas. Desde el 2026-08-28 las tres entradas comparten **un solo escaneo con estado**: comentarios de bloque, comentarios al final del renglón y cadenas que siguen en el renglón siguiente. Los tres huecos que cerró se encontraron indexando este repositorio; una comilla simple nunca cruza de renglón, porque en Rust es un lifetime |
+| Símbolos en el índice | `crates/thalyx-graph`, verbo `buscar` | Dónde se declara un nombre y dónde se usa. 5 495 nombres sobre `crates/` de este repo |
+| Dependencias que ningún import declara | `crates/thalyx-graph`, `Via::Symbol` | Un nombre hace arista donde se use si **exactamente un** archivo lo declara, es **visible desde afuera** (la regla de cada lenguaje, no una heurística), el archivo que lo usa **no lo ata** y **no lo declara él mismo**. Cubre acceso por campo, método, trait en una cota, llamada por ruta y re-export. Las cuatro condiciones salieron de correrlo sobre este repositorio: con sólo la primera, `thalyx-snapshot` tenía 41 dependientes; con las cuatro, 19, de los que 17 son referencias reales entre crates. Cada fila dice `via: import` o `via: symbol`. Ver [[FS-en-Grafo]] |
+| Corpus determinista del índice | `crates/thalyx-graph/corpus/` | Doce árboles con la respuesta correcta escrita al lado, 44 igualdades exactas, milisegundos y cero modelo. Cuatro existen para ser contestados angostamente. Los límites se declaran y `THALYX_REQUIRE_FULL_CORPUS=1` los exige. Etapa 49 |
 | Respuestas acotadas con cursor | `crates/thalyx-files/window.rs` | Total, cursor por llave y continuidad; en seis verbos |
 | El intento con nombre | `crates/thalyx-core/attempt.rs`, verbo `intento` | Política probada contra el falso de directorios; el Btrfs lo ejerce la etapa 26 |
 | Consumidor del ringbuf de mutaciones | `crates/thalyx-watch/src/ring.rs`, verbo `cambios` | Protocolo probado sobre bytes; el mapeo lo ejerce la etapa 27 |
@@ -84,6 +86,9 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | `llama.cpp` como proceso | `crates/thalyx-agent/llama.rs` | Invoca `llama-completion`, no `llama-cli`. Plazo, tope de salida, muestreo de `VmHWM`, y **comprobación del contrato de una pasada**. Corrido entero contra hierro real en **tres gamas** (1.5B, 3B, 7B). `grammar-check` probó que la gramática restringe en media y alta; en ligera dijo `PROVEN` **sin control** —el brazo libre no dijo nada— y ahora exige que lo diga. `Truncated` distingue presupuesto agotado de regla violada |
 | La gama elegida y sus pesos | `crates/thalyx-agent/config.rs` | Mide el archivo en vez de creerle a nadie; se niega si cambió de tamaño |
 | `agent model`, `agent grammar`, `agent bench` | `crates/thalyx-cli/agent_model.rs` | El banco que [[Gamas-de-Modelo]] pide: intención, argumentos, abstención, latencia y RAM. **Tres gamas medidas el 2026-08-08**; la máxima quedó `N/D` porque el proceso murió por falta de memoria antes de la primera inferencia. Un rechazo por atribución imprime **qué** id fue |
+| La costura del motor | `crates/thalyx-agent/llama.rs` (`Engine`, `EngineCall`, `ProcessEngine`) | Entra un vector de argumentos, salen bytes. Arriba de la línea no cambió nada de lo que el agente sabe sobre una respuesta; abajo hay dos maneras de arrancar `llama.cpp`. `Engine::scratch_root` es la parte con filo: dice **dónde** se le puede escribir el prompt, porque un módulo sólo ve lo que le concedieron |
+| El motor de inferencia, como módulo | `crates/thalyx-cli/src/engine_module.rs`, `dev/build-engine.sh`, `dev/stage-engine.sh` | **2026-08-28.** `llama-completion` estático, empaquetado en un `.thmod` firmado, instalado en el store y corrido por `thalyx_core::run` — el mismo que corre `correr` — bajo `module_standard`, con uid propio, cgroup, seccomp, raíz pivotada y los 4 GiB que pide su manifiesto. **Y desde el mismo día es residente**: el binario es `thalyx-engine` —el mismo `llama.cpp`, misma etiqueta, mismas banderas— que carga el GGUF una vez y contesta peticiones enmarcadas por una tubería, así que la segunda frase no vuelve a leer dos gigabytes de disco. Sigue sin haber demonio, ni servidor, ni red: `run::start` devuelve un `RunningModule` que posee el cgroup, la política y el proceso, y `run()` es ese mismo `start` seguido de `wait`, así que no hay un segundo lanzador. El GGUF es un dato del store en `/opt/thalyx/data/engine/models`, así que cambiar el modelo es copiar un archivo. La imagen sigue siendo el kernel y un programa. Ver [[Motor-de-Inferencia-como-Modulo]] y [[Motor-Residente]] |
+| El agente, desde la pantalla | `crates/thalyx-cli/src/session.rs` (`understand`) | Una línea que no es verbo va al agente, y lo que vuelve se convierte en **una línea del vocabulario de la sesión** que el mismo dispatch corre. Así un modelo no puede alcanzar una operación que una persona no pueda, ni saltarse una confirmación, ni inventar un verbo. Se dice en voz alta antes de correrlo, y un salto: lo que el modelo produjo no vuelve a consultar al modelo |
 | Memoria de tarea del agente | `crates/thalyx-agent/recollection.rs` | Escribe y **lee**; lo no confirmable se muestra y no se usa |
 | Repositorio local y resolución de versiones | `crates/thalyx-core/repo.rs` | Máxima versión que satisface el constraint y cuya firma valida |
 | CLI `thalyx` | `crates/thalyx-cli` | `module` (con `run`), `agent` (`plan`, `do`), `graph`, `memory`, `rollback`, `journal`, `permissions`, `enforce`, `store`, `dev` |
@@ -97,7 +102,7 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 | Cambiar archivos | `crates/thalyx-files` (`make_*`, `copy`, `move_to`, `remove`, `expand`) | `mkdir`, `touch`, `cp`, `mv`, `rm` con comodines `*` y `?`. Devuelven un `Done` con **qué pasó, dónde y los bytes exactos** — nada imprime por su cuenta, que es el decreto del objetivo. Nada sobrescribe sin pedirlo; un enlace se copia y se borra como enlace; `*` no cruza `/` ni toca ocultos; `mv` cae a copiar-y-borrar ante `EXDEV`. La cara estructurada los expone desde el 2026-08-09 |
 | El catálogo de verbos | `crates/thalyx-cli/src/catalogue.rs` | **A1**: `describe` contesta los 43 verbos con nombres, argumentos, banderas, el `op` de cada uno, si cambia la máquina y qué errores da. **El `op` que promete se comprueba corriendo el verbo** (etapa 22, veintiún verbos): el día que `red` nació con cara y quedó declarado sólo-prosa, el catálogo y el despacho concordaban cada uno consigo mismo y ninguna prueba unitaria podía verlo. Los nombres viven **una vez**: las completaciones se generan de aquí, y dos pruebas atan el banner y el despacho **corriendo la sesión**. Ningún otro sistema operativo puede describirse así |
 | Ensayar antes de hacer | `crates/thalyx-files` (`foresee_*`), `thalyx_core::foresee_run`, `crate::edit::foresee`, `ensayo` | **D1, nueve de nueve desde el 2026-08-26.** Cada `foresee_*` es *la mitad de comprobación de la operación real*, y la real la llama — no hay camino donde el ensayo y lo ensayado discrepen. Prefijo y no modo, porque un modo se queda encendido. Los dos últimos se cerraron el mismo día y por la misma forma: `correr` es el código de la corrida parado un renglón antes de que el programa exista, y `editar` es el camino de `editar` **sin la línea que guarda**. La lista de verbos que cambian la máquina y no se pueden ensayar **está vacía**, y hay una prueba que lo afirma |
-| El índice, desde la sesión | `crates/thalyx-cli/src/index.rs` | **C1**: `indexar`, `depende`, `usan`. La pregunta que ningún recorrido de carpetas contesta, por primera vez al alcance de algo que no es `thalyx graph`. Cada respuesta trae la **vigencia en el mismo objeto que las filas**, y un árbol que cambió contesta `stale` y devuelve las filas igual |
+| El índice, desde la sesión | `crates/thalyx-cli/src/index.rs` | **C1**: `indexar`, `depende`, `usan`. La pregunta que ningún recorrido de carpetas contesta, por primera vez al alcance de algo que no es `thalyx graph`. Cada respuesta trae la **vigencia en el mismo objeto que las filas**. Desde el 2026-08-28 los tres verbos semánticos **reconstruyen el índice antes de contestar** cuando el árbol cabe bajo 2 000 archivos, y cuando no dicen `declined_too_large` con el tamaño y el verbo que hay que llamar; `refrescar=no` devuelve lo que el índice tenía. Nada reporta `current` por haberlo intentado |
 | La cara estructurada | `crates/thalyx-files/src/machine.rs` | Lo que el decreto del objetivo pide por nombre: `structured on` y cada verbo de archivos contesta **un objeto JSON por renglón**, desde el mismo hecho que lee el impresor humano. No esconde ocultos, los tamaños son exactos, el silencio nunca es respuesta, y un renglón tecleado produce **exactamente un objeto** — `count` y `results` adentro, `ok` verdadero sólo si todos salieron. La forma se escribe a mano y no se deriva, porque una forma derivada la decide el nombre de una variante de Rust. **Desde el 2026-08-23 la contestan los cuarenta verbos**, y hay una prueba que afirma que la lista de sólo-prosa está vacía |
 | La terminal como terminal | `crates/thalyx-term`, `crates/thalyx-cli/term.rs` | Flechas, borrado a media línea, historial de 500 y tab que completa verbos al principio y nombres después. El crate es **puro** y se prueba sin abrir una terminal; el modo crudo es una guarda que la devuelve al soltarse, porque una sesión que sale sin hacerlo deja la máquina inservible. **Un solo lector de `stdin`**, `term::read_answer()`: dos lectores y un búfer que guarda lo que sobra no pueden coexistir |
 | PID 1 | `crates/thalyx-cli/init.rs` | Monta siete filesystems, arranca la sesión, cosecha huérfanos. **Corrido como PID 1 el 2026-08-03**: los siete montajes salieron `ok` |
@@ -143,6 +148,118 @@ Qué está construido de lo que está decretado. Esta nota se actualiza con cada
 - Un módulo no puede escribir en `.thalyx/` dentro de su propio árbol: ahí vive el registro de lo que tiene permitido hacer.
 - El modo de los archivos del artefacto se aplica enmascarado: setuid, setgid y sticky nunca sobreviven a una instalación.
 
+### El techo de memoria lo pide el manifiesto
+
+Decidido por Cesar el 2026-08-28 y construido el mismo día. `module_standard`
+topaba en 1 GiB y ningún manifiesto podía pedir más, así que el motor de
+inferencia no cabía. Ahora una petición de memoria es un permiso `persistent`
+—`resource = "memory"`, `action = "4GiB"`— que sale por el camino confiable y el
+registro que ya existían, y `for_permissions` sube el techo. El gigabyte pasa de
+techo a **piso**. Entero en [[Motor-de-Inferencia-como-Modulo]].
+
+### Una pregunta, dos caras — la pantalla deja de ser de sólo lectura
+
+`crates/thalyx-cli/src/ask.rs`, del 2026-08-28. Bajo `thalyx-capture` el
+descriptor 0 es `/dev/null`, así que los **ocho** lugares que se detienen a
+preguntar encontraban que no hay terminal y se negaban: en la cara con la que la
+máquina arranca, `instalar`, `ejecutar`, `observar`, `instalar-en` y `editar` se
+podían leer y no se podían acabar.
+
+Una sola comparación —`Accepts`— que las dos caras llaman, con cuatro respuestas
+(`Yes`, `No`, `NoOneToAsk`, `Unreadable`, y las dos últimas son distintas por la
+regla 10). La negativa se queda en cada verbo, porque esa frase es del verbo y no
+del preguntar. El cambio que lo hace posible es de orden: **decir de qué se trata
+va antes de revisar si hay terminal**, porque el contexto es la confirmación.
+`thalyx_capture::said_so_far` es de dónde sale ese contexto en la pantalla.
+
+**Lo dibujado sólo se ve arrancando la imagen.** Etapa 42 de `verify.sh` para lo
+que sí se puede medir aquí.
+
+### El teclado, que hasta el 2026-08-28 no podía escribir español
+
+`crates/thalyx-term/src/keymap.rs`. El kernel lleva un mapa compilado adentro y
+es US QWERTY; `loadkeys` no cabe en la imagen. La tecla que en un teclado
+latinoamericano dice `ñ` mandaba `;`, y `á` no se podía teclear en absoluto.
+`thalyx-screen` calentaba los glifos de `áéíóúüñ¿¡` desde antes: se podían
+dibujar y no escribir.
+
+- Las tablas se **generan** de `kbd` con `dev/keymap-table.py` y nunca se
+  escriben a mano. Una distribución es un dato sobre el mundo, y la regla 6
+  aplica: leer `la-latin1.kmap` directo era la trampa, son cuarenta renglones de
+  diff contra dos includes.
+- Dos distribuciones: `latino` y `ingles`, y la segunda es el mapa propio del
+  kernel —el mismo, no algo parecido— para que el regreso sea exacto.
+- `teclado` dice qué hay **preguntándole al kernel** con `KDGKBENT`, no
+  preguntándole a Thalyx qué mandó. Tres respuestas: una de las mías, otra cosa,
+  o no se pudo leer.
+- Se carga en el arranque, se reporta como un montaje, y `thalyx.teclado=no` en
+  la entrada de arranque no carga nada.
+- `ensayo teclado <distribución>` dice qué tecla pasaría de qué a qué sin tocar
+  la consola.
+
+**Que la carga de verdad funcione sólo lo contesta su hierro.** Etapa 43, que
+lee y nunca escribe: un keymap es un interruptor global sin dueño (regla 11).
+
+#### Y no funcionaba: la representación no era la que pide el ioctl (2026-08-28)
+
+Corriendo la imagen: con `la-latin1` cargado, **hasta las teclas ASCII** —
+`qwerty`, `asdfgh`, letras que no tienen nada que ver con el español — dibujaban
+cuadros. La misma imagen arrancada con `thalyx.teclado=no` escribía bien. Ese
+control deja la falla en la carga del keymap y en ningún otro lado: ni QEMU, ni
+el framebuffer, ni la fuente, ni el decodificador de entrada.
+
+La causa: las tablas que emite `loadkeys --mktable` están en la representación
+*interna* del kernel (`q` es `0xfb71`, `ñ` es `0xf0f1`), y `KDSKBENT` no recibe
+esa forma — `drivers/tty/vt/keyboard.c` pasa lo que le da userspace por `U(x)`,
+`x ^ 0xf000`, antes de guardarlo. Se le entregaba `0xfb71` directo, guardaba otra
+cosa, y la tecla dibujaba un cuadro.
+
+**Y la verificación lo tapaba.** `KDGKBENT` aplica la misma transformación de
+salida, así que el valor mal mandado volvía idéntico y todo lo que le preguntaba
+al kernel qué tenía —`loaded()`, la sonda de `teclado`— comparaba igual sobre un
+teclado que no servía. Regla 5 otra vez, y esta vez el instrumento equivocado era
+la simetría del propio kernel: un round-trip que coincide no prueba que lo
+guardado sea lo que se quería.
+
+La conversión quedó en `crates/thalyx-syscall/src/lib.rs`, en `keymap_to_ioctl` y
+`keymap_from_ioctl`, con sus pruebas. **No en `keyboard.rs` ni en las tablas
+generadas**: la diferencia no es un dato de la distribución, es el ABI de esos
+dos ioctls. Todo lo que está arriba de esa frontera —`loaded()`,
+`keymap::produces()`, `Layout::plainly()`— sigue hablando una sola
+representación, la de las tablas.
+
+### El editor, que en la pantalla no abría (2026-08-28)
+
+Corriendo la imagen: `crear prueba.txt` funcionaba y creaba `/home/prueba.txt`;
+`editar prueba.txt` desde la pantalla gráfica contestaba **«there is no terminal
+here to draw an editor on; address lines instead»**. En la superficie que es
+puro lugar donde dibujar.
+
+La causa no era un chequeo faltante sino **dónde estaba el chequeo**. El editor
+de `crates/thalyx-cli/src/edit.rs` pedía el tamaño con
+`terminal_size(stdin)`, leía teclas del descriptor 0 y escribía ANSI al 1. Bajo
+la pantalla el 0 es `/dev/null` y el 1 es el buffer de `thalyx-capture`, así que
+la respuesta honesta de ese chequeo era «no hay terminal» — y fingir una habría
+metido las secuencias de escape en la conversación como texto.
+
+El arreglo: `editar <archivo>` sin subverbo ya no abre nada, **contesta una
+transición**. `Flow::ToTheEditor(ruta)`, la segunda de esas —`Flow::Emptied` fue
+la primera, por la misma razón: hay verbos cuyo significado es una propiedad de
+la superficie, y entonces la superficie es la que los termina.
+
+- sesión de texto → `edit::on_this_terminal`, el editor ANSI de siempre, con su
+  chequeo de `terminal_size` intacto y su refusal `no_screen` para un pipe;
+- pantalla gráfica → `screen::edit_on_the_glass`, que dibuja en el framebuffer y
+  lee del teclado que la pantalla ya tiene duplicado, **fuera del capture**.
+
+**Un solo motor.** `thalyx-edit` sigue decidiendo qué es una edición, qué hace
+cada tecla, qué cabe en la vista y qué es guardar; lo que se agregó en
+`thalyx-screen` es `Screen::editor`, un cuadro de cadenas y dos números que el
+motor ya calculó. Un segundo motor es cómo uno de los dos termina guardando un
+archivo que el otro habría rechazado.
+
+Falta el hierro: que se vea bien a su resolución sólo lo contesta su máquina.
+
 ### La red, que se ve y no se usa
 
 Punto 8 de la terminal usable, decreto en [[Red]]. La configuración del kernel
@@ -173,6 +290,13 @@ máquina con una**, y ninguna prueba de fixture lo vio.
 No hay dirección, no hay DHCP, no hay resolvedor y no sale un paquete — y la
 respuesta lo dice, en las dos caras, porque es la única lista del sistema cuyas
 cosas ningún verbo puede usar.
+| Protocolo del puente anfitrión↔máquina | `crates/thalyx-bridge` | Marcado por largo de 4 bytes y JSON UTF-8; `hello`/`request`/`response`/`error`. Lo enlazan los dos extremos, así que hay una definición de frame y no dos |
+| Sesión de agente externo | `crates/thalyx-cli/src/external.rs` | Lista de verbos y guardián de rutas. Cada ruta se resuelve como la resuelve el verbo **y** como la resuelve el kernel, y las dos tienen que caer dentro del workspace; un `..` se rechaza de plano. `apagar`, `instalar-en`, `correr`, `ejecutar`, `negar` y `matar` no son alcanzables |
+| El extremo dentro de la máquina | `crates/thalyx-cli/src/bridge.rs` | Un hilo de la sesión, no un programa nuevo en la imagen. Encuentra el puerto por su nombre en `/sys/class/virtio-ports`, nunca por su número. Sin puerto: ni error, ni espera, ni una línea en el arranque |
+| Adaptador MCP | `crates/thalyx-mcp` | Once herramientas sobre stdio, **servidas una a la vez**: lee un mensaje, hace el viaje completo a la máquina, contesta, y hasta entonces lee el siguiente — así que llamadas concurrentes del cliente se ejecutarían en fila. No abre un archivo del workspace: es adaptador, y la superficie de Thalyx sigue siendo la autoridad. Descarta una herramienta cuyo verbo la máquina no anuncie. Las descripciones dicen **qué no sabe** cada primitiva, no sólo qué contesta: un agente que sobreinterpreta `dependencias` comete el error lejos de aquí |
+| Métricas de una sesión de agente | `crates/thalyx-mcp/src/metrics.rs` | Tiempo, llamadas, herramientas, bytes enviados **y** devueltos, errores, archivos leídos, búsquedas, intentos. Sin tokens: este proceso no los ve, y una estimación sería un número que parece medición |
+| Arnés de comparación de dos brazos | `dev/bench-external-agent.sh`, `dev/bench-summary.py` | Claude Code normal contra Claude Code con sólo herramientas Thalyx, mismo prompt y mismo modelo. Desde el 2026-08-28 lee `--output-format stream-json`, así que **las dos ramas** se miden igual: herramientas por nombre, bytes devueltos al modelo, archivos leídos, búsquedas, además de turnos, tiempo, tokens y costo. El parser está aparte y trae `--self-test` contra una sesión real capturada — regla 6. `--expect-file` da veredicto de la tarea; sin él, no hay veredicto Desde la misma fecha hay una tercera tarea, `--task reversible`: renombrar un símbolo en su definición y en todos sus dependientes, comprobar qué se tocó, y dejar el árbol byte por byte como estaba. El veredicto es una conjunción de tres instrumentos distintos —cambió de verdad (stream), restauró (hash del árbol en el anfitrión), contestó bien (`--expect-file`)— porque un agente que no hace nada restaura el árbol perfecto. El brazo B se comprueba en dos pasos, con la máquina apagada y `agent-export`; sin eso dice `not_proven`, y `THALYX_REQUIRE_RESTORE_CHECK=1` lo vuelve falla | Desde el 2026-08-29 el brazo A está **anclado**: su copia se escenifica fuera del checkout (`--workspace`), se revisa cada ancestro por `CLAUDE.md`, `.claude/`, `.mcp.json` y `.git`, un hook `PreToolUse` rechaza cualquier ruta de afuera, y después se lee del stream el `system init` y todas las rutas de todas las llamadas — una sola afuera deja la corrida `INVALID`, comprobado **entre los dos brazos**. El brazo B se prueba vivo antes de pagar el A (`thalyx-mcp --preflight`: hello, `where`, `list .` comparado con `--project`, todo de sólo lectura), y `provenance.json` guarda commit de origen, manifiesto de entrada, exclusiones y directorio efectivo de cada brazo, con los dos sellos escritos por el mismo programa; entradas distintas detienen la corrida antes de llamar a nadie. La clasificación de mutación tiene tres valores —`writes`, `reads`, `unknown`— porque el nombre de una herramienta es una intención y no un efecto: `Bash` es siempre `unknown`, y un testigo que no vio nada con llamadas `unknown` en el stream contesta `not_proven`, nunca `false`
+| Importar un proyecto a la máquina | `image/Makefile` (`agent`, `run-agent`, `agent-export`) | Una copia descartable, como subvolumen propio para que `intento` tenga qué fotografiar. El checkout del anfitrión no se toca y no es alcanzable desde adentro |
 
 ## No construido todavía
 
@@ -183,7 +307,21 @@ cosas ningún verbo puede usar.
 | Los casos sin medición del banco | Ninguna fracción de acierto es todavía la puntuación de su gama: 6 casos en ligera y 1 en media y en alta no produjeron respuesta |
 | Salir a internet | Que el store pueda traer un módulo de algún lado. DHCP, DNS y TLS tendrían que vivir dentro de `thalyx`, y **de dónde** es una pregunta de Fase 2 sin contestar. Ver [[Red]] |
 | WiFi | Necesita firmware binario en la imagen y un suplicante WPA, que en todos lados es un demonio aparte. Obliga a revisar qué quiere decir «el kernel y un programa» |
+| Que un Qwen2.5 real acierte la intención desde la pantalla | Es una medición del modelo, no de la máquina: la cadena entera está construida y corrida con un llama.cpp real, y lo que falta es correr `thalyx agent bench` contra las gamas desde adentro |
 
+> **Actualizado el 2026-08-28, más tarde.** Los dos renglones de abajo se
+> quitan: los dos están construidos. El tope de memoria lo pide el manifiesto y
+> lo aprueba Cesar al instalar, y el motor es un módulo instalado que corre
+> confinado — ver el renglón «El motor de inferencia, como módulo» arriba y
+> [[Motor-de-Inferencia-como-Modulo]].
+>
+> **Actualizado el 2026-08-28.** Se agregan dos renglones, y el primero es una
+> ausencia que llevaba desde el principio sin estar escrita: **el agente no está
+> en la máquina.** Nada mintió — cada nota del agente decía la verdad sobre lo
+> que el agente hace — pero nadie había preguntado *dónde corre*, y la respuesta
+> es que nunca ha corrido sobre Thalyx. Se encontró preguntando qué le falta al
+> sistema para ser usable, no auditando el agente.
+>
 > **Actualizado el 2026-08-08.** Esta tabla decía *«el `Model` real»*, *«la
 > gramática GBNF»* y *«el banco de las cuatro gamas»* como no construidos, y las
 > tres estaban construidas y corridas contra hierro desde ese mismo día — es la
@@ -233,7 +371,7 @@ reportando `NOT PROVEN` sin `THALYX_AGENT_WEIGHTS`, y
 
 ## Pruebas
 
-Más de 1 340 pruebas en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
+**1 649 pruebas** en total, en los tres niveles de [[Estrategia-de-Pruebas]]. Las 112
 del agente corren además en su propia etapa de `verify.sh`, para que si el crate
 desapareciera del workspace el total bajara **y se supiera cuáles faltan**. Los de nivel 2 matan el binario real con `SIGABRT` en cada punto del commit, incluido el instante entre los dos `rename`, y verifican consistencia **y recuperación**.
 
@@ -245,6 +383,31 @@ un disco ya construidos; **corrida así el 2026-08-06 con idéntico resultado**,
 que es lo que demuestra que la etapa del arranque no se estaba saltando. La del
 agente es distinta por naturaleza: no hay máquina que la satisfaga todavía,
 porque lo que le falta al agente no es hardware sino código.
+
+### Las pruebas que fuerzan un entrelazado — 2026-08-29
+
+Una clase nueva, y la única que puede ver la familia de defectos que cerró los
+cuatro P0 del 2026-08-28: **una regla comprobada y no impuesta se comporta
+igual que una impuesta mientras haya un solo cliente**, y cada prueba que había
+hacía una cosa a la vez.
+
+- **Dos clientes con una barrera**, en `attempt.rs`: dos hilos que abren su
+  propia descripción de `state/lock` —que es lo que tienen dos procesos— y
+  arrancan a la vez. Sin la barrera el primero termina antes de que el segundo
+  empiece.
+- **Un adversario en paralelo**, en `external.rs`: cuatro pruebas, una por verbo,
+  con un hilo cambiando un directorio por un symlink mientras 4000 peticiones
+  entran. De un solo lado —la afirmación es *cero* escapes— y con el conteo de
+  rechazos al lado como control, sin el cual «no escapó nada» y «no hubo
+  carrera» se leen igual.
+- **El estado intermedio sostenido a mano**, en `thalyx-sandbox`: dos
+  confinamientos establecidos y nada adentro del cgroup, que una máquina real
+  sostiene un instante y un fake sostiene para siempre. Con su mitad de kernel
+  en `tests/real_cgroup.rs`, con un proceso vivo adentro.
+
+**Los tres arreglos se comprobaron quitándolos**, y ésa es la parte que no es
+opcional: un test de concurrencia que nadie vio fallar pasa igual si mide la
+propiedad y si no mide nada.
 
 ## Lo que la auditoría del 2026-08-04 cambió
 

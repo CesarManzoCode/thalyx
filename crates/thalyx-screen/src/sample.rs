@@ -112,6 +112,7 @@ pub fn working() -> Screen {
             suggestion: None,
         },
         confirmation: None,
+        editor: None,
     }
 }
 

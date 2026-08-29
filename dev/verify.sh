@@ -431,6 +431,37 @@ if ! cargo build --quiet > "$WORK/build.log" 2>&1; then
     exit 1
 fi
 proven "the workspace builds"
+
+# And the other target, which is the one a Thalyx machine actually runs.
+#
+# Everything above compiles against glibc, and stage 11 packs *that* binary into
+# an image to count what is inside it. The image Cesar boots is a static musl
+# build, and until 2026-08-28 nothing here ever compiled for that target: five
+# ioctl requests cast to `libc::c_ulong` — which is what glibc's `ioctl` takes,
+# where musl's takes `c_int` — went through this whole script clean, and then
+# stopped `make -C image` dead on his machine. A whole delivery arrived
+# unbootable through a hole in this script, so this closes it with the exact
+# line the image Makefile runs. It builds into this script's own target
+# directory rather than the workspace's, like everything else here, so it costs
+# a build the first time and touches nothing `make -C image` will later use.
+MUSL_TARGET=x86_64-unknown-linux-musl
+if ! rustup target list --installed 2>/dev/null | grep -qx "$MUSL_TARGET"; then
+    GAP="the image's target is not installed here, so nothing checked that the one program the image carries still compiles: rustup target add $MUSL_TARGET"
+    if [ "${THALYX_REQUIRE_IMAGE_BUILD:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+elif cargo build --release --target "$MUSL_TARGET" -p thalyx-cli \
+        > "$WORK/musl-build.log" 2>&1; then
+    proven "the one program the image carries builds for the image's own target ($MUSL_TARGET)"
+elif grep -q "failed to find tool" "$WORK/musl-build.log"; then
+    # Rule from 2026-08-26: a limit of this machine is not a defect of Thalyx.
+    # A missing C compiler for musl stops the build without saying anything
+    # about the code, and calling that a failure would teach the reader to
+    # ignore this line.
+    GAP="there is no C compiler for $MUSL_TARGET here ($(grep -o 'failed to find tool \"[^\"]*\"' "$WORK/musl-build.log" | head -1)), so the image's build could not be exercised: install musl-gcc"
+    if [ "${THALYX_REQUIRE_IMAGE_BUILD:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    failed "the image's program does not build for $MUSL_TARGET, so \`make -C image\` cannot work whatever the rest of this run says"
+    excerpt "$WORK/musl-build.log" 25
+fi
 THALYX="$CARGO_TARGET_DIR/debug/thalyx"
 
 # Exported so `make -C lsm` uses the binary this run just built rather than
@@ -4156,13 +4187,14 @@ step "26. intenta esto y si sale mal deshazlo"
 # abandoning really returns the tree, and that a file made during the attempt is
 # gone afterwards rather than merely reverted.
 #
-# ## The three columns
+# ## The columns
 #
 # A file that existed before, changed during the attempt: must be back to its
-# old contents. A file made during the attempt: must be gone. And the control —
-# the same sequence settled with `confirmar` instead — where both must survive.
-# Without the control, an implementation that reverted on every path would pass
-# the first two and be useless.
+# old contents. A file made during the attempt: must be gone. The control — the
+# same sequence settled with `confirmar` instead — where both must survive;
+# without it, an implementation that reverted on every path would pass the first
+# two and be useless. Then the same sequence with an empty PATH, which is the
+# machine the image is. And standing at `/`, which must be refused.
 
 # The scratch path probed at the top of this script, which was proven by making
 # a subvolume rather than by reading a filesystem type — `stat -f` says btrfs for
@@ -4235,6 +4267,29 @@ else:
     set -- $SAID
     A_ATOMIC=$1; A_WOULD_DELETE=$2
 
+    # The column added 2026-08-28, and the one that is about the machine Thalyx
+    # actually is. Everything above ran on a host with btrfs-progs installed,
+    # which is not where `intento` lives: inside the image there is the kernel and
+    # one program, and `thalyx-snapshot` used to answer *is this a subvolume* by
+    # spawning `btrfs`. In QEMU that spawn failed and `thalyx_attempt` reported
+    # `not_a_subvolume` about a workspace that was one — a missing binary told as
+    # a fact about the filesystem. So the whole sequence runs once more with an
+    # empty PATH, which is this host doing what the image does.
+    printf 'before\n' > "$ATTEMPT_TREE/kept.txt"
+    rm -f "$ATTEMPT_TREE/made.txt"
+    bare_run() {
+        printf '%s\n' "structured on" "cd $ATTEMPT_TREE" "$@" salir | \
+            PATH=/nonexistent THALYX_ROOT="$ATTEMPT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    bare_run "intento empezar sin-btrfs" > "$WORK/attempt-nopath-begin.log"
+    printf 'changed during the attempt\n' > "$ATTEMPT_TREE/kept.txt"
+    printf 'made during the attempt\n' > "$ATTEMPT_TREE/made.txt"
+    bare_run "intento abandonar si" > "$WORK/attempt-nopath-abandon.log"
+
+    N_KEPT=$(cat "$ATTEMPT_TREE/kept.txt" 2>/dev/null || echo "unreadable")
+    N_MADE=no
+    [ -e "$ATTEMPT_TREE/made.txt" ] && N_MADE=yes
+
     # The control that matters most, and the one this stage did not have on the
     # day it was written: standing at `/` — which is a subvolume on every
     # ordinary Fedora install — must be **refused**. Without this column, a
@@ -4263,8 +4318,13 @@ else:
     if [ "$A_KEPT" = "before" ] && [ "$A_MADE" = "no" ] \
        && [ "$K_KEPT" = "changed during the attempt" ] && [ "$K_MADE" = "yes" ] \
        && [ "$A_WOULD_DELETE" = "1" ] \
+       && [ "$N_KEPT" = "before" ] && [ "$N_MADE" = "no" ] \
        && [ "$ROOT_REFUSED" = "False:the_whole_system" ]; then
-        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, and / was refused (atomic swap: $A_ATOMIC)"
+        proven "an attempt was abandoned whole on real Btrfs — reverted one file, deleted one, the kept control lost neither, / was refused, and all of it again with no \`btrfs\` on PATH (atomic swap: $A_ATOMIC)"
+    elif [ "$N_KEPT" != "before" ] || [ "$N_MADE" != "no" ]; then
+        failed "with no \`btrfs\` on PATH the attempt did not come back (kept.txt='$N_KEPT', made.txt present=$N_MADE), so \`intento\` still needs a binary the image cannot carry; see $WORK/attempt-nopath-abandon.log"
+        excerpt "$WORK/attempt-nopath-begin.log"
+        excerpt "$WORK/attempt-nopath-abandon.log"
     elif [ "$ROOT_REFUSED" != "False:the_whole_system" ]; then
         failed "standing at / and asking for an attempt answered '$ROOT_REFUSED' instead of refusing; see $WORK/attempt-root.log"
         excerpt "$WORK/attempt-root.log"
@@ -6126,6 +6186,920 @@ elif echo "$IMAGE_CMDLINE" | grep -q 'thalyx.pantalla='; then
     failed "the built-in command line already answers thalyx.pantalla, so the escape hatch is the default: $IMAGE_CMDLINE"
 else
     proven "the built-in command line leaves thalyx.pantalla unanswered, so a machine comes up on the screen and \`thalyx.pantalla=no\` is the way back from one that cannot"
+fi
+
+step "42. a verb that stops to ask can be answered, and the same answer means the same thing on both faces"
+
+# `crates/thalyx-cli/src/ask.rs`. The eight places in Thalyx that stop and ask a
+# human used to write the asking out by hand, and it cost two things at once:
+# they drifted about what a yes is, and none of them worked on the display,
+# because under `thalyx-capture` descriptor 0 is `/dev/null` and every one of
+# them found no terminal and refused. On the face the machine boots into,
+# `instalar`, `ejecutar`, `observar` and `instalar-en` could be read about and
+# not finished.
+#
+# What the integration tests already prove, in a container: the yes-set is one
+# set on both faces, a pipe still cannot authorise anything, and the context is
+# printed before the refusal so the display has something to draw. What is here
+# is the part they must not do — see the long note at the foot of
+# `tests/a_question_has_one_answer.rs`. Proving that `instalar-en` asks for the
+# disk's path and takes no `sí` means reaching a question only a disk the verb
+# agrees to erase can raise, and a cargo test that names a real disk is a test
+# that erases the machine the day the thing it tests is broken. Here the disk is
+# a file this script made.
+
+ASK_IMAGE="$WORK/ask-disk.img"
+ASK_KERNEL="$WORK/ask-kernel.bin"
+ASK_DEVICE=""
+if command -v losetup > /dev/null 2>&1; then
+    # Big enough for the verb to get as far as asking: it refuses anything under
+    # 673185792 bytes before it says a word, which is how the first version of
+    # this check passed while measuring nothing.
+    dd if=/dev/zero of="$ASK_IMAGE" bs=1M count=768 status=none 2>/dev/null || true
+    dd if=/dev/zero of="$ASK_KERNEL" bs=1M count=2 status=none 2>/dev/null || true
+    ASK_DEVICE="$(losetup -f --show "$ASK_IMAGE" 2>/dev/null || true)"
+fi
+
+if [ -z "$ASK_DEVICE" ]; then
+    GAP="no loop device could be made, so nothing asked an install for a confirmation"
+    if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    ASK_ROOT="$WORK/ask-face"
+    mkdir -p "$ASK_ROOT"
+
+    # `thalyx install --kernel` and not the session's `instalar-en`, and the
+    # difference is what makes this stage measure anything at all. Inside the
+    # session the verb finds the kernel on the medium this machine booted from,
+    # and on a machine that did not boot from a Thalyx medium it refuses for
+    # *that* — before it ever asks. Naming a kernel is the one way to reach the
+    # question on a machine that is not itself a Thalyx machine.
+    #
+    # A terminal of Thalyx's own making, because the confirmer refuses a stdin
+    # that is not one — which is the other half of what this stage measures.
+    printf 'sí\n' \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-yes.log" 2>&1 || true
+    printf '%s\n' "$ASK_DEVICE" \
+        | "$THALYX" dev pty -- "$THALYX" install --kernel "$ASK_KERNEL" \
+            --root "$ASK_ROOT" "$ASK_DEVICE" > "$WORK/ask-path.log" 2>&1 || true
+
+    losetup -d "$ASK_DEVICE" 2>/dev/null || true
+    rm -f "$ASK_IMAGE" "$ASK_KERNEL"
+
+    # The precondition, checked rather than assumed. Without it a verb that
+    # refused before asking would pass both columns below for free — which is
+    # exactly what happened to the cargo test this stage replaced, twice: once
+    # on a device that did not exist, and once on a machine with no medium to
+    # take a kernel from.
+    #
+    # And the marker is the sentence the confirmer itself prints, not `that is
+    # not`, which was the first thing written here and which matches `That is
+    # not the same as not looking` in the output of `discos` three lines up.
+    if ! grep -q "Type the disk's path to confirm" "$WORK/ask-yes.log" 2>/dev/null; then
+        GAP="the install never got as far as asking on this machine, so neither column below measures anything"
+        if [ "${THALYX_REQUIRE_LOOP_DEVICES:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        excerpt "$WORK/ask-yes.log"
+    elif ! grep -q 'the install was not confirmed' "$WORK/ask-yes.log" 2>/dev/null; then
+        failed "\`sí\` authorised a verb that writes a partition table over a whole disk; see $WORK/ask-yes.log"
+        excerpt "$WORK/ask-yes.log"
+    elif grep -q 'the install was not confirmed' "$WORK/ask-path.log" 2>/dev/null; then
+        # The control. Without it, a confirmer that refused everything would pass
+        # the column above while no verb on this machine could ever be finished —
+        # a policy that breaks everything looks like one that works.
+        failed "the disk's own path did not authorise it either, so the question cannot be answered at all; see $WORK/ask-path.log"
+        excerpt "$WORK/ask-path.log"
+    else
+        proven "the install asks for the disk's path, refuses a \`sí\`, and accepts the path — asked on a terminal Thalyx made and a disk this script made"
+    fi
+fi
+
+# The half that only his hardware answers. There is nothing to draw a question
+# on here, and no keyboard behind it, so this is named rather than inferred —
+# rule 10, and the reason the count of this run is not the count of a run on the
+# machine that has a display.
+if [ ! -e /dev/fb0 ]; then
+    GAP="a confirmation drawn on /dev/fb0 and answered on a real keyboard — this machine has no framebuffer, so the display's half of \`ask\` is untested here and can only be seen by booting the image"
+    if [ "${THALYX_REQUIRE_DISPLAY:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    unproven "this machine has /dev/fb0, and nothing here yet drives a drawn confirmation to an answer without taking the console to do it"
+fi
+
+step "43. the machine can be typed on in the language it speaks"
+
+# `crates/thalyx-term/src/keymap.rs`. Found by asking what a whole day inside
+# Thalyx would need: the kernel carries one keymap compiled into it and it is US
+# QWERTY, the program that replaces it everywhere else is `loadkeys`, and the
+# image is the kernel and one program. So on a Thalyx machine the key a Latin
+# American keyboard prints `ñ` on sent `;`, and `á` could not be typed at all —
+# an operating system whose every sentence is in Spanish, in which Spanish could
+# not be written. A `grep` of the repository for `keymap` came back empty.
+#
+# **This stage is rule 11 and rule 5 at once.** The keymap is a machine-global
+# switch with no owner — `THALYX_ROOT` isolates a store and nothing else — so a
+# stage that loaded a layout onto the console of whatever machine is running
+# this would leave a keyboard nobody asked for, and it would be the keyboard the
+# person reading this verdict is typing on. It therefore **reads and never
+# writes**, and everything about writing is asked of the rehearsal, which is the
+# same tables and the same code with the ioctl left out.
+#
+# And what it reads, it reads with `KDGKBENT` through Thalyx's own `teclado` —
+# which is not Thalyx's record of what it sent, it is the kernel answering.
+
+KEYBOARD_ROOT="$WORK/keyboard"
+mkdir -p "$KEYBOARD_ROOT"
+
+# The rehearsal, which touches nothing. Its `would_be` column is the claim: the
+# layout this machine would load puts `ñ` on the key a US map puts `;` on.
+printf 'structured on\nensayo teclado latino\nensayo teclado ingles\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session > "$WORK/keyboard-rehearse.log" 2>&1
+
+KEYBOARD_SAYS=$(grep '^{' "$WORK/keyboard-rehearse.log" | python3 -c '
+import json, sys
+
+seen = {}
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") != "rehearse" or said.get("verb") != "keyboard":
+        continue
+    keys = {entry["keycode"]: entry["would_be"] for entry in said.get("keys", [])}
+    seen[said.get("layout")] = (keys, said.get("changed_anything"))
+
+latin, kernel = seen.get("la-latin1"), seen.get("defkeymap")
+if not latin or not kernel:
+    print("missing")
+elif latin[1] is not False or kernel[1] is not False:
+    print("rehearsal_changed_something")
+elif latin[0].get("39") != "ñ" and latin[0].get(39) != "ñ":
+    print("no_entyay")
+elif kernel[0].get("39") != ";" and kernel[0].get(39) != ";":
+    print("no_semicolon")
+else:
+    print("ok")
+' 2>/dev/null)
+
+case "${KEYBOARD_SAYS:-missing}" in
+    ok)
+        proven "the layout this machine would load puts \`ñ\` on the key the kernel's own map puts \`;\` on, and rehearsing it changes nothing"
+        ;;
+    rehearsal_changed_something)
+        failed "\`ensayo teclado\` reported that it changed the machine, which is not a rehearsal"
+        ;;
+    no_entyay)
+        failed "the Latin American layout this machine carries has no \`ñ\` on the key that carries one; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    no_semicolon)
+        # Rule 4: without this column, «the layout has an ñ» would pass against a
+        # table that was the same everywhere, and would prove nothing about the
+        # machine needing to be changed at all.
+        failed "the kernel's own map does not put \`;\` on that key here, so the defect this stage is about is not the defect described"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+    *)
+        failed "\`ensayo teclado\` answered nothing a program can read; see $WORK/keyboard-rehearse.log"
+        excerpt "$WORK/keyboard-rehearse.log"
+        ;;
+esac
+
+# And what the kernel says is on this console right now — which on the machine
+# running this is Fedora's, loaded by its own `loadkeys`, and is nobody's
+# business to change. What is checked is that Thalyx can *ask*, and that it
+# tells the two failures apart.
+KEYBOARD_READ=$(printf 'structured on\nteclado\nsalir\n' \
+    | "$THALYX" --root "$KEYBOARD_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "keyboard":
+        read = said.get("read") or {}
+        print("read" if read.get("ok") else "unreadable")
+        break
+' 2>/dev/null)
+
+case "${KEYBOARD_READ:-nothing}" in
+    read)
+        proven "\`teclado\` asks the kernel what is on this console and gets an answer, without writing to it"
+        ;;
+    unreadable)
+        # Not a failure: `dev/verify.sh` is commonly run over ssh or from a
+        # terminal emulator, where `/dev/console` is not the keyboard and the
+        # ioctl is refused. Saying that is the honest answer — rule 10 — and the
+        # thing being measured is that Thalyx says it too.
+        GAP="this console does not answer keymap questions (a terminal emulator or ssh, not the machine's own console), so nothing here read a real keyboard"
+        if [ "${THALYX_REQUIRE_KEYBOARD_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+        ;;
+    *)
+        failed "\`teclado\` answered nothing a program can read"
+        ;;
+esac
+
+# The half only the image answers. Loading a layout is the one change in this
+# program whose failure is a machine that looks healthy and types the wrong
+# letters, and nothing here may try it — see the note at the top of this stage.
+GAP="a layout actually loaded onto a machine's own console — that is a machine-global switch with no owner (rule 11), so it is seen by booting the image and typing \`ñ\`, never by this script"
+unproven "$GAP"
+
+step "44. a module gets the memory it asked for and was granted, and nothing more"
+
+# Cesar, 2026-08-28. `module_standard` capped every module at a gigabyte and no
+# manifest could ask for more, so the first real module Thalyx is being built to
+# run — an inference engine, whose 31 system calls this confinement already
+# allows — could not run. Now the manifest asks and the human approves, which is
+# the shape every other thing a module wants already has.
+#
+# The unit tests prove the arithmetic and the refusals. What only a machine can
+# answer is whether the number reaches the kernel: `memory.max` is written by a
+# cgroup controller that has to be delegated, and this container's is not.
+
+MEMORY_ROOT="$WORK/memory-grant"
+mkdir -p "$MEMORY_ROOT"
+"$THALYX" --root "$MEMORY_ROOT" store status > /dev/null 2>&1
+
+# What an install compares a request against. Asked of Thalyx, because that is
+# what the install asks — a stage that read `/proc/meminfo` itself would be
+# checking its own arithmetic rather than the machine's.
+# `memoria` in the session and not `thalyx memory`, which is the agent's memory
+# between sessions — two different things with one word, found by running the
+# first version of this line.
+MEMORY_TOTAL=$(printf 'structured on\nmemoria\nsalir\n' \
+    | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+    | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "memory" and said.get("total"):
+        print(said["total"])
+        break
+' 2>/dev/null)
+if [ -n "${MEMORY_TOTAL:-}" ] && [ "$MEMORY_TOTAL" -gt 0 ] 2>/dev/null; then
+    proven "this machine reports how much memory it has ($((MEMORY_TOTAL / 1024 / 1024)) MiB), which is the number an install refuses a larger request against"
+else
+    failed "\`memoria\` did not report a total, so an install has nothing to compare a request against"
+fi
+
+# The limit a run would actually be confined to, read out of the rehearsal —
+# which is the run's own arithmetic stopped one line before the program exists,
+# not a second copy of it. Needs a module installed, and this stage does not
+# install one: `exit_criterion` and §20 already do that, and a stage that
+# installed a second module would be measuring its own fixture.
+MEMORY_MODULE=$("$THALYX" --root "$MEMORY_ROOT" module list 2>/dev/null \
+    | awk 'NR==1 && $1 !~ /^no/ {print $1}')
+if [ -z "$MEMORY_MODULE" ]; then
+    GAP="the memory limit a real run would be confined to — no module is installed under this stage's own store, so there was nothing to rehearse"
+    unproven "$GAP"
+elif [ "${HAVE_CONTROLLERS:-0}" != 1 ]; then
+    GAP="a granted memory limit written into a cgroup — this machine does not delegate the memory controller, so the number could be computed and not applied"
+    if [ "${THALYX_REQUIRE_CONTROLLER_TESTS:-0}" = 1 ]; then failed "$GAP"; else unproven "$GAP"; fi
+else
+    MEMORY_SAYS=$(printf 'structured on\nensayo correr %s\nsalir\n' "$MEMORY_MODULE" \
+        | "$THALYX" --root "$MEMORY_ROOT" session 2>/dev/null \
+        | grep '^{' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        said = json.loads(line)
+    except ValueError:
+        continue
+    if said.get("op") == "rehearse" and said.get("verb") == "run":
+        print(said.get("isolation") or "unsaid")
+        break
+' 2>/dev/null)
+    case "$MEMORY_SAYS" in
+        *memory*MiB*)
+            proven "a run's rehearsal names the memory limit it would be confined to: $MEMORY_SAYS"
+            ;;
+        *)
+            failed "the rehearsal does not say what memory limit a run would get, so a grant cannot be checked from outside the code that applies it: ${MEMORY_SAYS:-nothing}"
+            ;;
+    esac
+fi
+
+# The half this stage does not answer. §45 is where the engine actually runs.
+unproven "an inference engine running inside the granted limit — §45 runs the engine, and reads no cgroup counter while it does"
+
+step "45. the engine is a module, and a real inference goes through it"
+
+# Cesar's decree of 2026-08-28, and the one stage that closes the chain the
+# whole agent was built for: a sentence reaches a model, llama.cpp infers inside
+# the module system, and a contract comes back to Thalyx.
+#
+# Everything below the seam is what the container could never check. The
+# workspace tests drive `thalyx_agent::llama::Engine` against stand-in programs
+# — which is rule 8 done properly and is still not this: what is asked here is
+# whether a *real* llama.cpp, packed as a signed module and confined under
+# `module_standard`, can read a prompt out of a granted directory, load real
+# weights, obey the grammar, and print an answer Thalyx recognises.
+#
+# Two inputs, both named rather than searched for:
+#
+#   THALYX_ENGINE        a `thalyx-engine`. `dev/build-engine.sh` builds one.
+#                        Since 2026-08-28 that is the resident engine and not
+#                        `llama-completion`: same llama.cpp, same tag, same
+#                        flags, shaped as a program that loads the GGUF once and
+#                        then answers framed requests on a pipe. §46 is where
+#                        that residency is measured; this stage measures that a
+#                        real inference goes through the module system at all.
+#   THALYX_ENGINE_MODEL  a GGUF. Any real one; `dev/tiny-model.py` makes a
+#                        two-layer one that exercises the engine and answers
+#                        nothing, which is enough for everything below except
+#                        the last check, and that check says so.
+#
+# THALYX_ENGINE_DATA moves the granted directories out of `/opt/thalyx`. That is
+# rule 11: this machine has a real store at that path, and a stage that made
+# directories inside it would have changed the machine it was measuring.
+
+ENGINE_BIN="${THALYX_ENGINE:-$(command -v thalyx-engine || true)}"
+ENGINE_GGUF="${THALYX_ENGINE_MODEL:-}"
+ENGINE_GAP=""
+
+if [ -z "$ENGINE_BIN" ]; then
+    ENGINE_GAP="a real inference through the engine module — there is no thalyx-engine on this machine. Build one: dev/build-engine.sh, then THALYX_ENGINE=<path>"
+elif [ -z "$ENGINE_GGUF" ] || [ ! -f "$ENGINE_GGUF" ]; then
+    ENGINE_GAP="a real inference through the engine module — no weights. Set THALYX_ENGINE_MODEL to a GGUF; dev/tiny-model.py builds a small real one"
+fi
+
+if [ -n "$ENGINE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_ENGINE_TESTS:-0}" = 1 ]; then failed "$ENGINE_GAP"; else unproven "$ENGINE_GAP"; fi
+else
+    # The first claim, and it is checked before anything is run: there is no
+    # dynamic loader inside Thalyx, so an engine that wants one is an engine
+    # that dies at execve on the machine and works perfectly here. Rule 12 —
+    # the binary that gets verified has to be the binary that ships.
+    if readelf -lW "$ENGINE_BIN" 2>/dev/null | grep -q INTERP; then
+        failed "$ENGINE_BIN wants a dynamic loader, and there is no libc inside Thalyx — it would fail at execve on the machine and pass every check here"
+    elif readelf -dW "$ENGINE_BIN" 2>/dev/null | grep -q NEEDED; then
+        failed "$ENGINE_BIN needs shared libraries, which the machine does not have"
+    else
+        proven "the engine is a static program with no interpreter and no shared libraries, which is what the machine can execute"
+    fi
+
+    ENGINE_ROOT="$WORK/engine-store"
+    ENGINE_DATA="$WORK/engine-data"
+    mkdir -p "$ENGINE_ROOT" "$ENGINE_DATA/models" "$ENGINE_DATA/run" "$WORK/engine-pack/bin"
+    cp "$ENGINE_BIN" "$WORK/engine-pack/bin/thalyx-engine"
+    cp "$ENGINE_GGUF" "$ENGINE_DATA/models/model.gguf"
+
+    "$THALYX" dev keygen --out "$WORK/engine.key" > /dev/null 2>&1
+    cat > "$WORK/engine-manifest.toml" <<TOML
+format_version = 1
+id             = "dev.thalyx.engine"
+name           = "llama.cpp"
+version        = "1.0.0"
+description    = "The inference engine, packed the way image/Makefile packs it"
+license        = "MIT"
+publisher_key  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+distribution   = "prebuilt"
+
+[artifact]
+hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+size = 0
+
+[requires]
+thalyx = ">=0.1.0"
+
+[[permissions]]
+resource = "$ENGINE_DATA/models"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "$ENGINE_DATA/run"
+action   = "read"
+type     = "persistent"
+
+[[permissions]]
+resource = "memory"
+action   = "4GiB"
+type     = "persistent"
+
+[entrypoints]
+run = "bin/thalyx-engine"
+TOML
+
+    if ! "$THALYX" dev pack "$WORK/engine-pack" --manifest "$WORK/engine-manifest.toml"             --key "$WORK/engine.key" --out "$WORK/engine.thmod" > "$WORK/engine-pack.log" 2>&1; then
+        failed "the engine could not be packed into a signed module"
+        excerpt "$WORK/engine-pack.log"
+    elif ! "$THALYX" --root "$ENGINE_ROOT" module install "$WORK/engine.thmod" --yes             > "$WORK/engine-install.log" 2>&1; then
+        failed "the engine module would not install"
+        excerpt "$WORK/engine-install.log"
+    else
+        proven "a real llama.cpp packs into a signed module and installs, with the 4 GiB its manifest asks for"
+
+        "$THALYX" --root "$ENGINE_ROOT" agent model use ligera \
+            --weights "$ENGINE_DATA/models/model.gguf" \
+            --module dev.thalyx.engine > /dev/null 2>&1
+
+        # Confined first, always. Falling back is a weaker claim and it says so
+        # rather than passing quietly — rule 3.
+        ENGINE_CONFINED=1
+        THALYX_ENGINE_DATA="$ENGINE_DATA" "$THALYX" --root "$ENGINE_ROOT" \
+            agent model check "crea una carpeta llamada pruebas" > "$WORK/engine-run.log" 2>&1 \
+            || true
+        if grep -q "the kernel policy map is not loaded" "$WORK/engine-run.log" 2>/dev/null; then
+            ENGINE_CONFINED=0
+            THALYX_ENGINE_DATA="$ENGINE_DATA" THALYX_ENGINE_UNCONFINED=1 \
+                "$THALYX" --root "$ENGINE_ROOT" agent model check "crea una carpeta llamada pruebas" \
+                > "$WORK/engine-run.log" 2>&1 || true
+        fi
+
+        # What counts as the engine having run. Not "the answer was right" —
+        # a two-layer model answers nothing and is still a complete test of
+        # everything between the session and llama.cpp. What is checked is that
+        # Thalyx got *the engine's own output* back: either a proposal it
+        # parsed, or one of the two diagnoses that can only be reached by
+        # reading a completion that came through the marker.
+        if grep -q "operation" "$WORK/engine-run.log" 2>/dev/null \
+           || grep -q "began the object the grammar describes" "$WORK/engine-run.log" 2>/dev/null; then
+            if [ "$ENGINE_CONFINED" = 1 ]; then
+                proven "llama.cpp ran as a confined module, read the prompt out of a granted directory, and its output came back through the grammar into Thalyx"
+            else
+                unproven "the engine ran and answered, and it ran UNCONFINED — this machine could not enforce a policy, so what §45 measured is the plumbing and not the confinement"
+            fi
+        else
+            failed "the engine module did not produce an answer Thalyx could read"
+            excerpt "$WORK/engine-run.log" 25
+        fi
+
+        # The last link, and the only one a two-layer model cannot stand in for.
+        # A tiny model produces a grammatical object with nothing in it; whether
+        # a real Qwen2.5 turns a Spanish sentence into the right verb is a
+        # question about the model, and `thalyx agent bench` is what asks it.
+        unproven "that the configured tier answers an ordinary sentence with the right verb — that is a measurement of the model, not of this machine: \`thalyx agent bench\`"
+    fi
+fi
+
+step "46. the weights are loaded once, and the second sentence does not pay for them"
+
+# The claim Cesar made the shape of on 2026-08-28: *no me digas "persistent"
+# porque existe un objeto Rust persistente mientras el proceso sigue muriendo*.
+#
+# So what is asked here is a question about processes, and it is asked of one
+# `thalyx session` that is given two sentences — because the engine lives inside
+# a session's lifetime, and two `agent model check` invocations are two Thalyx
+# processes and therefore two engines however residency works.
+#
+# The evidence is the line the session prints under every proposal: `motor
+# <pid> ▪ frío|tibio ▪ <s>`. Two of them naming the same pid is one process
+# answering both sentences; the second saying `tibio` is that process not having
+# loaded the weights again. Both halves are checked, because either alone can
+# be true of something else — a machine that never restarted anything would
+# also print one pid, and one that reported `tibio` from a counter nobody set
+# would print it whatever happened.
+#
+# It reuses §45's store, engine and weights, so a machine that could not do §45
+# says so once rather than twice.
+
+if [ -n "$ENGINE_GAP" ]; then
+    if [ "${THALYX_REQUIRE_ENGINE_TESTS:-0}" = 1 ]; then
+        failed "the resident engine — $ENGINE_GAP"
+    else
+        unproven "that the weights are loaded once for two sentences — $ENGINE_GAP"
+    fi
+elif [ ! -d "${ENGINE_ROOT:-/nonexistent}" ]; then
+    unproven "that the weights are loaded once for two sentences — §45 never got as far as an installed engine module"
+else
+    RESIDENT_HOME="$WORK/resident-home"
+    rm -rf "$RESIDENT_HOME"
+    mkdir -p "$RESIDENT_HOME"
+
+    # Unconfined only if §45 found it had to be. The confinement is established
+    # by the same call that starts the resident — `run::start` — so on a machine
+    # that can enforce, this measures both at once.
+    RESIDENT_ENV=(env "THALYX_ENGINE_DATA=$ENGINE_DATA" "HOME=$RESIDENT_HOME")
+    if [ "${ENGINE_CONFINED:-1}" != 1 ]; then
+        RESIDENT_ENV+=("THALYX_ENGINE_UNCONFINED=1")
+    fi
+
+    printf 'cd %s\ncrea una carpeta llamada primera\ncrea una carpeta llamada segunda\nsalir\n' \
+        "$RESIDENT_HOME" \
+        | (cd "$RESIDENT_HOME" && "${RESIDENT_ENV[@]}" "$THALYX" --root "$ENGINE_ROOT" session) \
+        > "$WORK/resident.log" 2>&1 || true
+
+    ENGINE_PIDS=$(grep -o 'motor [0-9]*' "$WORK/resident.log" 2>/dev/null | awk '{print $2}')
+    DISTINCT=$(printf '%s\n' "$ENGINE_PIDS" | grep -c '[0-9]' || true)
+    UNIQUE=$(printf '%s\n' "$ENGINE_PIDS" | grep '[0-9]' | sort -u | wc -l)
+
+    if [ "$DISTINCT" -lt 2 ]; then
+        # A tiny model answers nothing the grammar can turn into a verb, so the
+        # cost line may never be printed. That is not a failure of residency and
+        # is not reported as one — rule 10.
+        unproven "that the weights are loaded once for two sentences — the session printed $DISTINCT engine lines, which means the model did not produce two proposals. With a real Qwen2.5 this is the stage that answers it"
+        excerpt "$WORK/resident.log" 25
+    elif [ "$UNIQUE" -ne 1 ]; then
+        failed "two sentences were answered by $UNIQUE different engine processes — the weights were loaded again"
+        excerpt "$WORK/resident.log" 25
+    elif ! printf '%s' "$(grep -o 'motor [0-9]* ▪ [a-zíó]*' "$WORK/resident.log" | tail -1)" | grep -q 'tibio'; then
+        failed "the second sentence was answered by the same process and still reported a cold load, so what `tibio` means is not what happened"
+        excerpt "$WORK/resident.log" 25
+    else
+        proven "two sentences went through one engine process, and the second one did not load the weights: $(printf '%s' "$ENGINE_PIDS" | tr '\n' ' ')"
+    fi
+fi
+
+# The half no automated stage can answer: the screen. Whether the frame keeps
+# composing while the model thinks is a claim about pixels on a display nobody
+# is looking at here.
+unproven "that the screen keeps drawing while an inference runs — boot it: make -C image run, and watch the spinner and the clock while it answers"
+
+step "47. a programming agent outside the machine gets a workspace and cannot leave it"
+
+# `vault/07-Adopcion-y-Fases/Agentes-Externos.md`. The claim is a boundary, and a
+# boundary is checked by trying to cross it — with a control beside every denial,
+# because without one a refusal and an operation that never worked look
+# identical (rule 4).
+#
+# The transport here is a UNIX socket and not virtio-serial. That is the same
+# `bridge::serve` over a different pair of descriptors, and what a socket cannot
+# prove is that QEMU carries the bytes — which is §48, and needs a boot.
+
+AGENT_WORK="$WORK/agent"
+rm -rf "$AGENT_WORK"
+mkdir -p "$AGENT_WORK/project/src" "$AGENT_WORK/store"
+printf 'mod greeting;\nfn main() { greeting::greet("x"); }\n' > "$AGENT_WORK/project/src/main.rs"
+printf 'pub fn greet(who: &str) { println!("{who}"); }\n' > "$AGENT_WORK/project/src/greeting.rs"
+printf 'not the agent\n' > "$AGENT_WORK/secret.txt"
+ln -sf /etc "$AGENT_WORK/project/out"
+
+AGENT_SOCK="$AGENT_WORK/agent.sock"
+"$THALYX" --root "$AGENT_WORK/store" bridge \
+    --workspace "$AGENT_WORK/project" --listen "$AGENT_SOCK" \
+    > "$WORK/agent-bridge.log" 2>&1 &
+AGENT_BRIDGE=$!
+
+# Waited for rather than slept on. A fixed sleep is either slower than it needs
+# to be or shorter than a loaded machine needs, and this suite has paid for that
+# before.
+for _ in $(seq 1 100); do
+    [ -S "$AGENT_SOCK" ] && break
+    sleep 0.05
+done
+
+if [ ! -S "$AGENT_SOCK" ]; then
+    failed "the agent bridge never opened a socket"
+    excerpt "$WORK/agent-bridge.log"
+else
+    python3 - "$AGENT_SOCK" "$AGENT_WORK/project" > "$WORK/agent-probe.json" 2>&1 <<'PROBE' || true
+import json, socket, struct, sys
+
+socket_path, workspace = sys.argv[1], sys.argv[2]
+sock = socket.socket(socket.AF_UNIX)
+sock.settimeout(20)
+sock.connect(socket_path)
+wire = sock.makefile("rwb")
+
+def read():
+    header = wire.read(4)
+    return json.loads(wire.read(struct.unpack("<I", header)[0]))
+
+def ask(verb, arguments):
+    body = json.dumps({"type": "request", "id": verb, "verb": verb,
+                       "arguments": arguments}).encode()
+    wire.write(struct.pack("<I", len(body)) + body)
+    wire.flush()
+    return read()
+
+out = {"hello": read(), "tried": {}}
+# Every one of these is a pair: the thing that must work, and the thing beside
+# it that must not. A run where the whole column is refused is a broken bridge
+# and must not read as a working boundary.
+for name, verb, arguments in [
+    ("inside",        "read", ["src/main.rs"]),
+    ("absolute_out",  "read", ["/etc/passwd"]),
+    ("dot_dot_out",   "read", ["../secret.txt"]),
+    ("symlink_out",   "read", ["out/passwd"]),
+    ("index",         "index_build", ["."]),
+    ("symbol",        "symbol", ["greet"]),
+    ("dependents",    "depended_on_by", ["src/greeting.rs"]),
+    ("power_off",     "power_off", []),
+    ("install_onto",  "install_onto", ["/dev/sda"]),
+    ("run",           "run", ["dev.thalyx.greeter"]),
+    ("rehearse_out",  "rehearse", ["rm", "/etc/passwd"]),
+]:
+    answer = ask(verb, arguments)
+    out["tried"][name] = {
+        "type": answer.get("type"),
+        "word": answer.get("word"),
+        "ok": (answer.get("answer") or {}).get("ok"),
+    }
+print(json.dumps(out))
+PROBE
+
+    AGENT_OUT=$(tail -1 "$WORK/agent-probe.json")
+    verdict() {
+        printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+try:
+    tried = json.load(sys.stdin)['tried']
+except Exception:
+    print('unreadable'); raise SystemExit
+print(json.dumps(tried.get('$1', {})))
+" 2>/dev/null
+    }
+
+    if ! printf '%s' "$AGENT_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        failed "the agent bridge did not answer the probe"
+        excerpt "$WORK/agent-probe.json"
+    else
+        # The controls first, so that a bridge which refuses everything cannot
+        # be reported as a boundary that works.
+        ALLOWED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+print(sum(1 for name in ('inside', 'index', 'symbol', 'dependents')
+          if tried[name]['type'] == 'response' and tried[name]['ok'] is True))")
+        if [ "$ALLOWED" != 4 ]; then
+            failed "only $ALLOWED of the 4 things an agent must be able to do worked; the denials below mean nothing"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "an external agent reads, indexes, resolves a symbol and asks for dependents inside its workspace"
+        fi
+
+        REFUSED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+bad = [name for name in ('absolute_out', 'dot_dot_out', 'symlink_out', 'rehearse_out')
+       if tried[name].get('word') != 'outside_workspace']
+print(','.join(bad))")
+        if [ -n "$REFUSED" ]; then
+            failed "an external agent reached outside its workspace: $REFUSED"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "an absolute path, a \`..\`, a symlink out and a rehearsal of one are all refused as outside_workspace"
+        fi
+
+        UNEXPOSED=$(printf '%s' "$AGENT_OUT" | python3 -c "
+import json, sys
+tried = json.load(sys.stdin)['tried']
+bad = [name for name in ('power_off', 'install_onto', 'run')
+       if tried[name].get('word') != 'not_exposed']
+print(','.join(bad))")
+        if [ -n "$UNEXPOSED" ]; then
+            failed "a verb that changes the machine is reachable from outside it: $UNEXPOSED"
+            excerpt "$WORK/agent-probe.json" 5
+        else
+            proven "apagar, instalar-en and correr are not reachable from outside the machine"
+        fi
+
+        # The journal, which is what a person has afterwards. Checked with
+        # something that is not the bridge.
+        if [ -f "$AGENT_WORK/store/journal.jsonl" ] \
+            && grep -q '"operation":"external_agent"' "$AGENT_WORK/store/journal.jsonl" \
+            && grep -q '"origin":"untrusted_content"' "$AGENT_WORK/store/journal.jsonl"; then
+            proven "what came from outside the machine is in the journal, marked as untrusted in origin"
+        else
+            failed "an external agent's refused escape left no trace in the journal"
+        fi
+    fi
+    kill "$AGENT_BRIDGE" 2>/dev/null || true
+    wait "$AGENT_BRIDGE" 2>/dev/null || true
+fi
+
+# The half a socket cannot answer, and it is the one the whole delivery rests on.
+if [ "$HAVE_BTRFS" = 1 ]; then
+    # A real subvolume, so `intento` has something to snapshot. This is the only
+    # place the reversible boundary an agent is sold on can actually be checked.
+    AGENT_SUB="$BTRFS_SCRATCH/agent-workspace"
+    rm -rf "$AGENT_SUB"
+    if btrfs subvolume create "$AGENT_SUB" > "$WORK/agent-subvol.log" 2>&1; then
+        mkdir -p "$AGENT_SUB/src"
+        printf 'fn a() {}\n' > "$AGENT_SUB/src/lib.rs"
+        BEFORE=$(find "$AGENT_SUB" -type f -not -path '*/.snapshots/*' -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum)
+
+        AGENT_SOCK2="$AGENT_WORK/agent2.sock"
+        rm -rf "$AGENT_WORK/store2"; mkdir -p "$AGENT_WORK/store2"
+        "$THALYX" --root "$AGENT_WORK/store2" bridge \
+            --workspace "$AGENT_SUB" --listen "$AGENT_SOCK2" \
+            > "$WORK/agent-bridge2.log" 2>&1 &
+        AGENT_BRIDGE2=$!
+        for _ in $(seq 1 100); do [ -S "$AGENT_SOCK2" ] && break; sleep 0.05; done
+
+        python3 - "$AGENT_SOCK2" > "$WORK/agent-attempt.json" 2>&1 <<'ATTEMPT' || true
+import json, socket, struct, sys
+sock = socket.socket(socket.AF_UNIX); sock.settimeout(60); sock.connect(sys.argv[1])
+wire = sock.makefile("rwb")
+def read():
+    return json.loads(wire.read(struct.unpack("<I", wire.read(4))[0]))
+def ask(verb, arguments):
+    body = json.dumps({"type": "request", "id": verb, "verb": verb,
+                       "arguments": arguments}).encode()
+    wire.write(struct.pack("<I", len(body)) + body); wire.flush(); return read()
+read()
+steps = {
+    "begin":    ask("attempt", ["empezar", "a change"]),
+    "made":     ask("make_file", ["src/new.rs"]),
+    "edited":   ask("edit", ["src/lib.rs", "poner", "1", "/// changed"]),
+    "removed":  ask("remove", ["src/lib.rs"]),
+    "changed":  ask("attempt", []),
+    "asked":    ask("attempt", ["abandonar"]),
+    "abandoned": ask("attempt", ["abandonar", "si"]),
+    "after":    ask("attempt", []),
+}
+print(json.dumps(steps))
+ATTEMPT
+        kill "$AGENT_BRIDGE2" 2>/dev/null || true
+        wait "$AGENT_BRIDGE2" 2>/dev/null || true
+
+        AFTER=$(find "$AGENT_SUB" -type f -not -path '*/.snapshots/*' -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum)
+        ATTEMPT_OUT=$(tail -1 "$WORK/agent-attempt.json")
+
+        BEGAN=$(printf '%s' "$ATTEMPT_OUT" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['begin'].get('answer',{}).get('began'))
+except Exception: print('unreadable')" 2>/dev/null)
+
+        if [ "$BEGAN" != "True" ]; then
+            failed "an external agent could not open an attempt on a real subvolume"
+            excerpt "$WORK/agent-attempt.json" 5
+        elif [ "$BEFORE" != "$AFTER" ]; then
+            failed "abandoning an attempt did not put the workspace back byte for byte"
+            excerpt "$WORK/agent-attempt.json" 5
+        else
+            # Both halves. The tree coming back is the claim; the first
+            # `abandonar` answering with the cost and doing nothing is the
+            # trusted path, and an abandon that went ahead on the first word
+            # would also have passed the hash check.
+            ASKED=$(printf '%s' "$ATTEMPT_OUT" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['asked'].get('answer',{}).get('done'))
+except Exception: print('unreadable')" 2>/dev/null)
+            if [ "$ASKED" = "True" ]; then
+                failed "the first \`abandonar\` went ahead without being confirmed"
+            else
+                proven "an agent began an attempt, made, edited and deleted files, and abandoning put every byte back"
+            fi
+        fi
+        rm -rf "$AGENT_SUB"
+    else
+        unproven "an attempt through the bridge — a subvolume could not be made at $BTRFS_SCRATCH"
+        excerpt "$WORK/agent-subvol.log" 5
+    fi
+else
+    unproven "that an agent can begin an attempt and abandon it back to the byte — this machine has no Btrfs, so there is nothing to snapshot"
+fi
+
+step "48. the agent channel is a device the machine finds, and QEMU is the only thing that can put one there"
+
+# What no host stage can answer. `bridge::port` looks in
+# `/sys/class/virtio-ports` for a port named `org.thalyx.agent`; the search is
+# tested against a directory laid out like sysfs, which proves the search and
+# not the driver.
+#
+# What is checked *here* is the one thing that would silently break it: the two
+# places the port's name is written must agree. The Makefile puts it on the QEMU
+# command line and the binary reads it out of sysfs, and a machine where those
+# disagree comes up with a channel nobody is listening on and no error anywhere.
+PORT_NAME=$(grep -o 'PORT_NAME: &str = "[^"]*"' "$ROOT/crates/thalyx-cli/src/bridge.rs" \
+    | sed 's/.*"\(.*\)"/\1/')
+if [ -z "$PORT_NAME" ]; then
+    failed "the agent port has no name in crates/thalyx-cli/src/bridge.rs"
+elif grep -q "name=$PORT_NAME" "$ROOT/image/Makefile"; then
+    proven "the port the machine looks for and the port QEMU creates are both \`$PORT_NAME\`"
+else
+    failed "image/Makefile does not create a virtserialport named \`$PORT_NAME\`, so a machine booted with run-agent would find no channel"
+fi
+
+if grep -qx 'CONFIG_VIRTIO_CONSOLE=y' "$ROOT/image/thalyx.config"; then
+    proven "the kernel is configured with the virtio-serial driver the channel needs"
+else
+    failed "CONFIG_VIRTIO_CONSOLE is not in image/thalyx.config, so no kernel built from it can have an agent channel"
+fi
+
+unproven "that virtio-serial actually carries the protocol — that needs a boot: make -C image agent PROJECT=<a project>, then dev/agent-connect.sh"
+
+step "49. the index finds a dependent that reaches the code through a field, and does not invent one"
+
+# The defect this stage is about was found by running the system, which is where
+# they all come from. Asked what depends on `src/store.rs`, the index named the
+# two files that write `use crate::store::…` and missed a third that reaches the
+# same code as `server.store.persist()`. Claude, on Linux, found it with `grep`.
+#
+# So `dependencies` meant *imports*, and the word an agent reads it as is
+# *everything that would break*. The evidence was already in the index — the
+# mention had been recorded — and nothing turned it into an edge.
+#
+# `crates/thalyx-graph/corpus/` is ten small trees whose right answers are
+# written down beside them, worked out by reading the source rather than by
+# running the code. Two of the ten exist to be answered *narrowly*: the case
+# where a name is declared in two files, where the right answer is to refuse,
+# and the case where a name appears in a comment and in a string, where the
+# right answer is to ignore it. A symbol-level index fails by returning too
+# much, so a corpus that only checked for the rows it wanted would pass on an
+# index that returned the whole tree.
+# `--nocapture` because the scoreboard and the stated limits are printed by the
+# test, and a passing test's output is swallowed without it — which would leave
+# this stage reporting a number it never read.
+if cargo test -p thalyx-graph --test the_corpus_says_what_the_index_knows \
+       -- --nocapture > "$WORK/corpus.log" 2>&1; then
+    CORPUS_CHECKS=$(grep -oE '[0-9]+ exact answers checked' "$WORK/corpus.log" | head -1)
+    proven "the ten fixtures of the index corpus answer exactly what they say they should${CORPUS_CHECKS:+ ($CORPUS_CHECKS)}"
+    # The known limits are printed rather than hidden, and there is a variable
+    # that demands them. Rule 3.
+    while IFS= read -r limit; do
+        unproven "the index corpus: ${limit#*NOT PROVEN  }"
+    done < <(grep 'NOT PROVEN' "$WORK/corpus.log" || true)
+else
+    failed "the index corpus does not answer what it says it should; see $WORK/corpus.log"
+    excerpt "$WORK/corpus.log" 20
+fi
+
+if cargo test -p thalyx-graph --test the_index_repairs_itself > "$WORK/refresh.log" 2>&1; then
+    proven "a semantic question about a tree that moved on repairs the index and answers about the tree, and declines rather than stalling when the tree is too big"
+else
+    failed "the index does not repair itself as claimed; see $WORK/refresh.log"
+    excerpt "$WORK/refresh.log" 20
+fi
+
+step "50. the benchmark harness reads what the agent printed, and nothing else"
+
+# Rule 6, and the reason it is a stage rather than a comment: the numbers that
+# will decide whether Thalyx is worth anything come out of a parser for somebody
+# else's output format, and this project has twice tested such a parser only
+# against fixtures its author invented. `dev/samples/claude-stream-json.ndjson`
+# is a real Claude Code session, captured verbatim, and the self-test checks the
+# things that session is known to be — two turns, one `Read`, a cost — plus the
+# half that matters more: that a field the agent never printed is **absent**
+# from the summary rather than zero.
+if python3 "$ROOT/dev/bench-summary.py" --self-test > "$WORK/bench-summary.log" 2>&1; then
+    proven "the benchmark summary parses a real captured session and invents nothing, counts writes without crediting a read as one, never reports a shell call as proven not to have written, keeps asked/confirmed/witnessed/restored apart, says where each arm actually worked and refuses a run that left its workspace, sets the benchmark's own machinery aside without hiding it, and refuses to score a run that did nothing as a restore"
+else
+    failed "the benchmark summary does not read a real session correctly; see $WORK/bench-summary.log"
+    excerpt "$WORK/bench-summary.log" 20
+fi
+
+# The other half of the harness, and the half that decides what the `reversible`
+# task means: one prompt for both arms, naming no tool; and a tree hash that
+# says "restored" only when the bytes came back. Rule 4 — the control is a tree
+# that did *not* come back, without which a hash function returning a constant
+# would pass every restore anybody ever ran.
+if bash "$ROOT/dev/bench-external-agent.sh" --self-test > "$WORK/bench-harness.log" 2>&1; then
+    proven "the benchmark prompt is one string for both arms and names no tool, arm A is staged outside this checkout and refuses to start under anybody's CLAUDE.md, arm B is proven alive before arm A is paid for, a restored tree is told from a tree that only looks restored, and a finished run can be graded again without being run again"
+else
+    failed "the benchmark harness does not hold its own claims; see $WORK/bench-harness.log"
+    excerpt "$WORK/bench-harness.log" 25
+fi
+
+step "51. one call does the mechanical rename that used to take sixteen"
+
+# The claim REVERSIBLE #1 produced, held in place without spending anything.
+#
+# That run was valid and mixed: arm B was correct, cheaper and read no files,
+# and it lost a third of the wall clock making sixteen line-addressed mutations
+# where arm A made six whole-file replacements. `sustituir` is the operation
+# that closes the gap, and this stage is the arithmetic of it — a two-crate
+# fixture with 19 mentions on 16 lines in 6 files, renamed both ways, the two
+# resulting trees compared byte for byte, and put back.
+#
+# It is **not** a benchmark result and says nothing about wall clock. Whether
+# the operation moves the benchmark is answered by running the benchmark, with
+# the harness frozen. The counts are printed because the point of this stage is
+# the numbers, not the word `ok`.
+if cargo test -p thalyx-cli --test a_mechanical_rename_costs_one_call \
+        -- --nocapture --test-threads=1 > "$WORK/one-call.log" 2>&1; then
+    proven "a mechanical rename across six files is one call where it was sixteen, both ways produce the same tree, and substituting back returns it byte for byte"
+    grep -E "line by line|substitution|places on" "$WORK/one-call.log" | sed 's/^/     /'
+else
+    failed "the rename that used to take sixteen calls does not take one; see $WORK/one-call.log"
+    excerpt "$WORK/one-call.log" 25
+fi
+
+step "52. several patterns are one call where they were five"
+
+# The claim the run of 2026-08-29 produced, and it is the next one down from
+# stage 51's.
+#
+# That run's arm B did the whole rename in **five** `thalyx_edit` calls, not
+# sixteen — stage 51's change worked. What it could not do was carry more than
+# one `old`/`new` pair, and a rename of one type needs several: the qualified
+# path, the definition, the impl, a type inside a tuple, the bare name. Five
+# round trips into the machine for one plan.
+#
+# So this is that plan's arithmetic. The fixture is the *shape* of it with names
+# of its own — a benchmark's vocabulary does not go into the system under test —
+# and what is checked is the part a batch could get wrong: five patterns in one
+# call leave byte for byte what five calls leave, an operation that matches
+# nothing writes none of the others, and `A -> B` followed by `B -> C` is
+# refused rather than silently turning every `A` into a `C`.
+#
+# It says nothing about wall clock or cost. Whether it moves the benchmark is
+# answered by running the benchmark.
+if cargo test -p thalyx-cli --test several_substitutions_are_one_call \
+        > "$WORK/one-batch.log" 2>&1; then
+    proven "five substitutions in one call leave the same bytes as five calls, one pattern that matches nothing writes none of them, an ambiguous composition is refused, and the answer says what each pattern did and what each file now is"
+else
+    failed "several substitutions in one call do not hold their own claims; see $WORK/one-batch.log"
+    excerpt "$WORK/one-batch.log" 25
 fi
 
 # ------------------------------------------------- the machine, as it is left

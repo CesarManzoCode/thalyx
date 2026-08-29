@@ -29,8 +29,11 @@
 //! invalid UTF-8 out of a valid word. Spanish is the language this machine is
 //! used in, so getting that wrong would be visible on the first day.
 
+pub mod keymap;
+
 /// One thing the person did, already decoded from whatever bytes carried it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
 pub enum Key {
     Char(char),
     Enter,
@@ -700,5 +703,28 @@ mod tests {
         }
         // A person pressing Tab means "finish what is under my hand".
         assert_eq!(line.before_cursor(), "cd Documentos/");
+    }
+    /// Why the confirmation on the display says Ctrl-C and not Escape.
+    ///
+    /// The drawn hint said *«Escape cancela»* from the day the confirmation was
+    /// designed until the day it was wired to a keyboard. It cannot work: a bare
+    /// Escape is the prefix of every arrow key, so a decoder that guessed at it
+    /// would turn one arrow key into a cancelled confirmation plus two stray
+    /// characters. Waiting is correct — and it means a person who presses Escape
+    /// on the trusted path sees nothing happen at all.
+    ///
+    /// Pinned here rather than left in a comment on the drawing, because the
+    /// drawing is where the wrong answer was written and this is where the fact
+    /// lives.
+    #[test]
+    fn a_bare_escape_is_not_a_key_yet_and_ctrl_c_is() {
+        assert_eq!(decode(&[0x1b]), None, "a lone Escape was decoded as a key");
+        // With what follows it, it is an arrow — which is the whole reason the
+        // decoder may not answer on the Escape alone.
+        assert_eq!(decode(b"\x1b[A"), Some((Key::Up, 3)));
+
+        // The key the hint names instead. Raw mode on this machine is entered
+        // without `ISIG`, so this byte arrives instead of killing the session.
+        assert_eq!(decode(&[0x03]), Some((Key::Interrupt, 1)));
     }
 }

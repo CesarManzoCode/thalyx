@@ -83,6 +83,40 @@ pub const CEILING: u64 = 4 * 1024 * 1024;
 /// terminal; here, *saving* one destroys a file that was never text.
 const SNIFF: usize = 8192;
 
+/// The most files one substitution may name.
+///
+/// A ceiling for the same reason [`CEILING`] is one, one level up: every file
+/// named is held open and held in memory through the preflight, so an unbounded
+/// list is the machine running out of memory on behalf of a caller that lost
+/// count. Sixty-four is well past what any mechanical rename of one symbol
+/// touches — the `UidRegistry` rename this was built for names six — and far
+/// short of what a workspace has.
+pub const MOST_FILES: usize = 64;
+
+/// The most places one substitution may change, across every file it names.
+///
+/// This is the one that guards against the *wrong* call rather than the large
+/// one. A caller that substitutes `e` for `a` across a crate asks for a hundred
+/// thousand changes and means none of them, and the cheapest moment to find
+/// that out is before anything is written. Refused with the count, so the
+/// caller learns what it actually asked for.
+pub const MOST_REPLACEMENTS: usize = 2000;
+
+/// The most substitutions one batch may carry.
+///
+/// A batch is several exact substitutions applied in one call, in order, to one
+/// set of files — the shape a mechanical rename actually has. The rename the
+/// benchmark asks for needed **five**: the qualified path, the definition, the
+/// impl, a tuple type and the bare name. Each of those was its own call, its own
+/// round trip into the machine and its own answer to read.
+///
+/// Sixteen for the same reason [`MOST_FILES`] is sixty-four: well past what any
+/// one mechanical change needs, and far short of a caller that has lost track of
+/// what it asked for. It is a ceiling on *patterns*, and the ceilings on files
+/// and on places to change still apply to the batch as a whole — a batch is not
+/// a way to ask for sixteen times as much.
+pub const MOST_OPERATIONS: usize = 16;
+
 /// How many changes back the screen can go.
 ///
 /// Bounded, and the bound is the point. Each step keeps a copy of the lines, so
@@ -186,11 +220,55 @@ pub struct Edited {
     pub bytes: u64,
 }
 
+/// What one file's substitution did, in the terms it did it in.
+///
+/// Its own type and not [`Edited`], because the two answer different questions
+/// and merging them would make both vaguer. An edit is *one* change at *one*
+/// address, so `span` is the answer to "where"; a substitution is many changes
+/// at many addresses, and the answer to "where" is a count plus the first one —
+/// enough for a caller to check the work with a single `ver` and never so much
+/// that reporting a rename costs more context than doing it.
+///
+/// There is deliberately no `lines_before`/`lines_after` pair. A substitution
+/// cannot change how many lines a file has: [`Text::substitute`] refuses a line
+/// break in either text, so the count is an invariant rather than a measurement,
+/// and a field that is always equal to another field is a field a caller has to
+/// read to learn nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Substituted {
+    pub path: PathBuf,
+    /// How many occurrences were replaced. Non-overlapping, left to right.
+    pub replacements: usize,
+    /// How many distinct lines hold at least one of them.
+    ///
+    /// Carried because it is the number a person checking a rename compares
+    /// against a diff, and `replacements` is not it: one line can hold three.
+    pub lines: usize,
+    /// The first line that changed, 1-based, so the check is one call away.
+    pub first_line: usize,
+    /// How many times the **replacement** text was already in this file before
+    /// the call.
+    ///
+    /// Carried because of what it costs when it is not zero, and the cost is
+    /// reversibility. Substituting `A` for `B` in a file that already said `B`
+    /// cannot be taken back by substituting `B` for `A`: that second call would
+    /// also change the `B`s that were always there, and nothing in the result
+    /// would say which ones those were. It is a legitimate thing to ask for —
+    /// normalising two spellings into one is exactly this — so it is reported
+    /// rather than refused, and the caller finds out *before* it needs the
+    /// undo rather than after.
+    pub new_already: usize,
+    /// Bytes on disk after the change, exact.
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     Inserted,
     Replaced,
     Deleted,
+    /// Every occurrence of an exact string was replaced by another.
+    Substituted,
     /// The screen was left without changing anything on disk.
     Unchanged,
     /// The screen's changes were written.
@@ -204,6 +282,7 @@ impl Change {
             Change::Inserted => "inserted",
             Change::Replaced => "replaced",
             Change::Deleted => "deleted",
+            Change::Substituted => "substituted",
             Change::Unchanged => "unchanged",
             Change::Saved => "saved",
         }
@@ -257,6 +336,98 @@ pub enum EditError {
     #[error("{path} could not be written: {detail}")]
     Unwritable { path: PathBuf, detail: String },
 
+    /// The text handed to a substitution is not something that can go in a file.
+    ///
+    /// One variant for four refusals — an empty `old`, a line break in either
+    /// text, a NUL in either — because they are one fact from the caller's side:
+    /// the string it sent cannot address or replace anything, and the fix is to
+    /// send a different string. `why` says which, so the message is still exact.
+    ///
+    /// The line break is the interesting one, and it is rule 9 rather than
+    /// laziness. Matching across a line ending would have to decide *what* a
+    /// line ending is, and this crate deliberately remembers that a file may be
+    /// CRLF — so `old` containing a newline would silently match nothing at all
+    /// in every file written on Windows. Refusing is the answer that cannot be
+    /// mistaken for "there was nothing to change".
+    #[error("the {which} text {why}")]
+    BadText {
+        which: &'static str,
+        why: &'static str,
+    },
+
+    /// A substitution whose two texts are the same string.
+    ///
+    /// Its own word rather than a silent success, because the two ways it
+    /// happens are both mistakes a caller wants told: a rename that was already
+    /// applied, and two arguments in the wrong order.
+    #[error("`{text}` would be replaced by itself, which is not a change")]
+    SameText { text: String },
+
+    /// A file was named and the text to replace is not in it.
+    ///
+    /// **The precondition, and the reason this is an error rather than a zero
+    /// in the report.** A caller naming six files for a rename has a model of
+    /// the workspace; a file with no occurrence says that model is wrong, and
+    /// the cautious answer is to change nothing and say which file — not to
+    /// change the other five and leave the caller believing it changed six.
+    #[error("`{old}` is not in {path}, so nothing there could be substituted")]
+    NoOccurrences { path: PathBuf, old: String },
+
+    /// More than this may be asked for in one call.
+    #[error("{what}: {given} were asked for and the ceiling is {most}")]
+    TooMuch {
+        what: &'static str,
+        given: usize,
+        most: usize,
+    },
+
+    /// The same file was named twice in one substitution.
+    ///
+    /// Refused rather than deduplicated, and the check is on the file's inode
+    /// and not on its name: two names for one file — a symlink, a hard link,
+    /// `./src/x.rs` beside `src/x.rs` — would each be opened, each substituted
+    /// against the text as it was *before* the call, and the second save would
+    /// throw away the first. Deduplicating quietly would hide a caller that has
+    /// lost track of what it named.
+    #[error("{path} was named more than once in the same substitution")]
+    RepeatedPath { path: PathBuf },
+
+    /// The verb was asked for without the things it cannot work without.
+    #[error("{needs}")]
+    Incomplete { needs: &'static str },
+
+    /// A batch whose shape could not be read at all.
+    ///
+    /// One variant for every way the *arguments* of a batch can be wrong —
+    /// a count that is not a number, a count that runs off the end of the line,
+    /// an operation with no files, two operations looking for the same text —
+    /// because they are one fact from the caller's side: what arrived is not a
+    /// batch, and nothing was opened to find that out. The sentence says which.
+    #[error("{why}")]
+    BadBatch { why: String },
+
+    /// Two substitutions in one batch where the second would change what the
+    /// first had just written.
+    ///
+    /// **The one refusal a batch has that a single substitution cannot.** A
+    /// batch runs its operations in the order it was given — that is defined,
+    /// and it is what makes `uids::Thing::load` before the bare `Thing::load`
+    /// mean what a caller writing those two means. What is *not* defined is
+    /// `A -> B` followed by `B -> C`: every `A` becomes a `C`, which nobody
+    /// asked for and which reading the call does not show. So the composition
+    /// is checked against the text before anything is written, and an ambiguous
+    /// one is refused rather than resolved by a rule the caller would have to
+    /// know. Rule 9: the cautious answer, never the fast one.
+    #[error(
+        "`{later_old}` is inside `{earlier_new}`, which an earlier operation of this \
+             batch writes — so the batch would change text it had just made, and what it \
+             means would depend on the order it ran in"
+    )]
+    Chained {
+        earlier_new: String,
+        later_old: String,
+    },
+
     /// The screen was asked for where there is no terminal to draw it on.
     ///
     /// Its own variant, and this is the one that earns it: a program down a pipe
@@ -282,6 +453,14 @@ impl EditError {
             EditError::Malformed { .. } => "malformed_address",
             EditError::Unreadable { .. } => "unreadable",
             EditError::Unwritable { .. } => "unwritable",
+            EditError::BadText { .. } => "bad_text",
+            EditError::SameText { .. } => "same_text",
+            EditError::NoOccurrences { .. } => "no_occurrences",
+            EditError::TooMuch { .. } => "too_much",
+            EditError::RepeatedPath { .. } => "repeated_path",
+            EditError::Incomplete { .. } => "incomplete",
+            EditError::BadBatch { .. } => "bad_batch",
+            EditError::Chained { .. } => "chained_substitution",
             EditError::NoScreen => "no_screen",
         }
     }
@@ -303,6 +482,19 @@ impl EditError {
             EditError::NoSuchLine { .. } | EditError::Backwards { .. } => "read_the_count",
             EditError::Malformed { .. } => "address_lines",
             EditError::Unreadable { .. } | EditError::Unwritable { .. } => "cannot",
+            EditError::BadText { .. } | EditError::SameText { .. } => "name_the_text",
+            // The one remedy here that is an instruction rather than a
+            // consolation: the caller knows which files it named, and the
+            // answer says which of them the text is not in.
+            EditError::NoOccurrences { .. } => "drop_that_file",
+            EditError::TooMuch { .. } => "send_less",
+            EditError::RepeatedPath { .. } => "name_it_once",
+            EditError::Incomplete { .. } => "ask_describe",
+            EditError::BadBatch { .. } => "ask_describe",
+            // Not "send less" and not "name the text": the batch is fine, the
+            // two operations in it are not composable, and the way out is to
+            // make the second call separately once the first has landed.
+            EditError::Chained { .. } => "separate_the_calls",
             EditError::NoScreen => "address_lines",
         }
     }
@@ -363,6 +555,10 @@ pub struct Text {
     /// the file it pointed at still says the old thing, and on a machine where
     /// `/etc` is full of links that is a configuration change nobody made.
     target: PathBuf,
+    /// The name the file was actually opened by, when that is not the name it
+    /// is reported under. `None` for every ordinary open. See
+    /// [`Text::open_anchored`].
+    opened_as: Option<PathBuf>,
     lines: Vec<String>,
     ending: Ending,
     /// Whether the file on disk ended with a line ending.
@@ -385,7 +581,28 @@ pub struct Text {
 impl Text {
     /// Read a file, or say precisely why it will not be edited.
     pub fn open(path: &Path) -> Result<Self, EditError> {
-        let meta = path.symlink_metadata().map_err(|e| classify(path, e))?;
+        Self::open_named(path, None)
+    }
+
+    /// The same, opened through one name and reported under another.
+    ///
+    /// The caller with two names is `crate::confine`'s anchor: a confined
+    /// session opens `/proc/self/fd/9/main.rs`, which is a descriptor the
+    /// kernel resolved inside the workspace and therefore a name nothing can
+    /// redirect, and the agent asked about `src/main.rs`. Every path this type
+    /// hands back has to be the second one — a refusal naming a file descriptor
+    /// describes a filesystem the caller may not see.
+    ///
+    /// What is *written* stays the first: [`Self::save`] stages beside the file
+    /// and renames, and the staging has to happen in the pinned directory or it
+    /// is a different directory.
+    pub fn open_anchored(open_as: &Path, shown: &Path) -> Result<Self, EditError> {
+        Self::open_named(open_as, Some(shown))
+    }
+
+    fn open_named(path: &Path, shown: Option<&Path>) -> Result<Self, EditError> {
+        let named = shown.unwrap_or(path);
+        let meta = path.symlink_metadata().map_err(|e| classify(named, e))?;
 
         // Followed deliberately: a person editing a symlink means the file it
         // points at, which is what every editor does and what makes `editar`
@@ -393,30 +610,30 @@ impl Text {
         // `symlink_metadata` for the size and mode below, for the same reason.
         let (meta, target) = if meta.file_type().is_symlink() {
             (
-                path.metadata().map_err(|e| classify(path, e))?,
-                path.canonicalize().map_err(|e| classify(path, e))?,
+                path.metadata().map_err(|e| classify(named, e))?,
+                path.canonicalize().map_err(|e| classify(named, e))?,
             )
         } else {
             (meta, path.to_path_buf())
         };
 
         if meta.is_dir() {
-            return Err(EditError::IsDirectory(path.to_path_buf()));
+            return Err(EditError::IsDirectory(named.to_path_buf()));
         }
         // Asked before reading. A ceiling checked after the read has already
         // spent the memory it exists to protect.
         if meta.len() > CEILING {
             return Err(EditError::TooLarge {
-                path: path.to_path_buf(),
+                path: named.to_path_buf(),
                 bytes: meta.len(),
                 ceiling: CEILING,
             });
         }
 
-        let raw = std::fs::read(path).map_err(|e| classify(path, e))?;
+        let raw = std::fs::read(path).map_err(|e| classify(named, e))?;
         if let Some(why) = not_text(&raw) {
             return Err(EditError::NotText {
-                path: path.to_path_buf(),
+                path: named.to_path_buf(),
                 why,
             });
         }
@@ -424,12 +641,17 @@ impl Text {
         // understand into `U+FFFD` and then writes them back over the original,
         // which destroys the file it was asked to fix.
         let body = String::from_utf8(raw).map_err(|_| EditError::NotText {
-            path: path.to_path_buf(),
+            path: named.to_path_buf(),
             why: "not valid UTF-8",
         })?;
 
-        let mut text = Self::from_str(path, &body, mode_of(&meta));
+        let mut text = Self::from_str(named, &body, mode_of(&meta));
         text.target = target;
+        // Only when the two differ. `through_link` compares the reported path
+        // with the written one, and for an anchored open those differ for a
+        // reason that is not a symlink — so the comparison is made against what
+        // was opened rather than against what is said.
+        text.opened_as = shown.map(|_| path.to_path_buf());
         Ok(text)
     }
 
@@ -464,6 +686,7 @@ impl Text {
         Self {
             path: path.to_path_buf(),
             target: path.to_path_buf(),
+            opened_as: None,
             lines,
             ending,
             final_newline,
@@ -485,8 +708,14 @@ impl Text {
     }
 
     /// Whether what was named and what gets written are two different paths.
+    ///
+    /// Compared against the name that was *opened*, which for an anchored open
+    /// is a descriptor path and not what the caller said. Comparing against the
+    /// reported name would make every confined edit look like an edit through a
+    /// symlink, which is a true-sounding sentence about something that did not
+    /// happen.
     pub fn through_link(&self) -> bool {
-        self.path != self.target
+        self.opened_as.as_deref().unwrap_or(&self.path) != self.target
     }
 
     pub fn lines(&self) -> &[String] {
@@ -639,6 +868,100 @@ impl Text {
         })
     }
 
+    /// How many times `old` occurs, non-overlapping and left to right.
+    ///
+    /// The same walk [`Self::substitute`] makes, so the count a caller is told
+    /// before anything is written is the count it gets afterwards. `str::matches`
+    /// and `str::replace` agree on where a match ends by construction; two
+    /// separately written loops would agree until the first overlapping pattern.
+    pub fn occurrences(&self, old: &str) -> usize {
+        if old.is_empty() {
+            return 0;
+        }
+        self.lines
+            .iter()
+            .map(|line| line.matches(old).count())
+            .sum()
+    }
+
+    /// Replace every occurrence of `old` with `new`, everywhere in this file.
+    ///
+    /// **This is the operation the line-addressed ones could not express.** A
+    /// mechanical rename touches a dozen places on eight lines, and asking for
+    /// it by line means the caller has to know every line number, send the whole
+    /// new text of every line, and leave the file in eleven intermediate states
+    /// on the way — each of which is saved and each of which is a state nobody
+    /// asked for. Here it is one walk, one save, and the caller sends the two
+    /// strings and nothing else.
+    ///
+    /// What it is **not** is a rename. This matches text: the same characters
+    /// inside a comment, a string literal, a longer identifier or an unrelated
+    /// symbol of the same name are all matched, because nothing here knows what
+    /// any of those are. Calling it a rename would be the dishonest version of
+    /// this function, and a caller that believed it would ship the wrong diff.
+    /// What makes it safe to use for a rename is not cleverness here, it is
+    /// [`crate::MOST_REPLACEMENTS`], the report below, and `intento`.
+    ///
+    /// Line breaks are refused in both texts, which buys the invariant that a
+    /// substitution never changes how many lines a file has — see
+    /// [`Substituted`] for why that is worth a refusal.
+    pub fn substitute(&mut self, old: &str, new: &str) -> Result<Substituted, EditError> {
+        substitutable(old, new)?;
+        // Counted before anything moves, which is the only moment it is
+        // answerable: afterwards every occurrence of `new` this call created
+        // looks exactly like one that was always there.
+        let new_already = self.occurrences(new);
+        let found = self.occurrences(old);
+        if found == 0 {
+            return Err(EditError::NoOccurrences {
+                path: self.path.clone(),
+                old: old.to_string(),
+            });
+        }
+
+        // Predicted rather than measured, and that is the point: measuring it
+        // means growing the file in memory first, and a caller that substituted
+        // a long string for a short one across a file at the ceiling is exactly
+        // the case where doing that is the machine running out of memory. The
+        // arithmetic is exact — every match is the same length in and the same
+        // length out — so this is not an estimate.
+        let after = self.weight() as i64 + found as i64 * (new.len() as i64 - old.len() as i64);
+        if after > CEILING as i64 {
+            return Err(EditError::TooLarge {
+                path: self.path.clone(),
+                bytes: after.max(0) as u64,
+                ceiling: CEILING,
+            });
+        }
+
+        self.remember();
+        let mut replacements = 0;
+        let mut touched = 0;
+        let mut first_line = 0;
+        for (index, line) in self.lines.iter_mut().enumerate() {
+            let here = line.matches(old).count();
+            if here == 0 {
+                continue;
+            }
+            *line = line.replace(old, new);
+            replacements += here;
+            touched += 1;
+            if first_line == 0 {
+                first_line = index + 1;
+            }
+        }
+        self.modified = true;
+
+        Ok(Substituted {
+            path: self.path.clone(),
+            replacements,
+            lines: touched,
+            first_line,
+            new_already,
+            bytes: self.weight(),
+        })
+    }
+
     /// Write the text back, atomically.
     ///
     /// A new file, then `rename` over the old one, which is the same shape as
@@ -711,6 +1034,49 @@ impl Text {
             bytes: body.len() as u64,
         })
     }
+}
+
+/// Whether these two strings can be a substitution at all.
+///
+/// Asked once, here, rather than in each face: a check written twice is a check
+/// that will be right in one of them, and the face that got it wrong is the one
+/// that writes the file.
+///
+/// Public because a caller with several files to change has to be able to ask
+/// it **before** it opens any of them. [`Text::substitute`] asks it too, so a
+/// caller that forgets is still refused — this is the cheap early answer, not
+/// the only one.
+pub fn substitutable(old: &str, new: &str) -> Result<(), EditError> {
+    if old.is_empty() {
+        return Err(EditError::BadText {
+            which: "old",
+            why: "is empty, and an empty string is in every file at every position",
+        });
+    }
+    if old == new {
+        return Err(EditError::SameText {
+            text: old.to_string(),
+        });
+    }
+    for (which, text) in [("old", old), ("new", new)] {
+        if text.contains('\n') || text.contains('\r') {
+            return Err(EditError::BadText {
+                which,
+                why: "has a line break in it; substitution works within a line, \
+                      and `cambiar` is the verb that replaces whole lines",
+            });
+        }
+        if text.contains('\0') {
+            // Rule 9. A NUL written into a file is what `not_text` refuses to
+            // open afterwards, so accepting one here would make a file this
+            // crate can never edit again.
+            return Err(EditError::BadText {
+                which,
+                why: "has a zero byte in it, and a file with one is not text",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Split what a caller handed us into lines to put in.
@@ -934,6 +1300,147 @@ mod tests {
 
         assert_eq!(predicted, done.bytes);
         assert_eq!(predicted, std::fs::metadata(&path).unwrap().len());
+    }
+
+    // ────────────────────────────────────────── substituting text, not lines
+
+    #[test]
+    fn every_occurrence_goes_including_several_on_one_line() {
+        let mut file = text("let a = Uid; let b = Uid;\nno mention\nUid\n");
+        let done = file.substitute("Uid", "UidRenamed").unwrap();
+
+        assert_eq!(done.replacements, 3);
+        // Three places and two lines, which are different numbers and both
+        // matter: a person comparing this against a diff counts lines.
+        assert_eq!(done.lines, 2);
+        assert_eq!(done.first_line, 1);
+        assert_eq!(
+            file.lines(),
+            &[
+                "let a = UidRenamed; let b = UidRenamed;",
+                "no mention",
+                "UidRenamed"
+            ]
+        );
+    }
+
+    #[test]
+    fn what_it_counts_before_is_what_it_changes_after() {
+        // The property the preflight rests on. If these two walks could ever
+        // disagree, a caller would be told six files were checked and find that
+        // one of them changed a different number of places.
+        let mut file = text("aaaa\naa\n");
+        let counted = file.occurrences("aa");
+        let done = file.substitute("aa", "b").unwrap();
+        assert_eq!(counted, done.replacements);
+        assert_eq!(file.lines(), &["bb", "b"]);
+    }
+
+    #[test]
+    fn a_substitution_never_changes_how_many_lines_a_file_has() {
+        // The invariant the line-break refusal buys, checked rather than
+        // asserted in a comment. It is what makes `first_line` still true after
+        // the call and what makes an undo comparable line by line.
+        let mut file = text("uno Uid\ndos\ntres Uid\n");
+        let before = file.count();
+        file.substitute("Uid", "X\nY").unwrap_err();
+        file.substitute("Uid", "muchisimo mas largo que antes")
+            .unwrap();
+        assert_eq!(file.count(), before);
+    }
+
+    #[test]
+    fn text_that_is_not_in_the_file_refuses_rather_than_reporting_zero() {
+        let mut file = text("uno\ndos\n");
+        let error = file.substitute("Uid", "UidRenamed").unwrap_err();
+        assert_eq!(error.word(), "no_occurrences");
+        assert_eq!(error.remedy(), "drop_that_file");
+        // And nothing moved. A refusal that already wrote is not a refusal.
+        assert_eq!(file.lines(), &["uno", "dos"]);
+        assert!(!file.is_modified());
+    }
+
+    #[test]
+    fn the_two_texts_being_the_same_is_its_own_refusal_and_not_a_quiet_success() {
+        let mut file = text("Uid\n");
+        let error = file.substitute("Uid", "Uid").unwrap_err();
+        assert_eq!(error.word(), "same_text");
+    }
+
+    #[test]
+    fn an_empty_search_is_refused_rather_than_matching_everywhere() {
+        // An empty string occurs between every pair of characters, so accepting
+        // it would insert the replacement across the whole file — the single
+        // most destructive thing this function could be asked to do.
+        let mut file = text("uno\n");
+        assert_eq!(file.substitute("", "x").unwrap_err().word(), "bad_text");
+        assert_eq!(file.occurrences(""), 0);
+    }
+
+    #[test]
+    fn a_line_break_in_either_text_is_refused_rather_than_matching_nothing() {
+        let mut file = text("uno\ndos\n");
+        assert_eq!(
+            file.substitute("uno\ndos", "x").unwrap_err().word(),
+            "bad_text"
+        );
+        assert_eq!(
+            file.substitute("uno", "a\nb").unwrap_err().word(),
+            "bad_text"
+        );
+        // `\r` too, and this is the half that would have been missed: a CRLF
+        // file's lines are stored without it, so an `old` carrying one matches
+        // nothing and would have looked like "that text is not here".
+        assert_eq!(
+            file.substitute("uno\r", "x").unwrap_err().word(),
+            "bad_text"
+        );
+    }
+
+    #[test]
+    fn a_zero_byte_in_the_replacement_is_refused_because_the_file_would_stop_being_text() {
+        let mut file = text("uno\n");
+        let error = file.substitute("uno", "un\0o").unwrap_err();
+        assert_eq!(error.word(), "bad_text");
+        assert_eq!(file.lines(), &["uno"]);
+    }
+
+    #[test]
+    fn a_substitution_that_would_pass_the_ceiling_is_refused_before_it_is_built() {
+        // Predicted, not measured: the refusal has to happen without ever
+        // holding the grown file in memory, which is the whole reason the
+        // arithmetic is done rather than the substitution.
+        let long = "x".repeat(1024);
+        let body = format!("{}\n", "Uid ".repeat(8 * 1024));
+        let mut file = text(&body);
+        let error = file.substitute("Uid", &long).unwrap_err();
+        assert_eq!(error.word(), "too_large");
+        assert!(file.lines()[0].starts_with("Uid "));
+    }
+
+    #[test]
+    fn a_substitution_can_be_stepped_back_the_way_every_other_change_can() {
+        let mut file = text("Uid\nUid\n");
+        file.substitute("Uid", "X").unwrap();
+        assert_eq!(file.lines(), &["X", "X"]);
+        assert!(file.undo());
+        assert_eq!(file.lines(), &["Uid", "Uid"]);
+    }
+
+    #[test]
+    fn a_file_written_on_windows_keeps_its_endings_through_a_substitution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("windows.rs");
+        std::fs::write(&path, "uno Uid\r\ndos Uid\r\n").unwrap();
+
+        let mut file = Text::open(&path).unwrap();
+        file.substitute("Uid", "X").unwrap();
+        file.save().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uno X\r\ndos X\r\n"
+        );
     }
 
     #[test]

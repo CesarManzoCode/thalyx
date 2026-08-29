@@ -29,7 +29,8 @@ El paralelismo por recurso, con su detección de deadlocks y su ordenamiento de 
 
 Desde el 4 de agosto de 2026 el lock existe: `Store::lock()` toma un `flock(2)`
 exclusivo sobre `state/lock`, y lo toman `install`, `remove`, `rollback`,
-`restore` y la asignación de uid dentro de `run`.
+`restore`, la asignación de uid dentro de `run` y —desde el 28 de agosto de
+2026— `intento` en sus tres transiciones.
 
 `flock` se eligió sobre `fcntl` por una razón concreta: un lock de `fcntl` se
 suelta cuando **cualquier** descriptor del archivo se cierra en el proceso, lo
@@ -56,6 +57,56 @@ problema. Está escrito aquí en vez de quedar como una diferencia silenciosa
 entre lo que el decreto dice y lo que la máquina hace.
 
 ## Revisiones
+
+### 2026-08-28 — `intento` no lo tomaba, y comprobar no es excluir
+
+`intento empezar` decía la regla correcta —uno abierto a la vez— y la
+**comprobaba** en lugar de **imponerla**. La secuencia era:
+
+```
+leer el registro  →  ¿hay alguno abierto?  →  tomar el snapshot  →  escribir el registro
+```
+
+sin nada entre la lectura y la escritura. Dos clientes que llegan juntos ven los
+dos «no hay ninguno», los dos toman un snapshot, y el segundo pisa el registro
+del primero. Lo que queda no falla ruidosamente: queda **un snapshot que nada
+nombra** —imposible de abandonar, invisible salvo como disco que no vuelve— y un
+`intento abandonar` que devuelve el árbol a un punto que no es el que el primer
+cliente creía.
+
+`confirmar` y `abandonar` tenían el espejo: dos clientes que planearon contra el
+mismo intento lo llevaban a cabo los dos, y el segundo `restore` caía sobre un
+árbol que el primero ya había devuelto —borrando en silencio lo que se hubiera
+escrito ahí desde entonces.
+
+**Lo que cambia:** las tres transiciones toman `Store::lock()`, el mismo de
+siempre y no un esquema nuevo. Como `flock` se ata a la descripción de archivo
+abierta y por lo tanto **no es reentrante**, un `abandonar` que tomara el lock y
+llamara a `restore::apply` —que también lo toma— se esperaría a sí mismo para
+siempre; por eso existe `restore::apply_holding_the_lock`, cuyo parámetro
+`&ContractLock` es la prueba de que quien llama ya lo tiene.
+
+La ventana que el lock **no** puede cerrar es la del plan y la confirmación: la
+confirmación es una persona leyendo una pregunta, y sostener el lock global
+mientras alguien lee es como una máquina deja de responder. Así que `abandonar`
+relee el registro adentro del lock y compara: si el intento en registro ya no es
+contra el que se planeó, contesta `superseded` en vez de llevarlo a cabo.
+
+**Y la durabilidad.** `attempt.json` se escribía con `std::fs::write`, que trunca
+antes de escribir: un corte a la mitad deja un archivo que es mitad de un estado
+y mitad de otro. La regla 2 de `attempt.rs` lo convierte —correctamente— en «hay
+un intento y no se puede leer», pero eso es permanente: la máquina ya no puede
+empezar un intento ni abandonar el que cree tener. Ahora usa
+`keystore::write_durably`, la misma publicación que el resto del estado —
+temporal único en el mismo directorio, `fsync`, `rename`, `fsync` del
+directorio — y el borrado del registro hace `fsync` del directorio por la misma
+razón.
+
+Lo prueban cinco tests en `attempt.rs`. El de la carrera usa hilos, lo que este
+decreto advierte que no sirve — y la advertencia es sobre otro caso: un hilo que
+*comparte* la descripción de archivo abierta pasa directo, y aquí cada hilo abre
+la suya, igual que dos procesos. Se comprobó quitando el lock de `begin`: el
+test falla en todas las corridas.
 
 ### 2026-08-04 — El lock decretado se implementa, y se corrige lo que el decreto prometía de más
 **Antes:** el decreto describía un lock global y ningún código lo tomaba. Cada

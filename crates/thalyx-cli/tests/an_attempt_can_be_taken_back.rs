@@ -232,3 +232,184 @@ fn rehearsing_it_sends_the_caller_to_the_verb_that_already_answers_that() {
     assert_eq!(answer["ok"], serde_json::json!(false));
     assert_eq!(answer["error"], serde_json::json!("ask_attempt_itself"));
 }
+
+/// A throwaway subvolume on a real Btrfs filesystem, or nothing.
+///
+/// The same shape `thalyx-snapshot`'s tests use, and the same variable, so a
+/// machine that can prove one of them can prove both without being configured
+/// twice.
+fn btrfs_scratch() -> Option<std::path::PathBuf> {
+    let base = std::env::var("THALYX_BTRFS_SCRATCH").ok()?;
+    let subvolume = Path::new(&base).join(format!("thalyx-substitute-{}", std::process::id()));
+    let _ = std::process::Command::new("btrfs")
+        .args(["subvolume", "delete"])
+        .arg(&subvolume)
+        .output();
+    let made = std::process::Command::new("btrfs")
+        .args(["subvolume", "create"])
+        .arg(&subvolume)
+        .output()
+        .ok()?;
+    made.status.success().then_some(subvolume)
+}
+
+#[test]
+fn abandoning_an_attempt_takes_back_a_substitution_across_files_byte_for_byte() {
+    // The whole of the `reversible` benchmark task, in one session and with no
+    // agent: open an attempt, make the mechanical change in one call, take it
+    // back. It is here rather than in the substitution's own test file because
+    // it is the one claim about substitution that this container cannot check —
+    // an attempt needs a Btrfs subvolume, and there is none here.
+    //
+    // `THALYX_REQUIRE_BTRFS_TESTS=1` turns the skip into a failure, which is
+    // what `dev/verify.sh` sets on the machine that has one.
+    let Some(work) = btrfs_scratch() else {
+        assert!(
+            std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
+            "THALYX_REQUIRE_BTRFS_TESTS is set and no Btrfs subvolume could be made"
+        );
+        eprintln!(
+            "NOT PROVEN: abandoning an attempt was never shown to take back a substitution. \
+             It needs a writable Btrfs filesystem (THALYX_BTRFS_SCRATCH=<path on btrfs>) \
+             and btrfs-progs."
+        );
+        return;
+    };
+    let root = tempfile::tempdir().expect("a store");
+
+    std::fs::create_dir_all(work.join("src")).expect("a directory");
+    let one = work.join("src/slots.rs");
+    let two = work.join("src/run.rs");
+    std::fs::write(&one, "pub struct SlotTable;\nimpl SlotTable {}\n").expect("a file");
+    std::fs::write(&two, "use crate::SlotTable;\n").expect("a file");
+    let before = (
+        std::fs::read(&one).expect("a file"),
+        std::fs::read(&two).expect("a file"),
+    );
+
+    let output = piped(
+        root.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            "intento empezar rename",
+            &format!(
+                "editar {} sustituir SlotTable SlotTableRenamed {}",
+                one.display(),
+                two.display()
+            ),
+            "intento abandonar si",
+            "salir",
+        ],
+    );
+    let said = objects(&output);
+
+    // The baseline. Without it, a substitution that never happened and one that
+    // was taken back leave the same tree, and this would pass on a machine
+    // where the edit was refused.
+    let edited = answer_to(&said, "edit");
+    assert_eq!(edited["ok"], serde_json::json!(true), "{edited}");
+    assert_eq!(edited["replacements"], serde_json::json!(4));
+
+    assert_eq!(
+        (
+            std::fs::read(&one).expect("a file"),
+            std::fs::read(&two).expect("a file")
+        ),
+        before,
+        "abandoning the attempt did not put the substitution back"
+    );
+
+    let _ = std::process::Command::new("btrfs")
+        .args(["subvolume", "delete"])
+        .arg(&work)
+        .output();
+}
+
+#[test]
+fn abandoning_an_attempt_takes_back_a_whole_batch_and_not_only_its_last_operation() {
+    // The same claim one level up, and it is not implied by the one above. A
+    // batch writes each file **once**, with every operation already in it, so a
+    // snapshot taken before it holds a state no single operation ever produced —
+    // and "the last substitution was taken back" and "all five were" are two
+    // different facts about that. The one this container cannot check.
+    //
+    // `THALYX_REQUIRE_BTRFS_TESTS=1` turns the skip into a failure, which is
+    // what `dev/verify.sh` sets on the machine that has a Btrfs to do it on.
+    let Some(work) = btrfs_scratch() else {
+        assert!(
+            std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
+            "THALYX_REQUIRE_BTRFS_TESTS is set and no Btrfs subvolume could be made"
+        );
+        eprintln!(
+            "NOT PROVEN: abandoning an attempt was never shown to take back a batch of \
+             substitutions. It needs a writable Btrfs filesystem \
+             (THALYX_BTRFS_SCRATCH=<path on btrfs>) and btrfs-progs."
+        );
+        return;
+    };
+    let root = tempfile::tempdir().expect("a store");
+
+    std::fs::create_dir_all(work.join("src")).expect("a directory");
+    let one = work.join("src/slots.rs");
+    let two = work.join("src/run.rs");
+    std::fs::write(
+        &one,
+        "pub struct SlotTable;\nimpl SlotTable {\n    fn open() -> (SlotTable, usize) {          (SlotTable, 0) }\n}\n",
+    )
+    .expect("a file");
+    std::fs::write(
+        &two,
+        "use crate::slots::SlotTable;\nfn go(t: (SlotTable, usize)) {}\n",
+    )
+    .expect("a file");
+    let before = (
+        std::fs::read(&one).expect("a file"),
+        std::fs::read(&two).expect("a file"),
+    );
+
+    let output = piped(
+        root.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            "intento empezar rename",
+            &format!(
+                "editar {} sustituir-lote 1 'pub struct SlotTable;' 'pub struct Table;' \
+                 1 'impl SlotTable {{' 'impl Table {{' 2 '(SlotTable, usize)' '(Table, usize)' {}",
+                one.display(),
+                two.display()
+            ),
+            "intento abandonar si",
+            "salir",
+        ],
+    );
+    let said = objects(&output);
+
+    // The baseline, and here it is doing more work than usual: without it a
+    // batch the machine refused and a batch it took back leave the same two
+    // files, and this would pass on a machine where the grammar was broken.
+    let edited = answer_to(&said, "edit");
+    assert_eq!(edited["ok"], serde_json::json!(true), "{edited}");
+    assert_eq!(edited["files"], serde_json::json!(2), "{edited}");
+    assert_eq!(edited["replacements"], serde_json::json!(4), "{edited}");
+    assert_eq!(
+        edited["operations"].as_array().map(Vec::len),
+        Some(3),
+        "{edited}"
+    );
+
+    assert_eq!(
+        (
+            std::fs::read(&one).expect("a file"),
+            std::fs::read(&two).expect("a file")
+        ),
+        before,
+        "abandoning the attempt did not put the whole batch back"
+    );
+
+    let _ = std::process::Command::new("btrfs")
+        .args(["subvolume", "delete"])
+        .arg(&work)
+        .output();
+}

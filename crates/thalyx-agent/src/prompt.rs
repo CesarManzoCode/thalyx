@@ -257,6 +257,12 @@ fn body(transcript: &Transcript, marker: &str) -> String {
         .map(|op| op.name())
         .collect::<Vec<_>>()
         .join(", ");
+    let module_operations = ProposedOperation::ALL
+        .iter()
+        .filter(|op| op.takes_module_id())
+        .map(|op| op.name())
+        .collect::<Vec<_>>()
+        .join(" and ");
 
     let mut prompt = String::new();
     prompt.push_str(
@@ -266,25 +272,53 @@ fn body(transcript: &Transcript, marker: &str) -> String {
     );
     prompt.push_str(&format!(
         "The object has a field named operation, whose value is one of: {operations}. \
-         It has a field named targets, a list of module ids in reverse-DNS form \
-         with at least three dot-separated segments. It may have a field named \
-         constraint, a semver range such as ^1.0 — omit it when the request says \
-         nothing about a version.\n\n",
+         It has a field named targets, a list of the arguments that operation \
+         would be given. It may have a field named constraint, a semver range \
+         such as ^1.0 — omit it when the request says nothing about a \
+         version.\n\n",
     ));
+    // Read off `takes_module_id`, which is also what splits the grammar's two
+    // object shapes. Written out by hand this sentence would be a second
+    // opinion about the catalogue, free to disagree with the rule the model is
+    // actually decoded under — and the model would be blamed for the
+    // disagreement.
+    prompt.push_str(&format!(
+        "Two of them act on installed modules: {module_operations}. Their \
+         targets are module ids, in reverse-DNS form with at least three \
+         dot-separated segments.\n\n",
+    ));
+    // The paragraph the whole file was missing, and the first real inference
+    // found it. Every operation used to be an install, so the instructions said
+    // targets were module ids and left it there. Told that, a 3B asked to
+    // «crea una carpeta llamada pruebas» proposed
+    // `com.thalyx.filesystem.pruebas` — obeying the sentence it was given,
+    // producing a value that appears in nothing it was told, and being refused
+    // by the attribution for it. The grammar had permitted the word `pruebas`
+    // all along; only the prompt insisted on an id.
     prompt.push_str(
-        "Name only module ids that appear in the material below. An id you \
-         invent will be refused, so inventing one costs the request and gains \
-         nothing.\n\n",
+        "Every other operation takes ordinary arguments, and you copy them from \
+         the request word for word. Asked to create a directory called pruebas, \
+         the operation is make_directory and targets holds one string, pruebas \
+         — not a longer name, not a path, and not an id. Many operations take \
+         no arguments at all, and for those targets is an empty list.\n\n",
     );
-    // The grammar permits an empty list precisely so this can be said. Telling
-    // the model is the other half: a way of abstaining that nobody mentions is
-    // one the model will not use, and the tier would then be scored on a
-    // decision it was never offered.
     prompt.push_str(
-        "If nothing here names a module, leave targets empty. That is how you \
-         say you did not find one, and it is the right answer — a person can \
-         then tell you which they meant, which costs them a moment. Choosing \
-         wrongly costs them the install.\n\n",
+        "Copy every value from the material below exactly as it is written \
+         there. A value you invent, expand or rewrite will be refused, so \
+         changing one only costs the request.\n\n",
+    );
+    // A way of abstaining that nobody mentions is one the model will not use,
+    // and the tier would then be scored on a decision it was never offered.
+    // The word is now `nothing` and no longer an empty target list: since the
+    // catalogue widened, most verbs take no arguments, so empty targets is a
+    // complete request rather than a refusal to make one. `grammar.rs` gives
+    // abstention an object of its own for the same reason.
+    prompt.push_str(
+        "If the material asks for no action you can carry out, answer with the \
+         operation nothing and an empty list of targets. That is how you say \
+         you did not find a request, and it is the right answer — a person can \
+         then tell you what they meant, which costs them a moment. Choosing \
+         wrongly costs them the action.\n\n",
     );
 
     material(transcript, &mut prompt);
@@ -474,16 +508,109 @@ mod tests {
 
     #[test]
     fn the_instructions_say_how_to_abstain() {
-        // The grammar permits an empty target list. A permitted answer nobody
-        // is told about is one that never gets used, and abstention is the
-        // measurement `Gamas-de-Modelo.md` calls the most important — so the
-        // grammar and the prompt have to grant it together or neither does.
+        // A permitted answer nobody is told about is one that never gets used,
+        // and abstention is the measurement `Gamas-de-Modelo.md` calls the most
+        // important — so the grammar and the prompt have to grant it together
+        // or neither does.
+        //
+        // It used to read `leave targets empty`, and that stopped being the
+        // signal when the catalogue widened: most verbs take no arguments, so
+        // an empty list is a complete request. `grammar.rs` gave abstention an
+        // object of its own; this is the prompt half of the same move.
         let rendered = Prompt::render(&Transcript::new());
         assert!(
-            rendered.text().contains("leave targets empty"),
-            "nothing tells the model it may decline: {}",
+            rendered
+                .text()
+                .contains("answer with the operation nothing"),
+            "the model is not told which answer declines: {}",
             rendered.text()
         );
+    }
+
+    #[test]
+    fn the_instructions_do_not_call_every_target_a_module_id() {
+        // The defect the first real inference found, and no test had a chance
+        // of finding: the prompt said `targets, a list of module ids in
+        // reverse-DNS form` for the whole catalogue, left over from when every
+        // operation was an install. Asked to make a directory called `pruebas`,
+        // a 3B did as it was told and proposed `com.thalyx.filesystem.pruebas`
+        // — a value appearing in nothing it had been shown, refused by the
+        // attribution, with the model looking like the thing that was wrong.
+        //
+        // The claim is narrow on purpose: the id rule must be attached to the
+        // operations that have it, never stated of `targets` as such.
+        let text = Prompt::render(&Transcript::new()).text().to_string();
+
+        let (before, _) = text
+            .split_once("reverse-DNS")
+            .expect("the id rule is gone entirely");
+        let sentence = before
+            .rsplit_once("\n\n")
+            .map(|(_, last)| last)
+            .unwrap_or(before);
+        assert!(
+            sentence.contains("install") && sentence.contains("run"),
+            "the reverse-DNS rule is stated without naming the operations it \
+             belongs to, which is what made a directory name into an id: {text}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_verb_is_shown_keeping_the_word_the_person_wrote() {
+        // `pruebas` and not a path, a prefix or an id. The grammar has always
+        // permitted the bare word — `plain-targets` and `ARGUMENT_CHARS` — so
+        // this is the only place the model could have learned otherwise.
+        let text = Prompt::render(&Transcript::new()).text().to_string();
+
+        assert!(
+            text.contains("copy them from the request word for word"),
+            "the instructions never say the arguments are copied: {text}"
+        );
+        let example = text
+            .find("make_directory and targets holds one string, pruebas")
+            .map(|at| &text[at..]);
+        assert!(
+            example.is_some_and(|rest| rest.contains("not an id")),
+            "the worked example does not rule out the thing that went wrong: {text}"
+        );
+    }
+
+    #[test]
+    fn the_operations_that_take_module_ids_are_named_from_the_catalogue_itself() {
+        // Written out by hand, this sentence would be a second opinion about
+        // the catalogue — free to disagree with the rule the model is actually
+        // decoded under, and the model would be blamed for the disagreement.
+        // So it is read off the same `takes_module_id` that splits the
+        // grammar's two object shapes, and this is what fails if a third
+        // operation joins them and only the grammar hears about it.
+        let text = Prompt::render(&Transcript::new()).text().to_string();
+
+        for operation in ProposedOperation::ALL {
+            if !operation.takes_module_id() {
+                continue;
+            }
+            assert!(
+                text.contains(operation.name()),
+                "{} takes module ids and the instructions do not say so: {text}",
+                operation.name()
+            );
+        }
+
+        // And the other direction, which is the one that regresses silently:
+        // an operation whose arguments are ordinary words must not be sitting
+        // in the module-id sentence.
+        let (_, after) = text.split_once("act on installed modules: ").unwrap();
+        let (listed, _) = after.split_once('.').unwrap();
+        for operation in ProposedOperation::ALL {
+            if operation.takes_module_id() || operation == ProposedOperation::Nothing {
+                continue;
+            }
+            assert!(
+                !listed.contains(operation.name()),
+                "{} does not take a module id and is listed as though it did: {listed}",
+                operation.name()
+            );
+        }
     }
 
     #[test]

@@ -8,14 +8,20 @@
 //! nothing but the mechanics, leaving every decision about *whether* to a
 //! caller that has asked.
 //!
-//! ## Why the `btrfs` command and not a library
+//! ## Two backends, and why the second one had to exist
 //!
-//! The same reasoning as `bpftool` in `thalyx-permd` and `thalyx-watch`: no
-//! build-time dependency on kernel headers or on `libbtrfsutil`, and every
-//! step this crate takes can be run by hand and checked while debugging. A
-//! snapshot is the last thing that should be happening inside an opaque
-//! binding — if Thalyx is about to replace a directory tree, the human should
-//! be able to reproduce the exact command that did it.
+//! [`Btrfs`] runs the `btrfs` command, for the reason `thalyx-permd` runs
+//! `bpftool`: no build-time dependency on kernel headers or on `libbtrfsutil`,
+//! and every step can be run by hand while debugging.
+//!
+//! That reasoning holds on a host and is false inside Thalyx. The image carries
+//! the Linux kernel and one program, so there is no `btrfs` to run — and on
+//! 2026-08-28 that showed up as `thalyx_attempt` answering `not_a_subvolume`
+//! about a workspace that *was* a subvolume, because the spawn failed and a
+//! failure to ask was reported as a fact about the filesystem. [`Native`] is the
+//! same four operations as the ioctls the kernel exports for them, which is what
+//! `intento` uses; the command backend stays for the host, and as the second
+//! opinion the two are graded against each other with.
 //!
 //! ## Why there is a trait
 //!
@@ -23,8 +29,8 @@
 //! ordering them, deciding which one a restore means, refusing when the world
 //! has moved — all of that is policy, and policy that can only be exercised on
 //! a Btrfs filesystem is policy that is never exercised. [`Volumes`] lets the
-//! reasoning be tested anywhere, and [`Btrfs`] is the one implementation that
-//! needs a real filesystem underneath it.
+//! reasoning be tested anywhere, and [`Btrfs`] and [`Native`] are the two
+//! implementations that need a real filesystem underneath them.
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +41,14 @@ pub enum SnapshotError {
 
     #[error("`btrfs {command}` failed: {message}")]
     Btrfs { command: String, message: String },
+
+    #[error("the kernel would not {operation} {path}: {source}")]
+    Kernel {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{0} is not a Btrfs subvolume, so it cannot be snapshotted")]
     NotASubvolume(PathBuf),
@@ -163,6 +177,148 @@ impl Volumes for Btrfs {
     fn delete(&self, subvolume: &Path) -> Result<()> {
         self.run(&["subvolume", "delete", &subvolume.to_string_lossy()])
             .map(|_| ())
+    }
+}
+
+/// Real Btrfs, through the kernel's own ioctls and no binary at all.
+///
+/// ## The defect this exists for
+///
+/// `make -C image agent` creates the agent's workspace as a real subvolume, and
+/// inside the running machine `thalyx_attempt` answered `not_a_subvolume` anyway.
+/// [`Btrfs`] asks the question by running `btrfs subvolume show`, and
+/// `vault/09-Notas-Tecnicas/Construccion-del-ISO.md` puts the kernel and one
+/// program in the image — so there is no `btrfs` to run, the spawn fails, and a
+/// failure to *ask* was being reported as a fact about the filesystem. Rule 10 of
+/// `Estrategia-de-Pruebas.md` from the wrong side, and the one verb the whole
+/// design leans on — *intenta esto y si sale mal deshazlo* — was the casualty.
+///
+/// It is the fifth time the answer has been the same one: `bpftool` for the LSM,
+/// `cpio` for the initramfs, `mkfs.btrfs` for the store, `partprobe` for the
+/// partition table. Thalyx asks the kernel itself.
+///
+/// ## Why [`Btrfs`] is still here
+///
+/// This one needs a kernel that answers the ioctls. That is every Btrfs, and it is
+/// not every machine — the development container has no Btrfs at all — so the
+/// command backend stays as what a person reaches for while debugging on a host,
+/// and as the second opinion in `tests/natively.rs`, where the two are asked the
+/// same question about the same path and have to agree.
+pub struct Native;
+
+impl Native {
+    /// A directory descriptor to ask the filesystem about.
+    ///
+    /// `File::open` on a directory is an `O_RDONLY` open on Linux; nothing is read
+    /// through it, it is only something for the ioctl to be answered by.
+    fn directory(path: &Path) -> Result<std::fs::File> {
+        std::fs::File::open(path).map_err(|source| SnapshotError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Where a subvolume is to be made, and what it is to be called.
+    ///
+    /// Both ioctls take a parent descriptor and one name, never a path — which is
+    /// also the shape that cannot be talked into touching a level further up.
+    fn place(path: &Path) -> Result<(&Path, &str)> {
+        let bad = |why| SnapshotError::BadName(path.display().to_string(), why);
+        let parent = path
+            .parent()
+            .ok_or_else(|| bad("it has no parent directory"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| bad("it does not end in a name"))?
+            .to_str()
+            .ok_or_else(|| bad("its last component is not UTF-8"))?;
+        Ok((parent, name))
+    }
+
+    fn create(&self, source: &Path, destination: &Path, read_only: bool) -> Result<()> {
+        use std::os::fd::AsFd;
+
+        let (parent, name) = Self::place(destination)?;
+        let source_directory = Self::directory(source)?;
+        let parent_directory = Self::directory(parent)?;
+
+        thalyx_syscall::btrfs_snapshot_create(
+            parent_directory.as_fd(),
+            source_directory.as_fd(),
+            name,
+            read_only,
+        )
+        .map_err(|source| SnapshotError::Kernel {
+            operation: if read_only {
+                "take a read-only snapshot at"
+            } else {
+                "make a writable copy at"
+            },
+            path: destination.to_path_buf(),
+            source,
+        })
+    }
+}
+
+impl Volumes for Native {
+    fn is_subvolume(&self, path: &Path) -> Result<bool> {
+        use std::os::fd::AsFd;
+
+        let directory = match std::fs::File::open(path) {
+            Ok(directory) => directory,
+            // Nothing there, or not a directory at all: that is an answer, and it
+            // is `false`. Anything else — a permission, an I/O error — is not an
+            // answer, and returning `false` for it would be this crate making the
+            // same mistake it was written to fix.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(source) => {
+                return Err(SnapshotError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        };
+
+        thalyx_syscall::btrfs_is_subvolume(directory.as_fd()).map_err(|source| {
+            SnapshotError::Kernel {
+                operation: "say what kind of thing",
+                path: path.to_path_buf(),
+                source,
+            }
+        })
+    }
+
+    fn snapshot(&self, source: &Path, destination: &Path) -> Result<()> {
+        // Read-only, and in one ioctl. A snapshot that is created writable and
+        // sealed afterwards is a working copy for as long as the second call takes.
+        self.create(source, destination, true)
+    }
+
+    fn restore_from(&self, snapshot: &Path, destination: &Path) -> Result<()> {
+        // Writable, because this becomes the live tree again.
+        self.create(snapshot, destination, false)
+    }
+
+    fn delete(&self, subvolume: &Path) -> Result<()> {
+        use std::os::fd::AsFd;
+
+        let (parent, name) = Self::place(subvolume)?;
+        let parent_directory = Self::directory(parent)?;
+
+        thalyx_syscall::btrfs_subvolume_destroy(parent_directory.as_fd(), name).map_err(|source| {
+            SnapshotError::Kernel {
+                operation: "delete",
+                path: subvolume.to_path_buf(),
+                source,
+            }
+        })
     }
 }
 
