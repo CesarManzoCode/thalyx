@@ -66,6 +66,106 @@ excerpt() {
     tail -n "${2:-15}" "$1" | sed 's/^/               | /'
 }
 
+# ------------------------------------------------- stages that do not touch each other
+
+# How many of them at once. Four, not one per core: each stage here starts
+# sessions, indexes trees and shells out, so the work inside one is already
+# several processes, and a machine with every core busy is a machine where the
+# stages that measure time — which are all serial, and all still to come — would
+# be measuring this.
+VERIFY_JOBS="${THALYX_VERIFY_JOBS:-4}"
+
+# Run several stages side by side and report them as if they had run in a row.
+#
+# ## What may be passed to this and what may not
+#
+# Only stages that share nothing. Every stage below is one that builds its own
+# store under `$WORK/<its own prefix>`, asks `$THALYX` about it and throws it
+# away — no cgroup, no mount, no loop device, no Btrfs, no BPF map, no QEMU, no
+# `/dev/fb0`, and nothing whose answer is about how long something took or in
+# what order two things happened. **Everything else stays serial**, and the two
+# reasons are not the same one: a stage that writes something machine-global is
+# rule 11 — the machine it measured is no longer the machine the next stage
+# measures — and a stage that measures scheduling is rule 7 from the wrong side,
+# because the load this function creates is exactly the noise such a measurement
+# has no defence against.
+#
+# ## Why the output is held back
+#
+# Four stages writing to one terminal interleave, and a report whose lines can
+# arrive in any order is a report nobody can diff against the last run. Each one
+# writes to a file of its own; when they are all done the files are printed in
+# the order they were launched, so the run reads exactly as it did when these
+# stages ran one after another.
+#
+# ## Why the counts come back through files
+#
+# `proven`, `unproven` and `failed` add to variables, and a background job is a
+# subshell: everything it counts dies with it. A group whose verdicts were lost
+# would make the summary at the bottom quietly smaller than the run — which is
+# the one failure mode this whole script exists to not have. So each subshell
+# writes what it counted, and a subshell that comes back with no count at all is
+# a `FAILED` here rather than a stage that silently did not happen.
+parallel_stages() {
+    local fn pid log
+    local -a fns=("$@") pids=() logs=()
+
+    # Once for the group, in the parent, rather than once per member inside it.
+    # `step` calls this too, and three subshells that all found the machine
+    # enforcing would all run `make -C lsm observe` — three programs writing one
+    # machine-global switch, which is the thing rule 11 is about. Nothing in a
+    # group touches the guard, so the group has one answer and this is it.
+    guard_check "stages run side by side"
+
+    # Launched in chunks and waited for as chunks, which is the whole of the
+    # concurrency control. A rolling window would need `wait -n`, and `wait -n`
+    # without a pid list stops for **any** background job — including one an
+    # earlier stage left running — so this function would be waiting on
+    # something it did not start. Nothing here is worth that: a group is three
+    # or four stages, and the cap exists to keep the machine usable rather than
+    # to squeeze the last second out of a group.
+    local outstanding=0
+    for fn in "${fns[@]}"; do
+        log="$WORK/parallel.$fn"
+        logs+=("$log")
+        rm -f "$log.count" "$log.notes" "$log.step"
+        if [ "$outstanding" -ge "$VERIFY_JOBS" ]; then
+            # This group's own children, named. A bare `wait` would also wait
+            # for whatever an earlier stage left in the background.
+            wait "${pids[@]}"
+            outstanding=0
+        fi
+        (
+            PROVEN=0; UNPROVEN=0; FAILED=0; NOTES=()
+            GUARD_EXPECT_OBSERVING=0
+            "$fn"
+            printf '%s %s %s\n' "$PROVEN" "$UNPROVEN" "$FAILED" > "$log.count"
+            printf '%s\n' "$LAST_STEP" > "$log.step"
+            [ "${#NOTES[@]}" -gt 0 ] && printf '%s\n' "${NOTES[@]}" > "$log.notes"
+        ) > "$log" 2>&1 &
+        pids+=("$!")
+        outstanding=$((outstanding + 1))
+    done
+    for pid in "${pids[@]}"; do wait "$pid"; done
+
+    local i=0 p u f note
+    for log in "${logs[@]}"; do
+        cat "$log"
+        if [ -f "$log.count" ]; then
+            read -r p u f < "$log.count"
+            PROVEN=$((PROVEN + p)); UNPROVEN=$((UNPROVEN + u)); FAILED=$((FAILED + f))
+            if [ -f "$log.notes" ]; then
+                while IFS= read -r note; do NOTES+=("$note"); done < "$log.notes"
+            fi
+            [ -f "$log.step" ] && LAST_STEP="$(cat "$log.step")"
+        else
+            failed "${fns[$i]} was run beside the stages around it and did not come back with a verdict, so whatever it checks is unchecked in this run"
+            excerpt "$log" 25
+        fi
+        i=$((i + 1))
+    done
+}
+
 # ------------------------------------------------- the mode the script assumes
 
 MODEPIN="/sys/fs/bpf/thalyx/maps/thalyx_enforcing"
@@ -3547,6 +3647,7 @@ fi
 
 # ────────────────────── 21. the structured face, asked for the way a program asks
 
+stage_21() {
 step "21. a program can ask the session for facts instead of sentences"
 
 # `Filosofia-Fundacional.md`, *El objetivo*: the objective is that an LLM works
@@ -3632,9 +3733,11 @@ else:
         excerpt "$WORK/face-human.log"
     fi
 fi
+}
 
 # ──────────────── 22. the machine describes itself, rehearses, and answers by structure
 
+stage_22() {
 step "22. a program can ask what this machine does, try it dry, and ask the index"
 
 # `Superficie-para-el-LLM.md`, puntos A1, D1 and C1 — the three that a program
@@ -3923,9 +4026,11 @@ else:
             ;;
     esac
 fi
+}
 
 # ─────────────────────── 23. a long answer is cut, counted, and can be resumed
 
+stage_23() {
 step "23. a directory too big for a context window arrives bounded"
 
 # `Superficie-para-el-LLM.md`, punto B1. The failure is the quiet one of the
@@ -4031,9 +4136,11 @@ else:
         excerpt "$WORK/window-human.log"
     fi
 fi
+}
 
 # ──────────────────────── 24. a name, not a line: the symbol index over real code
 
+stage_24() {
 step "24. asking where a name comes from, over this repository's own source"
 
 # `Superficie-para-el-LLM.md`, punto C2. `grep` answers with lines because it
@@ -4105,6 +4212,9 @@ print("%s %s %s %s" % (built, defined, used, control))
         excerpt "$WORK/symbol.log"
     fi
 fi
+}
+
+parallel_stages stage_21 stage_22 stage_23 stage_24
 
 # ───────────────────── 25. the journal, asked from a session instead of a subcommand
 
@@ -4525,6 +4635,7 @@ fi
 
 # ──────────────────────── 28. a tree nobody would wait for is refused, not started
 
+stage_28() {
 step "28. an answer that never arrives, refused instead"
 
 # `Superficie-para-el-LLM.md`: the fourth cost is the cost of getting it wrong.
@@ -4603,7 +4714,9 @@ else
     failed "the control tree indexed $SMALL_COUNT files instead of 1: a hidden directory was read, or the ordinary one was not; see $WORK/index-small.log"
     excerpt "$WORK/index-small.log"
 fi
+}
 
+stage_29() {
 step "29. a file's text can be changed, on a screen and by line"
 
 # Point 5 of the usable terminal. It is the first verb whose ordinary use
@@ -4686,9 +4799,11 @@ else
     failed "a file Thalyx refused to edit changed anyway — that is the one thing a refusal must never do; see $WORK/edit-lines.log"
     excerpt "$WORK/edit-lines.log"
 fi
+}
 
 # ------------------------------------------------ 30. finding things in a tree
 
+stage_30() {
 step "30. finding a file by name, and finding text inside files"
 
 # Point 6 of the usable terminal, and what a real machine adds over the unit
@@ -4805,6 +4920,9 @@ else
     failed "the binary in the tree was counted as $not_text file(s) skipped instead of 1; see $WORK/search.log"
     excerpt "$WORK/search.log"
 fi
+}
+
+parallel_stages stage_28 stage_29 stage_30
 
 # ------------------------------------------------ 31. what runs, and stopping it
 
@@ -5155,6 +5273,7 @@ fi
 
 # ------------------------------------------- 33. a name that has a space in it
 
+stage_33() {
 step "33. a name with a space in it, and a star that is not a pattern"
 
 # Point 9, decided by Cesar on 2026-08-23: quoting now, a whole shell language
@@ -5227,7 +5346,9 @@ elif [ "$UNTOUCHED" != yes ]; then
 else
     failed "the baseline is broken: with the quote closed, \`rm \"a b.log\"\` did not remove it, so the refusal above proves nothing; see $WORK/words-closed.log"
 fi
+}
 
+stage_34() {
 step "34. a rehearsal says what would happen, not what happened"
 
 # Punto D1, and the fault `matar` had: a sentence that reports a completed act
@@ -5300,7 +5421,9 @@ else
     failed "the baseline is broken: the real \`rm\` no longer reports what it did (says_past=$REAL_SAYS_PAST removed_it=$REAL_DID_IT), so the rehearsal's wording above proves nothing; see $WORK/tense-real.log"
     excerpt "$WORK/tense-real.log"
 fi
+}
 
+stage_35() {
 step "35. the network can be seen, and Thalyx says it cannot use it"
 
 # Point 8, `vault/02-Arquitectura/Red.md`, and the last of the nine.
@@ -5370,6 +5493,9 @@ else
         excerpt "$WORK/net.log"
     fi
 fi
+}
+
+parallel_stages stage_33 stage_34 stage_35
 
 step "36. a program nobody signed runs, confined, and only after a human says yes"
 
@@ -6985,6 +7111,7 @@ fi
 
 unproven "that virtio-serial actually carries the protocol — that needs a boot: make -C image agent PROJECT=<a project>, then dev/agent-connect.sh"
 
+stage_49() {
 step "49. the index finds a dependent that reaches the code through a field, and does not invent one"
 
 # The defect this stage is about was found by running the system, which is where
@@ -7027,7 +7154,9 @@ else
     failed "the index does not repair itself as claimed; see $WORK/refresh.log"
     excerpt "$WORK/refresh.log" 20
 fi
+}
 
+stage_50() {
 step "50. the benchmark harness reads what the agent printed, and nothing else"
 
 # Rule 6, and the reason it is a stage rather than a comment: the numbers that
@@ -7056,7 +7185,9 @@ else
     failed "the benchmark harness does not hold its own claims; see $WORK/bench-harness.log"
     excerpt "$WORK/bench-harness.log" 25
 fi
+}
 
+stage_51() {
 step "51. one call does the mechanical rename that used to take sixteen"
 
 # The claim REVERSIBLE #1 produced, held in place without spending anything.
@@ -7080,7 +7211,9 @@ else
     failed "the rename that used to take sixteen calls does not take one; see $WORK/one-call.log"
     excerpt "$WORK/one-call.log" 25
 fi
+}
 
+stage_52() {
 step "52. several patterns are one call where they were five"
 
 # The claim the run of 2026-08-29 produced, and it is the next one down from
@@ -7108,6 +7241,9 @@ else
     failed "several substitutions in one call do not hold their own claims; see $WORK/one-batch.log"
     excerpt "$WORK/one-batch.log" 25
 fi
+}
+
+parallel_stages stage_49 stage_50 stage_51 stage_52
 
 # ------------------------------------------------- the machine, as it is left
 #

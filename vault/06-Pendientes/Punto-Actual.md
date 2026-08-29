@@ -14,9 +14,72 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## Cinco llamadas eran un solo plan, y el brazo B nunca había salido de ningún lado — 2026-08-29
+> ## Cuatro fallas de `verify.sh`, y catorce etapas que ya no se esperan unas a otras — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> ### Las cuatro fallas, y ninguna era de Thalyx
+>
+> Las cuatro venían del instrumento. Están escritas enteras en
+> [[Estrategia-de-Pruebas]]; en corto:
+>
+> - **Dos pruebas de `intento` se peleaban por un subvolumen.** `btrfs_scratch()`
+>   nombraba su subvolumen `thalyx-substitute-<pid>` y empezaba borrándolo —y
+>   `cargo test` corre las pruebas de un archivo como hilos de **un** proceso, así
+>   que las dos tenían el mismo nombre. La segunda destruía el árbol de la primera
+>   y después no podía crear lo que ya existía. Ahora el nombre lleva la etiqueta
+>   de la prueba. `natively.rs` tenía lo mismo, con cuatro.
+> - **`replacements` esperaba 4 sobre un fixture con 3.** Aritmética escrita a
+>   mano en una prueba que este contenedor nunca corre.
+> - **La línea del lote estaba mal formada.** Sólo la primera operación toma
+>   prestado el archivo de antes del subverbo; las demás listan los suyos. La
+>   máquina leía `'(SlotTable, usize)'` como nombre de archivo y rechazaba el lote
+>   entero. Las dos constantes salieron ahora de correr los verbos de verdad.
+> - **El auto-test del arnés medía el PATH de root.** Sus dos comprobaciones de
+>   «esto se niega **antes** de arrancar un agente» eran las dos únicas
+>   sub-invocaciones sin un `claude` sustituto en el PATH, y `sudo` no le da uno a
+>   root. Morían con `no claude on this host` antes de llegar a la negativa que
+>   probaban. Ahora tienen un sustituto que **escribe un archivo si alguien lo
+>   llama**, así que «no se arrancó ningún agente» es un testigo y no una
+>   inferencia sobre un `.ndjson` vacío.
+>
+> ### Y catorce etapas corren de a grupos
+>
+> `parallel_stages` corre un grupo de etapas a la vez, guarda la salida de cada
+> una en su archivo y la reimprime **en el orden en que se lanzaron**, así que el
+> reporte se lee igual que antes. Los veredictos vuelven por archivo, porque un
+> trabajo en segundo plano es una subshell y lo que cuenta se muere con ella; una
+> etapa que vuelve sin veredicto es un `FAILED` aquí, nunca una etapa que
+> silenciosamente no pasó.
+>
+> Los cuatro grupos son **21-24**, **28-30**, **33-35** y **49-52**: cada una de
+> esas etapas se construye su propio almacén bajo `$WORK`, le pregunta a `$THALYX`
+> y lo tira. **Todo lo demás sigue serial**, y por dos razones distintas: lo que
+> escribe algo global —BPF, cgroups, montajes, loop, Btrfs, QEMU, `/dev/fb0`— es
+> la regla 11, y lo que mide tiempos o carreras —31, 32— no tiene defensa contra
+> el ruido que este mismo mecanismo produce (regla 7).
+>
+> Medido en el contenedor, en caliente: **104.7s -> 94.7s, 9.6% menos**, con el
+> reporte idéntico línea por línea y los mismos 98 / 43 / 0. En la máquina de
+> Cesar la fracción será menor: lo que domina ahí —QEMU, Btrfs, el LSM— es
+> justamente lo que se quedó serial.
+>
+> ### Lo que falta
+>
+> **La verificación de siempre**, que es lo único que puede cerrar las dos
+> pruebas de Btrfs: aquí no hay Btrfs y las dos se saltan.
+>
+> ```sh
+> cd ~/thalyx && git pull
+> cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+> ```
+>
+> Y sigue pendiente, sin tocar, **el regrade de la corrida que ya existe** que
+> pide el bloque de abajo.
+
+---
+
+> ## Cinco llamadas eran un solo plan, y el brazo B nunca había salido de ningún lado — 2026-08-29
 >
 > ### Lo que quedó hecho
 >
