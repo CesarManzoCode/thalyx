@@ -47,13 +47,63 @@
 
 use crate::files::{Face, Where};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use thalyx_edit::screen::{Editing, Reaction, Viewport};
 use thalyx_edit::{EditError, Edited, Text, machine};
 
+/// What `editar` leaves for the surface it was typed on to do.
+///
+/// **This exists because the editor is the one verb whose answer is a surface
+/// rather than words.** Every other verb finishes by printing; this one finishes
+/// by taking over the display until the person leaves it, and *which* display
+/// that is is not something the verb can know. Cesar found it by running the
+/// image: `crear prueba.txt` worked and `editar prueba.txt` answered «there is
+/// no terminal here to draw an editor on» — on the screen the machine boots
+/// into, which is nothing but display.
+///
+/// The reason is not a missing check, it is where the check was. The editor here
+/// writes ANSI to descriptor 1 and reads keys from descriptor 0, and under the
+/// screen descriptor 1 is `thalyx-capture`'s buffer and descriptor 0 is
+/// `/dev/null`. Faking a terminal there would have drawn the escape sequences
+/// into the conversation as text.
+///
+/// So the verb answers *open one*, and the surface — the text session or the
+/// screen — opens the one it has. That is the same shape [`Flow::Emptied`] took
+/// for `limpiar` and for the same reason: the meaning of the verb is a property
+/// of the surface, so the surface is what finishes it.
+///
+/// [`Flow::Emptied`]: crate::session::Flow::Emptied
+pub enum Opens {
+    /// Nothing more. The verb said everything it had to say.
+    Nothing,
+    /// A screen editor on this file, which only a surface can put up.
+    Editor(PathBuf),
+}
+
 /// The subverbs, in both spellings, and the order they are offered in.
-const ACTIONS: &[&str] = &[
-    "ver", "show", "poner", "insert", "cambiar", "replace", "borrar", "delete",
+pub const ACTIONS: &[&str] = &[
+    "ver",
+    "show",
+    "poner",
+    "insert",
+    "cambiar",
+    "replace",
+    "borrar",
+    "delete",
+    // The one that is not addressed by line. It is last because it is the
+    // newest and not because it is the least used — for a mechanical change it
+    // is the one to reach for, and `describe` says so.
+    "sustituir",
+    "substitute",
 ];
+
+/// The two spellings of the subverb that addresses text instead of a line.
+///
+/// Its own constant because three places have to agree about it — the parser
+/// here, the external boundary's decision about how to put the arguments on the
+/// line, and the tests — and three copies of two strings is how one of them
+/// keeps the old spelling after a rename.
+pub const SUBSTITUTE: &[&str] = &["sustituir", "substitute"];
 
 /// How many lines one `ver` answers with when nobody said.
 ///
@@ -63,7 +113,7 @@ const ACTIONS: &[&str] = &[
 /// for the rest costs one more call and never a guess.
 const PAGE: usize = 200;
 
-pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
+pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<Opens> {
     act(here, rest, face, false)
 }
 
@@ -75,17 +125,19 @@ pub fn run(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
 /// is the run's own arithmetic and not a second copy of it, which is the same
 /// property `foresee_run` has and for the same reason.
 pub fn foresee(here: &Where, rest: &str, face: Face) -> std::io::Result<()> {
-    act(here, rest, face, true)
+    // A rehearsal never opens anything — `""` is `nothing_to_rehearse` below —
+    // so there is nothing here for a surface to do.
+    act(here, rest, face, true).map(|_| ())
 }
 
-fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Result<()> {
+fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Result<Opens> {
     // Only the name is split as words. Everything after it is taken from the
     // line byte for byte, because the third part is text going into a file and a
     // configuration line that starts with four spaces means something with them
     // and something else without. `words.rs` calls this the one carve-out.
     let named = match crate::words::first(rest) {
         Ok(Some(named)) => named,
-        Ok(None) => return which_file(face),
+        Ok(None) => return which_file(face).map(|()| Opens::Nothing),
         Err(why) => {
             if face.is_machine() {
                 face.say(thalyx_files::machine::refused(
@@ -97,33 +149,100 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
             } else {
                 println!("\n  {why}\n");
             }
-            return Ok(());
+            return Ok(Opens::Nothing);
         }
     };
     let (named, after) = named;
     if named.is_empty() {
-        return which_file(face);
+        return which_file(face).map(|()| Opens::Nothing);
+    }
+
+    // The subverb is read as a *word* and the rest of the line is not.
+    //
+    // It used to be a raw split on the first space, which is nearly the same
+    // thing and is wrong in exactly one place: the external boundary composes
+    // this line, and for `sustituir` it has to quote what follows — two exact
+    // strings, either of which may hold a space. Quoting them means the subverb
+    // arrives quoted too, and a raw split would look for a subverb called
+    // `'sustituir'`, which no machine has. Reading it with the same scanner
+    // that read the file name costs nothing and makes both spellings work.
+    //
+    // What must **not** become words is everything after it: the third part is
+    // content going into a file, and `words.rs` calls that the one carve-out.
+    let taken = match crate::words::first(after) {
+        Ok(taken) => taken,
+        Err(why) => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused(
+                    op_of(rehearsing),
+                    why.word(),
+                    why.remedy(),
+                    &why.to_string(),
+                ));
+            } else {
+                println!("\n  {why}\n");
+            }
+            return Ok(Opens::Nothing);
+        }
+    };
+    let action = taken.as_ref().map(|(word, _)| word.as_str()).unwrap_or("");
+    let argument = taken.as_ref().map(|(_, rest)| rest.trim()).unwrap_or("");
+
+    // Answered before the file is opened, because this subverb has no *one*
+    // file: the name before it is the first of a list, and opening it here
+    // would mean opening it twice and refusing the second as a repeat.
+    if SUBSTITUTE.contains(&action) {
+        return substitute(here, named.as_str(), argument, face, rehearsing)
+            .map(|()| Opens::Nothing);
     }
 
     let path = thalyx_files::resolve(here.at(), named.as_str());
-    let mut words = after.splitn(2, char::is_whitespace);
-    let action = words.next().unwrap_or("").trim();
-    let argument = words.next().unwrap_or("").trim();
 
-    let mut text = match Text::open(&path) {
-        Ok(text) => text,
-        Err(error) => return refuse(op_of(rehearsing), &error, face),
+    // Two anchors and both are needed. The first proves the *file* resolves
+    // inside the workspace — `RESOLVE_BENEATH` refuses a link that leaves, and
+    // that is the check `Text::open`'s deliberate symlink-following would
+    // otherwise walk straight past. The second is what gets opened: the file's
+    // *parent*, pinned, with the name appended, because `Text::save` stages a
+    // temporary beside the file and renames it — and a descriptor path with no
+    // usable parent has nowhere to stage.
+    //
+    // For the person's session both are the path itself and this costs a clone.
+    let opened = match here
+        .anchor(&path)
+        .and_then(|_| here.anchor_parent(&path))
+        .map_err(|error| {
+            thalyx_edit::EditError::Absent(
+                error
+                    .path()
+                    .unwrap_or(std::path::Path::new(""))
+                    .to_path_buf(),
+            )
+        }) {
+        Ok(anchored) => anchored,
+        Err(error) => return refuse(op_of(rehearsing), &error, face).map(|()| Opens::Nothing),
     };
 
+    let mut text = match Text::open_anchored(opened.path(), &path) {
+        Ok(text) => text,
+        Err(error) => return refuse(op_of(rehearsing), &error, face).map(|()| Opens::Nothing),
+    };
+
+    // No subverb is the person's case, and it is the one that needs a surface.
+    // Answered **before** the match and by handing the file back rather than by
+    // opening anything, because which surface this was typed on is the one thing
+    // this verb cannot see — see [`Opens`]. The file is opened first all the
+    // same: a file that is not text or is over the ceiling is refused here,
+    // where a refusal is words, rather than by a display that has already gone
+    // blank to show it.
+    if action.is_empty() && !rehearsing {
+        return Ok(Opens::Editor(text.path().to_path_buf()));
+    }
+
     match action {
-        // No subverb is the person's case, and it is the one that needs a
-        // terminal. Refused with its own word rather than left to hang, because
-        // a program down a pipe waiting for a screen waits forever.
         // Both of these change nothing, so a rehearsal of them has nothing to
         // answer — and answering anyway would be a second, worse `ver`.
-        "" if rehearsing => nothing_to_rehearse("opening the screen", face),
+        "" => nothing_to_rehearse("opening the screen", face),
         "ver" | "show" if rehearsing => nothing_to_rehearse("`ver`", face),
-        "" => screen(&mut text, face),
         "ver" | "show" => show(&text, argument, face),
         "poner" | "insert" => {
             let (at, body) = split_argument(argument);
@@ -155,6 +274,7 @@ fn act(here: &Where, rest: &str, face: Face, rehearsing: bool) -> std::io::Resul
             Ok(())
         }
     }
+    .map(|()| Opens::Nothing)
 }
 
 /// Split `12 texto` into the address and everything after it.
@@ -299,6 +419,279 @@ fn change(
     Ok(())
 }
 
+/// `editar <archivo> sustituir <viejo> <nuevo> [más archivos…]` — one exact
+/// substitution, everywhere it occurs, across every file named.
+///
+/// ## Why this exists, and what it is not
+///
+/// It comes out of a measurement rather than a wish.
+/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md` records what the same
+/// model did to the same mechanical rename on Linux and on Thalyx: on Linux one
+/// call per file, because its editor can replace every occurrence in a file at
+/// once; here sixteen calls, one per place, each carrying the whole new text of
+/// a line. Every property Thalyx was being measured for held — the workspace
+/// boundary, the reversibility, the structured answers — and the *granularity*
+/// of the write surface cost a third of the wall clock and half again as many
+/// tokens out of the model.
+///
+/// So this is the shape that was missing and nothing more. It is **not** a
+/// rename: nothing here knows what a symbol is, and the same characters in a
+/// comment, a string or a longer identifier are matched exactly as the
+/// definition is. Calling it `renombrar` would be a promise this machine's index
+/// cannot keep today — see `thalyx_edit::Text::substitute`.
+///
+/// ## Preflight, then write, and never the other order
+///
+/// Every file is opened, counted and checked **before** any of them is written.
+/// A file that is not there, is not text, is over the ceiling, was named twice,
+/// or does not contain the text at all stops the whole call with nothing
+/// changed. That is the answer that costs a caller one corrected call; the
+/// alternative — change four files and refuse the fifth — costs it a
+/// reconstruction, and rule 9 says which of those to pick.
+///
+/// What preflight cannot promise is the write itself: a disk that fills between
+/// the third save and the fourth leaves three files changed. Each save is
+/// atomic on its own, so nothing is half-written, and the answer then says
+/// exactly which files carry the new text and which do not. Nothing here builds
+/// a transaction to avoid that — `intento` is the transaction, it is proven on
+/// real hardware, and a second weaker one beside it is the thing
+/// `Principio-Doble-Ruta` calls drift.
+fn substitute(
+    here: &Where,
+    first_named: &str,
+    rest: &str,
+    face: Face,
+    rehearsing: bool,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let op = op_of(rehearsing);
+    let Some(words) = crate::words::asked(face, op, rest) else {
+        return Ok(());
+    };
+    if words.len() < 2 {
+        return refuse_substitution(
+            op,
+            &EditError::Incomplete {
+                needs: "`sustituir` needs the text to replace and the text to put in its \
+                        place: editar <archivo> sustituir <viejo> <nuevo> [más archivos…]",
+            },
+            face,
+        );
+    }
+    let old = words[0].as_str().to_string();
+    let new = words[1].as_str().to_string();
+
+    // Asked before a single file is opened. A caller that sent the same string
+    // twice, or one with a line break in it, has asked for something no file
+    // can answer, and opening sixty-four of them to find that out is sixty-four
+    // opens spent on a refusal that was decidable from the arguments.
+    if let Err(error) = thalyx_edit::substitutable(&old, &new) {
+        return refuse_substitution(op, &error, face);
+    }
+
+    let mut named: Vec<String> = Vec::with_capacity(words.len() - 1);
+    named.push(first_named.to_string());
+    named.extend(words[2..].iter().map(|word| word.as_str().to_string()));
+    if named.len() > thalyx_edit::MOST_FILES {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "files named in one substitution",
+                given: named.len(),
+                most: thalyx_edit::MOST_FILES,
+            },
+            face,
+        );
+    }
+
+    // Held open for the whole call, and that is load-bearing rather than tidy:
+    // for a confined session the anchor *is* the descriptor the kernel resolved
+    // inside the workspace, `Text::save` stages beside it, and dropping it after
+    // the preflight would mean saving through a path that has to be resolved a
+    // second time — which is the precise shape of the check-then-reopen this
+    // boundary was hardened to stop.
+    let mut held: Vec<(crate::confine::Anchored, Text)> = Vec::with_capacity(named.len());
+    let mut seen: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
+    let mut total = 0usize;
+
+    for name in &named {
+        let path = thalyx_files::resolve(here.at(), name);
+        let anchored = match here
+            .anchor(&path)
+            .and_then(|_| here.anchor_parent(&path))
+            .map_err(|error| {
+                EditError::Absent(
+                    error
+                        .path()
+                        .unwrap_or(std::path::Path::new(""))
+                        .to_path_buf(),
+                )
+            }) {
+            Ok(anchored) => anchored,
+            Err(error) => return refuse_substitution(op, &error, face),
+        };
+
+        let text = match Text::open_anchored(anchored.path(), &path) {
+            Ok(text) => text,
+            Err(error) => return refuse_substitution(op, &error, face),
+        };
+
+        // Identity and not the name. Two names for one file — a symlink, a hard
+        // link, `./src/x.rs` beside `src/x.rs` — would each be substituted
+        // against the text as it was before the call, and the second save would
+        // silently throw the first away.
+        match std::fs::metadata(anchored.path()) {
+            Ok(meta) => {
+                if !seen.insert((meta.dev(), meta.ino())) {
+                    return refuse_substitution(op, &EditError::RepeatedPath { path }, face);
+                }
+            }
+            Err(error) => {
+                return refuse_substitution(
+                    op,
+                    &EditError::Unreadable {
+                        path,
+                        detail: error.to_string(),
+                    },
+                    face,
+                );
+            }
+        }
+
+        let found = text.occurrences(&old);
+        if found == 0 {
+            return refuse_substitution(op, &EditError::NoOccurrences { path, old }, face);
+        }
+        total += found;
+        held.push((anchored, text));
+    }
+
+    if total > thalyx_edit::MOST_REPLACEMENTS {
+        return refuse_substitution(
+            op,
+            &EditError::TooMuch {
+                what: "places to change in one substitution",
+                given: total,
+                most: thalyx_edit::MOST_REPLACEMENTS,
+            },
+            face,
+        );
+    }
+
+    let mut done: Vec<thalyx_edit::Substituted> = Vec::with_capacity(held.len());
+    for index in 0..held.len() {
+        let outcome = {
+            let (_, text) = &mut held[index];
+            match text.substitute(&old, &new) {
+                // The save is what makes this the same transaction shape every
+                // other structured edit has: nothing is left open between one
+                // typed line and the next.
+                Ok(one) if !rehearsing => text.save().map(|_| one),
+                other => other,
+            }
+        };
+        match outcome {
+            Ok(one) => done.push(one),
+            Err(error) => {
+                let left: Vec<std::path::PathBuf> = held[index..]
+                    .iter()
+                    .map(|(_, text)| text.path().to_path_buf())
+                    .collect();
+                return half_done(op, &old, &new, &done, &left, &error, face);
+            }
+        }
+    }
+
+    if face.is_machine() {
+        face.say(if rehearsing {
+            thalyx_edit::machine::would_substitute(&old, &new, &done)
+        } else {
+            thalyx_edit::machine::substituted(&old, &new, &done)
+        });
+        return Ok(());
+    }
+
+    let places: usize = done.iter().map(|one| one.replacements).sum();
+    let what = if rehearsing {
+        "would change"
+    } else {
+        "changed"
+    };
+    println!(
+        "\n  {what} {places} place(s) in {} file(s), `{old}` -> `{new}`:",
+        done.len()
+    );
+    for one in &done {
+        println!(
+            "    {} — {} place(s) on {} line(s), from line {}",
+            one.path.display(),
+            one.replacements,
+            one.lines,
+            one.first_line
+        );
+    }
+    if rehearsing {
+        println!("  Nothing was written.\n");
+    } else {
+        println!("  To take this back, it had to have been inside an `intento`.\n");
+    }
+    Ok(())
+}
+
+/// A substitution that refused before it wrote anything.
+///
+/// Its own function so that `wrote: false` cannot be forgotten on one of the
+/// eight paths that reach it. That field is the whole difference between a
+/// workspace nobody touched and one halfway through a rename, and a caller
+/// cannot get it from `ok`.
+fn refuse_substitution(op: &str, error: &EditError, face: Face) -> std::io::Result<()> {
+    if face.is_machine() {
+        face.say(thalyx_edit::machine::not_substituted(op, error));
+    } else {
+        println!("\n  {error}.");
+        println!("  Nothing was written.\n");
+    }
+    Ok(())
+}
+
+/// A substitution that passed its preflight and then could not finish.
+fn half_done(
+    op: &str,
+    old: &str,
+    new: &str,
+    done: &[thalyx_edit::Substituted],
+    left: &[std::path::PathBuf],
+    error: &EditError,
+    face: Face,
+) -> std::io::Result<()> {
+    // Nothing written yet means this is an ordinary refusal, and saying
+    // otherwise would send a caller to abandon an attempt it never needed.
+    if done.is_empty() {
+        return refuse_substitution(op, error, face);
+    }
+    if face.is_machine() {
+        face.say(thalyx_edit::machine::half_substituted(
+            old, new, done, left, error,
+        ));
+    } else {
+        println!("\n  {error}.");
+        println!(
+            "  {} file(s) were already changed and {} were not:",
+            done.len(),
+            left.len()
+        );
+        for one in done {
+            println!("    changed: {}", one.path.display());
+        }
+        for path in left {
+            println!("    left alone: {}", path.display());
+        }
+        println!("  Only an `intento` puts all of them back.\n");
+    }
+    Ok(())
+}
+
 /// The `op` a refusal carries, which has to follow the verb it stood in for.
 ///
 /// `describe` promises `rehearse` for `ensayo`, and a refusal that came back
@@ -404,9 +797,20 @@ fn show(text: &Text, argument: &str, face: Face) -> std::io::Result<()> {
 
 // ───────────────────────────────────────────────────────────────── the screen
 
-/// Open the full-screen editor, or say why there is none.
-fn screen(text: &mut Text, face: Face) -> std::io::Result<()> {
+/// Open the full-screen editor **on this terminal**, or say why there is none.
+///
+/// Called by the text session, which is the surface that has a terminal. The
+/// screen has its own — same engine, different pixels — and the reason there are
+/// two is in [`Opens`]: what an editor draws on is a property of the surface,
+/// and the escape sequences below are meaningless anywhere but here.
+pub fn on_this_terminal(path: &Path, face: Face) -> std::io::Result<()> {
     use std::os::fd::AsFd;
+
+    let mut text = match Text::open(path) {
+        Ok(text) => text,
+        Err(error) => return refuse("edit", &error, face),
+    };
+    let text = &mut text;
 
     // Asked of the terminal rather than inferred from the face. A person can
     // turn the structured face on and still be at a keyboard, and refusing them
@@ -592,6 +996,82 @@ mod tests {
         // — and the person would never find out where it happened.
         assert_eq!(unescape("^\\d+$"), "^\\d+$");
         assert_eq!(unescape("trailing\\"), "trailing\\");
+    }
+
+    /// The defect, at the line it happened on.
+    ///
+    /// On the image `crear prueba.txt` worked and `editar prueba.txt` answered
+    /// *«there is no terminal here to draw an editor on»* — on the display the
+    /// machine boots into. What was wrong is that this verb answered the
+    /// question at all: it looked at descriptor 0, which under the screen is
+    /// `/dev/null`, and concluded there was nowhere to draw.
+    ///
+    /// So the claim here is that it no longer answers it. **No terminal is
+    /// faked and no check is deleted** — the check moved to the surface that
+    /// owns a terminal, and what comes back is the file for whichever surface
+    /// asked. This test runs under `cargo test`, whose descriptor 0 is not a
+    /// terminal either: before the change it would have been a refusal.
+    #[test]
+    fn a_file_asked_for_with_no_subverb_is_handed_back_for_a_surface_to_open() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("prueba.txt");
+        std::fs::write(&file, "uno\ndos\n").expect("the file");
+
+        match run(&Where::start(), &file.display().to_string(), Face::Human)
+            .expect("`editar <archivo>`")
+        {
+            // And the right file: a transition that named the wrong path would
+            // open an editor on somebody else's work, which is worse than the
+            // refusal it replaced.
+            Opens::Editor(opened) => assert_eq!(opened, file),
+            Opens::Nothing => {
+                panic!("`editar <archivo>` refused instead of asking for a surface")
+            }
+        }
+    }
+
+    /// The other route, unchanged: a subverb answers here and asks for nothing.
+    ///
+    /// Beside the one above rather than in another file, because the pair is the
+    /// claim — one verb, two shapes — and a change that made *every* `editar`
+    /// ask for a surface would leave a program down a pipe waiting for a screen.
+    #[test]
+    fn a_subverb_is_still_finished_by_the_verb_and_asks_for_no_surface() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("prueba.txt");
+        std::fs::write(&file, "uno\ndos\n").expect("the file");
+
+        for typed in ["ver", "cambiar 1 UNO", "borrar 2"] {
+            let asked = run(
+                &Where::start(),
+                &format!("{} {typed}", file.display()),
+                Face::Human,
+            )
+            .expect("`editar <archivo> <subverbo>`");
+            assert!(
+                matches!(asked, Opens::Nothing),
+                "`editar … {typed}` asked for a surface"
+            );
+        }
+        // And it really did the work, rather than reporting nothing because it
+        // took an early way out.
+        assert_eq!(std::fs::read_to_string(&file).expect("the file"), "UNO\n");
+    }
+
+    /// A file that cannot be opened is refused **here**, in words, and never by
+    /// a display that has already gone blank to show it.
+    #[test]
+    fn a_file_that_is_not_text_is_refused_before_any_surface_is_asked_for() {
+        let tmp = tempfile::tempdir().expect("a temporary directory");
+        let file = tmp.path().join("binario");
+        std::fs::write(&file, [0u8, 159, 146, 150]).expect("the file");
+
+        let asked = run(&Where::start(), &file.display().to_string(), Face::Human)
+            .expect("`editar <binario>`");
+        assert!(
+            matches!(asked, Opens::Nothing),
+            "a binary file was handed to a surface to open"
+        );
     }
 
     #[test]

@@ -215,15 +215,28 @@ impl Typography {
         text: &str,
         style: TextStyle,
     ) -> bool {
-        if self.measure(style.face, style.size, text) <= max_width {
-            self.draw(canvas, x, baseline, text, style);
-            return false;
+        let kept = self.fit(style.face, style.size, max_width, text);
+        self.draw(canvas, x, baseline, &kept, style);
+        kept != text
+    }
+
+    /// The most of `text` that fits in `max_width`, ending in `…` if anything was
+    /// dropped.
+    ///
+    /// Split out of [`Typography::draw_within`] because a right-aligned string
+    /// has to be **measured before it can be placed**, and measuring the whole
+    /// text is what put a reading outside its own panel: [`Typography::draw`]
+    /// does not clip, so a value wider than its column was drawn starting to the
+    /// left of the column and ran across whatever was beside it.
+    pub fn fit(&mut self, face: Face, size: f32, max_width: f32, text: &str) -> String {
+        if self.measure(face, size, text) <= max_width {
+            return text.to_string();
         }
-        let ellipsis = self.advance(style.face, '…', style.size);
+        let ellipsis = self.advance(face, '…', size);
         let mut kept = String::new();
         let mut used = 0.0;
         for ch in text.chars() {
-            let next = self.advance(style.face, ch, style.size);
+            let next = self.advance(face, ch, size);
             if used + next + ellipsis > max_width {
                 break;
             }
@@ -231,8 +244,7 @@ impl Typography {
             kept.push(ch);
         }
         kept.push('…');
-        self.draw(canvas, x, baseline, &kept, style);
-        true
+        kept
     }
 
     /// Break `text` into lines no wider than `max_width`.

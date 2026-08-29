@@ -1,0 +1,18 @@
+{
+  "about": "A method on a type held two levels away: `holder.clock.tick_forward()`.",
+  "category": "method",
+  "why_it_matters": "Field access one step further out. `report.rs` imports only `holder.rs`; the code it actually calls lives in `clock.rs`.",
+  "dependents": {
+    "src/clock.rs": [
+      { "from": "src/holder.rs", "via": "import" },
+      { "from": "src/lib.rs", "via": "import" },
+      { "from": "src/report.rs", "via": "symbol", "through": "tick_forward" }
+    ]
+  },
+  "symbols": {
+    "tick_forward": {
+      "definitions": ["src/clock.rs:4 function"],
+      "uses": ["src/report.rs:4"]
+    }
+  }
+}

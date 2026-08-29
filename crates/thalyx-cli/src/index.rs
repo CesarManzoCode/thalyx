@@ -29,7 +29,7 @@
 use crate::files::{Face, Where};
 use serde_json::json;
 use std::path::Path;
-use thalyx_graph::{Freshness, Index};
+use thalyx_graph::{Freshness, Index, Refreshed};
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -52,7 +52,16 @@ fn open(store_root: &Path, tree: &Path) -> Result<Index, Box<dyn std::error::Err
 }
 
 /// Freshness as a caller reads it: a word to match on and a sentence to relay.
-fn freshness_fields(freshness: &Freshness) -> Vec<(&'static str, serde_json::Value)> {
+///
+/// The refresh outcome travels with it and is never optional, for the reason the
+/// freshness itself is never optional: a field that only appears on the bad day
+/// is a field nobody handles on the bad day. `refreshed: not_needed` on every
+/// ordinary answer is what makes `refreshed: declined_too_large` legible when it
+/// arrives.
+fn freshness_fields(
+    freshness: &Freshness,
+    refreshed: &Refreshed,
+) -> Vec<(&'static str, serde_json::Value)> {
     vec![
         (
             "fresh",
@@ -62,15 +71,37 @@ fn freshness_fields(freshness: &Freshness) -> Vec<(&'static str, serde_json::Val
                 "stale"
             }),
         ),
-        // Present in both cases. A field that only appears on the bad day is a
-        // field nobody handles on the bad day.
         ("freshness_detail", json!(freshness.describe())),
+        ("refreshed", json!(refreshed.word())),
+        ("refresh_detail", json!(refreshed.describe())),
     ]
+}
+
+/// Bring the index up to date before answering, unless the caller said not to.
+///
+/// The one place the policy lives, so that `buscar`, `depende` and `usan` cannot
+/// drift into three answers to the same question. What it decides is nothing:
+/// the decision is `Index::refresh_if_stale`, which is where the ceiling and the
+/// honesty rule are.
+fn refreshed_first(index: &mut Index, refresh: bool) -> Refreshed {
+    if !refresh {
+        return Refreshed::NotNeeded;
+    }
+    match index.refresh_if_stale() {
+        Ok(outcome) => outcome,
+        // The query still has an answer to give, and a caller that got an error
+        // instead would have lost rows it could have used over bookkeeping it
+        // did not ask for.
+        Err(error) => Refreshed::Failed {
+            was: Default::default(),
+            why: error.to_string(),
+        },
+    }
 }
 
 fn declined(face: Face, op: &str, word: &str, why: &str) {
     if face == Face::Machine {
-        println!("{}", thalyx_files::machine::declined(op, word, why));
+        face.say(thalyx_files::machine::declined(op, word, why));
     } else {
         println!("\n  {why}\n");
     }
@@ -78,7 +109,10 @@ fn declined(face: Face, op: &str, word: &str, why: &str) {
 
 /// `indexar [ruta]` — read the tree and record what refers to what.
 pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallible {
-    let tree = tree_of(here, rest);
+    let Some(given) = crate::words::asked(face, "index_build", rest) else {
+        return Ok(());
+    };
+    let tree = tree_of(here, &crate::words::phrase(&given));
 
     let mut index = match open(store_root, &tree) {
         Ok(index) => index,
@@ -91,30 +125,32 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
     match index.build() {
         Ok(report) => {
             if face == Face::Machine {
-                println!(
-                    "{}",
-                    thalyx_files::machine::answer(
-                        "index_build",
-                        vec![
-                            ("tree", json!(tree.display().to_string())),
-                            ("files_indexed", json!(report.files_indexed)),
-                            ("files_parsed", json!(report.files_parsed)),
-                            ("edges", json!(report.edges)),
-                            ("edges_resolved", json!(report.edges_resolved)),
-                            // Named rather than dropped: a file the parser did
-                            // not understand is not a file with no dependencies,
-                            // and a caller that read the second would conclude
-                            // things about a tree it has not actually seen.
-                            ("skipped", json!(report.skipped)),
-                            // What C2 rests on. A tree with zero symbols is one
-                            // the parser has no language for, and a caller that
-                            // only learned that by searching and finding nothing
-                            // would blame its own spelling.
-                            ("symbols", json!(report.symbols)),
-                            ("mentions", json!(report.mentions)),
-                        ],
-                    )
-                );
+                face.say(thalyx_files::machine::answer(
+                    "index_build",
+                    vec![
+                        ("tree", json!(tree.display().to_string())),
+                        ("files_indexed", json!(report.files_indexed)),
+                        ("files_parsed", json!(report.files_parsed)),
+                        ("edges", json!(report.edges)),
+                        ("edges_resolved", json!(report.edges_resolved)),
+                        // Named rather than dropped: a file the parser did
+                        // not understand is not a file with no dependencies,
+                        // and a caller that read the second would conclude
+                        // things about a tree it has not actually seen.
+                        ("skipped", json!(report.skipped)),
+                        // What C2 rests on. A tree with zero symbols is one
+                        // the parser has no language for, and a caller that
+                        // only learned that by searching and finding nothing
+                        // would blame its own spelling.
+                        ("symbols", json!(report.symbols)),
+                        ("mentions", json!(report.mentions)),
+                        // Of `edges`, the ones no import states. A caller that
+                        // only saw the total could not tell a tree whose
+                        // imports say everything from a build that stopped
+                        // looking past them.
+                        ("edges_via_symbol", json!(report.edges_via_symbol)),
+                    ],
+                ));
             } else {
                 println!();
                 println!(
@@ -129,6 +165,12 @@ pub fn build(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallibl
                     "  {} names declared, used in {} places",
                     report.symbols, report.mentions
                 );
+                if report.edges_via_symbol > 0 {
+                    println!(
+                        "  {} of the references are names used without an import",
+                        report.edges_via_symbol
+                    );
+                }
                 if report.skipped > 0 {
                     println!("  {} skipped — not a language I can read", report.skipped);
                 }
@@ -165,8 +207,8 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     let Some(given) = crate::words::asked(face, op, rest) else {
         return Ok(());
     };
-    let (path, window) = match asked_of(&given) {
-        Ok(both) => both,
+    let (path, window, refresh) = match asked_of_refreshable(&given) {
+        Ok(all) => all,
         Err(why) => {
             declined(face, op, "bad_cursor", &why.to_string());
             return Ok(());
@@ -179,13 +221,14 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     }
 
     let tree = tree_of(here, "");
-    let index = match open(store_root, &tree) {
+    let mut index = match open(store_root, &tree) {
         Ok(index) => index,
         Err(error) => {
             declined(face, op, "unreadable", &error.to_string());
             return Ok(());
         }
     };
+    let refreshed = refreshed_first(&mut index, refresh);
 
     let answer = if incoming {
         index.dependents_of(path)
@@ -229,6 +272,12 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
                     "raw_target": edge.raw_target,
                     "to": edge.to,
                     "line": edge.line,
+                    // `import` if the file declared the dependency, `symbol` if
+                    // it only used a name that one file in the tree declares.
+                    // Carried per row because they are different evidence: a
+                    // caller told only "these depend on it" would either trust
+                    // the weaker rows as much as the stronger, or trust neither.
+                    "via": edge.via.word(),
                 })
             })
             .collect();
@@ -239,12 +288,16 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
             ("edges", json!(rows)),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        carried.extend(freshness_fields(&answer.freshness));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        carried.extend(freshness_fields(&answer.freshness, &refreshed));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
     println!();
+    if !matches!(refreshed, Refreshed::NotNeeded) {
+        println!("  [{}]", refreshed.describe());
+        println!();
+    }
     if !answer.freshness.is_current() {
         println!("  [{}]", answer.freshness.describe());
         println!();
@@ -261,14 +314,28 @@ pub fn edges(store_root: &Path, here: &Where, rest: &str, incoming: bool, face: 
     if incoming {
         println!("  these refer to {path}:");
         for edge in &answer.rows {
-            println!("    {}  (line {})", edge.from, edge.line);
+            match edge.via {
+                thalyx_graph::Via::Import => {
+                    println!("    {}  (line {}, imports it)", edge.from, edge.line)
+                }
+                thalyx_graph::Via::Symbol => println!(
+                    "    {}  (line {}, uses `{}` without importing it)",
+                    edge.from, edge.line, edge.raw_target
+                ),
+            }
         }
     } else {
         println!("  {path} depends on:");
         for edge in &answer.rows {
-            match &edge.to {
-                Some(target) => println!("    {target}  (line {})", edge.line),
-                None => println!(
+            match (&edge.to, edge.via) {
+                (Some(target), thalyx_graph::Via::Import) => {
+                    println!("    {target}  (line {})", edge.line)
+                }
+                (Some(target), thalyx_graph::Via::Symbol) => println!(
+                    "    {target}  (line {}, through `{}`, no import)",
+                    edge.line, edge.raw_target
+                ),
+                (None, _) => println!(
                     "    {}  (line {}, outside the tree)",
                     edge.raw_target, edge.line
                 ),
@@ -295,8 +362,8 @@ pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
     let Some(given) = crate::words::asked(face, op, rest) else {
         return Ok(());
     };
-    let (name, window) = match asked_of(&given) {
-        Ok(both) => both,
+    let (name, window, refresh) = match asked_of_refreshable(&given) {
+        Ok(all) => all,
         Err(why) => {
             declined(face, op, "bad_cursor", &why.to_string());
             return Ok(());
@@ -308,13 +375,17 @@ pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
     }
 
     let tree = tree_of(here, "");
-    let index = match open(store_root, &tree) {
+    let mut index = match open(store_root, &tree) {
         Ok(index) => index,
         Err(error) => {
             declined(face, op, "unreadable", &error.to_string());
             return Ok(());
         }
     };
+    // Before the question and not after it. An answer built from a stale index
+    // and then labelled stale is an answer the caller has to throw away, which
+    // is the four-turn loop this exists to delete.
+    let refreshed = refreshed_first(&mut index, refresh);
 
     let answer = match index.symbol(&name) {
         Ok(answer) => answer,
@@ -366,12 +437,16 @@ pub fn symbol(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
             ("window_of", json!("uses")),
         ];
         carried.extend(thalyx_files::machine::window_fields(&page));
-        carried.extend(freshness_fields(&answer.freshness));
-        println!("{}", thalyx_files::machine::answer(op, carried));
+        carried.extend(freshness_fields(&answer.freshness, &refreshed));
+        face.say(thalyx_files::machine::answer(op, carried));
         return Ok(());
     }
 
     println!();
+    if !matches!(refreshed, Refreshed::NotNeeded) {
+        println!("  [{}]", refreshed.describe());
+        println!();
+    }
     if !answer.freshness.is_current() {
         println!("  [{}]", answer.freshness.describe());
         println!();
@@ -429,7 +504,26 @@ fn use_key(used: &thalyx_graph::Use) -> Vec<u8> {
 pub(crate) fn asked_of(
     given: &[crate::words::Word],
 ) -> Result<(String, thalyx_files::window::Asked), thalyx_files::window::Cut> {
+    let (named, window, _) = asked_of_refreshable(given)?;
+    Ok((named, window))
+}
+
+/// The same, for the three verbs that can rebuild the index before answering.
+///
+/// A wrapper rather than a third element on every caller: `asked_of` is shared
+/// by a dozen verbs that have no index to refresh, and making all of them
+/// destructure a flag they ignore would put the word "refresh" in twelve places
+/// where it means nothing.
+pub(crate) fn asked_of_refreshable(
+    given: &[crate::words::Word],
+) -> Result<(String, thalyx_files::window::Asked, bool), thalyx_files::window::Cut> {
     let mut window = thalyx_files::window::Asked::default();
+    // On by default, because the default is what an agent gets, and the default
+    // being "answer about the tree as it is" is the whole point. The switch
+    // exists for the one caller that wants the opposite: something measuring
+    // what the index held before the question, which is a real question and
+    // exactly the one an automatic rebuild would destroy.
+    let mut refresh = true;
     let mut named = Vec::new();
 
     for word in given.iter().map(crate::words::Word::as_str) {
@@ -440,11 +534,17 @@ pub(crate) fn asked_of(
             Some(("cursor" | "desde", token)) if !token.is_empty() => {
                 window.after = Some(thalyx_files::window::Cursor::parse(token)?);
             }
+            Some(("refrescar" | "refresh", value)) => {
+                // Anything that is not plainly "no" leaves it on. Fail closed
+                // in the direction of a true answer: a typo that silently turned
+                // the refresh off would produce stale rows that look ordinary.
+                refresh = !matches!(value, "no" | "false" | "0");
+            }
             _ => named.push(word),
         }
     }
 
-    Ok((named.join(" "), window))
+    Ok((named.join(" "), window, refresh))
 }
 
 /// What a cursor into a list of edges names.

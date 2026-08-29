@@ -5,6 +5,7 @@ members = [
     "crates/thalyx-manifest",
     "crates/thalyx-parser",
     "crates/thalyx-contract",
+    "crates/thalyx-bridge",
     "crates/thalyx-agent",
     "crates/thalyx-permd",
     "crates/thalyx-syscall",
@@ -26,6 +27,7 @@ members = [
     "crates/thalyx-capture",
     "crates/thalyx-core",
     "crates/thalyx-cli",
+    "crates/thalyx-mcp",
     "modules/dev.thalyx.greeter",
 ]
 
@@ -41,6 +43,7 @@ thalyx-abi = { path = "crates/thalyx-abi" }
 thalyx-manifest = { path = "crates/thalyx-manifest" }
 thalyx-parser = { path = "crates/thalyx-parser" }
 thalyx-contract = { path = "crates/thalyx-contract" }
+thalyx-bridge = { path = "crates/thalyx-bridge" }
 thalyx-agent = { path = "crates/thalyx-agent" }
 thalyx-permd = { path = "crates/thalyx-permd" }
 thalyx-sandbox = { path = "crates/thalyx-sandbox" }

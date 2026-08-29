@@ -21,6 +21,7 @@ thalyx-bpf.workspace = true
 thalyx-btrfs.workspace = true
 thalyx-install.workspace = true
 thalyx-journal.workspace = true
+thalyx-bridge.workspace = true
 uuid.workspace = true
 thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
@@ -66,3 +67,11 @@ thalyx-sandbox.workspace = true
 
 [lints]
 workspace = true
+
+# Its own `main`, because the engine module's entrypoint is a copy of this
+# test's own binary — the engine speaks a binary protocol and no shell script
+# can write one. libtest's arguments would otherwise reach that copy. See the
+# file's module documentation.
+[[test]]
+name = "the_engine_stays_alive"
+harness = false

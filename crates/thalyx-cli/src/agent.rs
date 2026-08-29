@@ -28,9 +28,21 @@ type Fallible = Result<(), Box<dyn std::error::Error>>;
 /// Boxed because the two are different types and the caller does not care which
 /// one it got. Which one it was is visible in the output either way: the
 /// unconfigured one produces an error naming itself.
-fn model_for(store: &Store) -> Result<Box<dyn Model>, Box<dyn std::error::Error>> {
+pub(crate) fn model_for(store: &Store) -> Result<Box<dyn Model>, Box<dyn std::error::Error>> {
     match agent_model::configured(store)? {
-        Some(settings) => Ok(Box::new(settings.model()?)),
+        Some(settings) => {
+            let model = settings.model()?;
+            // The engine is a module when the settings say so, and a program on
+            // `PATH` otherwise. Both run the same prompt through the same
+            // grammar and come back to the same parser: what changes is who
+            // starts llama.cpp, which is the seam Cesar decreed on 2026-08-28.
+            Ok(
+                match crate::engine_module::ModuleEngine::for_settings(store, &settings)? {
+                    Some(engine) => Box::new(model.through(engine)),
+                    None => Box::new(model),
+                },
+            )
+        }
         None => Ok(Box::new(UnconfiguredModel)),
     }
 }
@@ -258,26 +270,24 @@ pub(crate) fn recall_object(store: &Store, task: &str) -> Fallible {
         // Rule 10, and the memory's own version of it: an unreadable memory and
         // an empty one are different facts about the machine.
         Err(error) => {
-            println!(
-                "{}",
-                thalyx_files::machine::declined("memory", "unreadable", &error.to_string())
-            );
+            crate::files::Face::Machine.say(thalyx_files::machine::declined(
+                "memory",
+                "unreadable",
+                &error.to_string(),
+            ));
             return Ok(());
         }
     };
 
-    println!(
-        "{}",
-        thalyx_files::machine::answer(
-            "memory",
-            vec![
-                ("task", serde_json::json!(task)),
-                ("said", serde_json::json!(context.said)),
-                ("holds", serde_json::json!(context.holds)),
-                ("unconfirmable", serde_json::json!(context.unconfirmable)),
-            ],
-        )
-    );
+    crate::files::Face::Machine.say(thalyx_files::machine::answer(
+        "memory",
+        vec![
+            ("task", serde_json::json!(task)),
+            ("said", serde_json::json!(context.said)),
+            ("holds", serde_json::json!(context.holds)),
+            ("unconfirmable", serde_json::json!(context.unconfirmable)),
+        ],
+    ));
     Ok(())
 }
 

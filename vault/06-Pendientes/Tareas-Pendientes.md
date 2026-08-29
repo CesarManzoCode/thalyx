@@ -82,8 +82,37 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
       vacía.**
 
 - [x] **Los verbos, por la pantalla, y la pantalla como cara del arranque** — hecho el 2026-08-28, decretado por Cesar ese día: *«no quiero un comando para activar ui, quiero ya la ui, la que se ve al iniciar»*. El ciclo de seiscientas líneas no hubo que reescribirlo: sus brazos tocan cuatro cosas —la tienda, dónde está parada la persona, qué cara contesta y cómo llegó a existir este proceso— y nada más, así que salieron enteros a `session::dispatch`. Lo que imprimen se atrapa en el **descriptor** (`thalyx-capture`), que es lo único que también atrapa lo que imprime un módulo. Etapa 41 de `verify.sh`. **Nadie lo ha visto sobre hierro.**
-- [ ] **La confirmación del camino confiable, dibujada.** Lo que le falta a la pantalla para que un verbo consequente se pueda *terminar* ahí. Hoy `instalar`, `observar`, `instalar-en` y `ejecutar` **rechazan** en la pantalla en vez de preguntar en ella, porque la entrada está en `/dev/null` mientras corre un verbo y todos comprueban `is_terminal` antes de preguntar. Es un rechazo honesto y con la salida escrita —Ctrl-C baja a la sesión de texto y ahí se contesta—, pero el tipo `Confirmation` ya existe en `thalyx-screen`, ya se prueba y ya toma la pantalla entera: falta cablearlo. Ver [[La-Pantalla]] y [[Camino-Confiable]].
-- [ ] **El agente adentro de la máquina.** Elegido por Cesar el 2026-08-27 junto con la pantalla. Las cuatro gamas se midieron en Fedora con `llama-completion` en el `PATH`; adentro de la imagen no hay llama.cpp y no puede haberlo —el kernel y un programa—, así que tendría que ser un **programa ajeno en el store corrido con `ejecutar`**, que es exactamente para lo que se construyó G1. Lo que falta averiguar y sólo su hardware contesta: si un llama.cpp enlazado estáticamente corre bajo ese confinamiento, con qué concesiones, y qué huella tiene sobre Thalyx en vez de sobre Fedora — que es la medición definitiva de las gamas que está pendiente desde el 2026-08-08.
+- [x] **La confirmación del camino confiable, dibujada** — **hecho el
+      2026-08-28, y el hueco era más grande de lo que decía este renglón.** No
+      eran cuatro verbos que rechazan: eran **ocho lugares** con los mismos
+      cinco renglones escritos a mano, `editar` entre ellos —que nadie
+      nombraba— y habían derivado sobre qué cuenta como un sí. Ahora es
+      `crates/thalyx-cli/src/ask.rs`: una sola comparación que las dos caras
+      llaman, y la negativa se queda en cada verbo porque esa frase es del
+      verbo. El cambio que lo hace posible es de orden: **decir de qué se trata
+      va antes de revisar si hay terminal**, porque el contexto es la
+      confirmación y una negativa emitida antes de que exista no deja nada que
+      dibujar. Etapa 42 de `verify.sh`; la mitad del vidrio sólo se ve
+      arrancando la imagen. Ver [[La-Pantalla]] y [[Camino-Confiable]].
+- [x] **Que la máquina se pueda teclear en español** — **hecho el 2026-08-28**,
+      y no estaba escrito en ningún lado: un `grep` de `keymap` en todo el repo
+      salía vacío. El kernel lleva un mapa compilado adentro y es US QWERTY,
+      `loadkeys` no cabe en la imagen, y la tecla que en un teclado
+      latinoamericano dice `ñ` mandaba `;`. `thalyx-screen` hasta calienta los
+      glifos de `áéíóúüñ¿¡` — se podían dibujar y no escribir. Las tablas se
+      generan de `kbd` con `dev/keymap-table.py` (regla 6: una distribución es
+      un dato sobre el mundo). Verbo `teclado`, carga en el arranque, y
+      `thalyx.teclado=no` de salida. Etapa 43. **Sólo su hierro contesta si la
+      carga de verdad funciona.**
+- [x] **El techo de memoria de un módulo** — **decidido por Cesar el 2026-08-28
+      y construido el mismo día.** `module_standard` topaba en 1 GiB y ningún
+      manifiesto podía pedir más, así que el motor de inferencia no cabía. Su
+      decisión: lo que pida el manifiesto, aprobado por él al instalar. Es un
+      permiso `persistent`, así que usa el camino confiable y el registro que ya
+      existen. El gigabyte pasa de techo a piso. Etapa 44.
+
+- [x] **El agente adentro de la máquina** — **construido el 2026-08-28.** No como programa ajeno con `ejecutar`, que era la suposición de esta línea, sino como **módulo firmado e instalado**: `llama-completion` estático empaquetado en un `.thmod`, corrido por `thalyx_core::run` bajo `module_standard` con los 4 GiB que pide su manifiesto, un proceso por respuesta. El agente lo encuentra por el store y no por el `PATH` (`engine_module` en la configuración), y una frase que no es un verbo, escrita en la sesión, llega hasta un verbo que se ejecuta. Etapa 45 y `dev/build-engine.sh`. Ver [[Motor-de-Inferencia-como-Modulo]].
+- [ ] **La huella de las gamas sobre Thalyx, no sobre Fedora.** Lo que quedaba de la línea de arriba y sólo su hierro contesta: qué latencia y qué memoria residente tiene cada gama corriendo **confinada dentro de la máquina**, y si alguna abstiene alguna vez. Las cifras del 2026-08-08 son de un `llama-completion` suelto en Fedora. `thalyx agent bench` es el verbo; lo que falta es correrlo desde adentro.
 - [ ] **Decidir si la pantalla lleva ratón.** Hoy no, y la razón es que una pantalla sin ventanas no tiene qué apretar. Costaría `CONFIG_INPUT_EVDEV` y un HID de ratón en `thalyx.config`, que es el archivo que **sólo su hardware verifica** y donde las tres opciones que faltaron históricamente se encontraron arrancando. Decisión de Cesar, y no bloquea nada. Ver [[La-Pantalla]].
 - [ ] **Cargar `thalyx_watch` con el cargador propio.** Es lo único que queda de la lista de "lo que falta comprobar" de [[Punto-Actual]]. Diez hooks en lugar de dos, y el único tipo de mapa que el watcher usa y el LSM no es `PERCPU_ARRAY`. Probable no es comprobado, y no se puede intentar en el contenedor: faltan las cabeceras de `libbpf` para compilar el objeto.
 - [ ] **Probar `net/outbound` de punta a punta en hardware.** Que el LSM deniegue a un módulo sin la concesión está demostrado y es reproducible; que un módulo **con** la concesión abra una conexión está implementado, cubierto por pruebas unitarias y nunca ejercido en una máquina. Ver [[Permisos-JIT]].
@@ -344,14 +373,195 @@ Ver [[Que-Necesita-Un-Agente-Ajeno]].
       durante toda la ejecución del módulo. Sólo vale la pena el día que un
       runtime que haga falta dependa de esa puerta; ninguno de los medidos lo
       hace.
-- [ ] **Exponer las cuatro ventajas que ningún otro sistema tiene.** Ninguna
-      está al alcance de un agente ajeno todavía, y son la respuesta a «mejor» y
-      no sólo a «igual»: el índice semántico ([[FS-en-Grafo]]), el rollback
-      ([[Journal-y-Snapshots]]), la procedencia por campo ([[Marcado-de-Origen]])
-      y los permisos por tarea ([[Permisos-JIT]]).
-- [ ] **Decidir por dónde entra un agente ajeno.** ¿Es un módulo con permisos
-      amplios, un proceso aparte, o algo nuevo? No decidido, y no urge hasta que
-      haya qué ejecutar.
+- [x] **Exponer las cuatro ventajas que ningún otro sistema tiene** — **hecho
+      el 2026-08-28, por el camino que nadie había considerado: sin meter al
+      agente adentro.** Tres de las cuatro están al alcance de Claude Code hoy —
+      el índice semántico ([[FS-en-Grafo]]) por `thalyx_symbol` y
+      `thalyx_dependencies`, el rollback ([[Journal-y-Snapshots]]) por
+      `thalyx_attempt`, y la procedencia ([[Marcado-de-Origen]]) porque todo lo
+      que hace queda marcado `untrusted_content` en el journal. La cuarta,
+      [[Permisos-JIT]], no: un agente externo no corre programas, así que no hay
+      todavía nada que conceder por tarea. Ver [[Agentes-Externos]].
+- [x] **Por dónde entra el agente propio** — **decretado por Cesar el
+      2026-08-28: el motor de inferencia es el primer módulo real.** La pregunta
+      llegó al revés de como estaba escrita aquí: no era por dónde entra un
+      agente ajeno, era que **el propio nunca ha estado en la máquina**. Ver
+      [[Motor-de-Inferencia-como-Modulo]], y lo que falta para construirlo está
+      enumerado ahí. Lo que ya se midió: un motor real hace 31 llamadas al
+      sistema y `module_standard` permite las 31, así que el confinamiento
+      alcanza. Lo que falta y bloquea: el tope de memoria.
+- [ ] **Decidir el tope de memoria de un módulo, o que un manifiesto lo pida.**
+      `profile.rs` topa en 1 GiB, con un comentario que llama al número «una
+      perilla de política, no una decisión arquitectónica», y ningún manifiesto
+      puede pedir más. Bajo ese tope no cabe un modelo de ninguna gama útil.
+      **Es de Cesar**: es política y cuesta su hierro.
+- [x] **Que el motor deje de recargar los pesos en cada frase** — hecho el 2026-08-28. `llama-completion` es de una respuesta por construcción, así que la segunda frase volvía a leer el GGUF entero. Ahora el módulo es `thalyx-engine`: el mismo `llama.cpp` en la misma etiqueta, compilado por el mismo `cmake`, que carga los pesos una vez y contesta peticiones enmarcadas por una tubería. `run::start` devuelve un `RunningModule` que posee el confinamiento y el proceso; `run()` es ese `start` más `wait`, así que no hay un segundo lanzador. La pantalla pregunta en un hilo y sigue componiendo el marco mientras tanto. Ver [[Motor-Residente]].
+
+- [ ] **Anotar frío contra tibio con un modelo real.** La sesión ya imprime `motor <pid> ▪ frío|tibio ▪ <s>` bajo cada propuesta, y §46 de `verify.sh` comprueba que dos frases van por un solo proceso. Lo que falta son los dos números con un Qwen2.5-3B y ocho gigas concedidos, medidos dentro de la máquina. Ver [[Motor-Residente]].
+
+- [ ] **Medir el motor compilado contra musl estático.** Lo medido es glibc, y
+      la regla 12 dice que una compilación con otra configuración es otro
+      sistema. No se puede hacer en el contenedor: no hay objetivo de rustup ni
+      compilador de C para musl.
+- [x] **Decidir por dónde entra un agente ajeno** — **decretado por Cesar el
+      2026-08-28: por ninguna de las tres.** No es un módulo, no es un proceso
+      adentro y no es algo nuevo en la imagen. **Se queda en el anfitrión** y
+      alcanza la máquina por un canal virtio-serial; adentro, el extremo es un
+      hilo de la sesión, no un programa más en el disco. Lo que eso desbloquea es
+      la primera medición del proyecto sin esperar a G2. Ver [[Agentes-Externos]].
+
+- [ ] **Correr la comparación de verdad.** `dev/bench-external-agent.sh` existe y
+      corrió una vez: 8 turnos con `Read`/`grep` contra 7 con las herramientas de
+      Thalyx, sobre la misma tarea y el mismo modelo. **Una corrida de una tarea
+      es una anécdota.** Lo que falta es un conjunto de tareas, varias corridas
+      por brazo, y un criterio decidido de antemano sobre qué contaría como que
+      las primitivas sirven. **Es de Cesar**: qué se mide y qué cuenta como
+      mejor es una decisión de producto, no de código.
+      El instrumento ya no es la parte que falta: desde el 2026-08-28 el arnés
+      recoge **las dos ramas en las mismas unidades** —herramientas por nombre,
+      bytes devueltos al modelo, archivos leídos, búsquedas, turnos, tiempo,
+      tokens y costo— y `--expect-file` da veredicto de la tarea. Sin ese archivo
+      no hay veredicto, nunca uno adivinado.
+      Ya van tres corridas: lectura **−46 %** y **−62 %** de costo para Thalyx, y
+      edición de un archivo **empatada** (−4 % de costo, +24 % de tiempo), con el
+      brazo B sin abrir un intento. Esa tercera no midió nada de lo que Thalyx
+      apuesta: un archivo cambiado una vez no tiene nada que revertir.
+
+- [x] **Correr `--task reversible`, que es la tarea que sí ejercita la frontera**
+      — **corrido el 2026-08-29, regradado el mismo día, los dos brazos
+      `VALID`.** Los dos modificaron de verdad, los dos contestaron bien, los dos
+      devolvieron el árbol. Thalyx: **−13.2 % de costo, +33.2 % de reloj**, 36
+      llamadas contra 16, 16 mutaciones contra 6, **0 archivos leídos contra 7**,
+      −27.4 % de bytes hacia el modelo y **+51 % de tokens de salida**. El primer
+      resultado mixto con veredicto válido del proyecto: la navegación semántica
+      volvió a ganar y la escritura perdió el reloj. La causa que el trace
+      señala —el brazo A reemplaza todas las apariciones de un archivo en una
+      llamada y el brazo B sólo sabía direccionar líneas— provocó `sustituir`, y
+      **que eso mueva el banco es una hipótesis sin medir**. Ver
+      [[Evidencia-de-Agentes]]. Descripción original:
+      Renombrar un símbolo en
+      su definición y en todos sus dependientes, comprobar qué se tocó, y dejar
+      el árbol exactamente como estaba. El primer símbolo recomendado es
+      `UidRegistry` —17 menciones, 6 archivos, dos crates, ninguna aparición
+      fuera del código— y su verdad conocida está en
+      `dev/bench-expect/reversible-UidRegistry.txt`.
+      **Antes de creerle a los números hay una decisión de Cesar**: el brazo A
+      trabaja adentro de la copia, así que Claude Code le carga el `CLAUDE.md`
+      del proyecto y el brazo B no lo ve. Le suma tokens al brazo A por algo que
+      no es la tarea, o sea **le suma al lado que favorece a Thalyx**. Se evita
+      corriendo contra una copia sin `CLAUDE.md`. Ver [[Agentes-Externos]].
+
+- [x] **Que el índice conteste por afectación y no sólo por nombre** — **hecho el
+      2026-08-28.** Encontrado en la primera corrida real: el brazo de Linux
+      encontró un dependiente que el índice no, porque usa el símbolo a través de
+      un campo de otra estructura y nunca lo nombra. El índice **ya tenía** la
+      evidencia — la mención estaba registrada — y nada la convertía en arista.
+      Ahora un nombre que **exactamente un** archivo del árbol declara hace
+      arista donde se use, cada fila dice `via: import` o `via: symbol`, y un
+      nombre que declaran dos archivos no hace arista nunca. Con el mismo
+      mecanismo quedan cubiertos el acceso por campo, el método, el trait en una
+      cota, la llamada por ruta, el módulo de directorio y el re-export.
+      `crates/thalyx-graph/corpus/` lo mide sin gastar un modelo, etapa 49. Ver
+      [[FS-en-Grafo]].
+
+- [ ] **Seguir un alias hasta el nombre que renombra.** El límite declarado que
+      quedó: `use X as Y` da la dependencia entre archivos por el import, y que
+      `Y` sea `X` para `buscar` requiere seguir una ligadura, que es un
+      compilador y no un escaneo. Está anotado como `known_limits` en
+      `05-alias` del corpus, con `THALYX_REQUIRE_FULL_CORPUS=1` para exigirlo, y
+      la prueba afirma que **sigue siendo** un límite — así que arreglarlo avisa.
+      **Es de Cesar**: cuánto análisis semántico vale la pena es una decisión de
+      producto, y la regla hasta hoy ha sido no construir un compilador.
+
+- [ ] **La etapa siguiente: runtime y toolchains adentro del guest.** Node, git,
+      un enlazador, una libc. Deliberadamente **no** en esta etapa: primero se
+      quiere saber si las primitivas aportan valor. Ver [[Agentes-Externos]].
+
+## La campaña de evidencia con agentes, decidida el 2026-08-28
+
+Prioridad de la etapa: [[Prioridad-Operativa]]. Todo lo medido, y el protocolo
+con el que se mide, en [[Evidencia-de-Agentes]].
+
+- [x] **Correr el banco reversible.** Corrido el 2026-08-29 sobre `UidRegistry`.
+      Los dos brazos contestaron bien y el resumen los reprobó a los dos por
+      defectos del grader, no del agente. Ver [[Evidencia-de-Agentes]].
+- [ ] **Volver a leer REVERSIBLE #1 con el grader corregido.** No corre ningún
+      agente y no cuesta nada; es de Cesar sólo porque los artefactos están en su
+      máquina, en `target/bench-external-agent/`:
+
+      ```sh
+      dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+          --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+          --out target/bench-external-agent --regrade
+      ```
+
+      Escribe `summary-regraded.json` sin tocar el `summary.json` original, y
+      cada brazo sale `VALID`, `NOT PROVEN` o `INVALID` con la razón. Si primero
+      quiere ver qué contestó cada herramienta a cada una de las seis `Edit` del
+      brazo A —lo único que distingue seis ediciones deshechas de seis ediciones
+      que fallaron—, la misma orden con `--forensics` en vez de `--regrade`.
+- [ ] **Repetir el banco reversible una sola vez, si el regradado sale
+      `NOT PROVEN`.** El arnés ya deja las tres cosas que faltaban: el `ctime`
+      en la caminata, el reporte de lo que se dejó afuera, y los cuatro campos
+      separados de mutación. Corriendo conviene pedir las dos garantías, que son
+      dos variables porque son dos requisitos:
+      `THALYX_REQUIRE_RESTORE_CHECK=1` y `THALYX_REQUIRE_MUTATION_WITNESS=1`.
+      El hash de después del brazo B sigue yendo con la máquina apagada
+      (`sudo make -C image agent-export`, y una segunda pasada con
+      `--arms none --restored-b`).
+- [ ] **Decidir si se construye `validar`.** El agente externo puede entender,
+      leer y modificar, y no puede compilar ni probar lo que cambió — la mitad
+      del ciclo que falta. La propuesta concreta, con las cuatro piezas medidas
+      y en orden de costo, está en [[Validacion-Confiable]]. Lo caro y lo que no
+      se puede apurar es el perfil de seccomp: la lista de `module_standard`
+      tiene 36 entradas y `rustc` no cabe, y adivinarla es exactamente el error
+      que `dev/foreign-agent-needs.sh` existe para no cometer. Es de Cesar
+      porque cambia una frontera decretada: hoy `EXPOSED` no deja al agente
+      ejecutar nada.
+- [ ] **Decidir qué hacer con el `CLAUDE.md` en el brazo A.** El brazo A trabaja
+      dentro de la copia y Claude Code se lo carga; el brazo B no lo ve. Le suma
+      tokens al brazo A por algo que no es la tarea, **o sea al lado que
+      favorece a Thalyx**. Se evita apuntando `--project` a una copia sin
+      `CLAUDE.md`. Va antes de la primera corrida, no después.
+- [ ] **El primer bug real medido con el protocolo de dogfooding.** Espera a que
+      aparezca un bug adecuado; no se fabrica uno. Excluidos los bugs cuyo
+      problema central sea que el puente, el MCP o el índice del brazo B esté
+      roto.
+- [ ] **Saber cuánto se mueve una corrida por sí sola.** Ninguna tarea se ha
+      repetido, así que no hay varianza medida y los porcentajes son de esas
+      corridas concretas. Es la misma lección que las gamas del modelo:
+      **medir dos veces antes de comparar.** Ver [[Gamas-de-Modelo]].
+- [ ] **Medir otras clases de cambio y otro repositorio.** Hoy son dos de
+      lectura y una de escritura simple, en dos proyectos ajenos.
+- [ ] **Decidir si el grader pasa de presencia de cadenas a algo más.**
+      `--expect-file` comprueba que la respuesta contenga la verdad conocida, no
+      equivalencia semántica: puede reprobar una respuesta correcta escrita de
+      otra forma, y aprobar una que nombra los archivos correctos dentro de un
+      razonamiento equivocado. Cambiar el instrumento hace incomparables las
+      corridas anteriores, así que va con decisión y con antes/después.
+- [ ] **Evaluar —no implementar— los mecanismos externos** que
+      [[Prioridad-Operativa]] enumera: edición por símbolo, resultados
+      comprimidos o progresivos, batching, respaldo de LSP/rust-analyzer, capas
+      de precisión. Cada uno tiene que pasar por los cinco costos de
+      [[Superficie-para-el-LLM]] y por [[Criterio-de-Inclusion-de-Primitivas]],
+      y ninguno se construye antes de tener la medición que lo pida. **La
+      decisión que ya se tomó, y que vale como precedente: después de CHANGE #1
+      no se optimizó `thalyx_edit`.**
+      **Y el 2026-08-29 sí se optimizó, por el precedente y no contra él**:
+      REVERSIBLE #1 dio un resultado válido que nombró la causa —16 mutaciones
+      donde el otro brazo hizo 6—, así que hubo medición antes de la
+      construcción. Lo que se construyó es el **batching mecánico** de esa
+      lista, no la edición por símbolo: el índice de hoy no distingue el símbolo
+      del comentario, del homónimo ni de la cadena, y una API que lo llamara
+      «renombrado» sería una abstracción falsa. LSP/SCIP van debajo de la misma
+      API el día que existan, sin cambiarla.
+
+- [ ] **Volver a correr `--task reversible` con `sustituir` en el camino.** Es la
+      prueba de la hipótesis que provocó esa operación, y el arnés queda
+      **congelado**: mismo prompt, mismo símbolo, misma verdad conocida, mismo
+      grader. Adaptar la prueba al producto invalidaría las dos corridas.
+      Ninguna cifra de mejora puede escribirse en ninguna nota antes de eso.
+      Ver [[Evidencia-de-Agentes]].
 
 ## Pendientes de decreto formal
 

@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-28
+fecha-actualizacion: 2026-08-29
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,998 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-> ## La pantalla es la máquina — 2026-08-28
+> ## REVERSIBLE #1 salió válido y mixto, y la escritura ya no cuesta dieciséis llamadas — 2026-08-29
 >
 > **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> El banco reversible se regradó con el grader corregido, sobre los mismos
+> artefactos, sin correr ningún agente y sin gastar nada. **Los dos brazos salen
+> `VALID`**: los dos modificaron de verdad, los dos contestaron bien, los dos
+> devolvieron el árbol. Es el primer resultado mixto con veredicto válido del
+> proyecto y hay que leerlo entero:
+>
+> | | brazo A (Linux) | brazo B (Thalyx) |
+> | --- | --- | --- |
+> | costo | $0.2597362 | $0.2255152 — **−13.2 %** |
+> | reloj | 47.909 s | 63.805 s — **+33.2 % peor** |
+> | llamadas | 16 | 36 |
+> | mutaciones | 6 | 16 |
+> | archivos leídos | 7 | **0** |
+> | bytes al modelo | 19 774 | 14 365 — −27.4 % |
+> | tokens de salida | 3 880 | 5 859 — **+51 %** |
+>
+> La navegación semántica volvió a ganar y la frontera reversible funcionó de
+> punta a punta. Lo que perdió es el reloj, y el trace dice por qué sin ningún
+> misterio: el editor del brazo A reemplaza todas las apariciones de un archivo
+> en **una** llamada, así que hizo una por archivo; el brazo B sólo sabía
+> direccionar líneas, así que hizo una por línea —56, 61, 166, 168…— y en cada
+> una tuvo que escribir el texto nuevo completo de la línea.
+>
+> **Lo que se construyó por eso, y es una operación y no una capa:**
+> `editar <archivo> sustituir <viejo> <nuevo> [más archivos…]`, expuesta al
+> agente como `thalyx_edit` con `action: "substitute"`. Una cadena exacta, en
+> todas partes, en todos los archivos nombrados, en una llamada. Precomprueba
+> todos los archivos antes de escribir un byte —un archivo que no contiene el
+> texto detiene la llamada entera con nada cambiado—, dice `wrote: false` en
+> cada rechazo, rechaza el mismo archivo nombrado dos veces por inodo, y
+> contesta con cuentas en vez de contenido.
+>
+> Y **es sustitución, no renombrado**. El índice de hoy no distingue el símbolo
+> del comentario, del homónimo, de la cadena ni del identificador más largo que
+> lo contiene, y llamarle «renombrado semántico» a una sustitución léxica sería
+> una abstracción falsa. LSP/SCIP van debajo de esta misma API el día que
+> existan.
+>
+> La regresión que lo sostiene no gasta un centavo —
+> `crates/thalyx-cli/tests/a_mechanical_rename_costs_one_call.rs`, dos crates,
+> 19 apariciones en 16 líneas de 6 archivos, el mismo renombrado hecho de las
+> dos maneras y los dos árboles comparados byte a byte:
+>
+> ```
+> línea por línea   16 llamadas   1523 bytes enviados   2956 de vuelta
+> sustitución        1 llamada     252 bytes enviados    742 de vuelta
+> ```
+>
+> **Lo que falta, y es de Cesar porque cuesta dinero:** volver a correr el banco
+> reversible **una vez**, con el arnés congelado, que es la prueba de la
+> hipótesis y no su confirmación. Nada dice todavía que esto mejore el banco:
+>
+> ```sh
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+>     --out target/bench-external-agent-2
+> ```
+>
+> El detalle entero está en [[Evidencia-de-Agentes]], sección «Lo que la corrida
+> encontró, y el cambio que provocó».
+
+> ## El banco reversible se corrió, y el instrumento estaba mal — 2026-08-29
+>
+> Los bloques de abajo son cómo se llegó.
+>
+> Cesar corrió `--task reversible` sobre `UidRegistry`. La corrida terminó, los
+> dos brazos contestaron bien, y el resumen los reprobó a los dos por razones
+> que no tenían que ver con lo que hicieron. **El veredicto de esa corrida no
+> vale y la corrida no está perdida**: los dos defectos eran del grader y los
+> dos se arreglaron leyendo el grader, sin volver a pagar nada.
+>
+> **1. El socket de QEMU contaba como espacio de trabajo.** La única diferencia
+> que el brazo B reportó entre el árbol del que salió y el que volvió fue
+> `image/build/agent.sock`, que abre QEMU para el canal del agente y que ningún
+> agente pudo crear ni borrar. `image/build` es maquinaria del banco —lo dice
+> `.gitignore` desde antes de que el banco existiera— y faltaba en la lista de
+> exclusiones. Ahora está, en un solo lugar que usan la caminata inicial y la
+> final, y **lo que se deja afuera se reporta** (`set_aside`) para que una
+> exclusión no pueda ser un escondite.
+>
+> **2. El testigo del estado intermedio era el único que la tarea correcta
+> apaga.** Era el `mtime`, y la quinta parte de la tarea es *devolver todo
+> exactamente*; un agente que restaura desde una copia con `cp -a` devuelve el
+> contenido **y la fecha**. El brazo A hizo seis `Edit` y quedó registrado como
+> si nunca hubiera pasado nada. Ahora son tres testigos —el `ctime`, que nada en
+> espacio de usuario puede poner para atrás; la respuesta de la herramienta, que
+> ya está escrita en el stream y ninguna restauración alcanza; y el contador del
+> adaptador para el brazo B— y cuatro campos donde había dos: **pidió**,
+> **la herramienta contestó**, **algo de afuera lo vio**, **así quedó el árbol**.
+>
+> Y `turns: 37` bajo `--max-turns 30` no era una corrida cortada: `turns` cuenta
+> mensajes de usuario, `--max-turns` acota viajes a la API, y se separan en
+> cuanto el modelo pide dos herramientas en un mismo mensaje. Queda documentado
+> y fijado con `--self-test`.
+>
+> **Lo que falta, y es de Cesar porque los artefactos están en su máquina:**
+> volver a leer esa corrida con el grader corregido. No corre ningún agente, no
+> cuesta nada, y no toca el `summary.json` original:
+>
+> ```sh
+> dev/bench-external-agent.sh --task reversible --symbol UidRegistry \
+>     --expect-file dev/bench-expect/reversible-UidRegistry.txt \
+>     --out target/bench-external-agent --regrade
+> ```
+>
+> Escribe `summary-regraded.json`, y cada brazo sale `VALID`, `NOT PROVEN` o
+> `INVALID` con la razón. Antes de eso, `--forensics` imprime qué contestó cada
+> herramienta a cada una de las seis `Edit` del brazo A, que es lo único que
+> puede distinguir «seis ediciones que se deshicieron» de «seis ediciones que
+> fallaron». El incidente entero está en [[Evidencia-de-Agentes]] y la regla en
+> [[Estrategia-de-Pruebas]].
+>
+> **La corrida NO está registrada como resultado válido.** No hay número de esta
+> corrida en ninguna nota como si fuera evidencia; lo que hay es lo que imprimió,
+> marcado como lo que es.
+
+> ## Los cuatro P0 de la auditoría, cerrados, y ninguno se arregló por lectura — 2026-08-29
+>
+> Los bloques de abajo son cómo se llegó.
+>
+> Una auditoría había señalado cuatro defectos. Los cuatro eran reales, y **tres
+> eran el mismo defecto** en tres subsistemas que nadie habría puesto juntos:
+> una regla correcta, escrita, con su comentario explicando por qué importa, y
+> **comprobada en vez de impuesta**. La regla nueva está en
+> [[Estrategia-de-Pruebas]], 2026-08-29.
+>
+> **1. El oráculo del benchmark reversible daba tres falsos positivos.**
+> `really_changed` se leía como «el nombre nuevo apareció en alguna llamada»,
+> que es una frase que escribe el agente: un `Grep` de ese nombre la satisface,
+> un `Edit` que falló la satisface, y una corrida muerta en su límite de turnos
+> no se miraba. Cualquiera de los tres, con el árbol intacto porque nadie lo
+> tocó, salía `passed: true`. Y el digest era `find -type f | xargs sha256sum`
+> —contenido y nada más— mientras el prompt promete *byte por byte, ningún
+> archivo agregado ni quitado*: un symlink a `/etc/passwd` donde había un
+> fuente restauraba «perfecto». Ahora son cinco propiedades de cinco
+> instrumentos, con testigo externo del estado intermedio, y el digest es sobre
+> un manifiesto —tipo, permisos, contenido, destino de symlink— con **una sola
+> implementación**. Los siete falsos positivos están nombrados en
+> `bench-summary.py --self-test`. Ver [[Agentes-Externos]], revisión del
+> 2026-08-28.
+>
+> **2. `intento` comprobaba la exclusión en vez de imponerla.** Dos clientes que
+> llegan juntos ven los dos «no hay ninguno abierto», los dos toman snapshot, y
+> el segundo pisa el registro del primero — dejando un snapshot que nada nombra
+> y un `abandonar` que devuelve el árbol a un punto que no es el que el primer
+> cliente cree. Las tres transiciones toman ahora `Store::lock()`, el mismo
+> `flock` de siempre, y `attempt.json` se publica con `write_durably` en vez de
+> `std::fs::write`. Ver [[Concurrencia]], revisión del 2026-08-28.
+>
+> **3. La frontera del espacio de trabajo era una comparación.**
+> `canonicalize → comparar → el verbo abre el nombre original`, que es la
+> secuencia que `api.rs` fue reescrito para dejar de usar hace semanas. Se midió
+> antes de arreglar nada: un hilo que cambia `src` por un enlace a otro árbol
+> mientras un agente lee `src/main.rs` sacó **57 archivos de fuera del espacio
+> de trabajo en 4000 lecturas**. Ahora es `openat2` con `RESOLVE_BENEATH` contra
+> un descriptor del espacio de trabajo, y el verbo abre ese descriptor.
+> Ver [[Agentes-Externos]], revisión del 2026-08-28.
+>
+> **4. El desmontaje del sandbox preguntaba si el cgroup estaba vacío.** Esa
+> pregunta no se puede contestar mirando: `spawn` vuelve antes de que el
+> auxiliar se una al cgroup, así que una corrida que ya arrancó su módulo es
+> invisible durante una ventana — y el LSM falla abierto para un cgroup sin
+> entrada. Se cuenta en vez de mirar. Ver [[Sandbox-Ejecucion]], revisión del
+> 2026-08-29.
+>
+> **Cada arreglo se comprobó quitándolo.** Los cuatro tests adversariales de la
+> frontera fallan sin el anclaje; el de la carrera de `intento` falla cinco de
+> cinco corridas sin el candado; el del cgroup falla sin el contador.
+>
+> **Lo siguiente, y lo que no se hizo.** El cuello de botella que queda es que
+> el agente no puede compilar ni probar lo que cambió. Se midió el costo de
+> `validar` y no cabía honestamente en esta sesión —hace falta un perfil de
+> seccomp derivado corriendo un toolchain real, que es justo lo que no se puede
+> adivinar— así que quedó **una propuesta concreta** en
+> [[Validacion-Confiable]] en vez de arquitectura a medio construir.
+>
+> **El benchmark sigue sin correrse.** *(Se corrió el mismo día; ver el bloque
+> de hasta arriba.)*
+>
+
+> ## La prioridad de la etapa se reordena: demostrar y medir la ventaja para agentes — 2026-08-28
+>
+> **Cómo se llegó.**
+>
+> **Nada se construyó en este paso.** Es documentación, estrategia y
+> formalización: dos notas nuevas y revisiones fechadas en las que ya existían.
+>
+> **Lo que cambia**, decretado por Cesar el 2026-08-28 y escrito entero en
+> [[Prioridad-Operativa]]: durante esta etapa la prioridad operativa es
+> demostrar que Thalyx mejora el trabajo de agentes reales, medirlo, hacer
+> dogfooding, mejorar sólo lo que la evidencia pida, absorber mecanismos ya
+> demostrados por otras herramientas, bajar la fricción de adopción
+> —proyecto → VM → el mismo agente → trabajar— y **posponer la habitabilidad
+> general que no ayude a eso**. En una frase:
+>
+> > Primero demostrar que Thalyx hace mejor al agente. Después hacer que Thalyx
+> > pueda reemplazar al resto de la máquina.
+>
+> **Lo que NO cambia, y es la mitad importante:** la visión. [[Filosofia-Fundacional]]
+> sigue intacta, la imagen sigue siendo el kernel y un programa, MCP sigue siendo
+> un adaptador y no la API interna, y el agente externo sigue siendo software no
+> confiable. Navegador, paquetes, catálogo de aplicaciones, escritorio,
+> multimedia y compatibilidad por completitud quedan **diferidos, no
+> abandonados**. Nada de eso estaba decretado, así que lo que se defiere es una
+> aspiración de orden, no un decreto: [[Construccion-del-ISO]] ya decía que no
+> hay gestor de paquetes y [[La-Pantalla]] que no hay escritorio.
+>
+> **La regla de prioridad**, para no tener que releer la nota: una tarea va
+> primero si aumenta de forma medible el éxito del agente, o baja costo/tokens/
+> contexto, o baja tiempo/trabajo, o mejora seguridad/reversibilidad, o facilita
+> la adopción. Si no toca ninguna, normalmente espera. No sustituye a los cinco
+> costos de [[Superficie-para-el-LLM]]: los cinco deciden qué merece existir, y
+> esta regla decide qué merece el tiempo de esta etapa, exigiendo además que el
+> efecto se vea en una corrida.
+>
+> **Y la evidencia queda en un solo lugar**: [[Evidencia-de-Agentes]], con las
+> tres corridas completas —READ #1, READ #2 y **CHANGE #1, que no favorece a
+> Thalyx y está escrito igual de completo**—, la corrida histórica etiquetada
+> como anterior al endurecimiento del índice, los límites de lo que tres
+> observaciones pueden decir, y el **protocolo del bug real** para cuando
+> aparezca uno: congelar el SHA, describirlo, una sola comparación seria con los
+> dos brazos, y guardar streams, costo, parches y pruebas. Un bug cuyo problema
+> central sea el puente o el índice roto **no sirve** para esa comparación.
+>
+> **Lo que sigue pendiente y es de Cesar:** correr
+> `dev/bench-external-agent.sh --task reversible` sobre `UidRegistry`. *(Se
+> corrió el 2026-08-29; ver el bloque de hasta arriba.)*
+
+> ## El arnés tiene la tarea que sí ejercita la frontera reversible, y no se ha corrido — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Ya hay tres corridas reales de Claude Code, misma tarea y mismo modelo en los
+> dos brazos, los dos contestando correcto:
+>
+> | tarea | costo | tiempo de pared |
+> |---|---|---|
+> | lectura #1 | Thalyx **−46 %** | Thalyx **−18 %** |
+> | lectura #2 | Thalyx **−62 %** | Thalyx **−36 %** |
+> | edición simple, un archivo | Thalyx −4 % | Thalyx **+24 %** |
+>
+> La tercera salió empatada: los mismos 6 turnos y las mismas 5 llamadas en los
+> dos brazos, y el brazo B **nunca abrió un intento**. Eso no es una derrota,
+> **es una tarea que no medía la apuesta**: un archivo cambiado una vez no tiene
+> nada que revertir, así que no hay frontera reversible que ejercitar y el agente
+> hizo bien en no abrir una. Lo que midió fue el editor.
+>
+> Lo nuevo es `dev/bench-external-agent.sh --task reversible`, la tarea que sí la
+> ejercita: localizar un símbolo, cambiarlo en su definición y en todos sus
+> dependientes, comprobar qué se tocó, y **dejar el árbol exactamente como
+> estaba, byte por byte**. La pregunta, escrita antes de correrla, está en
+> [[Agentes-Externos]].
+>
+> **Nada se corrió todavía.** Esto es instrumento, no resultado, y se probó
+> entero sin gastar una sola corrida: `dev/bench-summary.py --self-test` y
+> `dev/bench-external-agent.sh --self-test`, los dos en la etapa 50 de
+> `verify.sh`.
+>
+> Cuatro cosas la mantienen honesta:
+>
+> 1. **Un solo prompt** para los dos brazos, que no nombra ninguna herramienta,
+>    ni MCP, ni Thalyx. El self-test lo comprueba leyendo el propio archivo:
+>    cuenta que haya exactamente un `claude -p` y busca las palabras prohibidas.
+> 2. **El cambio es mecánico**: un sufijo, `UidRegistry` → `UidRegistryRenamed`.
+>    No hay criterio que ejercer, así que no hay diferencia de criterio.
+> 3. **El brazo A restaura como quiera**: su copia trae el `.git` y tiene `Bash`,
+>    y `git checkout -- .` es una respuesta válida. Lo único prohibido —en los
+>    dos brazos— es compilar y probar, porque el brazo B no tiene shell.
+> 4. **"Restaurado" se comprueba desde afuera**, con `sha256` sobre el árbol, no
+>    preguntándole a la máquina que hizo la afirmación.
+>
+> **Y la trampa que trae adentro, que es lo que más trabajo costó:** un agente
+> que no hace nada restaura el árbol perfecto. Un veredicto leído del hash solo
+> pondría a un agente que se rehusó por encima de todos los que lo intentaron, y
+> más alto en el brazo B — la dirección en la que esto no puede equivocarse
+> nunca. Por eso `reversible.passed` es una conjunción de tres instrumentos
+> distintos: **cambió de verdad** (el nombre nuevo apareció en alguna llamada,
+> según el stream del agente), **restauró** (los bytes, según el anfitrión), y
+> **contestó bien** (nombró los archivos de `--expect-file`). Si alguna se
+> desconoce no hay veredicto; no es `false`. Es la regla 4 otra vez, en un lugar
+> donde nadie la había buscado, y quedó escrita en [[Estrategia-de-Pruebas]].
+>
+> El brazo B se comprueba en **dos pasos a propósito**: su espacio de trabajo
+> vive en una imagen Btrfs que QEMU tiene abierta, y montarla mientras la máquina
+> corre es como se corrompe un store. Así que el hash de después va con la
+> máquina apagada, `sudo make -C image agent-export`, y una segunda pasada con
+> `--arms none --restored-b`. Mientras no se haga, el resumen dice
+> `not_proven`; `THALYX_REQUIRE_RESTORE_CHECK=1` lo vuelve falla.
+>
+> **Lo que falta y es de Cesar:** correrla, y decidir antes qué hacer con el
+> `CLAUDE.md`. El brazo A trabaja adentro de la copia, así que Claude Code se lo
+> carga, y el brazo B trabaja en un directorio vacío y no lo ve — le suma tokens
+> al brazo A por algo que no es la tarea, **o sea al lado que favorece a
+> Thalyx**. Se evita apuntando `--project` a una copia sin `CLAUDE.md`.
+
+> ## El índice encuentra al dependiente que se llega por un campo, y las consultas se reparan solas — 2026-08-28
+>
+> Endurecimiento de la superficie **antes** del primer benchmark, para que lo que
+> se mida sea Thalyx y no defectos que ya conocíamos. Todo salió de evidencia que
+> ya teníamos: la primera comparación y la primera corrida real de Claude.
+>
+> **1. `dependencias` significaba `imports`, y la palabra es más ancha.**
+> Preguntado qué depende de `src/store.rs`, el índice nombraba los dos archivos
+> que escriben `use crate::store::…` y se le escapaba un tercero que llega al
+> mismo código como `server.store.persist()`. La evidencia ya estaba adentro — la
+> mención estaba registrada — y nada la convertía en arista. Ahora hay dos clases
+> de arista y **cada fila dice cuál es**: `via: import` (el archivo la declaró) y
+> `via: symbol` (usa un nombre que **exactamente un** archivo del árbol declara).
+> La regla de "exactamente uno" es toda la precisión: un nombre que declaran dos
+> archivos no se convierte en arista nunca, porque cuál de los dos se quiso decir
+> es una adivinanza. El decreto está en [[FS-en-Grafo]].
+>
+> Con el mismo mecanismo quedan resueltos la llamada directa por ruta, el acceso
+> por campo, el método, el trait en una cota, el módulo de directorio y el
+> **re-export** — que es el caso donde el import no resolvía a nada, porque
+> `crate::Engine` no es un archivo. Sigue sin saberse **el alias**: `use X as Y`
+> da la dependencia entre archivos, y que `Y` sea `X` es un compilador.
+>
+> Y la primera versión, con sólo esa regla, daba **41 dependientes** para
+> `thalyx-snapshot/src/lib.rs`. Correrla sobre este repositorio y leer las filas
+> —que es de donde salen todos los defectos— agregó tres condiciones más, cada
+> una de un defecto distinto: el nombre tiene que ser **visible desde afuera**
+> (`fn place` y `fn relative` son privadas, y ninguna arista hacia ellas puede
+> existir); el archivo que lo usa **no debe atarlo** (`for directory in …` habla
+> de su propia atadura, no de `pub fn directory`); y **no debe declararlo él
+> mismo** a ninguna visibilidad. Quedaron 19, de los cuales 17 son referencias
+> reales entre crates que **ningún import podía resolver**. Las dos que sobran
+> están contadas en [[FS-en-Grafo]]: necesitan saber de qué tipo es el receptor,
+> que es un compilador.
+>
+> **2. Tres falsos positivos que llevaban ahí desde siempre.** Al medir lo
+> anterior sobre este repositorio aparecieron: un comentario `/* … */`, una cadena
+> que sigue en el renglón siguiente, y un `r#"…"#` de veinte renglones — los tres
+> metían palabras al índice como si fueran código. Existían desde el principio y
+> no se veían, porque una mención de más es una fila que nadie mira; se hicieron
+> visibles el día que una mención pasó a ser una arista. El arreglo es **un solo
+> escaneo con estado** para las tres entradas del parser. Sobre `crates/`: 61 047
+> menciones antes, 58 390 después — 2 657 eran falsas.
+>
+> **3. Cuatro turnos que ya no se pagan.** En la corrida real, Claude preguntó por
+> un árbol que acababa de cambiar, dedujo del campo `fresh` que el índice estaba
+> atrasado, llamó a `state`, llamó a `indexar`, y volvió a preguntar. Ahora
+> `buscar`, `depende` y `usan` reconstruyen el índice antes de contestar cuando es
+> barato — techo de 2 000 archivos, sacado de la medición — y cuando no, contestan
+> `refreshed: declined_too_large` con el tamaño del árbol y el verbo que hay que
+> llamar. **La regla de honestidad no se movió**: nada reporta `current` por
+> haberlo intentado, y `refrescar=no` devuelve lo que el índice tenía.
+>
+> **4. Un corpus determinista, sin modelo.** `crates/thalyx-graph/corpus/` son
+> doce árboles chiquitos con la respuesta correcta escrita al lado, sacada de leer
+> el código. 44 respuestas exactas, en milisegundos, gratis. Cuatro de los doce
+> existen para ser contestados **angostamente**, porque un índice de símbolos
+> falla devolviendo de más. Encontró los tres defectos del punto 2 antes de que
+> ningún modelo mirara nada, y pasó entero mientras el mecanismo debajo cambiaba
+> tres veces en una tarde — que es para lo que existe una red de regresión.
+>
+> **5. El arnés recoge las dos mitades.** `dev/bench-external-agent.sh` usa
+> `--output-format stream-json`, así que ahora las **dos** ramas se miden en las
+> mismas unidades: llamadas a herramientas por nombre, bytes que cada una le
+> devolvió al modelo, archivos leídos, búsquedas de texto, además de turnos,
+> tiempo, tokens y costo. Antes sólo la rama B era contable. El parser es
+> `dev/bench-summary.py`, aparte a propósito, con `--self-test` contra una sesión
+> real capturada en `dev/samples/` — regla 6. Y `--expect-file` da un veredicto de
+> éxito de la tarea; sin él no hay veredicto, nunca uno adivinado.
+>
+> **Costo medido**, mismo árbol, mejor de siete, release: indexar `crates/` pasa
+> de 368,7 ms a 480,4 ms (+30 %) y devuelve 2 803 aristas que antes no existían,
+> con 2 657 menciones falsas menos. Las consultas no cambiaron: frescura 2,1 ms,
+> dependientes 1,8 ms. Dos optimizaciones baratas ya pagaron la mayor parte de
+> ese costo: sentencias preparadas en los dos `INSERT` que corren decenas de
+> miles de veces (588,2 → 480,4 ms) y un solo escaneo por archivo en vez de dos
+> (533,7 → 480,4 ms).
+>
+> Etapas 49 y 50 nuevas en `dev/verify.sh`. Nada de esto necesita hierro: corre
+> entero en el contenedor.
+>
+> ## `intento` ya no le pregunta a un binario que no existe — 2026-08-28
+>
+>
+> Encontrado corriendo la máquina, que es de donde salen todos: `make -C image
+> agent` **sí** crea el workspace como subvolumen Btrfs, y adentro de Thalyx
+> `thalyx_attempt` contestaba `not_a_subvolume` de todos modos.
+>
+> La causa es la quinta vez que aparece la misma: `thalyx-snapshot::Btrfs`
+> preguntaba corriendo `btrfs subvolume show`, y la imagen lleva el kernel y un
+> programa. El spawn fallaba, y `is_subvolume` no tiene forma de decir *no pude
+> preguntar* — así que la falta de un binario se reportaba como un hecho sobre el
+> sistema de archivos. **Regla 10 al revés**, en el único verbo del que depende
+> la ventaja que ningún otro sistema operativo tiene.
+>
+> Ahora existe `thalyx-snapshot::Native`, que son las cuatro operaciones contra
+> los ioctls del kernel: `BTRFS_IOC_SUBVOL_GETFLAGS` para preguntar —el kernel
+> contesta `EINVAL` si no es la raíz de un subvolumen y `ENOTTY` si ni siquiera
+> es Btrfs, así que una sola llamada separa las tres respuestas, sin privilegios
+> y sin el truco del inodo 256—, `SNAP_CREATE_V2` con `BTRFS_SUBVOL_RDONLY` para
+> la instantánea, la misma sin la bandera para la copia escribible del restore, y
+> `SNAP_DESTROY` para soltarla. `intento` usa ese backend; el backend por comando
+> se queda para el anfitrión y como segunda opinión en las pruebas.
+>
+> Lo que falta correr en hierro: la etapa 26 de `dev/verify.sh` tiene ahora una
+> columna más, la misma secuencia con `PATH` vacío, que es este anfitrión
+> haciendo lo que hace la imagen.
+>
+> ## El puente no habría llevado un byte por virtio-serial — 2026-08-28
+>
+> El bloque siguiente termina diciendo que virtio-serial no ha llevado un byte y
+> que lo que corrió fue el mismo `serve` sobre un socket UNIX. Al preparar ese
+> arranque aparecieron **dos defectos que sólo existen del lado del carácter**, y
+> los dos habrían hecho que la máquina arrancara anunciando un canal que no
+> contesta:
+>
+> 1. **`serve_port` abría el nodo dos veces**, una de lectura y otra de
+>    escritura, que es la forma que tiene un socket y no la que tiene un puerto
+>    virtio-serial. `port_fops_open`, en `drivers/char/virtio_console.c`, rechaza
+>    la segunda apertura con `EBUSY` —*"Allow only one process to open a
+>    particular port at a time"*—, así que cada vuelta del hilo moría en su
+>    segunda línea, el error se iba al `let _ = error` de siempre, y desde el
+>    anfitrión se veía como una VM que sigue arrancando. Ahora se abre **una vez**
+>    en lectura y escritura y el segundo extremo es un `try_clone`.
+> 2. **La búsqueda en sysfs se abandonaba entera** ante un puerto sin nombre. El
+>    driver crea el atributo `name` sólo para los puertos que QEMU nombró, así
+>    que cualquier otro puerto virtio-serial al lado del nuestro podía esconder
+>    el canal, dependiendo nada más del orden en que `read_dir` los devolviera.
+>    Regla 10, y ahora tiene su prueba: `a_port_with_no_name_at_all_does_not_hide_the_one_that_has_one`.
+>
+> Los dos son la regla 12 otra vez: **el transporte que se verificó no era el
+> transporte que se embarca.** Un socket UNIX nunca pudo mostrar ninguno de los
+> dos, y ninguna prueba de este contenedor puede — se prueban arrancando.
+>
+> Del lado del anfitrión, `Machine::connect` esperaba el saludo **sin plazo**.
+> Con `wait=off` el socket existe desde que QEMU arranca, así que el `connect`
+> nunca es lo lento; lo lento es el huésped, y el presupuesto de espera se
+> gastaba en lo único que jamás tarda. Un cliente arrancado antes que la máquina
+> —el orden que dice el README— se quedaba ahí para siempre. Ahora el plazo cubre
+> el saludo y dice qué encontró; y `dev/agent-connect.sh` ya no mata la sonda a
+> los 10 s cuando el adaptador espera 30.
+>
+> Y `a_question_has_one_answer.rs` medía la máquina en vez de la respuesta:
+> buscaba la frase *"the kernel policy map is not loaded"* como marca de que un
+> `sí` fue leído, y esa frase sólo se imprime donde no hay nada cargado. En la
+> máquina de Cesar, con el LSM cargado en observe mode, el `sí` se leía bien, el
+> verbo pasaba la pregunta como debe, y la prueba lo llamaba rechazo. La marca
+> ahora es lo que el otro lado tiene en común en cualquier estado del kernel:
+> `refusing to run \`…\`` o `ran:`.
+>
+> ## El primer agente de programación real usa las primitivas — 2026-08-28
+>
+> Hasta hoy la apuesta de [[Filosofia-Fundacional]] —que un sistema construido
+> alrededor de respuestas estructuradas, un índice semántico y una frontera
+> reversible hace que una IA trabaje mejor— **nunca se había medido**, y no había
+> forma de medirla: el único agente que podía usar las primitivas era el Qwen de
+> 3B de adentro, y compararlo con Claude sobre Linux mide el tamaño del modelo,
+> no la superficie.
+>
+> Ahora hay puente. **Claude Code real, corriendo en el anfitrión, hizo una tarea
+> de lectura usando sólo verbos de Thalyx**: cuatro llamadas —un `indexar`, dos
+> `buscar`, un `usan`— sin abrir un archivo y sin una sola búsqueda de texto. El
+> decreto está en [[Agentes-Externos]] y lo importante de él es dónde vive cada
+> cosa: **MCP es un adaptador, en el anfitrión; la superficie de Thalyx sigue
+> siendo la autoridad.**
+>
+> La cadena es
+> `Claude Code → thalyx-mcp → socket de QEMU → virtio-serial → un hilo de la
+> sesión → el MISMO dispatch que un teclado → índice, intento y journal reales`.
+> Sin red, sin TCP, sin dirección: `CONFIG_VIRTIO_CONSOLE=y` es todo el costo en
+> el kernel.
+>
+> **Un agente externo no es root remoto.** `crates/thalyx-cli/src/external.rs`
+> es una lista de verbos y un guardián de rutas que resuelve cada una dos veces
+> —como la resuelve el verbo y como la resuelve el kernel— y exige que las dos
+> caigan adentro del workspace. `apagar`, `instalar-en`, `correr`, `ejecutar`,
+> `negar` y `matar` no son alcanzables. Lo que un agente externo cambió, y todo
+> intento suyo de salirse, quedan en el journal marcados `untrusted_content`.
+>
+> **Lo que la primera medición dio**, con Sonnet, la misma tarea, dos copias
+> idénticas de un proyecto de 35 archivos: 8 turnos y 32.8 s con `Read`/`grep`
+> contra 7 turnos y 17.3 s con las herramientas de Thalyx. **Es una anécdota, no
+> un resultado** — una corrida de una tarea. Lo que existe es el arnés,
+> `dev/bench-external-agent.sh`, y una corrida real que lo prueba.
+>
+> Y enseñó algo en contra, que está escrito en el decreto: el brazo de Linux
+> encontró un dependiente que el índice no, porque usa el símbolo a través de un
+> campo y nunca lo nombra. El índice contesta *quién nombra esto*, no *a quién le
+> afecta*.
+>
+> **Lo que falta arrancar para creerlo del todo.** virtio-serial no ha llevado un
+> byte: este contenedor no tiene QEMU, y lo que corrió fue el mismo `serve` sobre
+> un socket UNIX. Y el ciclo `intento` completo a través del puente necesita
+> Btrfs. Los dos son `dev/verify.sh` §47 y §48, y los dos corren en la máquina de
+> Cesar:
+>
+> ```
+> make -C image agent PROJECT=/ruta/a/un/proyecto
+> # en otra terminal, cuando la máquina esté arriba:
+> dev/agent-connect.sh
+> claude
+> ```
+>
+> ## El motor se queda vivo, y la pantalla deja de congelarse — 2026-08-28
+>
+> El arranque en QEMU del bloque siguiente probó que la cadena entera existe:
+> una frase en español llegó a un Qwen2.5-3B confinado y `ls` mostró la carpeta.
+> Lo que ese arranque también mostró es que **el motor era por lotes**.
+> `llama-completion` es de una sola respuesta por construcción, así que la
+> segunda frase volvía a leer dos gigabytes de disco y a construir el contexto
+> otra vez: la mayor parte de lo que cuesta un modelo local, gastada de nuevo en
+> trabajo ya hecho. Y la llamada ocurría dentro de la pulsación de Enter, así
+> que durante esos segundos el marco no se redibujaba — ni el reloj.
+>
+> Las dos cosas están cerradas. **El decreto de que el motor es un módulo no
+> cambió en nada**: sigue firmado, instalado, corrido por `thalyx_core::run`
+> bajo `module_standard`, con su uid, su cgroup, su seccomp y su raíz pivotada.
+> Lo que cambió es la forma del programa que hay adentro.
+>
+> **`engine/thalyx-engine.cpp`.** El mismo `llama.cpp` en la misma etiqueta
+> fijada (`b10665`), con las mismas banderas y el mismo enlace estático; se copia
+> dentro de `tools/` del checkout y lo compila el mismo `cmake`, para que el
+> orden de enlace de los backends de ggml no sea algo que este repositorio
+> resuelva a mano. Carga el GGUF una vez, anuncia que está listo, y contesta
+> peticiones enmarcadas por una tubería hasta que Thalyx cierra el otro extremo.
+> No reimplementa inferencia: debajo del protocolo todo es la librería `common`
+> de `llama.cpp`.
+>
+> **Nada de red.** Ni HTTP, ni TCP, ni el servidor que `llama.cpp` ya trae:
+> conceder `net/outbound` al programa menos confiable de la máquina para que dos
+> procesos del mismo anfitrión se hablen es debilitar el aislamiento por
+> comodidad. El protocolo es little-endian con longitud por delante, y se mandan
+> **rutas y no texto** — los archivos ya están donde al módulo se le concedió
+> leerlos, así que la inferencia sigue siendo inspeccionable en disco.
+>
+> **Un solo lanzador.** `thalyx_core::run` se partió por dentro en `run::start`
+> → `RunningModule` → `wait`/`shutdown`, y `run()` es `start` seguido de `wait`.
+> El camino ordinario ejerce el mismo código que el residente mantiene abierto,
+> así que no hay un segundo lugar donde acertar con el cgroup, la política, el
+> filtro seccomp, la raíz y el uid.
+>
+> **La pantalla ya no se bloquea.** Una línea que no es un verbo vuelve como
+> `Flow::Thinking` en vez de gastar segundos dentro de la pulsación; la pantalla
+> pregunta en un hilo, dibuja `⠋ pensando…` con el reloj corriendo cada 120 ms, y
+> cuando llega la respuesta la corre por el **mismo** dispatch, en el hilo que
+> tiene el teclado. El trabajador propone y no actúa. Y al arrancar, la sesión
+> gráfica lanza un hilo que precalienta los pesos, así que la primera frase
+> probablemente encuentra el modelo ya adentro.
+>
+> **La evidencia se cuenta en procesos, no en objetos.** Bajo cada propuesta la
+> sesión imprime `motor <pid> ▪ frío|tibio ▪ <s>`: el mismo pid dos veces son dos
+> frases contestadas por un proceso. Y la prueba se escribió igual —
+> `the_engine_stays_alive` empaqueta el binario de la propia prueba como módulo
+> del motor y ese motor de mentira anota su pid al arrancar; lo que se afirma es
+> cuántas líneas tiene ese archivo.
+>
+> **Eso agarró un defecto que nada más habría agarrado.**
+> `if let (false, Some(stale)) = (usable, held.take())` evalúa las dos mitades de
+> la tupla antes de comparar con el patrón, así que `take()` corría siempre y el
+> residente vivo se tiraba en cada llamada. Todas las frases se contestaban bien;
+> lo único que cambiaba era el costo, que es justo lo que esta fase existía para
+> bajar. Y como `RunningModule` no tenía `Drop`, el proceso tirado seguía vivo:
+> la máquina acumulaba un motor por frase con el modelo cargado en cada uno.
+> Ahora tiene `Drop` y la regla está en [[Estrategia-de-Pruebas]].
+>
+> De paso, dos cosas de herramienta: **`make -C image run` abre la interfaz
+> gráfica** —era `-nographic`, que fue correcto hasta el día en que la pantalla
+> se volvió la cara del sistema y siguió *funcionando* después, que es por lo que
+> nadie lo notó— y `run-serial` es la ruta vieja con un nombre que dice lo que
+> es. `CPUS ?= 4`, porque el motor escoge sus hilos con
+> `available_parallelism` y `-smp 2` era un modelo a media velocidad sin que
+> nadie lo hubiera decidido.
+>
+> **Lo que falta y lo dice `verify.sh`:** §45 y §46 en el hierro de Cesar —
+> residencia *y* confinamiento los establece la misma llamada, pero este
+> contenedor no tiene BPF LSM y lo medido aquí corrió `--unconfined`. Y los dos
+> números, frío contra tibio, con un Qwen2.5-3B real. Ver [[Motor-Residente]].
+>
+> ---
+>
+> ## El primer arranque real en QEMU: el motor no encendía — 2026-08-28
+>
+> El primer defecto real del motor no lo encontró ninguna prueba. Lo encontró
+> arrancar la imagen en QEMU y hablarle:
+>
+> ```
+> the model failed: could not start module dev.thalyx.engine:
+> permission `8GiB memory` cannot be expressed as kernel policy
+> ```
+>
+> La causa es una frontera que faltaba. `Confinement::establish` le entregaba a
+> `thalyx_permd::apply` **todos** los permisos otorgados, y `thalyx-permd` sólo
+> sabe expresar operaciones que el LSM revisa en un hook: `net/outbound` y
+> lecturas y escrituras de rutas. Un techo de memoria no es una operación —es un
+> número en `memory.max`— así que permd lo rechazaba, correctamente y de forma
+> fail-closed, y el módulo con el que la máquina se deja hablar no arrancaba.
+>
+> **La corrección no fue ablandar a permd.** Enseñarle a `bit_for` a devolver
+> `0` para `memory` habría convertido un permiso inejecutable en uno que *parece*
+> ejecutado —exactamente la promesa que su error `Inexpressible` existe para
+> negarse a hacer— y lo habría hecho para todo recurso no-LSM futuro al mismo
+> tiempo. La frontera va donde se conoce el mecanismo: en el sandbox.
+> `profile::for_kernel_policy` retira de la lista que va al kernel sólo lo que
+> **este crate ya hizo cumplir por otro medio**, y todo lo demás sigue llegando a
+> `bit_for` y sigue siendo rechazado si nada lo hace cumplir. La lista completa
+> se conserva donde `RootFs` y `Profile::for_permissions` la necesitan.
+>
+> El detalle que hace que la frontera sea la correcta y no una lista de nombres:
+> un permiso `memory` cuya acción no se lee como tamaño (`8Gib`) tampoco lo hace
+> cumplir el cgroup, así que **no** se retira: llega a la política y se rechaza.
+> Hay una prueba para cada mitad.
+>
+> Y `dev/stage-engine.sh` pedía 4 GiB fijos, así que `ENGINE_TIER=media` producía
+> un store cuyo motor moría cargando sus propios pesos y la única salida era
+> editar el archivo a mano antes de cada build. Ahora el techo se deriva de la
+> gama: `ligera→4GiB`, `media→8GiB`, `alta→16GiB`, `máxima→32GiB`.
+>
+> Lo que enseña, y ya está en `Estrategia-de-Pruebas.md` como regla 1: **el
+> defecto salió de correr el sistema.** 189 verificaciones pasaban con el motor
+> incapaz de arrancar, porque ninguna preguntaba si un módulo con el permiso que
+> el propio `stage-engine.sh` le escribe llega a existir.
+
+> ## La máquina tiene agente: una frase suya llega a un modelo y algo pasa — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Lo que faltaba desde que se decretó el agente mínimo estaba en el punto 3 del
+> bloque de abajo: **no hay agente adentro**. Todo lo demás existía —el prompt,
+> la gramática GBNF, el parser, el contrato, el router, la atribución, las
+> gamas— y ninguna de esas piezas se podía alcanzar desde la única cara que
+> tiene la máquina. Escribir algo que no fuera un verbo contestaba *«no tengo
+> modelo cargado»*, lo cual era cierto y era también el agente entero siendo
+> inalcanzable.
+>
+> Ahora la cadena está cerrada de punta a punta:
+>
+> ```
+> pantalla → session/dispatch → thalyx-agent → prompt + gramática
+>          → motor llama.cpp instalado como módulo → GGUF del store
+>          → inferencia real → contrato → router/validación → verbo de Thalyx
+> ```
+>
+> ### Las cuatro decisiones que la hacen así
+>
+> 1. **El motor es un módulo, no parte de Thalyx.** `llama-completion` de
+>    llama.cpp, empaquetado en un `.thmod` firmado, instalado en el store,
+>    confinado bajo `module_standard` con el uid, el cgroup, el seccomp y la
+>    raíz pivotada que recibe cualquier otro módulo. La imagen sigue siendo el
+>    kernel y **un** programa: `make -C image count` lo dice.
+> 2. **Un proceso por respuesta.** No hay demonio, no hay servidor, no hay API
+>    HTTP. `thalyx_core::run` —el mismo que ejecuta `correr`— lanza el motor,
+>    espera, y lo que el módulo escribió en su `stdout` es la respuesta. Una
+>    inferencia es un módulo corriendo, con su entrada en el diario.
+> 3. **La costura es angosta a propósito.** `thalyx_agent::llama::Engine`:
+>    entra un vector de argumentos, salen bytes. Arriba de esa línea no cambió
+>    nada —el prompt, el marcador, la gramática, dónde termina una respuesta,
+>    qué es una respuesta rota— y abajo hay dos implementaciones:
+>    `ProcessEngine` (un programa en el `PATH`, que es lo que tiene una máquina
+>    de desarrollo) y `ModuleEngine` (el módulo instalado, que es lo que tiene
+>    la máquina). El crate del agente no puede lanzar procesos confinados y no
+>    debe poder: todo lo que sabe llegó de un modelo que no es de confiar.
+> 4. **El disco arranca listo.** El motor se instala en el stage y la elección
+>    de gama queda escrita, así que la máquina arranca **pudiendo ser hablada**.
+>    El greeter sigue sin instalar a propósito —el paso 2 del criterio de salida
+>    es una persona instalándolo— y el motor es el requisito contrario.
+>
+> ### Lo que se arregló en el camino
+>
+> - **El prompt se escribía en `/tmp`.** Un módulo sólo ve lo que su manifiesto
+>   le concedió, así que un prompt fuera de esos directorios es un archivo que
+>   el motor tiene orden de leer y no puede ver — y vuelve como «llama.cpp no
+>   completó el prompt», culpando a llama.cpp de un error de Thalyx. El motor
+>   ahora dice **dónde** se le puede escribir (`Engine::scratch_root`) y hay una
+>   prueba que sólo falla si eso se rompe.
+> - **`llama.cpp` no enlazaba estático.** Tres banderas, encontradas por tres
+>   enlaces fallidos, en este orden: `LLAMA_OPENSSL=OFF` (cpp-httplib encuentra
+>   el OpenSSL del sistema, que sólo existe como `.so`), `GGML_OPENMP=OFF`
+>   (`libgomp` igual) y `GGML_NATIVE=OFF` (la máquina que construye el store no
+>   es necesariamente la que lo arranca, y `-march=native` en un módulo es una
+>   instrucción ilegal en el CPU de otro). Están escritas en
+>   `dev/build-engine.sh` para que nadie las vuelva a encontrar.
+> - **`agent model use` fallaba al grabar una ruta que todavía no existe.** El
+>   store se construye en una máquina y se arranca en otra: la ruta que se graba
+>   es la de adentro y los bytes que se miden son los del stage. `--reading`.
+> - **El modelo diminuto declaraba 128 tokens de contexto** y el prompt real
+>   mide ~1800, así que rechazaba la única cosa para la que servía además de
+>   `engine-needs.sh`. Ahora declara 4096, que en un modelo de dos capas no
+>   cuesta nada.
+>
+> ### Qué está probado y qué no
+>
+> **Probado en el contenedor, con un llama.cpp real y un GGUF real** (dos capas,
+> hecho por `gguf-py` de llama.cpp):
+>
+> - el binario es estático, sin intérprete y sin bibliotecas compartidas;
+> - se empaqueta, se firma y se instala como módulo, con los 4 GiB que pide;
+> - `thalyx agent model check` lo corre **a través del sistema de módulos**, el
+>   motor lee el prompt del directorio concedido, carga los pesos, obedece la
+>   gramática y lo que imprime vuelve a Thalyx;
+> - una frase que no es un verbo, escrita en la sesión, se convierte en un verbo
+>   y **se ejecuta**: `crea una carpeta llamada pruebas` → `mkdir pruebas` → la
+>   carpeta existe. (Con un motor de reemplazo: es una afirmación sobre el
+>   cableado, no sobre el juicio de un modelo.)
+>
+> **No probado aquí, y nombrado en vez de supuesto:**
+>
+> - **confinado.** Este contenedor no tiene BPF LSM, así que la corrida fue
+>   `--unconfined` y el diario la anotó como degradada. La §45 de
+>   `dev/verify.sh` lo corre confinado en la máquina de Cesar, y dice NOT PROVEN
+>   si no puede;
+> - **que un Qwen2.5 real acierte la intención.** El modelo de dos capas produce
+>   un objeto gramatical y vacío. Eso es una medición del modelo, no de la
+>   máquina, y `thalyx agent bench` es lo que la hace.
+
+> ## La máquina se puede usar: se puede escribir en ella, y se puede terminar lo que se empieza — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar arrancó la imagen y preguntó qué le falta al sistema para que él, por
+> voluntad propia, pueda pasar **un día completo adentro**. Medido contra el
+> código, el hueco más grande no estaba escrito en ningún lado.
+>
+> ### Lo que se midió, y no es lo que la bóveda decía
+>
+> Seis cosas separan el arranque de la foto de un día de uso. Dos de ellas nadie
+> las había notado:
+>
+> 1. **La pantalla que arranca es una ventana, no un taller.** Bajo
+>    `thalyx-capture` el descriptor 0 es `/dev/null` —a propósito, si no la
+>    máquina se cuelga con una pregunta que nadie ve— así que los ocho lugares
+>    que se detienen a preguntar encuentran que no hay terminal y se niegan.
+>    `instalar`, `ejecutar`, `observar`, `instalar-en` **y `editar`** se pueden
+>    leer ahí y no se pueden acabar. La bóveda tenía escrita sólo «la
+>    confirmación dibujada»; `editar` no lo nombraba nadie.
+> 2. **No se podía teclear español.** Un `grep` de `keymap` en todo el repo
+>    salía vacío. El kernel lleva un mapa compilado adentro y es US QWERTY, y
+>    `loadkeys` no cabe en la imagen. La tecla que en un teclado latinoamericano
+>    dice `ñ` mandaba `;`. Un SO cuya bóveda entera está en español, en el que
+>    no se podía escribir en español.
+> 3. **No hay agente adentro** — decretado el 2026-08-28. **Cerrado** el
+>    mismo día: ver el bloque de arriba.
+> 4. **Una cosa a la vez** bajo la pantalla.
+> 5. **Nada entra ni sale** (`red` lee y no manda), y un store recién instalado
+>    está vacío.
+> 6. **El techo de 1 GiB** por módulo, que el motor no cabe.
+>
+> ### Sus dos decisiones
+>
+> Preguntadas con opciones, contestadas el mismo día:
+>
+> - **El día es escribir y pensar con el agente, y además operar la máquina.**
+>   No desarrollar Thalyx desde adentro, que abriría la Fase 2.
+> - **El techo de memoria: lo que pida el manifiesto, aprobado por él al
+>   instalar.** No un número fijo más grande.
+>
+> ### Lo entregado
+>
+> **A — una pregunta, dos caras** (`crates/thalyx-cli/src/ask.rs`). Las ocho
+> confirmaciones tenían los mismos cinco renglones escritos a mano, y habían
+> derivado sobre qué es un sí: `intento abandonar` tomaba `si` y `sí`, y el
+> verbo que le quita el guardián al kernel no tomaba ninguno. Ahora hay una sola
+> comparación y las dos caras la llaman; lo que no se comparte es la negativa,
+> que es del verbo. Y el orden cambió: **decir de qué se trata va antes de
+> revisar si hay terminal**, porque el contexto *es* la confirmación y una
+> negativa emitida antes de que exista no deja nada que dibujar.
+>
+> **B — el teclado** (`crates/thalyx-term/src/keymap.rs`). Las tablas se
+> generan de `kbd` con `dev/keymap-table.py`, nunca se escriben: una
+> distribución es un dato sobre el mundo y la regla 6 aplica. `teclado` dice qué
+> hay —preguntándole al kernel, no a Thalyx— y `teclado latino|ingles` lo
+> cambia. Se carga en el arranque, con `thalyx.teclado=no` de salida de
+> emergencia, y hay prueba de que las letras de `teclado ingles` están en la
+> misma tecla en las dos distribuciones, o sea que el camino de regreso se
+> teclea desde donde haría falta.
+>
+> **C — el techo por manifiesto.** Una petición de memoria es un permiso
+> `persistent`: sale por el camino confiable que ya existe, se guarda donde ya
+> se guarda, y `for_permissions` sube el techo. El gigabyte pasa de techo a
+> piso. Con unidad siempre (`4GiB`, nunca `4294967296`), nunca `jit`, negado si
+> no cabe en la máquina, y dos concesiones dan la mayor y no su suma. Entero en
+> [[Motor-de-Inferencia-como-Modulo]].
+>
+> **1506 pruebas verdes**, `clippy` limpio, y la compilación de musl —la regla
+> 12— corrida de verdad: este contenedor no la podía hacer y ahora sí, con
+> `apt-get install musl-tools`.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && make -C image image
+> ```
+>
+> Y **arrancar la imagen**, que es lo único que contesta las dos mitades que
+> este contenedor no tiene:
+>
+> - **Teclear `ñ`.** Si sale `ñ`, la pieza B funciona en hierro. Si sale otra
+>   cosa, `teclado ingles` regresa el mapa del kernel; si el teclado quedó
+>   inservible, `thalyx.teclado=no` en la entrada de arranque.
+> - **Teclear `instalar <algo>` o `ejecutar <programa>` en la pantalla.** Antes
+>   rechazaba; ahora debe dibujar la confirmación con el contexto arriba y
+>   tomar la respuesta. **Ctrl-C cancela** — el aviso decía «Escape» y era
+>   imposible: un Escape solo es el prefijo de toda flecha.
+>
+> `sudo ./dev/verify.sh` trae **tres etapas nuevas** (42, 43, 44) sobre las 189
+> de la corrida anterior.
+>
+> ### Lo que sigue, y por qué está en ese orden
+>
+> **D — el motor adentro de la máquina.** Es lo único que queda de lo que él
+> decidió, y es lo más grande. Ahora no lo bloquea nada: el confinamiento le
+> alcanza (31 de 31 llamadas), el techo ya se puede pedir, y `ejecutar` ya se
+> puede confirmar desde la pantalla — que era el hueco por el que el motor no
+> se podía ni arrancar desde la cara con la que la máquina viene.
+>
+> Los dos huecos que quedan del día y **no** están decididos: que se pueda hacer
+> más de una cosa a la vez, y por dónde entra y sale algo de la máquina.
+
+> ## El agente no está en la máquina, y por dónde entra — 2026-08-28
+>
+> **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+>
+> Cesar arrancó la imagen, vio la pantalla, y preguntó qué le falta al sistema
+> para ser *«algo real que pueda usar durante un buen tiempo de verdad»*. La
+> respuesta, medida contra el código, es más grande de lo que esta bóveda decía.
+>
+> ### Una máquina Thalyx arrancada no tiene agente
+>
+> Y no por un pendiente: por cómo está construido. `llama.rs` arranca
+> `llama.cpp` con `Command::new`, un binario aparte buscado en el `PATH`, y la
+> imagen lleva `/init` y `/dev/console` y nada más. Así que el motor **no existe
+> en la máquina que arranca y no puede existir ahí** mientras la imagen sea el
+> kernel y un programa. El router, la gramática y las tres gamas medidas han
+> corrido siempre en el Fedora de Cesar, nunca sobre Thalyx.
+>
+> Un sistema operativo donde la IA es ciudadana de primera arrancó sin ella, y
+> eso no estaba escrito en ningún lado como hueco.
+>
+> ### El decreto: el motor es el primer módulo real
+>
+> Decidido por Cesar el 2026-08-28. Un binario estático, firmado, en el store,
+> confinado bajo `module_standard` como cualquier módulo; el `.gguf` llega al
+> disco de store por donde `greeter` ya llega. **No contradice el decreto de la
+> imagen**: un módulo vive en el store, no en la imagen, y `make -C image count`
+> sigue diciendo uno. Lo que sí lo contradice es lo de hoy, un `PATH` del que se
+> saca un programa sin manifiesto, sin firma, sin permisos y sin confinamiento.
+> Entero en [[Motor-de-Inferencia-como-Modulo]].
+>
+> ### Y se midió antes de construir nada, porque una pregunta podía matarlo
+>
+> Si un motor real necesitara algo que `module_standard` niega, el decreto sería
+> inconstruible. `dev/engine-needs.sh` lo preguntó —es
+> `dev/foreign-agent-needs.sh` apuntado a un motor, la misma comparación contra
+> la misma lista, una sola y no dos— con llama.cpp de verdad y un modelo escrito
+> por el propio `gguf-py` de llama.cpp, no por nosotros (regla 6).
+>
+> **31 llamadas al sistema distintas para cargar, tokenizar, correr el grafo y
+> generar. Las 31 ya están permitidas.** El confinamiento que ya existe alcanza
+> para un motor de inferencia, y eso no se sabía. De 13 rutas abiertas, 9 caen
+> dentro de lo que un módulo ve; de las otras cuatro, una es el `.gguf` —los
+> datos del módulo, como el `notes.txt` de `greeter`— y las tres restantes son
+> `/dev/tty` y dos de conteo de núcleos bajo `/sys`.
+>
+> **Lo que no contesta es el tamaño, y ahí está el hueco.** El modelo medido
+> pesa menos de un megabyte. `module_standard` topa un módulo en **1 GiB**
+> (`profile.rs`), ningún manifiesto puede pedir más, y aunque los pesos por
+> `mmap` sean caché reclamable, el KV cache y los búferes de cómputo no lo son.
+> Ese número es de Cesar: es política y cuesta su hierro. Tampoco contesta el
+> libc — se midió glibc y embarcaría musl estático, que es la regla 12.
+>
+> ### Tres defectos que su foto agarró, arreglados
+>
+> Los tres salieron de mirar la pantalla arrancada, no el código, y ninguno era
+> un error de lo que la pantalla *dice*.
+>
+> - **Un renglón se salía de su panel.** `Row::Pair` medía el valor entero y
+>   luego lo alineaba a la derecha; uno más ancho que la columna quedaba con el
+>   lápiz a la izquierda del panel, y `draw` no recorta. El recorte salió a
+>   `Typography::fit`, porque un texto alineado a la derecha hay que medirlo **ya
+>   recortado**.
+> - **`clear` mandaba un escape a una tubería.** Bajo la pantalla la salida se
+>   atrapa en el descriptor, así que la pantalla dibujó `[2J[H` como texto. Ahora
+>   el escape sólo sale a una terminal de verdad y hay `Flow::Emptied`. Probado
+>   por tubería **y con control en una terminal hecha con `thalyx dev pty`**.
+> - **La barra decía las opciones de un tmpfs donde va el store.** Dos errores
+>   independientes: el respaldo le ganaba a lo que respaldaba —un `find` pedía
+>   `/var/thalyx` **o** `/`, y `/` se monta primero, así que en una máquina con
+>   store el store no se consultaba nunca— y el último campo de un renglón de
+>   `mountinfo` no es una etiqueta. Por eso la barra decía tmpfs mientras el panel
+>   dos pulgadas a la derecha decía `btrfs`: **la pantalla se contradecía a sí
+>   misma**, y ésa fue la pista. Ahora dice el disco, o «sin disco — no
+>   recuerda», o `store ?` cuando no se pudo leer (regla 10).
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && cargo install --path crates/thalyx-cli && make -C image image
+> ```
+>
+> Y arrancar la imagen para ver la pantalla otra vez: los tres defectos son de
+> vidrio y su Fedora no tiene framebuffer que los enseñe. `sudo ./dev/verify.sh`
+> no trae etapas nuevas todavía — la del motor llega cuando el motor exista.
+
+> ## La corrida en hierro salió limpia, y la imagen no compilaba — 2026-08-28
+>
+> Los bloques de abajo son cómo se llegó.
+>
+> **La corrida de Cesar: `proven 185 · not proven 4 · failed 0`.** Cero fallas, y
+> el conteo cuadra: 189 comprobaciones contra las 184 de la corrida anterior
+> (`181 · 2 · 1`), y las cinco de diferencia son exactamente las cinco que agregó
+> la entrega de la pantalla. Nada dejó de correr en silencio, que es la única
+> forma de leer un marcador.
+>
+> Lo que eso deja probado en hierro:
+>
+> - **la suite ya no arma el kernel de la máquina que está midiendo** — la falla
+>   de la §5 desapareció, y con ella queda comprobada en fierro la regla 11, que
+>   aquí no se puede comprobar porque este contenedor no tiene guardián;
+> - **el color del camino confiable está en una confirmación y en nada más**,
+>   leído por un decodificador de PNG que no es Thalyx, con su control y el
+>   control del control;
+> - **`pantalla` por tubería rechaza con `not_a_terminal` y la sesión sigue
+>   contestando** — una máquina sin monitor no se detiene;
+> - **la línea de comandos de la imagen deja `thalyx.pantalla` sin contestar**,
+>   así que `thalyx.pantalla=no` sigue siendo la salida de una máquina negra.
+>
+> **Los cuatro `NOT PROVEN`: dos son nuevos y son el mismo hueco.** De las cinco
+> comprobaciones nuevas sólo dos tienen rama de `NOT PROVEN`, y las dos son la
+> mitad de la etapa 40 que necesita `/dev/fb0`: la comparación del `ioctl` contra
+> sysfs, y el tracer que vigila que `pantalla` por tubería no llegue a tocar el
+> framebuffer. Cesar lo confirmó a mano: **su Fedora no tiene `/dev/fb0`** ni
+> `strace` instalado. Los otros dos son los de siempre, los que ya venían del 27.
+>
+> Eso **no es un hueco de la pantalla de Thalyx**, es de la máquina que verifica:
+> la imagen lleva `CONFIG_FB`, `CONFIG_FB_EFI` y `CONFIG_FRAMEBUFFER_CONSOLE`, y
+> la consola de texto con la que arrancó en agosto ya era prueba de que ahí sí
+> hay framebuffer. La pantalla sólo se puede *ver* arrancando la imagen, no desde
+> Fedora.
+>
+> ### Y lo siguiente que tecleó no compiló
+>
+> `make -C image image` murió con cinco errores de tipo, todos de la pantalla:
+> las peticiones de `ioctl` escritas `as libc::c_ulong`. Ése es el tipo que toma
+> `libc::ioctl` **contra glibc**; contra musl toma `c_int`, y la imagen es un
+> binario estático de musl.
+>
+> **Por qué 189 comprobaciones no vieron nada.** `verify.sh` compila contra glibc
+> de principio a fin, y la etapa 11 —la que se llama «la imagen»— arma el
+> initramfs **con ese binario de glibc** para contar cuántos programas lleva
+> adentro. El único lugar del proyecto donde se compilaba lo que de verdad
+> arranca era un comando que corre Cesar, a mano, después de que todo dijo que
+> estaba bien.
+>
+> **El arreglo son cinco palabras** —`as libc::Ioctl`, el alias que ya vale en
+> los dos objetivos— y la regla ya estaba escrita en el propio crate, en el
+> comentario de `BTRFS_IOC_SUBVOL_CREATE`, desde que se construyó Btrfs. Una
+> convención que vive sólo en un comentario la obedece quien lo lee.
+>
+> **Así que lo que se entrega no es el arreglo, es la comprobación.** La etapa 2
+> corre ahora la línea exacta del `Makefile` de la imagen:
+>
+> ```
+> cargo build --release --target x86_64-unknown-linux-musl -p thalyx-cli
+> ```
+>
+> Sus cuatro brazos se ejercieron uno por uno antes de entregarla, incluido el
+> que importa: con el defecto puesto de vuelta, la etapa dice `FAILED` y imprime
+> el error del compilador junto al veredicto. Si a la máquina le falta el
+> objetivo de rustup o un compilador de C para musl, dice `NOT PROVEN` nombrando
+> el remedio —un límite de la máquina no es una falla de Thalyx— y
+> `THALYX_REQUIRE_IMAGE_BUILD=1` vuelve falla esos saltos.
+>
+> La regla nueva es la 12 de `CLAUDE.md` y está entera en
+> [[Estrategia-de-Pruebas]]: **lo que se compila para verificar tiene que ser lo
+> que arranca.** Es la regla 8 apuntada al compilador: una compilación con otra
+> configuración es otro sistema.
+>
+> ### Lo que le toca correr a Cesar
+>
+> ```
+> git pull && make -C image image
+> ```
+>
+> Y arrancar la imagen, que es lo único que puede contestar cómo se ve la
+> pantalla: su Fedora no tiene framebuffer que enseñarla. Adentro no hay que
+> teclear nada — la pantalla es lo que sale. Si sale en negro: Ctrl-C a ciegas,
+> o `thalyx.pantalla=no` en la entrada de arranque.
+>
+> `sudo ./dev/verify.sh` completo no hace falta para esto; cuando se corra, va a
+> traer una comprobación más que las 189 de hoy.
+
+> ## La pantalla es la máquina — 2026-08-28
+>
+> Los bloques de abajo son cómo se llegó.
 >
 > **El decreto, en sus palabras:** *«te dije que ya deberíamos tener ui, porque
 > no lo hiciste? o sea no quiero un comando para activar ui, quiero ya la ui, la

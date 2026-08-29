@@ -91,6 +91,18 @@ De ahí dos reglas:
 
 **Todo test de denegación necesita una línea base y un control.** La línea base es la misma operación antes de activar la restricción; el control es la misma operación fuera de su alcance. Sin la primera, una denegación y una operación que nunca funcionó se ven igual. Sin el segundo, una política que rompe todo se ve igual que una que funciona.
 
+**Y la misma forma aparece donde el éxito es "nada cambió".** El 2026-08-28, al
+escribir la tarea `reversible` del arnés de comparación —cambiar un símbolo en
+varios archivos y después dejar el árbol byte por byte como estaba— quedó claro
+que **un agente que no hace absolutamente nada pasa la comprobación perfecta**.
+El hash de antes y el de después son iguales tanto para el que cambió todo y lo
+devolvió como para el que se rehusó. Un veredicto leído de ahí premia la
+inacción, y la premia más en el brazo que se está tratando de probar. El arreglo
+es el de siempre: el veredicto es una conjunción, y la parte que distingue los
+dos casos viene de otro instrumento —el stream del propio agente dice si el
+nombre nuevo apareció alguna vez en una llamada. `dev/bench-summary.py
+--self-test` tiene ese caso escrito con nombre y apellido.
+
 ## Regla derivada: un test que se salta tiene que decir que se saltó
 
 Buena parte de lo que Thalyx hace solo se puede probar contra un kernel real: un cgroup, un mapa BPF, un `rename` sobre el filesystem verdadero. En una máquina donde eso no está, un test así no puede correr.
@@ -4439,6 +4451,148 @@ la máquina— dibujaba nada. Cuarenta y tres pruebas de la pantalla estaban en
 verde y ninguna lo veía, porque todas usaban conversaciones que caben. Lo
 encontró correr el sistema; la prueba se escribió después.
 
+## Regla derivada: lo que se compila para verificar no es lo que arranca — 2026-08-28
+
+**Qué pasó.** La corrida en hierro de la pantalla cerró en `185 · 4 · 0` — cero
+fallas, todo lo que la máquina de Cesar podía comprobar comprobado. Lo siguiente
+que él tecleó fue `make -C image image`, y no compiló: cinco peticiones de
+`ioctl` de la pantalla estaban escritas `as libc::c_ulong`, que es el tipo que
+toma `ioctl` contra glibc, y contra musl toma `c_int`.
+
+**Por qué las 189 comprobaciones no vieron nada.** `verify.sh` compila contra
+glibc, de principio a fin. La etapa 11 —la que se llama «la imagen»— arma un
+initramfs **con ese binario de glibc** para contar cuántos programas lleva
+adentro, que es la pregunta del decreto; nunca compiló para el objetivo de la
+imagen. O sea que el único lugar del proyecto donde se compila lo que de verdad
+arranca era un comando que sólo corre Cesar, a mano, después de que todo dijo
+que estaba bien.
+
+**La forma general.** *Un artefacto compilado con otra configuración no es el
+artefacto.* Es la regla 8 —un sustituto tiene que modelar la propiedad que se
+mide— aplicada al compilador en vez de a un doble de prueba: el binario de
+glibc modela el comportamiento de Thalyx perfectamente y no modela lo único que
+esta clase de defecto toca, que es el tipo de una llamada. Mientras el arnés no
+construya **el binario que se embarca**, hay una clase entera de fallas que sólo
+puede encontrar la persona que menos debería encontrarlas.
+
+**Lo que quedó.** La etapa 2 corre ahora la línea exacta del `Makefile` de la
+imagen —`cargo build --release --target x86_64-unknown-linux-musl -p
+thalyx-cli`— con sus cuatro brazos ejercidos uno por uno: probada si compila;
+`FAILED` con el error del compilador junto al veredicto si no; y `NOT PROVEN`,
+nombrando el remedio, si a esta máquina le falta el objetivo de rustup o un
+compilador de C para musl —regla del 2026-08-26, un límite de la máquina no es
+una falla de Thalyx—. `THALYX_REQUIRE_IMAGE_BUILD=1` vuelve falla cualquiera de
+esos dos saltos.
+
+**Y una advertencia sobre el crate donde pasó.** `thalyx-syscall` ya tenía la
+regla escrita, en el comentario de `BTRFS_IOC_SUBVOL_CREATE`: el número se
+declara `u64` y se convierte en el sitio de la llamada con `as libc::Ioctl`,
+que es el alias que ya vale en los dos objetivos. Estaba escrita, era correcta,
+y la entrega de la pantalla no la siguió — una convención que vive sólo en un
+comentario la obedece quien lo lee. Ahora hay una comprobación que la exige.
+
+## Regla derivada: una prueba que no puede existir sin poner en riesgo la máquina vive en `verify.sh`, no en `cargo test` — 2026-08-28
+
+Salió construyendo la costura de confirmaciones. Había que probar que
+`instalar-en` pide la ruta del disco y **no** acepta un `sí`, y llegar a esa
+pregunta exige nombrar un disco que el verbo acepte borrar.
+
+La primera versión nombró un dispositivo inexistente y **pasó por vacío**:
+`instalar-en` se niega ante un dispositivo que no abre *antes* de preguntar
+nada, así que la prueba afirmaba que un `sí` no autorizó una pregunta que nunca
+se hizo. Es la misma clase que ya está catalogada dos veces aquí, y sólo se
+agarró porque se leyó la salida en vez del código de salida.
+
+**El arreglo no es nombrar un disco mejor.** Apuntar un verbo que borra discos a
+un disco de verdad y teclearle `sí` es una prueba que borra la máquina justo el
+día en que lo que mide está roto — que es el único día en que corre distinto.
+`THALYX_ROOT` no aísla un disco; nada lo aísla. Es la regla 11 otra vez, con la
+consecuencia más cara posible.
+
+Así que la afirmación vive en la etapa 42 de `verify.sh`, sobre un dispositivo
+de bucle que el guion crea y destruye, donde el disco que se borra es un archivo
+que el guion escribió. Y ahí sí se rompió en las dos direcciones antes de
+creerle: la peligrosa (un `sí` que autoriza) y la del espejo (un confirmador que
+niega todo, que sin la columna de control se ve igual que uno que funciona).
+
+**Y el patrón que la agarró:** `grep 'that is not'` pegaba en *«That is not the
+same as not looking»*, una frase de `discos` tres renglones arriba. Un marcador
+tomado de una frase en prosa es un marcador que otra prosa cumple. El que quedó
+es la oración que el confirmador mismo imprime y nada más.
+
+## Regla derivada: una justificación que sobrevive a que la desmientan es un cuento — 2026-08-28
+
+El comentario de `said_so_far` decía que leer el búfer con `seek` movería la
+posición donde el verbo escribe, y que por eso se lee con `pread`. Se puso el
+`seek` de vuelta para ver la prueba fallar —que es lo que este proyecto hace
+antes de creerle a una prueba— y **no falló**: `read_to_end` deja el offset al
+final, que es donde estaba.
+
+La razón verdadera es más angosta y sigue decidiendo lo mismo: `pread` no puede
+mover esa posición en absoluto, así que vale para una lectura parcial, para una
+que se corta a la mitad por un error, y para quien después lea sólo la cola. El
+comentario dice ésa.
+
+Lo que se aprende no es sobre `pread`. Es que **romper una prueba a propósito
+también prueba el comentario de al lado**, y que una explicación que no se puede
+desmentir no es una explicación — es una historia que se cuenta el código a sí
+mismo. Regla 5 apuntada al texto en vez de al instrumento.
+
+## Regla derivada: el encoding de otro sistema se lee entero o no se lee — 2026-08-28
+
+Las tablas de teclado del kernel guardan `K(tipo, valor)`, pero **sólo cuando el
+byte alto llega a `0xf0`**; por debajo de eso la entrada es un punto de Unicode
+tal cual. La primera versión de las pruebas leyó el tipo sin restar el `0xf0` y
+concluyó que la distribución latinoamericana no tiene `ñ`.
+
+La tabla estaba bien. El lector estaba mal. Se agarró porque la afirmación de al
+lado era lo bastante específica para ser obviamente falsa —«la tecla 39 da
+`ñ`»— y no porque algo fallara de forma visible: un lector que hubiera dicho «no
+es una letra» para media tabla habría pasado cualquier prueba escrita en
+términos de «tiene letras».
+
+Dos consecuencias, y la segunda es la regla:
+
+1. El decodificador vive en el módulo y no en la prueba. Dos lectores de un
+   encoding es cómo llegan a no coincidir, y aquí el segundo lector iba a ser el
+   verbo que le dice a una persona qué hace una tecla.
+2. **Una afirmación sobre datos ajenos necesita su columna de control igual que
+   una negativa.** «Esta distribución tiene `ñ`» pasa contra una tabla igual en
+   todos lados. Lo que se afirma es la *diferencia*: la tecla que aquí da `ñ` es
+   la que en el mapa compilado del kernel da `;`.
+
+## Regla derivada: un patrón evalúa sus dos mitades antes de decidir cuál usa — 2026-08-28
+
+El motor residente cargaba el modelo otra vez en cada frase, y la línea que lo
+causaba compilaba, pasaba `clippy` y se lee correcta:
+
+```rust
+if let (false, Some(stale)) = (usable, held.take()) {
+    stale.retire();
+}
+```
+
+La tupla se construye **antes** de comparar con el patrón, así que `held.take()`
+corría siempre. Cuando el motor sí servía —`usable == true`— el brazo no
+entraba, `stale` nunca se ligaba, y el residente que acababa de sacarse del sitio
+se destruía al final de la sentencia. La siguiente frase encontraba `None` y
+arrancaba otro proceso con los pesos otra vez.
+
+Tres cosas de esto, y la tercera es la regla:
+
+1. **No hubo error visible.** Cada frase se contestó bien. Lo único que cambió
+   fue el coste, que es exactamente lo que la fase entera existía para bajar.
+2. **`RunningModule` no tenía `Drop`**, así que el proceso tirado seguía vivo:
+   la máquina acumulaba un motor por frase, cada uno con el modelo cargado. Peor
+   que el fallo que se estaba reparando. Ahora tiene uno, y mata el proceso.
+3. **Lo que agarró el defecto fue contar procesos, no observar comportamiento.**
+   `the_engine_stays_alive` hace que el motor de mentira anote su pid en un
+   archivo al arrancar, y la afirmación es sobre cuántas líneas tiene ese
+   archivo. Una prueba escrita como «la segunda frase también se contesta»
+   habría pasado. Cuando lo que se afirma es *que algo caro no volvió a pasar*,
+   la prueba tiene que contar las veces que pasó — no comprobar el resultado,
+   que es el mismo de las dos formas.
+
 ## Regla de documentación
 
 **Ninguna afirmación sobre atomicidad o rollback se documenta en la bóveda sin un test de nivel 2 que la respalde.**
@@ -4457,3 +4611,389 @@ Y desde el lado de la investigación: un experimento que mata el proceso en el p
 - [[Caso-Instalar-Modulo]]
 - [[Criterio-de-Salida-Fase-1]]
 - [[Notas-Tecnicas-Implementacion]]
+
+## Regla derivada: una ruta nueva a la misma función encuentra lo que ninguna prueba de esa función podía — 2026-08-28
+
+**Un verbo probado por su propia suite y probado a través de una segunda entrada
+son dos comprobaciones distintas, y la segunda encuentra lo que la primera no
+puede ver: los supuestos que la primera comparte con el verbo.**
+
+El puente de agentes externos ([[Agentes-Externos]]) no reimplementa ningún
+verbo. Compone una línea del vocabulario de la sesión y la manda por el **mismo**
+`dispatch_asking` que recibe una tecla. Como lo que le llega son argumentos
+estructurados y no una línea escrita por una persona, cada argumento va entre
+comillas simples — POSIX, literal de punta a punta, para que un argumento no
+pueda convertirse en un segundo verbo.
+
+La primera vez que se corrió, el puente contestó:
+
+```
+/home/proyecto/'src/main.rs' is not there
+```
+
+`leer` **no partía la línea en palabras**. Tomaba el resto de la línea tal cual y
+lo resolvía como una ruta. Lo mismo `ir`, `indexar`, `describe` e `intento`.
+[[Palabras]] había decretado el entrecomillado el 2026-08-23 y se lo había dado a
+`cp`, `mv` y `rm`; a `leer` no. Así que **un archivo con un espacio en el nombre
+se podía listar, copiar y borrar, y no se podía leer.**
+
+Ninguna prueba de `leer` podía encontrarlo, porque todas las escribió alguien que
+sabía que `leer` toma el resto de la línea, y por eso ninguna le pasó comillas.
+Es la regla del fixture inventado, movida un nivel: **una prueba escrita contra
+una función comparte los supuestos de la función.** Una segunda ruta que llega
+por otro lado no los comparte, y por eso los ve.
+
+Y encontró un segundo caso del mismo tipo en el mismo minuto: `ensayo` parte su
+primera palabra de la línea cruda, así que `ensayo 'rm' …` pide ensayar un verbo
+llamado `'rm'` —que ninguna máquina tiene— y la respuesta se lee como un error
+del agente cuando es de Thalyx. El puente compone ahora la línea de `ensayo`
+recursivamente, con las reglas del verbo que envuelve.
+
+**Lo que hay que hacer con esto.** Cuando se agregue una segunda entrada a algo
+—una superficie, un canal, una API— la primera corrida contra ella vale más que
+la suite entera de lo que envuelve. Correrla antes de escribir una sola prueba
+nueva, y anotar lo que salga.
+
+## Regla derivada: una respuesta correcta y estrecha se lee como una respuesta completa — 2026-08-28
+
+`usan src/store.rs` contestaba con los dos archivos que escriben
+`use crate::store::…`, y era **cierto**: eso es exactamente lo que el índice
+sabía. Se le escapaba un tercero que llega al mismo código como
+`server.store.persist()`, que `grep` sí encontró.
+
+Ninguna prueba podía atrapar eso, y no por descuido: todas preguntaban *¿están
+las filas que tiene que haber?* y todas pasaban. La pregunta que faltaba era
+**¿qué palabra cree quien lee esto que acaba de recibir?** Un agente que pide
+"dependencias" no está pidiendo la lista de imports; está pidiendo lo que se
+rompería. La respuesta era angosta, la palabra era ancha, y la distancia entre
+las dos es el error que el que pregunta comete después, lejos, sin manera de
+saber que empezó aquí.
+
+**Lo que hay que hacer con esto.** Cada vez que una primitiva se le ofrece a un
+agente, la pregunta que hay que hacerle no es si contesta bien, sino **qué
+concluiría de la respuesta alguien que no vio el código**. Si lo que concluiría
+es más de lo que la respuesta sostiene, o el nombre está mal, o la respuesta
+está incompleta, y hay que decidir cuál de las dos — nunca dejarlo así porque
+técnicamente no miente.
+
+## Regla derivada: un corpus con respuestas conocidas mide lo que un modelo no puede — 2026-08-28
+
+Lo único que había para saber qué sabe el índice era darle una tarea a Claude y
+leer qué pasó. Eso cuesta dinero, tarda minutos, varía entre corridas, y contesta
+*cómo fue esa sesión* en vez de *qué sabe el índice*.
+
+`crates/thalyx-graph/corpus/` son diez árboles chiquitos con la respuesta
+correcta escrita al lado, sacada de leer el código y no de correrlo. Corre en
+milisegundos y contesta con una tabla. Encontró tres defectos de precisión en
+este mismo repositorio antes de que ningún modelo lo mirara.
+
+Dos cosas lo hacen medir y no adornar:
+
+1. **Las expectativas son igualdades, no "tiene que contener".** Un índice a
+   nivel de símbolo falla devolviendo de más, no de menos, y un corpus que sólo
+   buscara las filas que quiere pasaría igual de contento sobre uno que devuelve
+   el árbol entero. Dos de los diez casos existen únicamente para ser contestados
+   **angostamente**: un nombre declarado en dos archivos, donde lo correcto es
+   negarse, y un nombre escrito en un comentario y en una cadena, donde lo
+   correcto es ignorarlo.
+2. **Los límites se declaran, no se esconden.** Un caso puede traer
+   `known_limits`, y la prueba afirma que el límite **sigue siéndolo** — así que
+   arreglarlo aparece tan fuerte como romper otra cosa —, imprime `NOT PROVEN`, y
+   `THALYX_REQUIRE_FULL_CORPUS=1` lo convierte en falla. Regla 3, en un lugar
+   donde era muy fácil dejar una advertencia vieja envejeciendo sola.
+
+**Lo que hay que hacer con esto.** Antes de gastar un modelo midiendo algo,
+preguntarse si lo que se quiere saber tiene una respuesta conocida y barata. Casi
+siempre la tiene, y entonces el modelo se gasta en lo que sólo un modelo puede
+contestar.
+
+## Regla derivada: un escaneo de a un renglón no puede saber qué es código — 2026-08-28
+
+Tres defectos, uno por cada forma en que el texto se pasa de renglón, y los tres
+salieron de indexar **este** repositorio y leer las filas:
+
+- `uapi_btrfs.h` figuraba como dependiente de `thalyx-parser` porque la palabra
+  `definitions` aparece en un comentario `/* … */`.
+- `thalyx-permd` figuraba igual porque un mensaje de `panic!` sigue en el renglón
+  siguiente con una barra invertida, y ese renglón se escaneaba como código.
+- `thalyx-graph/src/schema.rs` igual, porque el SQL vive en una cadena cruda
+  `r#"…"#` de veinte renglones y adentro dice `from_path`.
+
+Los tres existían desde que existe el índice, y ninguno se veía: una mención de
+más en `buscar` es una fila que nadie mira. Se hicieron visibles el día que una
+mención se convirtió en **una arista de dependencia**, que es un archivo al que
+alguien va a ir.
+
+El arreglo no fue tapar los tres, fue **un solo escaneo con estado** para las
+tres entradas del parser, que antes hacían tres manejos de comentarios distintos.
+Y ese escaneo tiene una asimetría que hay que respetar: una comilla doble sin
+cerrar continúa al renglón siguiente, y una comilla simple **nunca**, porque en
+Rust `&'a str` es un lifetime. Llevarla habría borrado el resto del archivo — una
+pérdida de recall que nadie notaría y que a todos les dolería. Tiene su prueba,
+`a_lifetime_does_not_swallow_the_rest_of_the_file`, y la del espejo:
+`a_slash_star_inside_a_string_does_not_open_a_comment`.
+
+**Lo que hay que hacer con esto.** Cuando una señal que era decorativa pasa a
+tener consecuencias, sus falsos positivos viejos son defectos nuevos. Hay que ir
+a buscarlos **corriendo la cosa sobre este repositorio y leyendo las filas**, no
+sobre fixtures — los tres estaban en código real y ninguno en un fixture.
+
+## Regla derivada: comprobar no es imponer, y las dos se ven idénticas hasta que hay dos clientes — 2026-08-29
+
+Una auditoría encontró cuatro P0 el 2026-08-28. **Tres eran el mismo defecto**,
+en tres subsistemas que nadie habría puesto en la misma frase:
+
+| Dónde | La regla que decía | Cómo la comprobaba |
+|---|---|---|
+| `intento empezar` | un intento abierto a la vez | leer el registro, después escribirlo |
+| la frontera del agente externo | nada fuera del espacio de trabajo | `canonicalize`, comparar, y después abrir el nombre otra vez |
+| el desmontaje del sandbox | no retirar la política si queda alguien adentro | `is_empty()`, y después revocar |
+
+Los tres tenían la regla correcta escrita, con su comentario explicando por qué
+importaba. Los tres la **comprobaban**. Ninguno la **imponía**.
+
+Y las dos cosas son indistinguibles con un solo cliente. Cada test que existía
+pasaba, porque cada test hacía una cosa a la vez, que es exactamente el caso en
+el que una comprobación y una imposición dan la misma respuesta.
+
+**La regla.** Cuando una afirmación es sobre algo que puede cambiar entre la
+comprobación y el uso —otro cliente, otro proceso, el sistema de archivos— la
+prueba que vale es la que **fuerza el entrelazado**, y hay tres formas y sólo
+tres:
+
+1. **Dos clientes reales con una barrera.** Hilos, con descripciones de archivo
+   separadas si lo que se prueba es `flock`. Sin la barrera el primero termina
+   antes de que el segundo empiece y el test pasa en una máquina donde el
+   defecto sigue ahí.
+2. **Un adversario corriendo en paralelo**, para lo que no se puede sincronizar:
+   un hilo que cambia un directorio por un symlink mientras el otro lee. De un
+   solo lado —regla 7— porque una corrida donde el adversario nunca ganó no
+   prueba nada: la afirmación es *cero* escapes, y al lado va el conteo de
+   rechazos como control, sin el cual «no pasó nada» y «no hubo carrera» se ven
+   igual.
+3. **El estado intermedio sostenido a mano**, cuando el entrelazado es una
+   ventana de milisegundos que no se puede provocar: dos confinamientos
+   establecidos y nada adentro del cgroup es un estado que un fake sostiene
+   indefinidamente y una máquina real sostiene un instante cada vez.
+
+**Y cada arreglo se comprobó quitándolo.** Los cuatro tests adversariales de la
+frontera fallan sin el anclaje; el de la carrera de `intento` falla cinco de
+cinco corridas sin el candado; el del cgroup falla sin el contador. Un test de
+concurrencia que nadie vio fallar no es evidencia de nada — pasa igual si mide
+la propiedad y si no mide nada.
+
+### El corolario para los oráculos
+
+El cuarto P0 no era una carrera y es la misma familia: el veredicto del
+benchmark reversible leía *«el agente cambió algo de verdad»* de que el nombre
+nuevo apareciera en alguna llamada. Eso es una frase que escribe el agente. Un
+`Grep` de ese nombre la satisface; un `Edit` que falló la satisface.
+
+Es la regla 2 —preguntarle al sistema si funcionó no prueba nada— aplicada a un
+instrumento en vez de a una máquina, y duele más ahí: **un instrumento falso
+produce evidencia falsa**, y la evidencia falsa se cree. La forma de la regla
+para un oráculo: cada propiedad del veredicto viene de un instrumento distinto
+del sujeto, y una propiedad que no se pudo medir hace el veredicto *ausente*,
+nunca `false` y nunca `true`.
+
+## Regla derivada: un guardia se calibra sobre el repositorio, no sobre el ejemplo que lo motivó — 2026-08-28
+
+La regla de las aristas de símbolo —*un nombre que exactamente un archivo del
+árbol declara*— pasaba los diez casos del corpus a la primera. Corrida sobre este
+repositorio, `thalyx-snapshot/src/lib.rs` tenía **41 dependientes**.
+
+Los tres defectos que faltaban salieron uno tras otro de leer esas filas, y
+ninguno se parecía al anterior:
+
+1. `fn place`, `fn relative` — **privadas**. Ningún otro archivo puede
+   nombrarlas, así que la arista no es improbable: es imposible. Faltaba
+   preguntarle a cada lenguaje su propia regla de visibilidad.
+2. `pub fn directory(&self)`, `pub fn subvolume(&self)` — públicas, únicas,
+   alcanzables, y **palabras del idioma**. Todo archivo con un `for directory in
+   …` figuraba como dependiente. Faltaba que un archivo que **ata** un nombre
+   esté hablando de su propia atadura.
+3. Un archivo con su propio `fn validate_name` privado, llamándolo, figuraba como
+   dependiente del único crate con uno público — porque al exigir visibilidad, la
+   declaración privada de al lado dejó de estar ahí para volver ambiguo el
+   nombre. **Arreglar un guardia destapó al siguiente.**
+
+Quedaron 19, de los cuales 17 son referencias reales entre crates que ningún
+import podía resolver, y las dos que sobran están contadas.
+
+Y el corpus hizo su trabajo del otro lado: las doce piezas pasaron enteras
+mientras el mecanismo debajo cambiaba tres veces en una tarde. Eso es lo que una
+red de regresión tiene que hacer y lo único que prueba que sirve.
+
+**Lo que hay que hacer con esto.** Un guardia probado sólo contra los casos que
+lo motivaron está probado contra su propio autor. El repositorio es el corpus
+adversario que nadie escribió, es gratis, y hay que correrlo **y leer las filas**
+— no contarlas. Los tres defectos estaban en la lista desde la primera corrida;
+lo que faltaba era mirarla.
+
+## Regla derivada: un testigo que el éxito de la tarea apaga no es un testigo — 2026-08-29
+
+La corrida REVERSIBLE #1 se pagó, terminó, y el instrumento la reprobó dos veces
+por razones que no tenían nada que ver con lo que hizo el agente. Es la
+decimoquinta vez que el problema resulta ser el instrumento, y la primera en la
+que el instrumento se equivocó **porque la tarea salió bien**.
+
+### El testigo
+
+La tarea reversible pide cinco cosas y la quinta es **dejar el árbol
+exactamente como estaba**. Contra eso el arnés tenía una trampa conocida —un
+agente que no hace nada restaura el árbol perfecto— y contra la trampa tenía un
+testigo: los `mtime` del espacio de trabajo, caminados antes y después. Un
+agente que cambió seis archivos y los devolvió deja seis `mtime` movidos; uno
+que sólo leyó, no.
+
+Salvo que el `mtime` es lo único de esa lista que **se puede volver a poner**.
+`utimensat` existe. Un agente que guarda una copia con `cp -a` y restaura desde
+ella devuelve el contenido y devuelve la fecha, y el testigo no ve nada. El
+brazo A hizo seis llamadas `Edit`, terminó con el árbol restaurado, y el resumen
+dijo `intermediate_state: false` — que es la frase «aquí nunca pasó nada», dicha
+sobre una corrida que quizá hizo todo el trabajo.
+
+Y lo peor no es el falso negativo: es que **el falso negativo y el verdadero son
+el mismo renglón**. Seis `Edit` que fallaron todas, seis `Edit` que nadie
+contestó y seis `Edit` que funcionaron y se deshicieron producen exactamente el
+mismo `mutating_tool_calls: 6` con `files_touched_on_disk: 0`. El resumen no
+distinguía cuatro hechos distintos:
+
+1. **lo que el modelo pidió** — una llamada que sólo puede mutar, contada de la
+   petición;
+2. **lo que la herramienta contestó** — el `tool_result`, escrito por Claude
+   Code después de escribir, no por el modelo;
+3. **lo que vio algo fuera del agente** — que el espacio de trabajo tuvo otro
+   estado;
+4. **cómo quedó al final** — el árbol contra la línea base.
+
+Los cuatro ahora son cuatro campos. Y el testigo son tres instrumentos, no uno,
+porque cada uno se equivoca en una dirección distinta:
+
+| testigo | prueba que sí | no puede probar que no | lo apaga |
+| --- | --- | --- | --- |
+| `mtime` | el archivo se escribió | — | una restauración con `cp -a` |
+| `ctime` | el inodo cambió | — | nada en espacio de usuario |
+| la respuesta de la herramienta | `Edit` escribió | `sed -i` dentro de `Bash` | nada: el stream ya se escribió |
+| el contador del adaptador | hubo mutación por MCP | — | nada, y en el brazo B sí es de dos caras |
+
+El `ctime` es la mitad que faltaba: **no hay llamada que lo ponga para atrás.**
+Escribir lo mueve, `utimensat` lo mueve, `chmod` lo mueve, y restaurar la fecha
+lo mueve otra vez. Sólo sirve cuando las dos caminatas son del **mismo** árbol —
+un `cp -a` le da `ctime` nuevo a todo, y el brazo B se exporta con `cp -a`— así
+que la caminata escribe de qué raíz salió y la comparación usa el `ctime` nada
+más cuando las dos raíces coinciden.
+
+La respuesta de la herramienta es la que sirve **hacia atrás**: está en el
+stream de una corrida que ya terminó, y ninguna restauración posterior la
+alcanza. Es la que permitió arreglar el grader sin volver a pagar la corrida.
+
+### La frontera
+
+El otro falso negativo de la misma corrida. El brazo B reportó una sola
+diferencia entre el árbol del que salió y el que volvió:
+
+```
+-s140000  0755  -  -  image/build/agent.sock
+```
+
+Es el socket que **QEMU** abre para que `thalyx-mcp` hable con la máquina.
+Existe en el anfitrión porque el banco está corriendo; no está en la copia del
+store porque no existía cuando `project-stage` empaquetó el proyecto. Ningún
+agente pudo crearlo y ninguno pudo borrarlo.
+
+La regla: **el árbol lógico de una medición no incluye la maquinaria que
+transporta la medición.** `image/build` es lo que construye `make -C image` —el
+kernel, el initramfs, el disco del store y ese socket— y `.gitignore` lo dice
+desde antes de que el banco existiera. Estaba fuera de la lista de exclusiones
+por descuido, no por criterio.
+
+Y la parte que la hace segura, porque una exclusión es un lugar donde esconder
+cosas: **excluido no es no medido.** `set_aside()` recorre cada raíz de
+maquinaria y reporta cuántas entradas tiene y un digest de sus tipos, modos y
+tamaños, de los dos lados, dentro del resumen. Lo que cambia ahí sigue en el
+registro; lo único que deja de hacer es decidir `restored`. Las cuatro pruebas
+que lo fijan están en `dev/bench-summary.py --self-test`: que el socket aparezca
+y la restauración siga en pie, y que un archivo real cambiado **al lado** del
+socket, un archivo no listado en cualquier parte, y un modo, un enlace o un byte
+movidos sigan reprobando.
+
+### Lo que hay que hacer con esto
+
+1. **Un testigo que la tarea correcta puede apagar necesita un segundo testigo
+   que no.** No es redundancia: son instrumentos con debilidades distintas, y
+   la regla 5 dice que si se contradicen hay que escribir la contradicción, no
+   promediarla. `witnesses_disagree` la escribe.
+2. **«Lo pidió» no es «lo hizo».** Contar peticiones y llamarlas mutaciones es
+   el mismo error que contar pruebas y llamarlas verdad.
+3. **La evidencia que se puede releer vale más que la que hay que volver a
+   producir.** El manifiesto en renglones estaba en disco al lado del digest, y
+   por eso una corrida caminada bajo una frontera equivocada se pudo volver a
+   leer bajo la correcta sin caminar nada otra vez. Un arnés que sólo hubiera
+   guardado el digest habría tenido que pagar otra corrida para averiguar lo que
+   ya sabía.
+4. **Una exclusión se reporta o es un escondite.**
+
+## Regla derivada: dos números con el mismo nombre no son la misma medida — 2026-08-29
+
+La misma corrida reportó `turns: 37` bajo `--max-turns 30`, y nadie podía decir
+si la habían cortado. La respuesta no es que el límite no funcione: es que
+**cuentan cosas distintas.**
+
+- `turns` es el `num_turns` del propio Claude Code, y ahí va el número de
+  **mensajes de usuario** de la conversación: el prompt más uno por cada tanda
+  de resultados de herramienta. En la sesión capturada de `dev/samples/` —una
+  sola llamada `Read`— hay un mensaje de usuario y `num_turns: 2`.
+- `--max-turns` acota el contador del ciclo agéntico: los **viajes de ida y
+  vuelta a la API**, o sea los mensajes del asistente que pidieron herramientas.
+  El ciclo se detiene cuando `turnCount + 1 > max_turns`.
+
+Son iguales mientras el modelo pida una herramienta a la vez. En cuanto pide dos
+en un mismo mensaje, un viaje produce dos resultados: `turns` sube dos y el
+contador acotado sube uno. Por eso `turns` puede pasar de `--max-turns` sin que
+el límite haya estado cerca, y **`turns > max_turns` no es evidencia de una
+corrida cortada.** Lo que sí lo es: el `stop_reason` de la corrida y su propio
+`is_error`.
+
+`dev/bench-summary.py` ya no tiene un solo número ambiguo. Deja `turns` tal como
+lo imprimió el agente —regla 10— y pone al lado los tres que puede contar solo:
+`assistant_messages`, `assistant_messages_with_a_tool_use` (el que `--max-turns`
+acota) y `most_tool_calls_in_one_message`. `turns_mean` lo dice dentro del
+resumen, y el `--self-test` lo fija contra la sesión capturada, para que un
+cambio en lo que Claude Code pone en `num_turns` se vea como una falla y no como
+un número que nadie puede nombrar.
+
+## Regla derivada: la regresión que sale de un banco no se escribe sobre el caso del banco — 2026-08-29
+
+REVERSIBLE #1 salió válido y mixto, y nombró una causa: el brazo B necesitó
+dieciséis mutaciones donde el otro necesitó seis, porque sólo sabía direccionar
+líneas. De ahí salió `sustituir`, y con la operación hay que escribir la
+regresión que la sostiene. **La tentación es escribirla sobre `UidRegistry`**,
+que es el símbolo del banco, con la verdad conocida ya escrita y el árbol ya
+elegido. Es exactamente lo que no se vale.
+
+Una regresión escrita sobre el caso del banco mide dos cosas a la vez y no
+distingue entre ellas: si la operación es general, y si el banco pasa. La
+segunda es la única que se puede afirmar cuando coinciden, y es la que no vale
+nada — un banco que el producto puede ver mientras se construye deja de ser una
+medición y se vuelve un examen con las respuestas al lado.
+
+Así que la regla tiene dos mitades:
+
+1. **La regresión reproduce la *forma*, no el caso.**
+   `a_mechanical_rename_costs_one_call.rs` arma su propio proyecto de dos
+   crates, con un nombre que no es el del banco (`SlotTable`), y comprueba lo
+   que la forma exige: una definición con varias menciones de su propio nombre,
+   dependientes en un segundo directorio, un cambio mecánico, y el árbol
+   devuelto. Si la operación sólo funcionara para `UidRegistry`, esta prueba
+   falla.
+2. **El arnés se congela mientras se construye contra él.** Ni el prompt, ni el
+   símbolo, ni la verdad conocida, ni el grader se tocan. Adaptar la prueba al
+   producto invalida las dos corridas —la anterior y la siguiente— y no queda
+   forma de saber cuál de los dos cambios movió el número.
+
+Y el corolario, que es de escritura y no de código: **hasta que el banco se
+vuelva a correr, ninguna nota puede decir que la operación lo mejora.** Lo que
+sí se puede escribir es lo que se observó, lo que se supone y lo que se
+construyó, separados y en ese orden. La corrida siguiente es la prueba de la
+hipótesis, no su confirmación.

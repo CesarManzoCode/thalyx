@@ -145,6 +145,101 @@ pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -
     const NAME_AT: usize = 8;
     const ARGS_LEN: usize = 4096;
 
+    check_subvolume_name(name)?;
+
+    let mut args = [0u8; ARGS_LEN];
+    // `fd` is left zero: this ioctl ignores it. `BTRFS_IOC_SNAP_CREATE` shares
+    // the struct and does read it, which is why the field is here at all.
+    args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
+
+    // The request narrows to `c_int` on a musl target, and 0x5000940e is positive
+    // in 32 bits, so nothing is lost. Asserted rather than assumed, because the
+    // day it stops being true the symptom is a different ioctl being called.
+    let request = BTRFS_IOC_SUBVOL_CREATE as libc::Ioctl;
+    debug_assert_eq!(request as u64, BTRFS_IOC_SUBVOL_CREATE);
+
+    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole
+    // call, which is exactly `sizeof(struct btrfs_ioctl_vol_args)` and the size
+    // the ioctl number itself declares. The name is NUL-terminated because the
+    // buffer starts zeroed and the name is shorter than the field. `parent` is
+    // borrowed, so it cannot be closed underneath the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
+    check(result)
+}
+
+// ───────────────────────────────── snapshotting a subvolume, from inside Thalyx
+//
+// The same sentence again, and this time it was found by running the machine:
+// `make -C image agent` creates the workspace as a real subvolume, and inside the
+// image `thalyx_attempt` answered `not_a_subvolume` anyway — because
+// `thalyx-snapshot` asks the question by running `btrfs subvolume show`, and there
+// is no `btrfs` binary on an image that carries the kernel and one program. The
+// answer was not wrong about the machine it was on; it was an answer about a
+// missing binary, reported as a fact about the filesystem. Rule 10 of
+// `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`, from the wrong side: a
+// failure to *ask* had become a failure to exist.
+//
+// So the three operations `intento` needs — is this a subvolume, snapshot it,
+// throw the snapshot away — are here, as the ioctls the kernel exports for them.
+
+/// `BTRFS_IOC_SUBVOL_GETFLAGS`, from `include/uapi/linux/btrfs.h`:
+/// `_IOR(BTRFS_IOCTL_MAGIC, 25, __u64)`.
+///
+/// This is how Thalyx asks *is this a subvolume*, and it is worth writing down why
+/// this ioctl and not something that sounds more like the question. The kernel
+/// answers it with `EINVAL` unless the inode it is called on is the root of a
+/// subvolume, and with `ENOTTY` when the filesystem is not Btrfs at all — so one
+/// call, needing no privilege, separates the three answers a caller has. The
+/// alternative everyone reaches for is the inode-number trick (a subvolume root is
+/// inode 256), which `thalyx-btrfs` already declines for a stated reason: it is
+/// true of Btrfs today and it is not an interface anybody promised.
+pub const BTRFS_IOC_SUBVOL_GETFLAGS: u64 = 0x8008_9419;
+
+/// `BTRFS_IOC_SNAP_CREATE_V2`:
+/// `_IOW(BTRFS_IOCTL_MAGIC, 23, struct btrfs_ioctl_vol_args_v2)`.
+///
+/// V2 and not `BTRFS_IOC_SNAP_CREATE`, because only V2 carries flags — and a
+/// snapshot that is made writable and then turned read-only by a second ioctl has
+/// a window in which it is a working copy. `btrfs subvolume snapshot -r` uses this
+/// one for the same reason.
+pub const BTRFS_IOC_SNAP_CREATE_V2: u64 = 0x5000_9417;
+
+/// `BTRFS_IOC_SNAP_DESTROY`:
+/// `_IOW(BTRFS_IOCTL_MAGIC, 15, struct btrfs_ioctl_vol_args)`.
+///
+/// A subvolume is not a directory and `rmdir` will not have it, so this is the
+/// only way to let one go without the `btrfs` binary.
+pub const BTRFS_IOC_SNAP_DESTROY: u64 = 0x5000_940f;
+
+/// `BTRFS_SUBVOL_RDONLY`, the one flag of `btrfs_ioctl_vol_args_v2` used here.
+pub const BTRFS_SUBVOL_RDONLY: u64 = 1 << 1;
+
+/// Where the fields of `struct btrfs_ioctl_vol_args_v2` are: `__s64 fd`,
+/// `__u64 transid`, `__u64 flags`, four unused `__u64`, then `char name[4040]`.
+///
+/// Public because they are what [`btrfs_snapshot_create`] writes at, and
+/// `thalyx-btrfs`'s `tests/ioctl.rs` recomputes them from the kernel header it
+/// carries verbatim. Kept private they could only have been graded against the
+/// comment beside them, which is not a grade.
+pub const BTRFS_VOL_ARGS_V2_LEN: usize = 4096;
+/// Byte offset of `flags` in `struct btrfs_ioctl_vol_args_v2`.
+pub const BTRFS_VOL_ARGS_V2_FLAGS_AT: usize = 16;
+/// Byte offset of `name` in `struct btrfs_ioctl_vol_args_v2`.
+pub const BTRFS_VOL_ARGS_V2_NAME_AT: usize = 56;
+
+/// A name that can be one directory entry of a Btrfs filesystem.
+///
+/// Refused here rather than by the kernel, which is conversion and not policy: a
+/// name holding a NUL is not a shorter name, it is a different one. And the
+/// kernel's own refusal is unreadable — `EINVAL` from these ioctls is also what a
+/// filesystem with no space left says, so a caller could not tell a typo from a
+/// full disk.
+///
+/// The limit is `BTRFS_VOL_NAME_MAX` for all three ioctls even though the V2
+/// struct's field is 4040 bytes: a directory entry name on Btrfs is at most 255
+/// bytes, so the larger field is room the kernel will not fill.
+fn check_subvolume_name(name: &str) -> io::Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -166,23 +261,127 @@ pub fn btrfs_subvolume_create(parent: std::os::fd::BorrowedFd<'_>, name: &str) -
             format!("`{name}` is not a single name: a subvolume name holds no `/` and no NUL"),
         ));
     }
+    Ok(())
+}
+
+/// The subvolume flags of whatever `directory` refers to.
+///
+/// `Ok` means it is the root of a Btrfs subvolume, and the value carries
+/// [`BTRFS_SUBVOL_RDONLY`] when it is a read-only one. `EINVAL` means Btrfs and
+/// not a subvolume root; `ENOTTY` means not Btrfs. [`btrfs_is_subvolume`] is that
+/// mapping for callers who only want the question answered.
+pub fn btrfs_subvolume_flags(directory: std::os::fd::BorrowedFd<'_>) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+
+    let mut flags: u64 = 0;
+
+    // The read direction sets bit 31, so this number is larger than `i32::MAX` and
+    // the cast on a musl target is a wrap rather than a widening. That is correct
+    // and not a hazard — `ioctl(2)` takes an `unsigned int`, so the kernel sees the
+    // same 32 bits either way — but it is exactly the shape of rule 12, so the
+    // assertion below compares the 32 bits and not the sign.
+    let request = BTRFS_IOC_SUBVOL_GETFLAGS as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SUBVOL_GETFLAGS);
+
+    // SAFETY: the ioctl writes exactly one `__u64` through the pointer, which is a
+    // live local of that type for the whole call. `directory` is borrowed, so it
+    // cannot be closed underneath it.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(directory.as_raw_fd(), request, &raw mut flags) };
+    check(result)?;
+    Ok(flags)
+}
+
+/// Whether `directory` is the root of a Btrfs subvolume.
+///
+/// The two answers that mean *no* are told apart from the ones that mean *this
+/// could not be asked*, because the bug this exists to fix was precisely those two
+/// being confused. `EINVAL` — Btrfs, not a subvolume root — and `ENOTTY` — not
+/// Btrfs — are both a plain `false`. Anything else is an error, and a caller that
+/// treats it as `false` is claiming to know something it does not.
+pub fn btrfs_is_subvolume(directory: std::os::fd::BorrowedFd<'_>) -> io::Result<bool> {
+    match btrfs_subvolume_flags(directory) {
+        Ok(_) => Ok(true),
+        Err(error) => match error.raw_os_error() {
+            Some(libc::EINVAL) | Some(libc::ENOTTY) => Ok(false),
+            _ => Err(error),
+        },
+    }
+}
+
+/// Snapshot the subvolume `source` refers to, as `name` inside `parent`.
+///
+/// `read_only` is the whole reason this takes the V2 ioctl: a snapshot Thalyx
+/// keeps as a record of a moment must not be writable, and making it writable
+/// first and sealing it afterwards leaves a window in which it is a second working
+/// copy. Restoring wants the other answer — the copy becomes the live tree — so
+/// the flag is a parameter rather than a decision made here.
+pub fn btrfs_snapshot_create(
+    parent: std::os::fd::BorrowedFd<'_>,
+    source: std::os::fd::BorrowedFd<'_>,
+    name: &str,
+    read_only: bool,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `struct btrfs_ioctl_vol_args_v2`: `__s64 fd`, `__u64 transid`, `__u64 flags`,
+    // an unused union of four `__u64`, then `char name[4040]`. Built as bytes for
+    // the reason `thalyx-btrfs` builds every kernel shape that way — the layout is
+    // the kernel's, and a Rust type that happens to agree today agrees by
+    // coincidence. `tests/ioctl.rs` in `thalyx-btrfs` checks these offsets against
+    // the header captured verbatim.
+    const FLAGS_AT: usize = BTRFS_VOL_ARGS_V2_FLAGS_AT;
+    const NAME_AT: usize = BTRFS_VOL_ARGS_V2_NAME_AT;
+    const ARGS_LEN: usize = BTRFS_VOL_ARGS_V2_LEN;
+
+    check_subvolume_name(name)?;
 
     let mut args = [0u8; ARGS_LEN];
-    // `fd` is left zero: this ioctl ignores it. `BTRFS_IOC_SNAP_CREATE` shares
-    // the struct and does read it, which is why the field is here at all.
+    // Unlike `BTRFS_IOC_SUBVOL_CREATE`, this ioctl reads `fd`: it is the subvolume
+    // being snapshotted, and the descriptor the call is made on is where the new
+    // name appears.
+    args[0..8].copy_from_slice(&(source.as_raw_fd() as i64).to_le_bytes());
+    if read_only {
+        args[FLAGS_AT..FLAGS_AT + 8].copy_from_slice(&BTRFS_SUBVOL_RDONLY.to_le_bytes());
+    }
     args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
 
-    // The request narrows to `c_int` on a musl target, and 0x5000940e is positive
-    // in 32 bits, so nothing is lost. Asserted rather than assumed, because the
-    // day it stops being true the symptom is a different ioctl being called.
-    let request = BTRFS_IOC_SUBVOL_CREATE as libc::Ioctl;
-    debug_assert_eq!(request as u64, BTRFS_IOC_SUBVOL_CREATE);
+    let request = BTRFS_IOC_SNAP_CREATE_V2 as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SNAP_CREATE_V2);
 
-    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole
-    // call, which is exactly `sizeof(struct btrfs_ioctl_vol_args)` and the size
-    // the ioctl number itself declares. The name is NUL-terminated because the
-    // buffer starts zeroed and the name is shorter than the field. `parent` is
-    // borrowed, so it cannot be closed underneath the call.
+    // SAFETY: `args` is a 4096-byte buffer this function owns for the whole call,
+    // which is `sizeof(struct btrfs_ioctl_vol_args_v2)` and the size the ioctl
+    // number itself declares. The name is NUL-terminated because the buffer starts
+    // zeroed and the name is far shorter than the field. Both descriptors are
+    // borrowed, so neither can be closed underneath the call.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
+    check(result)
+}
+
+/// Delete the subvolume called `name` inside the directory `parent` refers to.
+///
+/// By name inside a directory, and never by a path of its own, because that is the
+/// shape of the ioctl — which is also the shape that cannot be talked into
+/// deleting something one level up.
+pub fn btrfs_subvolume_destroy(parent: std::os::fd::BorrowedFd<'_>, name: &str) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `struct btrfs_ioctl_vol_args`, the same 4096 bytes as `SUBVOL_CREATE`.
+    const NAME_AT: usize = 8;
+    const ARGS_LEN: usize = 4096;
+
+    check_subvolume_name(name)?;
+
+    let mut args = [0u8; ARGS_LEN];
+    args[NAME_AT..NAME_AT + name.len()].copy_from_slice(name.as_bytes());
+
+    let request = BTRFS_IOC_SNAP_DESTROY as libc::Ioctl;
+    debug_assert_eq!(request as u32 as u64, BTRFS_IOC_SNAP_DESTROY);
+
+    // SAFETY: as `btrfs_subvolume_create`, with which this ioctl shares its
+    // argument struct — a 4096-byte buffer owned for the whole call, NUL-terminated
+    // by construction, and a borrowed descriptor.
     #[allow(unsafe_code)]
     let result = unsafe { libc::ioctl(parent.as_raw_fd(), request, args.as_mut_ptr()) };
     check(result)
@@ -767,6 +966,36 @@ pub const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 
 /// Refuse to cross a mount point during resolution.
 pub const RESOLVE_NO_XDEV: u64 = 0x01;
+
+/// Refuse to traverse **any** symlink, including one that stays inside.
+///
+/// Not what a workspace wants — a project with a relative link in it is an
+/// ordinary project, and `RESOLVE_BENEATH` already contains where such a link
+/// can land. It is here for a caller that needs to know a path names what it
+/// spells, with nothing standing in for anything.
+pub const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+/// Open for resolution only: no read, no write, no execute.
+///
+/// Re-exported rather than left to the caller so that a crate which does not
+/// depend on `libc` — every crate in this workspace but this one — can still
+/// name the flag `openat2` wants for an anchor.
+pub const O_PATH: i32 = libc::O_PATH;
+
+/// Not inherited across an `exec`.
+pub const O_CLOEXEC: i32 = libc::O_CLOEXEC;
+
+/// What `RESOLVE_BENEATH` answers for a path, or a symlink, that leaves the base.
+pub const EXDEV: i32 = libc::EXDEV;
+
+/// A symlink loop, and what `RESOLVE_NO_MAGICLINKS` answers for a magic link.
+pub const ELOOP: i32 = libc::ELOOP;
+
+/// There is nothing there.
+pub const ENOENT: i32 = libc::ENOENT;
+
+/// A component of the path is not a directory.
+pub const ENOTDIR: i32 = libc::ENOTDIR;
 
 /// Open a path relative to a directory, with the kernel enforcing containment.
 ///
@@ -2625,11 +2854,19 @@ mod bpf_tests {
 ///
 /// Spelled out for the same reason as [`BLKRRPART`]: `_IOR` is a C macro and
 /// this workspace has no C.
+///
+/// `u64` here and `as libc::Ioctl` at the call site, which is the rule the whole
+/// crate follows and which the display's five call sites broke on 2026-08-28:
+/// `libc::ioctl` takes `c_ulong` against glibc and `c_int` against musl, so
+/// `as libc::c_ulong` compiles on the machine that verifies Thalyx and stops
+/// `make -C image` — the one build that produces a Thalyx machine, and the one
+/// nothing else here exercises.
 const FBIOGET_VSCREENINFO: u64 = 0x4600;
 /// `FBIOGET_FSCREENINFO`: `0x4602`.
 const FBIOGET_FSCREENINFO: u64 = 0x4602;
 
-/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`.
+/// `KDGETMODE` and `KDSETMODE`, from `include/uapi/linux/kd.h`. Converted at the
+/// call site for the reason above.
 const KDGETMODE: u64 = 0x4B3B;
 const KDSETMODE: u64 = 0x4B3A;
 /// `KD_TEXT` is 0 and `KD_GRAPHICS` is 1.
@@ -2665,6 +2902,273 @@ const FB_VAR_SCREENINFO: usize = 160;
 /// long` members are eight wide and force alignment.
 const FB_FIX_SCREENINFO: usize = 80;
 
+// ---------------------------------------------------------------------------
+// The keyboard's translation table.
+// ---------------------------------------------------------------------------
+//
+// `crates/thalyx-term/src/keymap.rs` has the whole reason. In short: the kernel
+// carries one keymap compiled into it and it is US QWERTY, the program that
+// replaces it everywhere else is `loadkeys`, and the image is the kernel and one
+// program. So these two ioctls are the only way a Thalyx machine can be typed
+// on in the language every sentence it says is written in.
+//
+// The numbers are from `linux/kd.h`, read rather than remembered. `as Ioctl` on
+// every one of them, which is rule 12: glibc's `ioctl` takes `c_ulong` and
+// musl's takes `c_int`, and the binary that ships is the musl one.
+
+/// `KDGKBENT` — read one entry of the translation table.
+const KDGKBENT: u32 = 0x4B46;
+/// `KDSKBENT` — write one.
+const KDSKBENT: u32 = 0x4B47;
+/// `KDSKBDIACRUC` — write the whole accent table, in UCS.
+///
+/// The UCS form and not `KDSKBDIACR`, whose entries are single bytes: this one
+/// takes `unsigned int`, so a layout whose composed characters leave Latin-1 is
+/// expressible. Nothing in Spanish needs that, and picking the narrow one
+/// because today's layout fits it is how the next layout silently loses letters.
+const KDSKBDIACRUC: u32 = 0x4BFB;
+/// `KDGKBMODE` — what the keyboard is doing with what it reads.
+const KDGKBMODE: u32 = 0x4B44;
+/// `K_UNICODE` — the mode in which a key that produces `ñ` sends UTF-8 rather
+/// than one unusable byte.
+pub const K_UNICODE: i32 = 0x03;
+
+/// One entry of the kernel's translation table: `struct kbentry`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct KeyEntry {
+    table: u8,
+    index: u8,
+    value: u16,
+}
+
+/// The two representations of one keymap entry, and why they are two.
+///
+/// **This is the defect that made a Thalyx machine untypeable.** The image
+/// booted with `la-latin1` loaded and every key — `qwerty`, `asdfgh`, ASCII
+/// letters that have nothing to do with Spanish — drew a box. The same image
+/// booted with `thalyx.teclado=no` typed fine, which is the control that put
+/// the fault in the loading of the keymap and nowhere else.
+///
+/// The tables in `thalyx-term` are what `loadkeys --mktable` emits, which is the
+/// kernel's *internal* form: `q` is `0xfb71`, `ñ` is `0xf0f1`. But `KDSKBENT`
+/// does not take that form. `drivers/tty/vt/keyboard.c` passes what userspace
+/// hands it through `U(x)`, `((x) ^ 0xf000)`, before storing it — so a caller
+/// that wants `0xfb71` stored must send `0x0b71`. Sending `0xfb71` stored
+/// `0x0b71 ^ 0xf000`'s counterpart, an entry naming a type nothing prints, and
+/// the key drew a box.
+///
+/// **And the readback hid it.** `KDGKBENT` applies the same `U(x)` on the way
+/// out, so the wrong value went in, a differently wrong value was stored, and
+/// the ioctl handed back exactly the `0xfb71` that had been sent. Every check
+/// that asked the kernel what it held — `loaded()`, the probe in `teclado` —
+/// compared equal on a keyboard that did not work. Rule 5 again: the instrument
+/// included the harness, and here the harness was the kernel's own symmetry.
+///
+/// The conversion lives here and not in `keyboard.rs` or in the generated
+/// tables, because it is not a fact about the layout — it is the ABI of these
+/// two ioctls. Everything above this boundary speaks one representation.
+const KEYMAP_IOCTL_BIAS: u16 = 0xf000;
+
+/// Thalyx's representation → what `KDSKBENT` wants in `kb_value`.
+fn keymap_to_ioctl(value: u16) -> u16 {
+    value ^ KEYMAP_IOCTL_BIAS
+}
+
+/// What `KDGKBENT` returns in `kb_value` → Thalyx's representation.
+fn keymap_from_ioctl(value: u16) -> u16 {
+    value ^ KEYMAP_IOCTL_BIAS
+}
+
+/// What the console currently turns `keycode` into, under modifier `table`.
+///
+/// **This is the instrument, and it is deliberately not Thalyx's own record of
+/// what it sent.** Rule 5: a check that asked Thalyx whether it had loaded a
+/// keymap would pass on a machine where every ioctl silently failed.
+pub fn keymap_entry(console: BorrowedFd<'_>, table: u8, keycode: u8) -> io::Result<u16> {
+    use std::os::fd::AsRawFd;
+
+    let mut entry = KeyEntry {
+        table,
+        index: keycode,
+        value: 0,
+    };
+    // SAFETY: one `struct kbentry` in and out, a live local, and the descriptor
+    // is borrowed for the call.
+    #[allow(unsafe_code)]
+    let read = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDGKBENT as libc::Ioctl,
+            &mut entry as *mut KeyEntry,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(keymap_from_ioctl(entry.value))
+}
+
+/// Set what `keycode` produces under modifier `table`.
+pub fn set_keymap_entry(
+    console: BorrowedFd<'_>,
+    table: u8,
+    keycode: u8,
+    value: u16,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut entry = KeyEntry {
+        table,
+        index: keycode,
+        value: keymap_to_ioctl(value),
+    };
+    // SAFETY: as above.
+    #[allow(unsafe_code)]
+    let written = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDSKBENT as libc::Ioctl,
+            &mut entry as *mut KeyEntry,
+        )
+    };
+    if written != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod keymap_boundary_tests {
+    use super::*;
+
+    /// The three entries are the ones the broken machine was diagnosed with:
+    /// two ASCII letters, which is what proved the fault was not about Spanish
+    /// at all, and the `ñ` the whole layout exists for. The right-hand numbers
+    /// are what `U(x)` in `drivers/tty/vt/keyboard.c` requires userspace to send
+    /// for the left-hand ones to end up stored.
+    #[test]
+    fn a_table_entry_is_biased_before_the_kernel_sees_it() {
+        assert_eq!(keymap_to_ioctl(0xfb71), 0x0b71, "`q`");
+        assert_eq!(keymap_to_ioctl(0xfb61), 0x0b61, "`a`");
+        assert_eq!(keymap_to_ioctl(0xf0f1), 0x00f1, "`ñ`");
+    }
+
+    /// `KDGKBENT` applies the same transformation on the way out, and this is
+    /// the half whose absence made the round trip agree with itself while the
+    /// keyboard was broken. Written as the exact values the tables hold, so a
+    /// reader can put them beside `la_latin1.rs`.
+    #[test]
+    fn what_the_kernel_returns_comes_back_in_the_tables_representation() {
+        assert_eq!(keymap_from_ioctl(0x0b71), 0xfb71, "`q`");
+        assert_eq!(keymap_from_ioctl(0x0b61), 0xfb61, "`a`");
+        assert_eq!(keymap_from_ioctl(0x00f1), 0xf0f1, "`ñ`");
+    }
+
+    /// Not a tautology worth skipping: it is the property `loaded()` depends on
+    /// to recognise a layout it has just written, and the property that made the
+    /// defect invisible when only one side of it was applied.
+    #[test]
+    fn the_two_directions_undo_each_other() {
+        for value in [0xfb71u16, 0xf0f1, 0xf401, 0xf702, 0x0107, 0x0000, 0xffff] {
+            assert_eq!(keymap_from_ioctl(keymap_to_ioctl(value)), value);
+        }
+    }
+}
+
+/// `struct kbdiacruc` — a dead key, the letter after it, and what they make.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct AccentEntry {
+    diacr: u32,
+    base: u32,
+    result: u32,
+}
+
+/// Replace the whole accent table, which is what makes a dead key mean anything.
+///
+/// The whole table and not an entry at a time, because the ioctl takes the whole
+/// table — and because a partial one would leave the previous layout's
+/// compositions live under the new layout's dead keys.
+pub fn set_accents(console: BorrowedFd<'_>, accents: &[(u32, u32, u32)]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    /// `MAX_DIACR` from `linux/keyboard.h`. Refused rather than truncated: a
+    /// table cut to fit is a keyboard missing exactly the letters at the end of
+    /// somebody's alphabet. Rule 9.
+    const MAX_DIACR: usize = 256;
+    if accents.len() > MAX_DIACR {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "an accent table of {} entries does not fit the kernel's {MAX_DIACR}",
+                accents.len()
+            ),
+        ));
+    }
+
+    // `struct kbdiacrsuc`: a `kb_cnt` followed by the entries.
+    #[repr(C)]
+    struct AccentTable {
+        count: u32,
+        entries: [AccentEntry; MAX_DIACR],
+    }
+
+    let mut table = AccentTable {
+        count: accents.len() as u32,
+        entries: [AccentEntry::default(); MAX_DIACR],
+    };
+    for (slot, (diacr, base, result)) in table.entries.iter_mut().zip(accents) {
+        *slot = AccentEntry {
+            diacr: *diacr,
+            base: *base,
+            result: *result,
+        };
+    }
+
+    // SAFETY: the struct is laid out exactly as `struct kbdiacrsuc`, it is a
+    // live local for the duration of the call, and the count never exceeds the
+    // array the kernel reads from.
+    #[allow(unsafe_code)]
+    let written = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDSKBDIACRUC as libc::Ioctl,
+            &mut table as *mut AccentTable,
+        )
+    };
+    if written != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// What the keyboard does with what it reads — `K_UNICODE` and the rest.
+///
+/// Asked rather than assumed, because a layout with `ñ` on it loaded onto a
+/// keyboard that is not in Unicode mode produces one byte that is not `ñ` in any
+/// encoding the screen reads, and the symptom is a letter that comes out wrong
+/// rather than a keymap that failed to load.
+pub fn keyboard_mode(console: BorrowedFd<'_>) -> io::Result<i32> {
+    use std::os::fd::AsRawFd;
+
+    let mut mode: libc::c_long = 0;
+    // SAFETY: the ioctl writes one `long` through the pointer, and it is a live
+    // local.
+    #[allow(unsafe_code)]
+    let read = unsafe {
+        libc::ioctl(
+            console.as_raw_fd(),
+            KDGKBMODE as libc::Ioctl,
+            &mut mode as *mut libc::c_long,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(mode as i32)
+}
+
 /// Ask the display how it is shaped.
 pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeometry> {
     use std::os::fd::AsRawFd;
@@ -2680,7 +3184,7 @@ pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeomet
     let read_var = unsafe {
         libc::ioctl(
             framebuffer.as_raw_fd(),
-            FBIOGET_VSCREENINFO as libc::c_ulong,
+            FBIOGET_VSCREENINFO as libc::Ioctl,
             var.as_mut_ptr(),
         )
     };
@@ -2694,7 +3198,7 @@ pub fn display_geometry(framebuffer: BorrowedFd<'_>) -> io::Result<DisplayGeomet
     let read_fix = unsafe {
         libc::ioctl(
             framebuffer.as_raw_fd(),
-            FBIOGET_FSCREENINFO as libc::c_ulong,
+            FBIOGET_FSCREENINFO as libc::Ioctl,
             fix.as_mut_ptr(),
         )
     };
@@ -2809,14 +3313,14 @@ impl GraphicsMode {
         // SAFETY: `KDGETMODE` writes one `long` through the pointer, which is to
         // a live local. The descriptor is borrowed for the call.
         #[allow(unsafe_code)]
-        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::c_ulong, &raw mut saved) };
+        let read = unsafe { libc::ioctl(fd, KDGETMODE as libc::Ioctl, &raw mut saved) };
         if read != 0 {
             return Err(io::Error::last_os_error());
         }
 
         // SAFETY: `KDSETMODE` takes its argument by value, not by pointer.
         #[allow(unsafe_code)]
-        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::c_ulong, KD_GRAPHICS) };
+        let set = unsafe { libc::ioctl(fd, KDSETMODE as libc::Ioctl, KD_GRAPHICS) };
         if set != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -2831,7 +3335,7 @@ impl Drop for GraphicsMode {
         // does not outlive.
         #[allow(unsafe_code)]
         unsafe {
-            libc::ioctl(self.fd, KDSETMODE as libc::c_ulong, self.saved);
+            libc::ioctl(self.fd, KDSETMODE as libc::Ioctl, self.saved);
         }
     }
 }

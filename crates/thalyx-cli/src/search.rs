@@ -68,10 +68,12 @@ pub fn by_name(here: &Where, rest: &str, face: Face) -> Fallible {
         };
 
     if face.is_machine() {
-        println!(
-            "{}",
-            thalyx_files::machine::found_by_name(&root, &asked.subject, &found, &page)
-        );
+        face.say(thalyx_files::machine::found_by_name(
+            &root,
+            &asked.subject,
+            &found,
+            &page,
+        ));
         return Ok(());
     }
 
@@ -126,10 +128,12 @@ pub fn in_contents(here: &Where, rest: &str, face: Face) -> Fallible {
     };
 
     if face.is_machine() {
-        println!(
-            "{}",
-            thalyx_files::machine::found_in_contents(&root, &asked.subject, &found, &page)
-        );
+        face.say(thalyx_files::machine::found_in_contents(
+            &root,
+            &asked.subject,
+            &found,
+            &page,
+        ));
         return Ok(());
     }
 
@@ -294,7 +298,7 @@ fn parse(rest: &str, face: Face, op: &str) -> Option<Asking> {
 /// once. This was found by a test asking for the remedy and getting `null`.
 fn refused(face: Face, op: &str, error: &FileError) -> Fallible {
     if face.is_machine() {
-        println!("{}", thalyx_files::machine::failure(op, error));
+        face.say(thalyx_files::machine::failure(op, error));
     } else {
         println!("\n  {error}\n");
     }
@@ -303,7 +307,7 @@ fn refused(face: Face, op: &str, error: &FileError) -> Fallible {
 
 fn declined(face: Face, op: &str, word: &str, why: &str) {
     if face.is_machine() {
-        println!("{}", thalyx_files::machine::declined(op, word, why));
+        face.say(thalyx_files::machine::declined(op, word, why));
     } else {
         println!("\n  {why}\n");
     }

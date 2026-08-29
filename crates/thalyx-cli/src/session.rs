@@ -336,6 +336,25 @@ pub(crate) fn gather(store: &Store) -> Vec<Reading> {
     ]
 }
 
+/// The directory an external agent is confined to, if this machine was booted
+/// for one.
+///
+/// `thalyx.workspace=` on the kernel command line, the same shape as
+/// `thalyx.store=` and for the same reason: the person who started the machine
+/// is the one who decides what it is for, and a machine that *searched* for a
+/// project to hand an agent would find the wrong one exactly once.
+///
+/// Absent is the ordinary answer. It means this is a machine somebody is using,
+/// not one an agent was pointed at.
+fn agent_workspace() -> Option<std::path::PathBuf> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
+    cmdline
+        .split_ascii_whitespace()
+        .find_map(|word| word.strip_prefix("thalyx.workspace="))
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Turn the machine off.
 ///
 /// It exists because the `salir` branch has been telling people to type
@@ -1332,6 +1351,38 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         return Ok(());
     }
 
+    // The one channel a programming agent on the host reaches this machine
+    // through, and it only exists on a machine QEMU gave a virtio-serial port
+    // to. `Agentes-Externos.md` decrees the arrangement; `crate::bridge` has
+    // why it is a thread of this process and not a second program on the disk.
+    //
+    // Silent on an ordinary machine, and that is a requirement rather than a
+    // nicety: no port means no thread, no wait and no line here, so a Thalyx
+    // with no agent attached cannot tell that this code was compiled in.
+    if let Some(workspace) = agent_workspace() {
+        match crate::bridge::start(store.root().to_path_buf(), workspace.clone()) {
+            Some(node) => {
+                println!();
+                println!(
+                    "  agent bridge  {} — workspace {}",
+                    node.display(),
+                    workspace.display()
+                );
+            }
+            // Said, because a machine that was booted *for* an agent and came
+            // up without the channel is a machine somebody is about to wait on
+            // forever. Rule 10: the port being absent and the thread failing to
+            // start are different facts, and only the first is ordinary.
+            None => {
+                println!();
+                println!(
+                    "  agent bridge  no {} port on this machine",
+                    crate::bridge::PORT_NAME
+                );
+            }
+        }
+    }
+
     println!();
     match &standing {
         Standing::TheMachine => {
@@ -1418,7 +1469,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `ejecutar [leyendo|escribiendo <ruta>]… <programa> …`,");
             println!("  `permisos`, `negar`, `observar`, `revertir`, `recuerdos`,");
             println!("  `estado`, `nucleo`,");
-            println!("  `discos`, `instalar-en <disco>`, `red`.");
+            println!("  `discos`, `instalar-en <disco>`, `red`, `teclado`.");
             println!("  `salir` to leave. `apagar` exists and refuses here,");
             println!("  because this machine is not mine to turn off.");
         }
@@ -1453,6 +1504,8 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         // keeping it.
         face: crate::files::Face::Human,
         watch: KernelWatch::from_now(),
+        // The screen turns this on for as long as it owns the loop.
+        thinking_elsewhere: false,
     };
 
     // The screen, before the first prompt, on the machine that has one.
@@ -1527,8 +1580,26 @@ pub fn run(store: &Store, once: bool) -> Fallible {
         }
 
         match session.act_on(line)? {
-            Flow::Stay => {}
+            // Nothing to do here: `files::clear` has already written the escape
+            // to the console it is standing on. The variant exists for the
+            // screen, which has no console to write it to.
+            Flow::Stay | Flow::Emptied => {}
+            // Never on this surface — `thinking_elsewhere` is false here, so
+            // `act_on` asks the model and returns a verb. Answered rather than
+            // ignored anyway: a flow that fell through silently would be a
+            // sentence the machine swallowed.
+            Flow::Thinking(said) => {
+                let read = interpret(session.store, session.here.at(), &said);
+                say_interpretation(session.face, &said, &read);
+                if let Interpretation::Verb { rewritten, .. } = read {
+                    session.act_on_proposal(&rewritten)?;
+                }
+            }
             Flow::Leave => break,
+            // This surface's editor, which is the ANSI one. The terminal stays
+            // as it is: the editor draws in place on purpose, and raw mode is
+            // already the mode it needs.
+            Flow::ToTheEditor(path) => crate::edit::on_this_terminal(&path, session.face)?,
             Flow::ToTheScreen => {
                 // Raw mode goes back before the screen takes the keyboard: two
                 // termios settings on one descriptor, and the one put back last
@@ -1645,7 +1716,9 @@ fn said_no_to_the_screen(cmdline: &str) -> bool {
 }
 
 /// What a typed line did to where the session stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Not `Copy`: `ToTheEditor` carries a path. Every use moves it once, which is
+/// what a transition is.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Flow {
     /// Keep taking lines.
     Stay,
@@ -1654,6 +1727,42 @@ pub(crate) enum Flow {
     /// Go to the display. From the text session that means entering the screen;
     /// from the screen it means the person is already there and is told so.
     ToTheScreen,
+    /// The display was asked to empty itself.
+    ///
+    /// `clear` is the one verb whose whole meaning is a property of the surface
+    /// it is typed on, so it is the one verb that cannot be finished by printing
+    /// something. In the text session emptying the display is an escape
+    /// sequence; on the screen it is dropping the conversation, and the screen
+    /// drew that escape as the literal text `[2J[H` until this existed.
+    Emptied,
+    /// `editar <archivo>` with nothing after it: put a text editor up on this
+    /// surface, on this file.
+    ///
+    /// The second verb whose meaning is a property of the surface, and it
+    /// arrived the same way `Emptied` did — by being run on the display and
+    /// coming out wrong. On the screen the verb answered *there is no terminal
+    /// here to draw an editor on*, which is true of the descriptors and absurd
+    /// about the machine: the screen is nothing but a place to draw.
+    ///
+    /// The path and not an open file, so that nothing of the editing engine
+    /// crosses the dispatcher. The surface opens it, which is also where a file
+    /// that stopped being readable between the two gets reported.
+    ToTheEditor(std::path::PathBuf),
+    /// Not a verb, and the surface said it would ask the model itself.
+    ///
+    /// The third thing whose meaning is a property of the surface, and it
+    /// arrived the way the other two did — by being right on the terminal and
+    /// wrong on the screen. Asking the model takes seconds, and on the screen
+    /// those seconds were spent inside `act_on`, so nothing redrew: no clock,
+    /// no spinner, a frame frozen on the glass with the person's own sentence
+    /// as the last thing on it. A machine that looks dead is a machine nobody
+    /// waits for.
+    ///
+    /// So the screen takes the sentence back and asks on a worker thread, and
+    /// what comes back is **a line of this session's own vocabulary** run
+    /// through this same dispatch. The worker never touches the machine; see
+    /// [`interpret`].
+    Thinking(String),
 }
 
 /// Everything a typed line reads and may change.
@@ -1668,6 +1777,14 @@ pub(crate) struct Session<'a> {
     pub here: crate::files::Where,
     pub face: crate::files::Face,
     pub watch: KernelWatch,
+    /// Whether a sentence that is not a verb comes back as [`Flow::Thinking`]
+    /// instead of being asked here.
+    ///
+    /// The screen sets it while it owns the loop, because on the glass the wait
+    /// has to be drawn. The text session leaves it false: a terminal that is
+    /// waiting looks like a terminal that is waiting, and there is nothing on
+    /// it that stops being true meanwhile.
+    pub thinking_elsewhere: bool,
 }
 
 impl<'a> Session<'a> {
@@ -1684,19 +1801,103 @@ impl<'a> Session<'a> {
             here: crate::files::Where::start(),
             face: crate::files::Face::Human,
             watch: KernelWatch::from_now(),
+            thinking_elsewhere: false,
         }
     }
 
     /// Run one line and say what it did to the session.
     pub(crate) fn act_on(&mut self, line: &str) -> Result<Flow, Box<dyn std::error::Error>> {
-        dispatch(
+        let ask = if self.thinking_elsewhere {
+            Ask::Elsewhere
+        } else {
+            Ask::Here
+        };
+        dispatch_asking(
             self.store,
             &self.standing,
             &mut self.here,
             &mut self.face,
             line,
+            ask,
         )
     }
+
+    /// Run a line the model produced, which is never handed back to the model.
+    ///
+    /// What the screen calls once a worker has come back with a verb. Same
+    /// dispatch, same confirmations, same everything — the only difference from
+    /// [`Session::act_on`] is the floor under the recursion. See [`Ask::Never`].
+    pub(crate) fn act_on_proposal(
+        &mut self,
+        line: &str,
+    ) -> Result<Flow, Box<dyn std::error::Error>> {
+        dispatch_asking(
+            self.store,
+            &self.standing,
+            &mut self.here,
+            &mut self.face,
+            line,
+            Ask::Never,
+        )
+    }
+}
+
+/// Run one line for a caller that is not on this machine.
+///
+/// The external agent bridge's only way in, and deliberately the *same* function
+/// a person's keystroke reaches — `Agentes-Externos.md` decrees that MCP is an
+/// adapter and that Thalyx's own surface stays the authority, and a second
+/// dispatch would be exactly the parallel API that decree forbids.
+///
+/// Two things it fixes rather than takes:
+///
+/// - [`Ask::Never`], so a line the dispatch does not recognise is refused
+///   instead of being handed to the local model. An external agent proposing a
+///   sentence and getting Qwen's idea of what it meant back would be two models
+///   guessing at each other, and the second one has the machine.
+/// - the [`Flow`] is dropped. `pantalla`, `salir` and `limpiar` are properties
+///   of a surface, and a caller on a socket has none — none of the three is on
+///   the exposed list, and this is what makes that structural rather than a
+///   convention.
+///
+/// What is *not* fixed is where the answer goes: see [`crate::files::caught`].
+pub(crate) fn dispatch_external(
+    store: &Store,
+    here: &mut crate::files::Where,
+    face: &mut crate::files::Face,
+    line: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_asking(
+        store,
+        &Standing::AProgram {
+            under: "an external agent".to_string(),
+        },
+        here,
+        face,
+        line,
+        Ask::Never,
+    )
+    .map(|_| ())
+}
+
+/// Who asks the model about a line that is not a verb, and whether anyone does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ask {
+    /// Ask it here and wait. The text session, where waiting is what a terminal
+    /// does and there is nothing on screen that stops being true meanwhile.
+    Here,
+    /// Hand the sentence back to the surface, which will ask on a thread. See
+    /// [`Flow::Thinking`].
+    Elsewhere,
+    /// Do not ask. This is the line the model itself produced.
+    ///
+    /// Without it the recursion has no floor: a proposal the dispatch does not
+    /// recognise would come straight back here and be handed to the model
+    /// again, and a model that keeps proposing the same unrecognised verb would
+    /// spin forever, spending an inference each time round. One hop is all the
+    /// arrangement needs — the model turns a sentence into a verb, and verbs
+    /// are what the session runs.
+    Never,
 }
 
 /// Every verb, in one place, for whichever face is asking.
@@ -1705,13 +1906,15 @@ impl<'a> Session<'a> {
 /// same verbs instead of growing a second set of them. The parameters are the
 /// four things an arm can read or change and nothing else — which is what made
 /// the lift safe: the loop's other locals, the terminal and the kernel watch,
-/// are never touched by an arm.
-fn dispatch(
+/// are never touched by an arm. The fifth says who asks the model, and only
+/// [`Session`] chooses it: see [`Ask`].
+fn dispatch_asking(
     store: &Store,
     standing: &Standing,
     here: &mut crate::files::Where,
     answering_in: &mut crate::files::Face,
     line: &str,
+    may_ask: Ask,
 ) -> Result<Flow, Box<dyn std::error::Error>> {
     let mut face = *answering_in;
     let mut flow = Flow::Stay;
@@ -1762,7 +1965,7 @@ fn dispatch(
         "estado" | "status" => {
             let readings = gather(store);
             if face == crate::files::Face::Machine {
-                println!("{}", state_object(&readings));
+                face.say(state_object(&readings));
             } else {
                 for reading in &readings {
                     println!(
@@ -1845,6 +2048,15 @@ fn dispatch(
         }
         // Point 8, and the one listing verb whose things cannot be acted on.
         // See `crate::net`: the closing sentence is the verb.
+        // Point B of «a real system»: the machine speaks Spanish and, until
+        // this verb, could not be typed in it. `thalyx_term::keymap` has why.
+        _ if starts_any(line, &["teclado ", "keyboard "]) => {
+            let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+            crate::keyboard::run(rest, face)?;
+        }
+        "teclado" | "keyboard" => {
+            crate::keyboard::run("", face)?;
+        }
         "red" | "network" => {
             crate::net::interfaces(face)?;
         }
@@ -1856,6 +2068,7 @@ fn dispatch(
         // cannot copy, move or delete it either.
         "clear" | "limpiar" | "cls" => {
             crate::files::clear(face);
+            flow = Flow::Emptied;
         }
         // The verb the objective decree was waiting on: everything below
         // already returns facts, and this is what lets something ask for
@@ -1939,10 +2152,14 @@ fn dispatch(
         // program without either of them losing something.
         _ if starts_any(line, &["editar ", "edit "]) => {
             let rest = line.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
-            crate::edit::run(here, rest, face)?;
+            if let crate::edit::Opens::Editor(path) = crate::edit::run(here, rest, face)? {
+                flow = Flow::ToTheEditor(path);
+            }
         }
         "editar" | "edit" => {
-            crate::edit::run(here, "", face)?;
+            if let crate::edit::Opens::Editor(path) = crate::edit::run(here, "", face)? {
+                flow = Flow::ToTheEditor(path);
+            }
         }
         // Point 6. Two verbs and not one, because `buscar` already answers a
         // third question and a caller that has to work out which of three a
@@ -2103,6 +2320,24 @@ fn dispatch(
         "correr" | "run" => {
             start_module(store, "", face);
         }
+        // Not a verb. Which is where the agent lives: everything above is
+        // something the rules resolve without a model, and this is the
+        // remainder `Principio-Doble-Ruta.md` describes — the sentences a
+        // person says when they do not know, or do not want to use, the word
+        // the machine has for the thing.
+        // The surface asks, and comes back with a verb. Before this the
+        // screen asked from inside the keystroke and stopped drawing for as
+        // long as the model took.
+        _ if may_ask == Ask::Elsewhere => {
+            flow = Flow::Thinking(line.to_string());
+        }
+        _ if may_ask == Ask::Here => {
+            let read = interpret(store, here.at(), line);
+            say_interpretation(face, line, &read);
+            if let Interpretation::Verb { rewritten, .. } = read {
+                flow = dispatch_asking(store, standing, here, &mut face, &rewritten, Ask::Never)?;
+            }
+        }
         _ => {
             println!();
             println!("  I have no model loaded, so I can only act on what the rules");
@@ -2113,6 +2348,186 @@ fn dispatch(
     }
     *answering_in = face;
     Ok(flow)
+}
+
+/// What the agent made of a line that is not a verb.
+///
+/// A value and never an action, which is the property the screen leans on: the
+/// worker thread that produced it holds no store, opens no file and runs no
+/// verb. It hands back a sentence in the session's own vocabulary, and the
+/// session — on its own thread, with the display and the keyboard — is what
+/// runs it, through the same dispatch a person types into.
+pub(crate) enum Interpretation {
+    /// A line of the session's own vocabulary, to be run as if typed.
+    Verb {
+        rewritten: String,
+        operation: String,
+        targets: Vec<String>,
+    },
+    /// The model proposed something this machine has no verb for.
+    NoSuchVerb(String),
+    /// Missing, unloadable, unparseable, or declined. See
+    /// [`say_interpretation`] for why those four stay four.
+    Cannot(String),
+}
+
+/// Hand one sentence to the agent and work out what verb it means.
+///
+/// The whole of the agent is reused and none of it is re-decided here: the
+/// transcript, the router, the prompt, the grammar, the parser, the attribution
+/// and the provenance are `thalyx_agent::plan`, exactly as `thalyx agent plan`
+/// calls it.
+///
+/// **Nothing here executes anything**, and that is the point rather than
+/// tidiness. A proposal comes back as a line of text, and the session runs it
+/// through the same dispatch a person types into. So a model cannot reach an
+/// operation a person could not, cannot skip a confirmation, and cannot invent
+/// a verb: a name the dispatch does not have simply does not run. It is also
+/// what makes this safe to call from a worker thread — the authority stays with
+/// the session, and the thread only produces a proposal.
+///
+/// It prints nothing, for the same reason. On the screen the output of a verb
+/// is caught by `thalyx-capture`, and a thread printing outside that capture
+/// would write ANSI onto a console that is in graphics mode.
+pub(crate) fn interpret(store: &Store, here: &std::path::Path, line: &str) -> Interpretation {
+    use thalyx_agent::{ForeignText, Segment, Transcript};
+
+    let model = match crate::agent::model_for(store) {
+        Ok(model) => model,
+        Err(error) => return Interpretation::Cannot(error.to_string()),
+    };
+
+    // Where the session is standing goes in as system state, not as something
+    // the person said. It is what makes "crea una carpeta llamada pruebas"
+    // land here rather than at a path the model chose — and it is attributed
+    // as the machine's own knowledge, which is what
+    // `Contrato-Estructurado.md` requires of a field nobody typed.
+    let transcript = Transcript::new()
+        .with(Segment::thalyx(format!(
+            "the session is standing in {}",
+            here.display()
+        )))
+        .with(Segment::typed(line));
+
+    let caller = thalyx_contract::Caller {
+        module_id: "dev.thalyx.agent".to_string(),
+        request_id: format!("session-{}", thalyx_journal::now()),
+    };
+
+    let plan = match thalyx_agent::plan(&transcript, model.as_ref(), ForeignText::NeverActs, caller)
+    {
+        Ok(plan) => plan,
+        Err(error) => return Interpretation::Cannot(error.to_string()),
+    };
+
+    let operation = plan.operation().to_string();
+    let targets = plan.targets().to_vec();
+
+    // An install is the one thing that arrives as a contract rather than as a
+    // verb. It still becomes the session's own word for it, because `instalar`
+    // is what carries the trusted-path confirmation, and a second way in would
+    // be a second way to get that wrong.
+    let Some(verb) = crate::catalogue::verb_with_id(&operation) else {
+        return Interpretation::NoSuchVerb(operation);
+    };
+
+    let rewritten = if targets.is_empty() {
+        verb.names[0].to_string()
+    } else {
+        format!("{} {}", verb.names[0], targets.join(" "))
+    };
+
+    Interpretation::Verb {
+        rewritten,
+        operation,
+        targets,
+    }
+}
+
+/// Say what the agent made of it, before anything happens.
+///
+/// Always, and out loud. A machine that quietly turns what somebody said into a
+/// different command and runs it is a machine nobody can trust with the next
+/// sentence: the human has to see the verb before it happens, and the verbs
+/// that change anything ask again anyway.
+///
+/// One function rather than one per surface, because the screen and the text
+/// session say the same four things and two copies of that sentence is one
+/// surface quietly telling a person something the other would not have.
+pub(crate) fn say_interpretation(face: crate::files::Face, line: &str, read: &Interpretation) {
+    match read {
+        Interpretation::Verb {
+            rewritten,
+            operation,
+            targets,
+        } => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::answer(
+                    "understand",
+                    vec![
+                        ("said", serde_json::json!(line)),
+                        ("operation", serde_json::json!(operation)),
+                        ("arguments", serde_json::json!(targets)),
+                        ("running", serde_json::json!(rewritten)),
+                    ],
+                ));
+            } else {
+                println!();
+                println!("  I understood that as: {rewritten}");
+                // What it cost, when a resident engine is what answered.
+                // Nothing on a machine whose rules answered, and nothing the
+                // first time somebody reads it either — see `cost_line`.
+                if let Some(cost) = crate::engine_module::cost_line() {
+                    println!("  {cost}");
+                }
+                println!();
+            }
+        }
+        Interpretation::NoSuchVerb(operation) => {
+            if face.is_machine() {
+                face.say(thalyx_files::machine::declined(
+                    "understand",
+                    "no_such_verb",
+                    &format!(
+                        "the model proposed `{operation}`, which is not a verb of this machine"
+                    ),
+                ));
+            } else {
+                println!();
+                println!("  I understood that as `{operation}`, and there is no such verb");
+                println!("  here. Nothing was done.");
+                println!();
+            }
+        }
+        Interpretation::Cannot(why) => say_the_agent_cannot(face, line, why),
+    }
+}
+
+/// Why nothing happened, without ending the session over it.
+///
+/// A model that is missing, that failed to load, that said something
+/// unparseable, or that declined are four different sentences and all four
+/// leave the machine exactly as usable as it was — which is
+/// `Principio-Doble-Ruta.md` being load-bearing. The error text is printed
+/// rather than summarised because it is the one thing that says which of the
+/// four happened.
+fn say_the_agent_cannot(face: crate::files::Face, line: &str, why: &str) {
+    if face.is_machine() {
+        face.say(thalyx_files::machine::declined(
+            "understand",
+            "no_answer",
+            why,
+        ));
+        return;
+    }
+    println!();
+    println!("  I could not make a verb of that.");
+    println!("    {why}");
+    println!();
+    println!("  Everything the rules already understand still works. `describe`");
+    println!("  lists every verb, and `thalyx agent plan \"{line}\"` shows what");
+    println!("  I would make of that and who understood it.");
+    println!();
 }
 
 // ─────────────────────────────────────────── installing this machine onto a disk
@@ -2364,8 +2779,6 @@ pub fn foresee_install_onto(disk: &str, face: crate::files::Face) {
 /// the bytes are read the same way they were written, so this needs no vfat in the
 /// kernel.
 fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
-    use std::io::{IsTerminal, Write};
-
     // The op is the one the caller typed, not the one this function is called.
     // `describe` promises `rehearse` for `ensayo`, and a refusal that came back
     // under `install_onto` would be an answer to a verb nobody used — which, on
@@ -2579,7 +2992,9 @@ fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
         return;
     }
 
-    if !std::io::stdin().is_terminal() {
+    let asked = crate::ask::Accepts::Exactly(disk.display().to_string());
+    let said = crate::ask::confirm("  Type the disk's path to confirm: ", &asked);
+    if said == crate::ask::Answered::NoOneToAsk {
         refuse(
             "no_terminal",
             "confirm_at_a_terminal",
@@ -2588,13 +3003,16 @@ fn install_onto(disk: &str, face: crate::files::Face, rehearsing: bool) {
         );
         return;
     }
-    print!("  Type the disk's path to confirm: ");
-    let _ = std::io::stdout().flush();
-    let answer = crate::term::read_answer()
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if answer.trim() != disk.display().to_string() {
+    if said == crate::ask::Answered::Unreadable {
+        refuse(
+            "unreadable",
+            "confirm_at_a_terminal",
+            "The answer could not be read, so nothing was written.",
+            false,
+        );
+        return;
+    }
+    if said != crate::ask::Answered::Yes {
         refuse(
             "not_confirmed",
             "type_the_disk_path",

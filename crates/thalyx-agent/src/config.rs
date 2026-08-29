@@ -84,6 +84,19 @@ pub struct Settings {
     pub weights_bytes: u64,
     /// `sha256:…`, taken once. See the module docs for why it is not re-checked.
     pub weights_digest: String,
+    /// The installed module that runs the engine, when the engine is one.
+    ///
+    /// [`None`] means the engine is whatever `binary` names on `PATH`, which is
+    /// what a development machine has and what `thalyx agent bench` runs
+    /// against. On the machine itself there is no `PATH` and no libc: the
+    /// engine is an installed, signed module, and this is its id.
+    ///
+    /// `#[serde(default)]` so that a settings file written before this field
+    /// existed still reads — a machine that has to be reconfigured because
+    /// Thalyx learned a new field is a machine that lost a human's decision to
+    /// an upgrade.
+    #[serde(default)]
+    pub engine_module: Option<String>,
 }
 
 impl Settings {
@@ -94,8 +107,30 @@ impl Settings {
         binary: impl Into<PathBuf>,
     ) -> Result<Settings, ConfigError> {
         let weights = weights.into();
-        let bytes = std::fs::metadata(&weights)?.len();
-        let digest = digest_of(&weights)?;
+        Settings::record_reading(tier, weights.clone(), weights, binary)
+    }
+
+    /// The same, when the file is not yet where the machine will see it.
+    ///
+    /// `image/Makefile` is the one caller and the reason this exists: it builds
+    /// the store on a development machine, where the weights sit in a staging
+    /// directory, and records the path they will have **inside** Thalyx —
+    /// `/opt/thalyx/data/engine/models/model.gguf`, which does not exist on the
+    /// machine doing the building.
+    ///
+    /// The measurement still comes from the bytes. Recording a size and a
+    /// digest that nobody read would be the opposite of what this file is for:
+    /// see the module docs on why the size is re-checked at all.
+    pub fn record_reading(
+        tier: Tier,
+        weights: impl Into<PathBuf>,
+        reading: impl Into<PathBuf>,
+        binary: impl Into<PathBuf>,
+    ) -> Result<Settings, ConfigError> {
+        let weights = weights.into();
+        let reading = reading.into();
+        let bytes = std::fs::metadata(&reading)?.len();
+        let digest = digest_of(&reading)?;
         let defaults = Invocation::new(binary, &weights);
 
         Ok(Settings {
@@ -108,7 +143,14 @@ impl Settings {
             timeout_seconds: defaults.timeout.as_secs(),
             weights_bytes: bytes,
             weights_digest: digest,
+            engine_module: None,
         })
+    }
+
+    /// Record that the engine is an installed module rather than a `PATH` name.
+    pub fn through_module(mut self, module_id: Option<String>) -> Settings {
+        self.engine_module = module_id;
+        self
     }
 
     pub fn tier(&self) -> Result<Tier, ConfigError> {

@@ -282,6 +282,23 @@ pub enum FileError {
     TreeTooLarge { root: PathBuf, ceiling: usize },
 }
 
+impl FileError {
+    /// The path this is about, for a caller that has to say it in another
+    /// vocabulary. `None` for the two that are about a request rather than a
+    /// path.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Absent(path)
+            | Self::IsDirectory(path)
+            | Self::Exists(path)
+            | Self::NotADirectory(path) => Some(path),
+            Self::NotText { path, .. } | Self::Unreadable { path, .. } => Some(path),
+            Self::TreeTooLarge { root, .. } => Some(root),
+            Self::NothingAsked => None,
+        }
+    }
+}
+
 /// List a directory, keeping what could not be established rather than dropping it.
 pub fn list(path: &Path) -> Result<Listing, FileError> {
     let reader = std::fs::read_dir(path).map_err(|error| classify(path, error))?;

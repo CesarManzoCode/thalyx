@@ -93,6 +93,20 @@ pub struct Definition {
     pub kind: SymbolKind,
     /// 1-indexed, so the answer can send somebody straight to it.
     pub line: usize,
+    /// Whether another file could refer to this name at all.
+    ///
+    /// Each language's own rule and not a heuristic: Rust wants `pub`,
+    /// JavaScript wants `export`, Go wants a capital letter, C is external
+    /// unless `static`, and Python is everything that does not start with `_`.
+    ///
+    /// It exists because of what happened when a name became a dependency edge.
+    /// `thalyx-snapshot` declares `fn place` and `fn relative` — both private,
+    /// both ordinary words — and every file in the repository that writes
+    /// `let relative = …` was reported as depending on it. Thirty-three
+    /// dependents where about eight are real. A private name **cannot** be
+    /// referred to from another file, so that is not a guess about the code, it
+    /// is the language saying the edge is impossible.
+    pub exported: bool,
 }
 
 /// What kind of thing a name is, at the coarseness five languages share.
@@ -126,43 +140,187 @@ impl SymbolKind {
     }
 }
 
+/// Source with everything that is not code taken out of it.
+///
+/// One scan for the three entry points below, because they were three scans
+/// that disagreed. Each did its own comment handling — a line *starting* with
+/// `//` was a comment and nothing else was — and every gap that left showed up
+/// as a wrong answer somewhere: a `#include` inside `/* … */` became a
+/// dependency edge no execution follows; the word `definitions` inside a C
+/// block comment became a use of `thalyx_parser::definitions`; a name inside a
+/// Rust string that ran over two lines became a use of whatever declares it.
+/// All three were found by indexing this repository and reading the rows.
+///
+/// It is a scrubber and not a lexer. It knows four things — line comments,
+/// block comments, double-quoted strings that may span lines, and quotes that
+/// close on their own line — and that is enough for the questions above,
+/// because every one of them is *what to ignore* rather than what to parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Scrubbed {
+    /// 1-indexed, so an answer can send somebody straight to the line.
+    number: usize,
+    /// Comments blanked, string literals left whole — `#include "local.h"` and
+    /// `import "fmt"` write the reference *inside* the quotes, so a reference
+    /// scan that got the stripped line would find nothing at all.
+    code: String,
+    /// The same line with the contents of strings blanked too, which is what a
+    /// scan for identifiers needs: a log line containing the word `login` is
+    /// not a use of `login`.
+    bare: String,
+}
+
+/// Which sequences start a comment in a language.
+///
+/// Python is the one that has to be asked separately in both directions: `#`
+/// begins a comment there and nowhere else — in C it begins the preprocessor,
+/// which is half of what the C parser is for — and `//` is floor division there
+/// and a comment everywhere else.
+fn comment_markers(language: Language) -> (&'static str, bool) {
+    match language {
+        Language::Python => ("#", false),
+        _ => ("//", true),
+    }
+}
+
+fn scrub(language: Language, source: &str) -> Vec<Scrubbed> {
+    let (line_comment, has_block_comments) = comment_markers(language);
+
+    let mut out = Vec::new();
+    // The two states that outlive a line. A string opened with a double quote
+    // does — that is what a Rust `"…\` continuation and a `r#"…"#` both are —
+    // and a block comment does. Nothing else may: a Rust lifetime is written
+    // `&'a str`, so a single quote left open at the end of a line is a lifetime
+    // far more often than a string, and carrying it would blank the rest of the
+    // file. That is the difference between a few rows too many and a file the
+    // index cannot see, so the two are not treated alike.
+    let mut in_string = false;
+    let mut in_block = false;
+
+    for (index, raw) in source.lines().enumerate() {
+        let characters: Vec<char> = raw.chars().collect();
+        let mut code = String::with_capacity(raw.len());
+        let mut bare = String::with_capacity(raw.len());
+        let mut in_char = false;
+        let mut escaped = false;
+        let mut at = 0;
+
+        while at < characters.len() {
+            let character = characters[at];
+            let next = characters.get(at + 1).copied();
+
+            if in_block {
+                if character == '*' && next == Some('/') {
+                    in_block = false;
+                    at += 2;
+                    continue;
+                }
+                at += 1;
+                continue;
+            }
+
+            if in_string {
+                code.push(character);
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    in_string = false;
+                }
+                at += 1;
+                continue;
+            }
+
+            if in_char {
+                code.push(character);
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '\'' {
+                    in_char = false;
+                }
+                at += 1;
+                continue;
+            }
+
+            // A comment marker, checked before anything else can consume it.
+            if raw_starts_with(&characters, at, line_comment) {
+                break;
+            }
+            if has_block_comments && character == '/' && next == Some('*') {
+                in_block = true;
+                at += 2;
+                continue;
+            }
+
+            if character == '"' {
+                in_string = true;
+                code.push(character);
+                bare.push(' ');
+                at += 1;
+                continue;
+            }
+            if character == '\'' {
+                in_char = true;
+                code.push(character);
+                bare.push(' ');
+                at += 1;
+                continue;
+            }
+
+            code.push(character);
+            bare.push(character);
+            at += 1;
+        }
+
+        // A quote that never closed on its line was a lifetime, an apostrophe
+        // in prose, or a typo — never a string that continues. See above.
+        let _ = in_char;
+
+        out.push(Scrubbed {
+            number: index + 1,
+            code,
+            bare,
+        });
+    }
+
+    out
+}
+
+fn raw_starts_with(characters: &[char], at: usize, needle: &str) -> bool {
+    needle
+        .chars()
+        .enumerate()
+        .all(|(offset, wanted)| characters.get(at + offset) == Some(&wanted))
+}
+
 /// Extract every dependency reference from a source file.
 pub fn parse(language: Language, source: &str) -> Vec<Reference> {
     let mut references = Vec::new();
 
-    for (index, raw_line) in source.lines().enumerate() {
-        let line = raw_line.trim();
-        let number = index + 1;
-
-        // Line comments are skipped rather than parsed. A commented-out import
-        // is not a dependency, and treating it as one would put edges in the
-        // graph that no execution can ever follow.
-        if is_comment(language, line) {
+    for line in scrub(language, source) {
+        // Commented-out imports are gone before this point rather than skipped
+        // here. A dependency the code cannot reach would put an edge in the
+        // graph that no execution follows.
+        let text = line.code.trim();
+        if text.is_empty() {
             continue;
         }
+        let number = line.number;
 
         match language {
-            Language::Rust => parse_rust(line, number, &mut references),
-            Language::Python => parse_python(line, number, &mut references),
-            Language::JavaScript => parse_javascript(line, number, &mut references),
-            Language::C => parse_c(line, number, &mut references),
-            Language::Go => parse_go(line, number, &mut references),
+            Language::Rust => parse_rust(text, number, &mut references),
+            Language::Python => parse_python(text, number, &mut references),
+            Language::JavaScript => parse_javascript(text, number, &mut references),
+            Language::C => parse_c(text, number, &mut references),
+            Language::Go => parse_go(text, number, &mut references),
         }
     }
 
     references.sort();
     references.dedup();
     references
-}
-
-fn is_comment(language: Language, line: &str) -> bool {
-    match language {
-        // `#include` and `#define` are not comments in C, and treating every
-        // `#` line as one there would throw away half of what the C half of
-        // this parser is for.
-        Language::Python => line.starts_with('#'),
-        _ => line.starts_with("//"),
-    }
 }
 
 /// Every name this file declares.
@@ -178,18 +336,18 @@ fn is_comment(language: Language, line: &str) -> bool {
 pub fn definitions(language: Language, source: &str) -> Vec<Definition> {
     let mut found = Vec::new();
 
-    for (index, raw_line) in source.lines().enumerate() {
-        let line = raw_line.trim();
-        let number = index + 1;
-        if is_comment(language, line) {
+    for line in scrub(language, source) {
+        let text = line.code.trim();
+        if text.is_empty() {
             continue;
         }
+        let number = line.number;
         match language {
-            Language::Rust => rust_definition(line, number, &mut found),
-            Language::Python => python_definition(line, number, &mut found),
-            Language::JavaScript => javascript_definition(line, number, &mut found),
-            Language::C => c_definition(line, number, &mut found),
-            Language::Go => go_definition(line, number, &mut found),
+            Language::Rust => rust_definition(text, number, &mut found),
+            Language::Python => python_definition(text, number, &mut found),
+            Language::JavaScript => javascript_definition(text, number, &mut found),
+            Language::C => c_definition(text, number, &mut found),
+            Language::Go => go_definition(text, number, &mut found),
         }
     }
 
@@ -211,68 +369,171 @@ pub fn definitions(language: Language, source: &str) -> Vec<Definition> {
 /// it would be confidently wrong in a way a caller cannot check without opening
 /// the file — which is exactly the trip this saves.
 pub fn identifiers(language: Language, source: &str) -> Vec<(String, usize)> {
+    identifiers_from(&scrub(language, source))
+}
+
+fn identifiers_from(scrubbed: &[Scrubbed]) -> Vec<(String, usize)> {
     let mut found = Vec::new();
 
-    for (index, raw_line) in source.lines().enumerate() {
-        let line = raw_line.trim();
-        if is_comment(language, line) {
-            continue;
-        }
-        let line = without_strings(line);
-
+    for line in scrubbed {
         let mut word = String::new();
-        for character in line.chars() {
+        for character in line.bare.chars() {
             if character.is_alphanumeric() || character == '_' {
                 word.push(character);
                 continue;
             }
             if !word.is_empty() {
-                found.push((std::mem::take(&mut word), index + 1));
+                found.push((std::mem::take(&mut word), line.number));
             }
         }
         if !word.is_empty() {
-            found.push((word, index + 1));
+            found.push((word, line.number));
         }
     }
 
     found
 }
 
-/// The line with everything between quotes removed.
+/// The names this file introduces itself: locals, parameters, fields.
 ///
-/// One line at a time, so a string that spans lines is only half removed. That
-/// is the honest limit of a line-oriented parser and it fails in the safe
-/// direction: the extra identifiers it lets through are reported as mentions,
-/// which is a row too many, never a definition in the wrong place.
-fn without_strings(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut inside: Option<char> = None;
-    let mut escaped = false;
+/// Not definitions — those are [`definitions`] — but the other thing a name in a
+/// file can be: a thing this file just made up. `let directory = …`,
+/// `for entry in …`, `fn handle(server: &Server)`, `pub subvolume: [u8; 16]`.
+///
+/// ## Why the index needs this and `grep` never did
+///
+/// Because of what happens when a mention becomes a dependency edge. Asked what
+/// depends on `thalyx-snapshot/src/lib.rs`, the index answered with forty-one
+/// files. That crate has `pub fn directory(&self)` and `pub fn subvolume(&self)`
+/// — both perfectly public, both methods on a type, and both ordinary English
+/// words. Every file in the repository holding `for directory in …` or a struct
+/// field called `subvolume` was reported as a dependent.
+///
+/// A file that binds a name is talking about its own binding. That is not a
+/// guess about which one it meant: the binding is right there in the same file,
+/// and it shadows anything outside. So the rule only ever *removes* an edge,
+/// and what it costs is the file that binds `difference` and also calls the
+/// `difference` from somewhere else — a row lost, which is the direction rule 9
+/// says to fail in.
+///
+/// It is deliberately not scope-aware. Scope is a compiler; a set per file is a
+/// scan, and the difference between them is a row here and there in exchange
+/// for a mechanism that can be read in one sitting.
+pub fn bound_names(language: Language, source: &str) -> std::collections::HashSet<String> {
+    bound_from(language, &scrub(language, source))
+}
 
-    for character in line.chars() {
-        match inside {
-            Some(quote) => {
-                if escaped {
-                    escaped = false;
-                } else if character == '\\' {
-                    escaped = true;
-                } else if character == quote {
-                    inside = None;
-                    out.push(' ');
-                }
+/// Both halves of what the index needs from a file, over one scan of it.
+///
+/// The index asks for the mentions and the bindings together, always, and
+/// asking twice means scrubbing every file twice — 533.7 ms against 480.4 ms on
+/// this repository, best of seven. The two public
+/// functions stay, because each is a separate question and each has its own
+/// tests; this is the one call that has both questions at once.
+pub fn identifiers_and_bindings(
+    language: Language,
+    source: &str,
+) -> (Vec<(String, usize)>, std::collections::HashSet<String>) {
+    let scrubbed = scrub(language, source);
+    (identifiers_from(&scrubbed), bound_from(language, &scrubbed))
+}
+
+fn bound_from(language: Language, scrubbed: &[Scrubbed]) -> std::collections::HashSet<String> {
+    let mut bound = std::collections::HashSet::new();
+
+    for line in scrubbed {
+        let characters: Vec<char> = line.bare.chars().collect();
+        let words = words_with_positions(&characters);
+
+        for (index, (word, start, end)) in words.iter().enumerate() {
+            // `name:` — a parameter, a struct field, a struct-literal key, a
+            // type annotation. Never `name::`, which is a path and the most
+            // reference-like thing there is.
+            if characters.get(*end) == Some(&':') && characters.get(end + 1) != Some(&':') {
+                bound.insert(word.clone());
+                continue;
             }
-            None => {
-                if character == '"' || character == '\'' {
-                    inside = Some(character);
-                    out.push(' ');
-                } else {
-                    out.push(character);
-                }
+
+            // `x := y`, which is Go's whole binding syntax.
+            if characters.get(*end) == Some(&' ')
+                && characters.get(end + 1) == Some(&':')
+                && characters.get(end + 2) == Some(&'=')
+            {
+                bound.insert(word.clone());
+                continue;
             }
+
+            let previous = index.checked_sub(1).map(|before| words[before].0.as_str());
+            match previous {
+                // Everything between `let`/`var`/`const` and the `=` is a
+                // pattern: `let mut x`, `let (a, b)`, `let Thing { one, two }`.
+                Some("let" | "var" | "mut" | "ref") => {
+                    if before_the_equals(&characters, *start) {
+                        bound.insert(word.clone());
+                    }
+                }
+                // `for x in …`, in Rust, Python and JavaScript alike.
+                Some("for") => {
+                    bound.insert(word.clone());
+                }
+                // `mod restore;` puts the name `restore` in this file's own
+                // namespace, and `use … as Keys` does the same for `Keys`.
+                // Both are the file naming something for itself, which is what
+                // every other case here is.
+                Some("mod" | "as") => {
+                    bound.insert(word.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Python binds by assignment and has no keyword to look for. Only at
+        // the start of a statement, so `self.total = x` binds nothing and
+        // `total = x` binds `total`.
+        if language == Language::Python
+            && let Some((first, _, end)) = words.first()
+            && let Some(rest) = line.bare.get(*end..)
+            && rest.trim_start().starts_with('=')
+            && !rest.trim_start().starts_with("==")
+        {
+            bound.insert(first.clone());
         }
     }
 
-    out
+    bound
+}
+
+/// Every identifier on a line, with where it starts and ends.
+fn words_with_positions(characters: &[char]) -> Vec<(String, usize, usize)> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut start = 0;
+    for (at, character) in characters.iter().enumerate() {
+        if character.is_alphanumeric() || *character == '_' {
+            if word.is_empty() {
+                start = at;
+            }
+            word.push(*character);
+            continue;
+        }
+        if !word.is_empty() {
+            words.push((std::mem::take(&mut word), start, at));
+        }
+    }
+    if !word.is_empty() {
+        words.push((word, start, characters.len()));
+    }
+    words
+}
+
+/// Whether this position is still on the left of an `=`, which is what tells a
+/// binding pattern from the expression it is bound to.
+fn before_the_equals(characters: &[char], at: usize) -> bool {
+    characters[..at]
+        .iter()
+        .rev()
+        .take_while(|c| **c != ';')
+        .all(|c| *c != '=')
 }
 
 /// The name that follows a keyword, up to whatever ends it.
@@ -307,6 +568,9 @@ fn without_visibility(line: &str) -> &str {
 }
 
 fn rust_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    // Asked before the prefix is stripped, because stripping is how the
+    // question stops being answerable.
+    let exported = is_rust_public(line);
     let mut line = without_visibility(line);
     // `const fn` is a function and not a constant, and it is the one prefix
     // where the order matters: stripped in the wrong order it becomes a
@@ -336,6 +600,7 @@ fn rust_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
                 name: name.to_string(),
                 kind,
                 line: number,
+                exported,
             });
             return;
         }
@@ -346,8 +611,39 @@ fn rust_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
             name: name.to_string(),
             kind: SymbolKind::Function,
             line: number,
+            // A macro carries no `pub`, and `#[macro_export]` is on the line
+            // above. Counted as reachable rather than as private, because the
+            // opposite would make every macro in a codebase invisible to the
+            // index — a much larger hole than the private macros it would shut.
+            exported: true,
         });
     }
+}
+
+/// Whether a Rust item is visible outside the file it is written in.
+///
+/// `pub(self)` is spelled like the others and means private, which is the one
+/// way this reads backwards if it only looks for the three letters.
+fn is_rust_public(line: &str) -> bool {
+    let line = line.trim_start();
+    let Some(rest) = line.strip_prefix("pub") else {
+        return false;
+    };
+    // `pub` has to end where it ends, or `public_thing` is a visibility.
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if let Some(scope) = rest.strip_prefix('(')
+        && let Some((named, _)) = scope.split_once(')')
+    {
+        return named.trim() != "self";
+    }
+    true
 }
 
 fn python_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
@@ -359,6 +655,10 @@ fn python_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
             out.push(Definition {
                 name: name.to_string(),
                 kind,
+                // Python has no visibility, so the language's rule is the
+                // convention it enforces nowhere and everybody follows: a
+                // leading underscore says do not import this.
+                exported: !name.starts_with('_'),
                 line: number,
             });
             return;
@@ -367,6 +667,8 @@ fn python_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
 }
 
 fn javascript_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    // Asked before the word is stripped, for the same reason as Rust's `pub`.
+    let exported = line.starts_with("export ") || line.starts_with("export default ");
     let line = line.strip_prefix("export default ").unwrap_or(line);
     let line = line.strip_prefix("export ").unwrap_or(line);
     let line = line.strip_prefix("async ").unwrap_or(line);
@@ -392,6 +694,7 @@ fn javascript_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
                 name: name.to_string(),
                 kind,
                 line: number,
+                exported,
             });
             return;
         }
@@ -408,11 +711,16 @@ const C_NOT_A_DEFINITION: &[&str] = &[
 ];
 
 fn c_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
+    // C's own rule, and the only one it has: `static` at file scope means this
+    // name does not leave the translation unit. Everything else does.
+    let exported = !line.starts_with("static ");
     if let Some(name) = name_after(line, "#define ") {
         out.push(Definition {
             name: name.to_string(),
             kind: SymbolKind::Constant,
             line: number,
+            // A `#define` in a header is exactly what another file includes.
+            exported: true,
         });
         return;
     }
@@ -426,6 +734,7 @@ fn c_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
                     name: name.to_string(),
                     kind: SymbolKind::Type,
                     line: number,
+                    exported,
                 });
             }
             return;
@@ -462,6 +771,7 @@ fn c_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
         name,
         kind: SymbolKind::Function,
         line: number,
+        exported,
     });
 }
 
@@ -477,6 +787,9 @@ fn go_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
         };
         if let Some(name) = name_after(rest, "") {
             out.push(Definition {
+                // Go is the one language where visibility is spelled in the
+                // name itself, so there is nothing to guess at all.
+                exported: is_go_exported(name),
                 name: name.to_string(),
                 kind: SymbolKind::Function,
                 line: number,
@@ -493,6 +806,7 @@ fn go_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
     for (keyword, kind) in cases {
         if let Some(name) = name_after(line, keyword) {
             out.push(Definition {
+                exported: is_go_exported(name),
                 name: name.to_string(),
                 kind,
                 line: number,
@@ -500,6 +814,12 @@ fn go_definition(line: &str, number: usize, out: &mut Vec<Definition>) {
             return;
         }
     }
+}
+
+/// Go's whole visibility system: a name that starts with a capital leaves the
+/// package, and one that does not, does not.
+fn is_go_exported(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn parse_rust(line: &str, number: usize, out: &mut Vec<Reference>) {
@@ -823,7 +1143,8 @@ mod harness;
             "parse",              // pub fn
             "definitions",        // pub fn
             "identifiers",        // pub fn
-            "without_strings",    // a private fn
+            "scrub",              // a private fn
+            "Scrubbed",           // a private struct
             "rust_definition",    // a private fn
             "Reference",          // pub struct
             "ReferenceKind",      // pub enum
@@ -978,6 +1299,163 @@ mod harness;
     fn a_name_inside_a_comment_is_not_a_use_of_it() {
         assert!(identifiers(Language::Rust, "// login happens here").is_empty());
         assert!(identifiers(Language::Python, "# login happens here").is_empty());
+    }
+
+    #[test]
+    fn a_name_in_a_block_comment_is_not_a_use_of_it() {
+        // Found by indexing this repository: `uapi_btrfs.h` was reported as a
+        // dependent of the parser because the word `definitions` appears in a
+        // `/* … */` header comment. Line-at-a-time comment handling can never
+        // see this, and once a use becomes a dependency edge a wrong one is no
+        // longer a row too many — it is a file somebody goes and reads.
+        let source = "/*\n * login is described here\n */\nfn other() {}\n";
+        let mentions: Vec<String> = identifiers(Language::Rust, source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!mentions.contains(&"login".to_string()), "{mentions:?}");
+        assert!(mentions.contains(&"other".to_string()), "{mentions:?}");
+    }
+
+    #[test]
+    fn a_name_in_a_string_that_runs_over_two_lines_is_not_a_use_of_it() {
+        // The other half of the same repository finding: `thalyx-permd` was a
+        // dependent of the parser because a panic message continued onto a
+        // second line with a backslash, and the second line was scanned as code.
+        let source = "let message = \"a message that runs \\\n     over two lines about login\";\n";
+        let mentions: Vec<String> = identifiers(Language::Rust, source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!mentions.contains(&"login".to_string()), "{mentions:?}");
+        assert!(mentions.contains(&"message".to_string()), "{mentions:?}");
+    }
+
+    #[test]
+    fn a_comment_at_the_end_of_a_line_is_not_part_of_the_line() {
+        let mentions: Vec<String> = identifiers(Language::Rust, "run(); // see login for why")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(mentions, vec!["run".to_string()], "{mentions:?}");
+    }
+
+    #[test]
+    fn an_include_inside_a_block_comment_is_not_a_dependency() {
+        // The same hole in the reference half, where it is worse: an edge no
+        // execution can follow. A commented-out `#include` was becoming one.
+        let source = "/*\n#include \"old.h\"\n*/\n#include \"real.h\"\n";
+        let found = targets(Language::C, source);
+        assert_eq!(found, vec!["real.h".to_string()], "{found:?}");
+    }
+
+    #[test]
+    fn a_lifetime_does_not_swallow_the_rest_of_the_file() {
+        // The one thing the scrubber must not do. A `'` is a lifetime in Rust
+        // far more often than the start of anything, so it may never carry over
+        // to the next line — a state that did would blank whole files, which is
+        // a recall loss nobody would notice and everybody would be hurt by.
+        let source = "fn one<'a>(x: &'a str) {}\nfn two() { login(); }\n";
+        let mentions: Vec<String> = identifiers(Language::Rust, source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(mentions.contains(&"login".to_string()), "{mentions:?}");
+    }
+
+    #[test]
+    fn a_slash_star_inside_a_string_does_not_open_a_comment() {
+        // The mirror of the rule above, and the reason the scrubber tracks
+        // strings and comments together instead of one after the other.
+        let source = "let pattern = \"/*\";\nfn two() { login(); }\n";
+        let mentions: Vec<String> = identifiers(Language::Rust, source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(mentions.contains(&"login".to_string()), "{mentions:?}");
+    }
+
+    #[test]
+    fn python_keeps_its_floor_division_and_c_keeps_its_preprocessor() {
+        // `//` is a comment in four of the five languages and an operator in
+        // Python; `#` is a comment in Python and the preprocessor in C. Getting
+        // either backwards silently deletes half of what a language's parser is
+        // for, and neither shows up as an error.
+        let mentions: Vec<String> = identifiers(Language::Python, "half = total // divisor")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(mentions.contains(&"divisor".to_string()), "{mentions:?}");
+        assert_eq!(targets(Language::C, "#include <stdio.h>"), vec!["stdio.h"]);
+    }
+
+    // ─────────────────────────────── what another file could reach at all
+
+    #[test]
+    fn each_language_is_asked_its_own_visibility_rule_and_not_a_guess() {
+        let exported = |language, line: &str| definitions(language, line)[0].exported;
+
+        // Rust: `pub`, and `pub(self)` is the one that reads backwards.
+        assert!(exported(Language::Rust, "pub fn open() {}"));
+        assert!(exported(Language::Rust, "pub(crate) struct Thing;"));
+        assert!(!exported(Language::Rust, "fn helper() {}"));
+        assert!(!exported(Language::Rust, "pub(self) fn helper() {}"));
+
+        // JavaScript: the word `export`.
+        assert!(exported(Language::JavaScript, "export function go() {}"));
+        assert!(!exported(Language::JavaScript, "function go() {}"));
+
+        // Go: the capital letter, which is the whole system.
+        assert!(exported(Language::Go, "func Close() {}"));
+        assert!(!exported(Language::Go, "func close() {}"));
+
+        // C: external unless `static`.
+        assert!(exported(Language::C, "int setup(void) {"));
+        assert!(!exported(Language::C, "static int setup(void) {"));
+
+        // Python: the convention it enforces nowhere and everyone follows.
+        assert!(exported(Language::Python, "def go():"));
+        assert!(!exported(Language::Python, "def _go():"));
+    }
+
+    #[test]
+    fn a_name_the_file_binds_is_the_files_own_and_not_somebody_elses() {
+        // The defect: `thalyx-snapshot` declares `pub fn directory(&self)`, and
+        // every file in the repository holding `for directory in …` was
+        // reported as depending on it. A binding shadows anything outside, so
+        // the file is talking about itself.
+        let bound = bound_names(
+            Language::Rust,
+            "fn walk(root: &Path) {\n    for directory in root {\n        let place = 1;\n    }\n}\n             struct Held { subvolume: u32 }\nmod restore;\nuse a::b as Keys;\n",
+        );
+        for name in ["root", "directory", "place", "subvolume", "restore", "Keys"] {
+            assert!(bound.contains(name), "`{name}` is bound here: {bound:?}");
+        }
+        // And what is plainly a reference is not swept up with them.
+        for name in ["walk", "Path", "Held"] {
+            assert!(
+                !bound.contains(name),
+                "`{name}` is not a binding: {bound:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_is_not_a_binding_however_many_colons_it_has() {
+        // `name:` is a binding and `name::` is the most reference-like thing
+        // there is. One character apart, and reading them alike would delete
+        // every qualified call in the tree.
+        let bound = bound_names(Language::Rust, "let answer = crate::store::save();\n");
+        assert!(bound.contains("answer"), "{bound:?}");
+        assert!(!bound.contains("store"), "{bound:?}");
+        assert!(!bound.contains("save"), "{bound:?}");
+    }
+
+    #[test]
+    fn what_is_on_the_right_of_the_equals_is_not_being_bound() {
+        let bound = bound_names(Language::Rust, "let held = existing;\n");
+        assert!(bound.contains("held"), "{bound:?}");
+        assert!(!bound.contains("existing"), "{bound:?}");
     }
 
     #[test]

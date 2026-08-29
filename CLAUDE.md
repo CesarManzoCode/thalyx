@@ -153,14 +153,19 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened fourteen times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened sixteen times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
    — twice, for the same reason — a parser tested only against fixtures its
    author invented. The second of that pair accused llama.cpp of ignoring a
    grammar it had just obeyed, because every fixture agreed with the parser
-   about where an answer stops. The stale `main` is the cheapest of them, and it
+   about where an answer stops. The fifteenth and sixteenth are the reversible
+   benchmark's grader, on 2026-08-29, failing a paid run twice for reasons that
+   were not the agent's: a workspace boundary that counted **QEMU's own socket**
+   as the tree failing to come back, and a mutation witness made only of mtimes
+   — which the task's own last step, *put everything back*, is what erases. A
+   witness a correct answer can switch off is not a witness. The stale `main` is the cheapest of them, and it
    came back on 2026-08-26 because the rule was written short: `main` and
    `origin/main` are different questions, **and `origin/main` is only a
    question about the repository after a `fetch`** — before that it is a
@@ -211,6 +216,28 @@ These were all learned by something going wrong. They are recorded in
     owner is not isolated by an environment variable; the only real separation is
     a separate process, which in Rust means a separate crate — hence
     `thalyx-capture`.
+
+12. **The binary that gets verified has to be the binary that ships.** `verify.sh`
+    compiles against glibc from end to end, and the image is a static musl
+    build; the stage called "the image" packs the *glibc* binary to count the
+    programs inside it. So five ioctl requests cast to `libc::c_ulong` — which
+    is what glibc's `ioctl` takes, where musl's takes `c_int` — went through 189
+    checks clean on 2026-08-28 and then stopped `make -C image` dead, with the
+    person who runs the hardware finding it. It is rule 8 pointed at the
+    compiler: a build with a different configuration is a different system.
+    Stage 2 now runs the image Makefile's own build line, and
+    `THALYX_REQUIRE_IMAGE_BUILD=1` turns its skips into failures.
+
+13. **When the claim is that something expensive stopped happening, count the
+    times it happened.** The resident engine reloaded the model on every
+    sentence because `if let (false, Some(stale)) = (usable, held.take())`
+    builds the whole tuple before matching, so `take()` ran unconditionally and
+    the live engine was dropped on every call. Nothing looked wrong: every
+    sentence was answered correctly, and the only thing that changed was the
+    cost — which is the entire thing that change existed to reduce. A test
+    written as "the second sentence is also answered" passes. What caught it was
+    a stand-in that appends its pid to a file when it starts, and an assertion
+    about how many lines that file has.
 
 ## How to write code here
 

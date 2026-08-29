@@ -173,11 +173,12 @@ fn every_answer_carries_the_indexs_freshness_in_the_same_object_as_the_rows() {
 }
 
 #[test]
-fn a_tree_that_moved_on_is_reported_as_stale_rather_than_answered_as_if_it_had_not() {
+fn a_tree_that_moved_on_is_brought_up_to_date_before_the_question_is_answered() {
     let (root, tree) = a_tree_with_a_dependency();
 
     // Indexed, then changed behind Thalyx's back — which is the ordinary case,
-    // because the human is free to edit files without telling anybody.
+    // because the human is free to edit files without telling anybody, and it
+    // is also what an agent does between one question and the next.
     let indexed = piped(
         root.path(),
         &["structured on", &inside(&tree), "indexar", "salir"],
@@ -187,7 +188,11 @@ fn a_tree_that_moved_on_is_reported_as_stale_rather_than_answered_as_if_it_had_n
         serde_json::json!(true)
     );
 
-    std::fs::write(tree.join("src/tres.rs"), "pub fn nueva() {}\n").expect("a new file");
+    std::fs::write(
+        tree.join("src/tres.rs"),
+        "pub fn nueva() { crate::dos::hace(); }\n",
+    )
+    .expect("a new file");
 
     let output = piped(
         root.path(),
@@ -195,11 +200,61 @@ fn a_tree_that_moved_on_is_reported_as_stale_rather_than_answered_as_if_it_had_n
     );
     let answer = answer_to(&objects(&output), "depended_on_by");
 
-    // The rows are still returned — they are not wrong, they are incomplete —
-    // and the answer says so in the same breath. An agent that reads this can
-    // decide; one that was never told would trust an answer about a tree that
-    // has moved on.
-    assert_eq!(answer["fresh"], serde_json::json!("stale"));
+    // The four turns this deleted. Until 2026-08-28 the answer here was the
+    // rows as they were, labelled `stale`, and acting on that label was left to
+    // the caller — which in the first real run meant Claude spending three
+    // turns on the index's bookkeeping before it could ask its question again.
+    assert_eq!(
+        answer["refreshed"],
+        serde_json::json!("rebuilt"),
+        "{answer}"
+    );
+    assert_eq!(answer["fresh"], serde_json::json!("current"), "{answer}");
+
+    // And the repair is not cosmetic: the file written a moment ago is in the
+    // answer. A `current` label over the old rows would be the worst of both.
+    let dependents: Vec<&str> = answer["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .map(|edge| edge["from"].as_str().expect("a from"))
+        .collect();
+    assert!(
+        dependents.contains(&"src/tres.rs"),
+        "the new file depends on dos.rs and the answer does not say so: {answer}"
+    );
+}
+
+#[test]
+fn a_caller_that_asks_not_to_refresh_gets_the_rows_and_the_stale_label() {
+    // The honesty rule of FS-en-Grafo does not move because a convenience was
+    // added on top of it. A caller can still ask what the index held — which is
+    // a real question, and exactly the one an automatic rebuild would destroy —
+    // and what comes back says `stale` in the same object as the rows.
+    let (root, tree) = a_tree_with_a_dependency();
+    piped(
+        root.path(),
+        &["structured on", &inside(&tree), "indexar", "salir"],
+    );
+    std::fs::write(tree.join("src/tres.rs"), "pub fn nueva() {}\n").expect("a new file");
+
+    let output = piped(
+        root.path(),
+        &[
+            "structured on",
+            &inside(&tree),
+            "usan src/dos.rs refrescar=no",
+            "salir",
+        ],
+    );
+    let answer = answer_to(&objects(&output), "depended_on_by");
+
+    assert_eq!(answer["fresh"], serde_json::json!("stale"), "{answer}");
+    assert_eq!(
+        answer["refreshed"],
+        serde_json::json!("not_needed"),
+        "{answer}"
+    );
     assert!(
         answer["freshness_detail"].as_str().expect("a detail").len() > 5,
         "the staleness said nothing useful: {answer}"

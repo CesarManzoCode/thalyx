@@ -1,0 +1,20 @@
+{
+  "about": "A directory module reached through `mod.rs`, and a function inside it called by path.",
+  "category": "module",
+  "why_it_matters": "`main.rs` declares `mod net`, which is `net/mod.rs`. The code it calls is one file further in, and nothing in `main.rs` names it.",
+  "dependents": {
+    "src/net/socket.rs": [
+      { "from": "src/main.rs", "via": "symbol", "through": "dial" },
+      { "from": "src/net/mod.rs", "via": "import" }
+    ],
+    "src/net/mod.rs": [
+      { "from": "src/main.rs", "via": "import" }
+    ]
+  },
+  "symbols": {
+    "dial": {
+      "definitions": ["src/net/socket.rs:1 function"],
+      "uses": ["src/main.rs:4"]
+    }
+  }
+}

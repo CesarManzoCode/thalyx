@@ -115,8 +115,29 @@ pub fn apply<V: Volumes>(
     // The global lock. A restore replaces a whole subvolume; an install
     // committing into it halfway through would be published into a tree that
     // is about to be replaced, and would vanish with no record of why.
-    let _lock = store.lock()?;
+    let lock = store.lock()?;
+    apply_holding_the_lock(store, snapshots, plan, request_id, &lock)
+}
 
+/// The same restore, for a caller that already holds the global lock.
+///
+/// `flock` attaches to an open file description and is not reentrant: a caller
+/// that took the lock and then called [`apply`] would open a second description
+/// on the same file and wait for itself, forever. So the lock is a parameter
+/// and the type is the proof — there is no way to reach this without one, and
+/// no way to reach it while holding nothing.
+///
+/// [`crate::attempt::abandon`] is the caller that needs it. Abandoning is
+/// "check the attempt on record is still the one I planned against, restore,
+/// clear the record", and those three have to be one transition or two clients
+/// abandoning at once restore the same snapshot twice.
+pub(crate) fn apply_holding_the_lock<V: Volumes>(
+    store: &Store,
+    snapshots: &Snapshots<V>,
+    plan: &Plan,
+    request_id: &str,
+    _lock: &crate::store::ContractLock,
+) -> Result<Restored> {
     let journal = Journal::open(store.journal_path())?;
 
     let entry = |outcome: Outcome, notes: Vec<String>| Entry {

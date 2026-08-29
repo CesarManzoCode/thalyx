@@ -25,7 +25,9 @@
 use crate::canvas::{Canvas, Rect};
 use crate::color::{self, Color};
 use crate::layout::{Layout, Metrics};
-use crate::state::{Bar, Confirmation, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice};
+use crate::state::{
+    Bar, Confirmation, Editor, Guard, Panel, Prompt, Row, Screen, Tone, Turn, Voice,
+};
 use crate::text::{Face, TextStyle, Typography};
 
 /// Draw `screen` at `width` × `height`.
@@ -36,6 +38,13 @@ pub fn compose(screen: &Screen, typography: &mut Typography, width: u32, height:
     // Not a layer over the rest: the rest is not drawn. See the module note.
     if let Some(confirmation) = &screen.confirmation {
         draw_confirmation(&mut canvas, typography, &layout, confirmation);
+        return canvas;
+    }
+
+    // Second, and the order is the rule: a confirmation is the trusted path, so
+    // a file open on the glass never covers the question authorising something.
+    if let Some(editor) = &screen.editor {
+        draw_editor(&mut canvas, typography, &layout, editor);
         return canvas;
     }
 
@@ -325,7 +334,26 @@ fn draw_panel(
             }
             Row::Pair { label, value } => {
                 let value_style = TextStyle::new(Face::Mono, metrics.fact, color::FACT);
-                let value_width = typography.measure(Face::Mono, metrics.fact, value);
+                // The value is trimmed to the column **before** it is measured,
+                // and this is the whole fix. It used to be measured whole and
+                // then placed at `inner.right() - value_width`; a reading wider
+                // than the panel put that pen to the left of `inner.left`, and
+                // `draw` clips nothing — so `2 of 2 hook(s) live: …` was drawn
+                // across the conversation beside it, in the panel's colour, on
+                // the machine panel where every reading is a fact about the
+                // machine. The label was already clipped, which is why only one
+                // half of every row ever escaped.
+                //
+                // The value gets the room first because it is the fact and the
+                // label is only what the fact is about; the label keeps at least
+                // half the column so a row never becomes a bare number with
+                // nothing saying what it counts.
+                let label_room = typography
+                    .measure(Face::Prose, metrics.small, label)
+                    .min(inner.width as f32 * 0.5);
+                let value_room = (inner.width as f32 - label_room - metrics.padding * 0.5).max(1.0);
+                let value = typography.fit(Face::Mono, metrics.fact, value_room, value);
+                let value_width = typography.measure(Face::Mono, metrics.fact, &value);
                 typography.draw_within(
                     canvas,
                     inner.left as f32,
@@ -338,7 +366,7 @@ fn draw_panel(
                     canvas,
                     inner.right() as f32 - value_width,
                     baseline,
-                    value,
+                    &value,
                     value_style,
                 );
                 baseline += row_height;
@@ -547,6 +575,141 @@ fn draw_prompt(canvas: &mut Canvas, typography: &mut Typography, layout: &Layout
     }
 }
 
+/// Where an editor's text sits on a display, in one place.
+///
+/// **Shared by the drawing and by [`editor_viewport`], and that is the point.**
+/// The engine is told how many rows and columns it has and answers with a frame
+/// cut to exactly that; if the two arithmetics were written twice they would
+/// differ by a row the first time either changed, and what a person would see is
+/// a cursor drawn one line away from the letter they are typing.
+struct EditorGeometry {
+    left: f32,
+    /// Baseline of the first row of the file.
+    first_baseline: f32,
+    step: f32,
+    size: f32,
+    /// One character. Mono, so every character is this wide.
+    column: f32,
+    rows: usize,
+    columns: usize,
+}
+
+fn editor_geometry(typography: &mut Typography, layout: &Layout) -> EditorGeometry {
+    let metrics = &layout.metrics;
+    let size = metrics.fact;
+    let step = typography.line_height(Face::Mono, size);
+    let left = metrics.padding * 2.0;
+    let width = (layout.screen.width as f32 - left * 2.0).max(step);
+
+    // The title and the legend are not the file. Subtracted here, where the row
+    // count is decided, rather than by the caller: a viewport that quietly knew
+    // about a status bar is the arrangement that goes wrong the day there are
+    // two of them.
+    let title_baseline = metrics.padding * 1.5 + typography.ascent(Face::MonoBold, size);
+    let first_baseline = title_baseline + step * 1.6;
+    let legend_room = step * 2.2;
+    let room = layout.screen.height as f32 - first_baseline - legend_room;
+    let rows = (room / step).floor().max(1.0) as usize;
+
+    // `M` and not the widest glyph in the font: this is the mono face, where
+    // every advance is the same, and asking for a character that is actually in
+    // the file would make the column width depend on the file.
+    let column = typography.advance(Face::Mono, 'M', size).max(1.0);
+    let columns = (width / column).floor().max(1.0) as usize;
+
+    EditorGeometry {
+        left,
+        first_baseline,
+        step,
+        size,
+        column,
+        rows,
+        columns,
+    }
+}
+
+/// How much of a file fits on a display this size: rows first, then columns.
+///
+/// Public because the caller has to build the editing engine's viewport before
+/// it has anything to draw, and the only honest source for those two numbers is
+/// the code that will do the drawing.
+pub fn editor_viewport(typography: &mut Typography, width: u32, height: u32) -> (usize, usize) {
+    let layout = Layout::for_size(width, height);
+    let geometry = editor_geometry(typography, &layout);
+    (geometry.rows, geometry.columns)
+}
+
+fn draw_editor(canvas: &mut Canvas, typography: &mut Typography, layout: &Layout, editor: &Editor) {
+    let metrics = &layout.metrics;
+    let geometry = editor_geometry(typography, layout);
+
+    // The file's own ground, a shade off the screen's, so the edge of the text
+    // area is visible without a rule drawn around it.
+    canvas.fill(layout.screen, color::INK);
+
+    let title_baseline = geometry.first_baseline - geometry.step * 1.6;
+    typography.draw_within(
+        canvas,
+        geometry.left,
+        title_baseline,
+        layout.screen.width as f32 - geometry.left * 2.0,
+        &editor.title,
+        TextStyle::new(Face::MonoBold, geometry.size, color::HUMAN),
+    );
+
+    let mut baseline = geometry.first_baseline;
+    for line in &editor.lines {
+        // A row past the end of the file is muted: it is the editor speaking,
+        // not the file, and drawing it in the file's colour is how a person
+        // comes to think their file has a column of tildes in it.
+        let colour = if line == "~" {
+            color::MUTED
+        } else {
+            color::FACT
+        };
+        typography.draw(
+            canvas,
+            geometry.left,
+            baseline,
+            line,
+            TextStyle::new(Face::Mono, geometry.size, colour),
+        );
+        baseline += geometry.step;
+    }
+
+    // The cursor after the text, so it is on top of the character it is on.
+    // Drawn as an outline-thin block rather than a filled one for the same
+    // reason: a filled caret hides the letter underneath it, and the letter
+    // underneath it is the one being typed.
+    if editor.cursor_row < geometry.rows {
+        let ascent = typography.ascent(Face::Mono, geometry.size);
+        let x = geometry.left + geometry.column * editor.cursor_column as f32;
+        let y = geometry.first_baseline + geometry.step * editor.cursor_row as f32;
+        canvas.fill(
+            Rect::new(
+                x.round() as i32,
+                (y - ascent).round() as i32,
+                (geometry.column.round() as u32).max(1),
+                (ascent * 1.15).round().max(2.0) as u32,
+            ),
+            color::HUMAN,
+        );
+    }
+
+    let legend_baseline = layout.screen.height as f32
+        - metrics.padding * 1.5
+        - typography.line_height(Face::Prose, metrics.small)
+        + typography.ascent(Face::Prose, metrics.small);
+    typography.draw_within(
+        canvas,
+        geometry.left,
+        legend_baseline,
+        layout.screen.width as f32 - geometry.left * 2.0,
+        &editor.legend,
+        TextStyle::new(Face::Prose, metrics.small, color::MUTED),
+    );
+}
+
 /// One line of the confirmation, already resolved to how it is drawn.
 ///
 /// Built as a list first so the whole block can be measured and then centred.
@@ -635,7 +798,13 @@ fn draw_confirmation(
         space_above: step * 0.9,
     });
     lines.push(Line {
-        text: "Escape cancela. Nada se ha hecho todavía.".into(),
+        // **Ctrl-C and not Escape**, which is what this line said until the
+        // confirmation was first wired to a real keyboard. A bare Escape is the
+        // prefix of every arrow key, so a decoder that is correct waits for the
+        // byte after it — the hint named a key that appears to do nothing until
+        // you press another one, on the one screen where a person needs to be
+        // sure how to get out. `thalyx-term` has the test that pins it.
+        text: "Ctrl-C cancela. Nada se ha hecho todavía.".into(),
         style: TextStyle::new(Face::Prose, metrics.small, color::MUTED),
         space_above: step * 1.6,
     });
@@ -773,6 +942,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A panel with one reading in it, and the column that reading belongs in.
+    fn machine_panel_with(value: &str) -> (Canvas, Rect) {
+        let mut screen = Screen::new(a_bar());
+        screen.right = vec![Panel::new("máquina", vec![Row::pair("lsm", value)])];
+        let mut typography = Typography::embedded();
+        let layout = Layout::for_size(1280, 800);
+        let column = layout.right.expect("a right column at 1280x800");
+        let canvas = compose(&screen, &mut typography, 1280, 800);
+        (canvas, column)
+    }
+
+    #[test]
+    fn a_reading_wider_than_its_panel_does_not_leave_it() {
+        // Found on the glass and not here: Cesar photographed a booted machine
+        // with `a module can be pivoted into a root of its own` written across
+        // the middle of the conversation, in the panel's colour, starting well
+        // to the left of the panel it belonged to. Every reading in the machine
+        // panel is a `Row::Pair`, its value was measured at full width and then
+        // right-aligned against the panel's right edge, and `draw` clips
+        // nothing — so any value wider than the column was placed at a negative
+        // offset from where it should have started.
+        //
+        // Asserted at the pixels because that is where it happened: nothing
+        // about the row's *text* was ever wrong. And asserted as "the ground is
+        // untouched" rather than "this colour is absent", because text is drawn
+        // with coverage — a thin stem blends toward the ground and may never
+        // land on the exact colour it was asked for, so looking for `FACT`
+        // outside the panel would miss the very stroke that gave it away.
+        let (canvas, _) =
+            machine_panel_with("2 of 2 hook(s) live: thalyx_socket_connect, thalyx_file_open");
+
+        // The conversation, which is where the reading was photographed and
+        // where nothing was said. An empty conversation is empty ground; a
+        // single glyph in it came from somewhere it should not have.
+        let centre = Layout::for_size(1280, 800).centre;
+        for y in centre.top..centre.bottom() {
+            for x in centre.left..centre.right() {
+                assert_eq!(
+                    canvas.pixel(x as u32, y as u32).unwrap(),
+                    color::INK,
+                    "something was drawn at {x},{y}, in a conversation with nothing in it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reading_that_fits_is_still_drawn() {
+        // The control, and it is not optional: a fix that clipped every value to
+        // nothing would pass the test above perfectly. What is claimed there is
+        // that the value stays inside the panel, not that the panel went quiet.
+        //
+        // Counted against the same panel with no value at all, so what is being
+        // compared is the value and not the heading or the label beside it.
+        let ink = |value: &str| {
+            let (canvas, column) = machine_panel_with(value);
+            (column.top..column.bottom())
+                .flat_map(|y| (column.left..column.right()).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    let pixel = canvas.pixel(*x as u32, *y as u32).unwrap();
+                    pixel != color::SURFACE && pixel != color::INK && pixel != color::LINE
+                })
+                .count()
+        };
+        assert!(
+            ink("bpf") > ink(""),
+            "the value of a row that fits was not drawn at all"
+        );
     }
 
     #[test]
