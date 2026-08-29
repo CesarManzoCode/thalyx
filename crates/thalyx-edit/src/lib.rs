@@ -231,6 +231,18 @@ pub struct Substituted {
     pub lines: usize,
     /// The first line that changed, 1-based, so the check is one call away.
     pub first_line: usize,
+    /// How many times the **replacement** text was already in this file before
+    /// the call.
+    ///
+    /// Carried because of what it costs when it is not zero, and the cost is
+    /// reversibility. Substituting `A` for `B` in a file that already said `B`
+    /// cannot be taken back by substituting `B` for `A`: that second call would
+    /// also change the `B`s that were always there, and nothing in the result
+    /// would say which ones those were. It is a legitimate thing to ask for —
+    /// normalising two spellings into one is exactly this — so it is reported
+    /// rather than refused, and the caller finds out *before* it needs the
+    /// undo rather than after.
+    pub new_already: usize,
     /// Bytes on disk after the change, exact.
     pub bytes: u64,
 }
@@ -841,6 +853,10 @@ impl Text {
     /// [`Substituted`] for why that is worth a refusal.
     pub fn substitute(&mut self, old: &str, new: &str) -> Result<Substituted, EditError> {
         substitutable(old, new)?;
+        // Counted before anything moves, which is the only moment it is
+        // answerable: afterwards every occurrence of `new` this call created
+        // looks exactly like one that was always there.
+        let new_already = self.occurrences(new);
         let found = self.occurrences(old);
         if found == 0 {
             return Err(EditError::NoOccurrences {
@@ -887,6 +903,7 @@ impl Text {
             replacements,
             lines: touched,
             first_line,
+            new_already,
             bytes: self.weight(),
         })
     }

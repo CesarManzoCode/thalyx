@@ -140,7 +140,16 @@ fn rows(done: &[Substituted]) -> Value {
 }
 
 fn totals(old: &str, new: &str, done: &[Substituted]) -> Map<String, Value> {
-    fields([
+    // Said on every answer and not only when it is true, which is the rule this
+    // file already follows for `more`: a caller that has to infer a fact from a
+    // missing key is a caller that will get it wrong once, and the fact here is
+    // whether its own undo is exact.
+    let overlapping: Vec<Value> = done
+        .iter()
+        .filter(|one| one.new_already > 0)
+        .map(|one| json!(one.path.to_string_lossy()))
+        .collect();
+    let mut carried = fields([
         ("old", json!(old)),
         ("new", json!(new)),
         ("files", json!(done.len())),
@@ -148,7 +157,15 @@ fn totals(old: &str, new: &str, done: &[Substituted]) -> Map<String, Value> {
             "replacements",
             json!(done.iter().map(|one| one.replacements).sum::<usize>()),
         ),
-    ])
+        ("new_was_present", json!(!overlapping.is_empty())),
+    ]);
+    if !overlapping.is_empty() {
+        // Named, because "somewhere" is not something a caller can act on. It
+        // now knows that substituting back is not the inverse of this call, and
+        // in which files, so it can reach for the attempt instead.
+        carried.insert("new_was_present_in".into(), Value::Array(overlapping));
+    }
+    carried
 }
 
 /// What a substitution did, across every file it was given.
@@ -420,6 +437,31 @@ mod tests {
             !answer.to_string().contains("Renamed\\nno"),
             "the answer is carrying the file's text back to the caller"
         );
+    }
+
+    #[test]
+    fn a_substitution_says_whether_substituting_back_would_be_its_inverse() {
+        // The trap this closes: renaming `Slot` to `Table` in a file that
+        // already said `Table` cannot be undone by renaming `Table` to `Slot` —
+        // that second call would also move the `Table`s that were always there,
+        // and afterwards nothing could tell them apart. Reported and not
+        // refused, because normalising two spellings into one is exactly this
+        // and is a legitimate thing to ask for.
+        let mut one = text("Slot and Table\n");
+        let done = one.substitute("Slot", "Table").unwrap();
+        assert_eq!(done.new_already, 1);
+        let answer = parse(&substituted("Slot", "Table", std::slice::from_ref(&done)));
+        assert_eq!(answer["new_was_present"], true);
+        assert_eq!(answer["new_was_present_in"][0], "/tmp/notes.txt");
+
+        // And the ordinary case says so too, rather than leaving the caller to
+        // infer safety from a key that is not there.
+        let mut two = text("Slot only\n");
+        let clean = two.substitute("Slot", "Table").unwrap();
+        assert_eq!(clean.new_already, 0);
+        let answer = parse(&substituted("Slot", "Table", std::slice::from_ref(&clean)));
+        assert_eq!(answer["new_was_present"], false);
+        assert!(answer.get("new_was_present_in").is_none());
     }
 
     #[test]

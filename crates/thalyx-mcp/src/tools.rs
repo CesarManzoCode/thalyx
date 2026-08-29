@@ -384,13 +384,15 @@ with none, it answers that none is open.",
         description: "\
 Change a file. Use `substitute` for anything repeated or mechanical — a rename, \
 a changed constant, a moved import: it replaces an exact string everywhere it \
-occurs, across every file you name, in one call, and it tells you how many \
-places in each. It matches text and not symbols, so confirm the name with \
-thalyx_symbol first. The line actions are for surgical changes: `insert` puts \
-text before a line, `replace` swaps a line or a range (`3-7`), `delete` removes \
-them, `show` returns numbered lines; use \\n in the text for more than one \
-line. Nothing is written unless every named file passes, so a file the text is \
-not in refuses the whole call and changes nothing. Every answer carries its undo.",
+occurs, in one call, across every file in `paths` — which is the file list \
+thalyx_symbol just gave you. It answers with how many places in each, so you \
+do not need to read them back. It matches text and not symbols, so get the \
+name from thalyx_symbol first. The line actions are for surgical changes: \
+`insert` puts text before a line, `replace` swaps a line or a range (`3-7`), \
+`delete` removes them, `show` returns numbered lines; use \\n in the text for \
+more than one line. Nothing is written unless every named file passes: a file \
+the text is not in refuses the whole call and changes nothing. Every answer \
+carries its undo.",
         schema: || {
             json!({
                 "type": "object",
@@ -654,7 +656,13 @@ mod tests {
         // decides, so it has to name the case — repeated, mechanical, many
         // files — and it has to warn that this matches text and not symbols.
         let edit = TOOLS.iter().find(|t| t.name == "thalyx_edit").unwrap();
-        for taught in ["substitute", "mechanical", "one call", "thalyx_symbol"] {
+        for taught in [
+            "substitute",
+            "mechanical",
+            "one call",
+            "thalyx_symbol",
+            "paths",
+        ] {
             assert!(
                 edit.description.contains(taught),
                 "the edit description never mentions `{taught}`"
