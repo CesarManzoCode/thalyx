@@ -275,6 +275,115 @@ pub type Result<T> = std::result::Result<T, SandboxError>;
 ///
 /// Holding one of these is the proof that the ordering rule was followed: it
 /// cannot be constructed without the policy already having been written.
+/// Who else is inside this cgroup, counted rather than observed.
+///
+/// ## The race this closes
+///
+/// Two runs of the same module share one cgroup — it is named after the
+/// module's id — and teardown asked the kernel whether anybody else was in it:
+/// `is_empty()`, and if so, withdraw the policy and remove the directory.
+///
+/// That question cannot be answered by looking. [`Held::spawn`] returns as soon
+/// as the helper process exists, and the helper joins the cgroup several steps
+/// later, after it has unshared its namespaces. So a run that has established
+/// its confinement and started its module is **invisible in the cgroup** for a
+/// window, and the interleaving is:
+///
+/// ```text
+///   B  establish: the cgroup exists, the policy is in the kernel
+///   A  release:   is_empty() is true, because B's child has not joined yet
+///   B  spawn:     the child joins the cgroup
+///   A  revoke:    the policy for that cgroup id is withdrawn
+///   B  …runs, in a cgroup the LSM has no entry for
+/// ```
+///
+/// and the LSM fails **open** for a cgroup it has no entry for — it has to, or
+/// every process on the machine would be denied everything. So B's module runs
+/// unconfined, holding a confirmation the human gave for a confined run, and
+/// nothing anywhere says so.
+///
+/// ## Why counting is the whole fix
+///
+/// Inside the image there is one Thalyx and modules are its children, so two
+/// concurrent runs are two callers in **one process**. A count of live
+/// confinements per cgroup is therefore exact where `is_empty()` is a guess,
+/// and it is exact from the instant `establish` returns rather than from
+/// whenever a child gets scheduled.
+///
+/// The emptiness check stays, and stays as an `and`: a count that reached zero
+/// while the cgroup still holds a process is a module that outlived its
+/// confinement, and withdrawing the policy from under it would be the same
+/// failure by a different route. Rule 9 — the cautious answer.
+///
+/// This is not a lock and serialises nothing. It is a refcount, and what it
+/// guards is the decision to revoke.
+static OWNERS: std::sync::Mutex<Option<std::collections::BTreeMap<PathBuf, usize>>> =
+    std::sync::Mutex::new(None);
+
+/// One live confinement's claim on a cgroup.
+#[derive(Debug)]
+struct Owner {
+    of: PathBuf,
+    /// Whether the claim has already been given up. Without it, a `Held` that
+    /// released and was then dropped would decrement twice, and the count would
+    /// go under — which in this direction means "nobody is here" about a cgroup
+    /// somebody is in.
+    given_up: bool,
+}
+
+impl Owner {
+    fn take(of: &Path) -> Self {
+        let mut owners = OWNERS.lock().unwrap_or_else(|held| held.into_inner());
+        *owners
+            .get_or_insert_with(Default::default)
+            .entry(of.to_path_buf())
+            .or_insert(0) += 1;
+        Self {
+            of: of.to_path_buf(),
+            given_up: false,
+        }
+    }
+
+    /// Give the claim up, and say whether it was the last one.
+    fn was_the_last(&mut self) -> bool {
+        if self.given_up {
+            return false;
+        }
+        self.given_up = true;
+        let mut owners = OWNERS.lock().unwrap_or_else(|held| held.into_inner());
+        let Some(counts) = owners.as_mut() else {
+            return false;
+        };
+        match counts.get_mut(&self.of) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            Some(_) => {
+                counts.remove(&self.of);
+                true
+            }
+            // Cannot happen: a claim exists only while its entry does. Answered
+            // `false` rather than `true` so that the impossible case does not
+            // withdraw somebody's policy.
+            None => false,
+        }
+    }
+}
+
+impl Drop for Owner {
+    /// A confinement dropped without being released still gives its claim back.
+    ///
+    /// Otherwise a run that failed between `establish` and `release` would
+    /// leave a claim behind forever, and every later run of that module would
+    /// be told somebody else is still inside — a cgroup and a policy that never
+    /// go away, which is the failure this counter exists to prevent, arrived at
+    /// from the other side.
+    fn drop(&mut self) {
+        self.was_the_last();
+    }
+}
+
 pub struct Confinement<'a> {
     held: Held,
     policy_store: &'a dyn PolicyStore,
@@ -299,6 +408,8 @@ pub struct Confinement<'a> {
 /// kernel gives that inode to next. Whoever holds one owns that release.
 pub struct Held {
     cgroup: Cgroup,
+    /// This confinement's claim on the cgroup. See [`Owner`].
+    owner: Owner,
     cgroup_id: u64,
     applied: thalyx_permd::Policy,
     profile: Profile,
@@ -418,6 +529,11 @@ impl<'a> Confinement<'a> {
 
         Ok(Self {
             held: Held {
+                // Claimed **after** everything that can fail, and before this
+                // value is handed to anybody. A claim taken earlier would have
+                // to be given back on each of the error paths above, and one of
+                // them would eventually be forgotten.
+                owner: Owner::take(cgroup.path()),
                 cgroup,
                 cgroup_id,
                 applied,
@@ -572,8 +688,29 @@ impl Held {
     /// same module is running, and stripping its permissions mid-flight would
     /// deny it operations the human confirmed. Returns whether the
     /// confinement was actually torn down.
-    pub fn release(self, policy_store: &dyn PolicyStore) -> Result<bool> {
+    pub fn release(mut self, policy_store: &dyn PolicyStore) -> Result<bool> {
+        // Both, and in this order.
+        //
+        // The emptiness check answers "is a *process* still in there", which
+        // the count cannot: a module that outlived the confinement that started
+        // it is still a module the policy is protecting. It goes first because
+        // failing it must not spend the claim — this confinement is still the
+        // owner and will be asked again.
+        //
+        // The count answers "is another *run* holding this cgroup", which
+        // `is_empty()` cannot: `spawn` returns before the helper joins, so a run
+        // that has already started its module is invisible in the cgroup for a
+        // window, and a teardown that looked would find the cgroup empty and
+        // withdraw the policy out from under it.
+        //
+        // Neither check subsumes the other, and swapping them would leak: a
+        // claim given up while the cgroup is still occupied leaves a live
+        // module with no owner, and the next run of that module would then
+        // revoke its policy on the way out.
         if !self.cgroup.is_empty()? {
+            return Ok(false);
+        }
+        if !self.owner.was_the_last() {
             return Ok(false);
         }
 
@@ -764,5 +901,116 @@ mod tests {
         assert!(!confinement.release().unwrap());
         assert!(store.get(id).unwrap().is_some());
         assert!(parent.join("org.thalyx.demo").is_dir());
+    }
+
+    /// The interleaving `is_empty()` cannot see, forced by hand.
+    ///
+    /// The test above joins a pid to the cgroup first, so the emptiness check
+    /// is what saves it. This one is the case with no pid to see: `spawn`
+    /// returns as soon as the helper process exists and the helper joins the
+    /// cgroup several steps later, so a run whose module has *started* is
+    /// invisible in the cgroup for a window. A teardown that looked would find
+    /// it empty and withdraw the policy — and the LSM fails open for a cgroup
+    /// with no entry, so the other run's module would go on running unconfined,
+    /// holding a confirmation the human gave for a confined run.
+    ///
+    /// No process is created here on purpose. What is under test is the
+    /// decision, and the state that produces it is "two confinements
+    /// established, nothing in the cgroup yet" — which is exactly what a fake
+    /// can hold, and what a real machine holds for a few milliseconds every
+    /// time two runs of one module overlap. `tests/real_cgroup.rs` is where a
+    /// kernel is involved.
+    #[test]
+    fn a_run_that_has_not_joined_its_cgroup_yet_is_not_an_empty_cgroup() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = fake_hierarchy(dir.path(), "org.thalyx.demo");
+        let store = MemoryStore::new();
+
+        let establish = || {
+            Confinement::establish(
+                &store,
+                &parent,
+                "org.thalyx.demo",
+                crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
+                &[permission("net", "outbound")],
+                0,
+                0,
+            )
+            .unwrap()
+        };
+
+        let first = establish();
+        let id = first.cgroup_id();
+        let second = establish();
+        assert_eq!(second.cgroup_id(), id, "the two runs must share one cgroup");
+
+        // The cgroup is empty — neither module has been placed in it — and the
+        // first run ends. Before 2026-08-29 this withdrew the policy the second
+        // run is about to be enforced by.
+        assert!(
+            !first.release().unwrap(),
+            "the first run tore down a confinement the second one is holding"
+        );
+        assert!(
+            store.get(id).unwrap().is_some(),
+            "the policy was withdrawn while another run was inside the confinement"
+        );
+        assert!(parent.join("org.thalyx.demo").is_dir());
+
+        // And the other direction, without which a counter that never let
+        // anything go would pass: when the last run ends, it does tear down.
+        //
+        // The policy store is what is asserted on, not the return value. The
+        // fake's cgroup is a directory of ordinary files, and `rmdir` refuses
+        // one of those where the kernel accepts a cgroup with its interface
+        // files in place — so the last release withdraws the policy and then
+        // reports that it could not remove the directory. The withdrawal is the
+        // decision under test; `tests/real_cgroup.rs` is where a kernel removes
+        // anything.
+        let _ = second.release();
+        assert!(
+            store.get(id).unwrap().is_none(),
+            "the last run out did not withdraw the policy"
+        );
+    }
+
+    /// A run that fails between establishing and releasing gives its claim back.
+    ///
+    /// The failure the counter could introduce, tested because introducing it
+    /// would be worse than the race it closes: a claim left behind is a cgroup
+    /// and a policy that never go away, and every later run of that module told
+    /// that somebody else is still inside.
+    #[test]
+    fn a_confinement_dropped_without_being_released_stops_holding_its_cgroup() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = fake_hierarchy(dir.path(), "org.thalyx.other");
+        let store = MemoryStore::new();
+
+        let establish = || {
+            Confinement::establish(
+                &store,
+                &parent,
+                "org.thalyx.other",
+                crate::profile::resolve(crate::profile::DIAGNOSTIC).unwrap(),
+                &[permission("net", "outbound")],
+                0,
+                0,
+            )
+            .unwrap()
+        };
+
+        let abandoned = establish();
+        let id = abandoned.cgroup_id();
+        drop(abandoned);
+
+        let carried_on = establish();
+        // As above: the removal is the fake's limit and the withdrawal is the
+        // property. A claim left behind by the dropped confinement would stop
+        // this run withdrawing anything at all.
+        let _ = carried_on.release();
+        assert!(
+            store.get(id).unwrap().is_none(),
+            "a claim left behind by a dropped confinement blocked the teardown forever"
+        );
     }
 }

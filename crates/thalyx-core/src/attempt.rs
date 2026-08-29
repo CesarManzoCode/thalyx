@@ -44,6 +44,30 @@
 //!    snapshot is gone the honest answer is that this attempt can no longer be
 //!    abandoned — and the record stays, because a caller told "done" would go on
 //!    believing the tree was returned.
+//! 5. **Each of the three is one transition, under the global lock.** Added
+//!    2026-08-28, when an audit pointed out that rule 1 was checked and not
+//!    enforced. `begin` read the record, took a snapshot and wrote the record,
+//!    with nothing between the read and the write to stop a second client doing
+//!    the same — so two clients arriving together both saw "nothing is open",
+//!    both snapshotted, and the second overwrote the first's record. The first
+//!    attempt's snapshot then existed with nothing naming it: unabandonable,
+//!    and invisible except as disk that never comes back. `keep` and `abandon`
+//!    had the mirror of it — two clients planning against the same attempt and
+//!    both carrying it out, restoring one snapshot twice.
+//!
+//!    The lock is [`Store::lock`], the same `flock` every other multi-file
+//!    contract in this crate takes; there is no second locking scheme here.
+//!    Because `flock` attaches to an open file description and is therefore not
+//!    reentrant, [`crate::restore::apply_holding_the_lock`] exists so that
+//!    `abandon` can restore without waiting for itself.
+//!
+//!    And the record is published the way every other state file in this crate
+//!    is: written to a unique temporary in the same directory, `fsync`ed,
+//!    `rename`d over, and the directory `fsync`ed after. `std::fs::write`,
+//!    which is what this used, can leave a half-written `attempt.json` after a
+//!    crash — which rule 2 turns into "there is an attempt and it cannot be
+//!    read", correctly but permanently: the machine can no longer begin an
+//!    attempt and no longer abandon the one it thinks it has.
 
 use crate::store::Store;
 use crate::{CoreError, Result};
@@ -82,6 +106,18 @@ pub enum AttemptError {
 
     #[error("the snapshot `{0}` this attempt goes back to is not there, so it cannot be abandoned")]
     SnapshotGone(String),
+
+    /// The attempt this call was planned against is no longer the one on
+    /// record. Somebody else settled it between the plan and the carrying out.
+    ///
+    /// Reported rather than carried out anyway, which would restore a snapshot
+    /// a second time — over a tree that the first abandon had already returned
+    /// and that somebody may have started working in again.
+    #[error(
+        "the attempt this was planned against has been settled already; \
+         the one on record now is `{0}`"
+    )]
+    Superseded(String),
 }
 
 /// Where the open attempt is written down.
@@ -114,19 +150,38 @@ pub fn open(store: &Store) -> Result<Option<Open>> {
     }
 }
 
+/// Write the record atomically and durably.
+///
+/// [`crate::keystore::save_json`] and not `std::fs::write`, which is what this
+/// was: a crash in the middle of that leaves a file that is half of one record
+/// and half of another, and rule 2 above then reports — correctly — that there
+/// is an attempt on record and it cannot be read. Correctly and permanently:
+/// nothing can begin an attempt after that, and nothing can abandon the one the
+/// machine believes it has. This is the primitive holding a promise of
+/// recovery, so it gets the same publication every other state file here gets.
 fn write(store: &Store, attempt: &Open) -> Result<()> {
-    let file = path(store);
-    let raw = serde_json::to_string_pretty(attempt).expect("an attempt serialises");
-    std::fs::write(&file, raw).map_err(|error| CoreError::io(&file, error))
+    crate::keystore::save_json(&path(store), attempt)
 }
 
+/// Forget the record, and make the forgetting survive a power cut.
+///
+/// The `fsync` of the directory is the same half `write_durably` does after its
+/// rename, and it matters in the same way: without it the unlink is atomic with
+/// respect to readers and not with respect to power, so a machine could come
+/// back up believing an attempt is open over a snapshot that was already let
+/// go — and rule 4 would then refuse every abandon for a reason that is not
+/// true any more.
 fn clear(store: &Store) -> Result<()> {
     let file = path(store);
     match std::fs::remove_file(&file) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(CoreError::io(&file, error)),
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(CoreError::io(&file, error)),
     }
+    let parent = store.state_root();
+    let dir = std::fs::File::open(&parent).map_err(|error| CoreError::io(&parent, error))?;
+    dir.sync_all()
+        .map_err(|error| CoreError::io(&parent, error))
 }
 
 fn journal_entry(operation: &str, outcome: Outcome, attempt: &Open, notes: Vec<String>) -> Entry {
@@ -148,12 +203,20 @@ fn journal_entry(operation: &str, outcome: Outcome, attempt: &Open, notes: Vec<S
 /// The snapshot is taken **before** the record is written. The other order would
 /// leave, on an interruption, a record naming a snapshot that does not exist —
 /// an attempt that cannot be abandoned and says nothing about why.
+///
+/// All three steps — read the record, take the snapshot, write the record — are
+/// under the global lock, which is rule 5. Checking that nothing is open and
+/// then writing as if that were still true is not a check, and the two clients
+/// it lets through do not collide noisily: the second one's record wins and the
+/// first one's snapshot is left with nothing naming it.
 pub fn begin<V: Volumes>(
     store: &Store,
     snapshots: &Snapshots<V>,
     label: &str,
     request_id: &str,
 ) -> Result<Open> {
+    let _lock = store.lock()?;
+
     if let Some(already) = open(store)? {
         return Err(CoreError::Attempt(AttemptError::AlreadyOpen(already.label)));
     }
@@ -185,6 +248,8 @@ pub fn begin<V: Volumes>(
 /// and `abandon` does. What it costs is the ability to change one's mind, and
 /// that is said rather than assumed.
 pub fn keep<V: Volumes>(store: &Store, snapshots: &Snapshots<V>, request_id: &str) -> Result<Open> {
+    let _lock = store.lock()?;
+
     let attempt = open(store)?.ok_or(CoreError::Attempt(AttemptError::NoneOpen))?;
 
     // The record is cleared even if the snapshot could not be deleted, and that
@@ -240,7 +305,29 @@ pub fn abandon<V: Volumes>(
     plan: &crate::restore::Plan,
     request_id: &str,
 ) -> Result<Restored> {
-    let restored = crate::restore::apply(store, snapshots, plan, request_id)?;
+    // One transition: check the record, restore, clear the record. The plan and
+    // the confirmation were made outside this lock — they have to be, because
+    // the confirmation is a person at a terminal and holding the machine's
+    // global lock while somebody reads a question is how a machine stops
+    // answering. So what could have changed in between is re-read here.
+    let lock = store.lock()?;
+
+    // Rule 4's neighbour, and the reason `Superseded` exists. Two clients that
+    // both planned against the same attempt would otherwise both carry it out:
+    // the second restore lands on a tree the first one already returned, and
+    // silently deletes whatever was written in it since.
+    match open(store)? {
+        None => return Err(CoreError::Attempt(AttemptError::NoneOpen)),
+        Some(on_record) if &on_record != attempt => {
+            return Err(CoreError::Attempt(AttemptError::Superseded(
+                on_record.label,
+            )));
+        }
+        Some(_) => {}
+    }
+
+    let restored =
+        crate::restore::apply_holding_the_lock(store, snapshots, plan, request_id, &lock)?;
 
     // Only now. An abandon that failed leaves the attempt open on purpose — a
     // caller told the attempt was settled would go on believing the tree was
@@ -298,6 +385,213 @@ mod tests {
 
     fn snapshots_of(tree: &Path) -> Snapshots<Directories> {
         Snapshots::of(Directories, tree)
+    }
+
+    /// Two clients arriving at the same moment, on one real store.
+    ///
+    /// Threads and not a mock, because the thing under test is `flock`, and a
+    /// mock of `flock` would be a mock that grants the property it is meant to
+    /// prove — rule 8.
+    ///
+    /// `Concurrencia.md` warns that a thread is the wrong instrument for a
+    /// `flock` test, and it is right about the case it is describing: a thread
+    /// that *shares* an open file description is let straight through. That is
+    /// not this. Each thread here calls `Store::open` and then `Store::lock`,
+    /// and `lock` opens `state/lock` itself — two descriptions, which is what
+    /// two processes have. The falsification is on record: with the lock taken
+    /// out of `begin`, this test fails every run.
+    ///
+    /// The barrier is what makes it a race rather than a sequence. Without it
+    /// the first thread finishes before the second starts and the test passes
+    /// on a machine where the bug is still there.
+    #[test]
+    fn two_clients_beginning_at_the_same_moment_open_exactly_one_attempt() {
+        use std::sync::{Arc, Barrier};
+
+        let (_base, store, tree) = a_machine();
+        let root = store.root().to_path_buf();
+        let both = Arc::new(Barrier::new(2));
+
+        let outcomes: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|label| {
+                let (root, tree, both) = (root.clone(), tree.clone(), Arc::clone(&both));
+                std::thread::spawn(move || {
+                    let store = Store::open(root).expect("a store");
+                    let snapshots = snapshots_of(&tree);
+                    both.wait();
+                    begin(&store, &snapshots, label, label).map(|open| open.label)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("no panic"))
+            .collect();
+
+        let won: Vec<_> = outcomes.iter().filter(|result| result.is_ok()).collect();
+        assert_eq!(won.len(), 1, "both clients opened an attempt: {outcomes:?}");
+        assert!(
+            outcomes.iter().any(|result| matches!(
+                result,
+                Err(CoreError::Attempt(AttemptError::AlreadyOpen(_)))
+            )),
+            "the loser was told something other than that an attempt is open: {outcomes:?}"
+        );
+
+        // And the half that a "one of them failed" assertion would miss: the
+        // record on disk names the winner, and there is exactly one snapshot.
+        // Two clients that both snapshotted and one of whose records was
+        // overwritten leave a snapshot nothing can ever abandon.
+        let on_record = open(&store).unwrap().expect("an attempt is open");
+        assert_eq!(
+            Some(&on_record.label),
+            won[0].as_ref().ok(),
+            "the record does not name the client that won"
+        );
+        let snapshots = snapshots_of(&tree);
+        assert_eq!(
+            snapshots.list().unwrap().len(),
+            1,
+            "a snapshot was taken by a client that did not get to record it"
+        );
+    }
+
+    /// The mirror of it: two clients that both planned against the same attempt.
+    ///
+    /// The plan and the confirmation happen outside the lock on purpose — the
+    /// confirmation is a person reading a question — so this is the window that
+    /// cannot be closed by holding the lock longer, and has to be closed by
+    /// re-reading the record inside it. Carrying both out would restore the
+    /// same snapshot twice, the second time over a tree the first abandon had
+    /// already returned and that somebody may have written in since.
+    #[test]
+    fn two_clients_abandoning_the_same_attempt_carry_it_out_once() {
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+
+        let opened = begin(&store, &snapshots, "refactor", "r1").unwrap();
+        std::fs::write(tree.join("after.txt"), "made during the attempt").unwrap();
+
+        // Both plans are made while the attempt is open, which is what two
+        // clients that each asked "what would this cost" would hold.
+        let (first, first_plan) = what_abandoning_costs(&store, &snapshots).unwrap();
+        let (second, second_plan) = what_abandoning_costs(&store, &snapshots).unwrap();
+        assert_eq!(first, opened);
+        assert_eq!(second, opened);
+
+        abandon(&store, &snapshots, &first, &first_plan, "r2").unwrap();
+        assert!(
+            !tree.join("after.txt").exists(),
+            "the first abandon did nothing"
+        );
+
+        // Somebody starts working again in the returned tree.
+        std::fs::write(tree.join("after.txt"), "written after the abandon").unwrap();
+
+        let twice = abandon(&store, &snapshots, &second, &second_plan, "r3");
+        assert!(
+            matches!(twice, Err(CoreError::Attempt(AttemptError::NoneOpen))),
+            "a second abandon of a settled attempt was carried out: {twice:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join("after.txt")).unwrap(),
+            "written after the abandon",
+            "the second abandon deleted work done after the first one finished"
+        );
+    }
+
+    /// And the same window with a *different* attempt on record, which is the
+    /// case `NoneOpen` cannot catch: begin, abandon, begin again, and the stale
+    /// plan from the first one arrives.
+    #[test]
+    fn an_abandon_planned_against_a_settled_attempt_does_not_hit_the_next_one() {
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+
+        let first = begin(&store, &snapshots, "one", "r1").unwrap();
+        let (stale, stale_plan) = what_abandoning_costs(&store, &snapshots).unwrap();
+        assert_eq!(stale, first);
+        keep(&store, &snapshots, "r2").unwrap();
+
+        begin(&store, &snapshots, "two", "r3").unwrap();
+        std::fs::write(tree.join("during the second.txt"), "work").unwrap();
+
+        let wrong = abandon(&store, &snapshots, &stale, &stale_plan, "r4");
+        assert!(
+            matches!(wrong, Err(CoreError::Attempt(AttemptError::Superseded(ref label))) if label == "two"),
+            "a stale plan reached the attempt that came after it: {wrong:?}"
+        );
+        assert!(
+            tree.join("during the second.txt").exists(),
+            "the second attempt's work was undone by the first attempt's plan"
+        );
+    }
+
+    /// A record left half-written by a crash.
+    ///
+    /// Rule 2 already said this must never read as "nothing is open", and it
+    /// did not. What this adds is the other half: that the machine cannot then
+    /// begin a *new* attempt on top of it either. An unreadable record is a
+    /// snapshot that exists with a name nothing can produce, and beginning over
+    /// it would strand it for good.
+    #[test]
+    fn a_half_written_record_stops_everything_rather_than_reading_as_nothing() {
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+
+        begin(&store, &snapshots, "refactor", "r1").unwrap();
+        let file = path(&store);
+        let whole = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, &whole[..whole.len() / 2]).unwrap();
+
+        assert!(matches!(
+            open(&store),
+            Err(CoreError::Attempt(AttemptError::Unreadable(_)))
+        ));
+        assert!(
+            matches!(
+                begin(&store, &snapshots, "another", "r2"),
+                Err(CoreError::Attempt(AttemptError::Unreadable(_)))
+            ),
+            "a new attempt was opened over a record nobody could read"
+        );
+        assert!(matches!(
+            keep(&store, &snapshots, "r3"),
+            Err(CoreError::Attempt(AttemptError::Unreadable(_)))
+        ));
+    }
+
+    /// That the record is published rather than written in place.
+    ///
+    /// This does not prove durability against a power cut — nothing in a test
+    /// process can, and a mock that claimed to would be the fake rule 8 forbids.
+    /// What it proves is the mechanism that durability rests on: the bytes go
+    /// to a temporary in the same directory and arrive under the real name by
+    /// `rename`, so the only two states a reader can see are the old record and
+    /// the new one. The `fsync`s are `keystore::write_durably`'s and are tested
+    /// where they live.
+    #[test]
+    fn the_record_is_published_and_never_written_in_place() {
+        let (_base, store, tree) = a_machine();
+        let snapshots = snapshots_of(&tree);
+
+        begin(&store, &snapshots, "refactor", "r1").unwrap();
+
+        let leftovers: Vec<_> = std::fs::read_dir(store.state_root())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the temporary the record was staged in is still there: {leftovers:?}"
+        );
+
+        // And the record that landed is whole, which is the property the
+        // temporary buys: `std::fs::write` truncates first, so a reader between
+        // the truncate and the write finds a file that parses as nothing.
+        assert!(open(&store).unwrap().is_some());
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod attempt;
 mod bridge;
 mod catalogue;
 mod changes;
+mod confine;
 mod dev;
 mod edit;
 mod enforce;

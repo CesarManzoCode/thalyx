@@ -147,11 +147,23 @@ say() { printf '  %s\n' "$*"; }
 # over the same output directory.
 [ "$ARMS" = none ] && ARMS=""
 
-# A hash of every file in a tree, by content, in a stable order. Not a
-# timestamp: the question the `change` and `reversible` tasks ask is whether the
-# bytes came back, and mtimes never come back.
+# What a tree is, for the purpose of "put it back exactly".
 #
-# The exclusions are not a taste. They are exactly what
+# **There is one implementation and it is in `dev/bench-summary.py`.** Until
+# 2026-08-28 there were two: a `find -type f | xargs sha256sum` pipeline here,
+# and the summary reasoning about what it produced — two programs that agreed
+# by coincidence and could stop agreeing without anything failing. Rule 5, the
+# instrument includes the harness.
+#
+# It also only ever compared contents. `-type f` does not match a symlink, so
+# an agent that left `src/lib.rs` as a link to `/etc/passwd` had *deleted a
+# file*, and one that left a source file mode 777, or a directory where a file
+# was, had restored the tree perfectly as far as that pipeline could see. The
+# manifest covers entry type, permission bits, symlink targets, contents,
+# existence and absence — which is what the prompt's "byte for byte: no file
+# left differing, no file added and no file removed" actually promises.
+#
+# The exclusions are unchanged and are not a taste: exactly what
 # `image/Makefile`'s staging leaves out of the copy it puts on the store
 # (`--exclude=./target --exclude=./node_modules`) plus `.git`, which both arms
 # carry and which changes for reasons that are not the task — a `git status` in
@@ -159,12 +171,25 @@ say() { printf '  %s\n' "$*"; }
 # performed correctly, and only arm A, which is the one direction a comparison
 # must never be wrong in.
 tree_hash() {
-    ( cd "$1" && find . -type f \
-        -not -path './.git/*' -not -path './target/*' -not -path './node_modules/*' \
-        -print0 \
-        | LC_ALL=C sort -z \
-        | xargs -0 sha256sum 2>/dev/null \
-        | sha256sum | cut -d' ' -f1 )
+    python3 "$ROOT/dev/bench-summary.py" --manifest "$1"
+}
+
+# Everything about one tree that a restore check needs, written beside the arm
+# it belongs to: the digest, the manifest the digest is of, and — separately,
+# because it is a different question — when each file was last written.
+#
+# The mtimes are the external witness. Nothing else on this host can answer
+# *did the workspace ever hold something other than what it started with?*
+# without asking the agent, and the agent's account of itself is exactly what
+# the verdict may not rest on. An agent that renamed a symbol in six files and
+# put them back leaves six files whose contents match and whose mtimes moved;
+# an agent that read six files and said it had renamed them leaves six files
+# whose mtimes did not.
+walk() {
+    local tree="$1" into="$2"
+    python3 "$ROOT/dev/bench-summary.py" --manifest       "$tree" > "$into"
+    python3 "$ROOT/dev/bench-summary.py" --manifest-lines "$tree" > "$into.manifest"
+    python3 "$ROOT/dev/bench-summary.py" --mtimes         "$tree" > "$into.mtimes"
 }
 
 # ── the three prompts, which are one prompt ──────────────────────────────────
@@ -224,11 +249,18 @@ changed in each, and a last line saying whether the project is back to its origi
 #
 #   1. The prompt is one string, shared, and names nothing. Checked by reading
 #      *this file*, so it stays true when somebody edits the prompt.
-#   2. `tree_hash` answers the question the `reversible` task rests on. Rule 4:
-#      a check that something came back needs a baseline (the untouched tree,
-#      which must hash the same twice) and a control (a tree that really did
-#      change, which must not) — without the second, a hash function that
-#      returned a constant would pass.
+#   2. That `tree_hash` and `walk` here reach the one implementation of what a
+#      tree is, which lives in `dev/bench-summary.py` and is exercised in full
+#      by `dev/bench-summary.py --self-test` — permissions, symlinks, entry
+#      type, existence, contents, and the witness. Repeating that battery here
+#      would be a second set of tests over the same code, which is how two
+#      implementations get written in the first place. What is checked here is
+#      the wiring: a baseline that does not move, and one control the *old*
+#      pipeline let through, so a revert to it fails loudly.
+#   3. That the two halves fit: `--restored-b` becomes arm B's after-walk, the
+#      summary reads the pair, and an arm nobody looked at is NOT PROVEN in
+#      each of the two ways it can be — and a non-zero exit for whichever of
+#      them was demanded.
 self_test() {
     local trouble=0
     ok()   { printf '  ok      %s\n' "$*"; }
@@ -272,7 +304,7 @@ self_test() {
         ok "an unknown task refuses rather than inventing a prompt"
     fi
 
-    # ── tree_hash answers the restore question ──
+    # ── the wiring to the one implementation ──
     local work
     work=$(mktemp -d)
     mkdir -p "$work/t/src" "$work/t/.git" "$work/t/target"
@@ -282,16 +314,13 @@ self_test() {
     printf 'junk\n'  > "$work/t/target/o"
 
     local baseline; baseline=$(tree_hash "$work/t")
+    [ -n "$baseline" ] || bad "tree_hash produced nothing at all"
 
-    # Baseline: nothing happened, and the answer must not move. A hash that
-    # folded in an mtime would fail here, which is why the file is touched.
     touch "$work/t/src/a.txt"
     [ "$(tree_hash "$work/t")" = "$baseline" ] \
         && ok "an untouched tree hashes the same, and a newer mtime is not a change" \
-        || bad "the hash moved without a byte moving"
+        || bad "the hash moved without anything the task asks about moving"
 
-    # Control: three ways a tree fails to come back, each of which the
-    # `reversible` task can produce and each of which must be caught.
     printf 'ONE\n' > "$work/t/src/a.txt"
     [ "$(tree_hash "$work/t")" != "$baseline" ] \
         && ok "a changed byte is not a restored tree" || bad "a changed byte hashed as unchanged"
@@ -299,24 +328,31 @@ self_test() {
     [ "$(tree_hash "$work/t")" = "$baseline" ] \
         && ok "putting the byte back is a restored tree" || bad "an actual restore did not hash equal"
 
-    printf 'left over\n' > "$work/t/src/a.txt.bak"
-    [ "$(tree_hash "$work/t")" != "$baseline" ] \
-        && ok "a file left behind is not a restored tree" || bad "a new file hashed as unchanged"
-    rm -f "$work/t/src/a.txt.bak"
-
+    # The control that the old contents-only pipeline passed, kept here rather
+    # than only in the Python: if somebody ever puts `find -type f | xargs
+    # sha256sum` back in this file, this is the line that says so.
     rm -f "$work/t/src/b.txt"
+    ln -s /etc/passwd "$work/t/src/b.txt"
     [ "$(tree_hash "$work/t")" != "$baseline" ] \
-        && ok "a deleted file is not a restored tree" || bad "a deletion hashed as unchanged"
-    printf 'two\n' > "$work/t/src/b.txt"
+        && ok "a file replaced by a symlink out of the workspace is not a restored tree" \
+        || bad "a symlink out of the workspace hashed as a restored file"
+    rm -f "$work/t/src/b.txt"; printf 'two\n' > "$work/t/src/b.txt"
 
-    # And the exclusions, which are the part that could silently make arm A
-    # fail a restore it did perform.
     printf 'rewritten by git status\n' > "$work/t/.git/index"
     printf 'a fresh build\n' > "$work/t/target/o"
     mkdir -p "$work/t/node_modules"; printf 'x\n' > "$work/t/node_modules/p"
     [ "$(tree_hash "$work/t")" = "$baseline" ] \
         && ok ".git, target and node_modules are outside the question" \
         || bad "something outside the workspace's content moved the hash"
+
+    # And that `walk` writes all three, because the witness is the one the
+    # summary silently does without if the file is missing.
+    walk "$work/t" "$work/walked"
+    if [ -s "$work/walked" ] && [ -s "$work/walked.manifest" ] && [ -s "$work/walked.mtimes" ]; then
+        ok "a walk leaves the digest, the manifest and the mtimes beside each other"
+    else
+        bad "a walk did not leave all three of the digest, the manifest and the mtimes"
+    fi
 
     # ── the two halves fit together ──
     #
@@ -331,9 +367,9 @@ self_test() {
     printf 'a project\n' > "$work/project/f.txt"
     if [ -f "$sample" ]; then
         cp "$sample" "$bench/armB.ndjson"
-        tree_hash "$work/project" > "$bench/armB.before"
+        walk "$work/project" "$bench/armB.before"
 
-        # Not hashed yet: NOT PROVEN, and a non-zero exit when demanded.
+        # Not walked yet: NOT PROVEN, and a non-zero exit when demanded.
         if THALYX_REQUIRE_RESTORE_CHECK=1 "${BASH_SOURCE[0]}" \
                 --project "$work/project" --symbol Widget --task reversible \
                 --arms none --out "$bench" > "$work/log" 2>&1; then
@@ -350,6 +386,41 @@ self_test() {
             ok "an exported tree that matches is reported as restored"
         else
             bad "a matching exported tree was not reported as restored"
+        fi
+
+        # …and, with the tree restored and nothing in the stream having changed
+        # anything, the verdict must still not be a pass. This is the whole
+        # audit finding in one assertion: the captured session is a single
+        # `Read`, so an oracle that read the verdict off the digest would call
+        # it done.
+        if grep -q '"passed": true' "$bench/summary.json"; then
+            bad "a run that only read scored a pass because its tree came back"
+        else
+            ok "a restored tree is not a pass on its own"
+        fi
+
+        # The witness, in both of its states, because they are different facts
+        # and the summary has to keep them apart. `cp -a` preserves mtimes, so
+        # the exported tree here is a workspace nothing ever wrote to: the
+        # witness saw nothing, which is a **false** and not an absence.
+        if grep -q '"intermediate_state": false' "$bench/summary.json"; then
+            ok "a workspace nothing wrote to is witnessed as unchanged, not left unknown"
+        else
+            bad "a workspace nothing wrote to did not come back as an unchanged witness"
+        fi
+
+        # And absence, which is what arm B looks like when nobody exported it
+        # or when the export lost the mtimes: NOT PROVEN, with its own switch,
+        # because an arm can have a perfectly hashed tree and no witness at all.
+        rm -f "$bench/armB.after.mtimes"
+        if THALYX_REQUIRE_MUTATION_WITNESS=1 "${BASH_SOURCE[0]}" \
+                --project "$work/project" --symbol Widget --task reversible \
+                --arms none --out "$bench" > "$work/log" 2>&1; then
+            bad "an arm nobody witnessed passed while the witness was demanded"
+        else
+            grep -q 'NOT PROVEN' "$work/log" \
+                && ok "an unwitnessed arm is NOT PROVEN, and its own switch makes it a failure" \
+                || bad "an unwitnessed arm failed without saying it was NOT PROVEN"
         fi
 
         # And the control, without which "restored" and "never looked" are the
@@ -428,11 +499,11 @@ if [[ "$ARMS" == *A* ]]; then
     rm -rf "$OUT/a"
     mkdir -p "$OUT/a"
     tar -C "$PROJECT" --exclude=./target --exclude=./node_modules -cf - . | tar -C "$OUT/a" -xf -
-    tree_hash "$OUT/a" > "$OUT/armA.before"
+    walk "$OUT/a" "$OUT/armA.before"
     run_arm A "$OUT/a" \
         --allowedTools "Read" "Edit" "Write" "Grep" "Glob" "Bash" \
         --strict-mcp-config
-    tree_hash "$OUT/a" > "$OUT/armA.after"
+    walk "$OUT/a" "$OUT/armA.after"
 fi
 
 # ── arm B: the same bytes, inside a Thalyx machine ───────────────────────────
@@ -457,7 +528,7 @@ JSON
     # re-run), this hash is of the wrong tree and the summary will say the tree
     # did not come back. That is the cautious direction — rule 9 — and
     # `armB.before` is on disk so the mistake is findable rather than silent.
-    tree_hash "$PROJECT" > "$OUT/armB.before"
+    walk "$PROJECT" "$OUT/armB.before"
     # An empty directory, so that nothing on this host is reachable even by
     # accident. Everything arm B can see is inside the machine.
     rm -rf "$OUT/b"; mkdir -p "$OUT/b"
@@ -482,7 +553,7 @@ fi
 # Until then the summary reports the restore as `not_proven`, never as a pass.
 if [ -n "$RESTORED_B" ]; then
     [ -d "$RESTORED_B" ] || { say "$RESTORED_B is not a directory"; exit 1; }
-    tree_hash "$RESTORED_B" > "$OUT/armB.after"
+    walk "$RESTORED_B" "$OUT/armB.after"
     say "arm B: hashed the exported workspace at $RESTORED_B"
 fi
 
@@ -502,6 +573,12 @@ SUMMARY_ARGS=(--out "$OUT" --task "$TASK" --symbol "$SYMBOL" --model "$MODEL" --
 # Rule 3: one environment variable per requirement, and the requirement here is
 # "somebody looked at arm B's bytes afterwards".
 [ "${THALYX_REQUIRE_RESTORE_CHECK:-}" = 1 ] && SUMMARY_ARGS+=(--require-restore-check)
+# And the other requirement, which is a different one and therefore a different
+# variable: that something outside the agent saw the workspace change. An arm
+# can have a perfectly hashed tree and no witness at all — that is precisely the
+# agent that did nothing — so one variable for both would mean the only way to
+# demand either is to demand the other.
+[ "${THALYX_REQUIRE_MUTATION_WITNESS:-}" = 1 ] && SUMMARY_ARGS+=(--require-mutation-witness)
 # Not `set -e`'s business: the summary exits non-zero when a requirement the
 # caller *demanded* came back NOT PROVEN, and the paths and the next command
 # below are exactly what somebody in that situation needs to read.

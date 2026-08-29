@@ -263,8 +263,8 @@ Cuatro cosas la mantienen honesta:
    —en los dos brazos— es compilar y correr pruebas, porque el brazo B no tiene
    shell y no podría: dejarlo habría medido `cargo` en una columna y nada en la
    otra.
-4. **"Restaurado" se comprueba desde afuera**, con `sha256` sobre el árbol
-   entero, no preguntándole a la máquina que hizo la afirmación.
+4. **"Restaurado" se comprueba desde afuera**, con un digest del árbol entero,
+   no preguntándole a la máquina que hizo la afirmación.
 
 ### La trampa que esa tarea trae adentro
 
@@ -273,11 +273,78 @@ del hash solo pondría a un agente que se rehusó por encima de todos los que lo
 intentaron — y lo pondría más alto en el brazo B, que es la dirección en la que
 esta comparación no puede equivocarse nunca.
 
-Por eso `reversible.passed` es una conjunción, y cada parte viene de un
-instrumento distinto: **cambió de verdad** (el nombre nuevo apareció en alguna
-llamada, según el stream del propio agente), **restauró** (los bytes, según el
-anfitrión), y **contestó bien** (nombró los archivos que la verdad conocida
-exige, `--expect-file`). Si alguna se desconoce, no hay veredicto: no es `false`.
+### Revisión — 2026-08-28: el oráculo daba tres falsos positivos
+
+Lo escrito arriba era la intención. Lo implementado no la cumplía, y una
+auditoría lo encontró antes de que se gastara una sola corrida pagada, que es
+el único motivo por el que esto es una revisión y no una retractación.
+
+`reversible.passed` era una conjunción de tres cosas, y la segunda —**cambió de
+verdad**— se leía como *"el nombre nuevo apareció en alguna llamada"*. Tres
+corridas que no cambiaron nada la satisfacían:
+
+- `Grep {"pattern": "UidRegistryRenamed"}` nombra el nombre nuevo y es lectura;
+- un `Edit` cuyo `old_string` no coincidió con nada nombra el nombre nuevo,
+  vuelve con `is_error` y el espacio de trabajo nunca tuvo el nombre nuevo ni
+  por un instante;
+- y el `result` del propio agente podía traer `is_error: true` —una corrida
+  muerta en su límite de turnos— sin que el veredicto lo mirara.
+
+Además el digest era `find -type f | xargs sha256sum`, o sea **contenido y nada
+más**, mientras el prompt promete *byte por byte, ningún archivo agregado ni
+quitado*. `-type f` no empareja un symlink: un agente que dejara `src/lib.rs`
+como enlace a `/etc/passwd` había *borrado un archivo*, y uno que dejara un
+fuente en modo 777, o un directorio donde había un archivo, restauraba el árbol
+perfecto según esa tubería.
+
+**Lo que exige ahora**, cinco propiedades y cada una de un instrumento distinto:
+
+| | Propiedad | De dónde sale |
+|---|---|---|
+| A | `mutation_attempted` — hubo una llamada que sólo puede mutar, que nombra el nombre nuevo, **y cuyo resultado volvió sin error** | el stream, pero de la respuesta de la herramienta, no del pedido del modelo |
+| B | `intermediate_state` — el espacio de trabajo realmente tuvo otra cosa un rato | **fuera del agente**: los mtimes del anfitrión antes y después, o el contador `mutations` de `thalyx-mcp --metrics` |
+| C | `completed_normally` — el `result` de la corrida no dijo `is_error` | el evento final del agente |
+| D | `task_success` — la respuesta nombró los archivos que la verdad conocida exige | `--expect-file` |
+| E | `restored` — el digest volvió | el anfitrión |
+
+**Ningún texto del propio agente prueba que modificó algo.** Ésa es la regla, y
+B es la que la sostiene: es la única evidencia que no pasa por lo que el agente
+dice de sí mismo. Para el brazo A son dos recorridas de mtimes del mismo
+directorio —una antes de arrancar, otra al terminar— que no cuestan nada
+durante la corrida y por lo tanto no rompen la comparabilidad. Para el brazo B
+el espacio de trabajo vive adentro de la VM y el anfitrión no puede recorrerlo
+mientras corre, así que el testigo es el adaptador: `thalyx-mcp` cuenta las
+llamadas que cambiaron el espacio de trabajo **y volvieron sin error ni
+rechazo**, de su lado del cable. Si ninguno de los dos existe, B es
+`not_proven` y `THALYX_REQUIRE_MUTATION_WITNESS=1` lo convierte en falla —
+regla 3, una variable por requisito, distinta de la del restore porque son
+requisitos distintos.
+
+Hay una excepción a A, y es a favor del brazo A: `sed -i` llega como `Bash` y el
+stream no lo distingue de `ls`. Exigir una herramienta-que-sólo-muta castigaría
+al brazo A por usar la herramienta que se le dio. Así que una llamada que
+nombró el nombre nuevo, volvió sin error **y dejó el sistema de archivos
+movido** también cuenta — y ninguno de los tres falsos positivos de arriba puede
+producir eso, porque ninguno escribe un archivo.
+
+**Y el digest es ahora un manifiesto**: para cada entrada bajo la raíz, su
+**tipo**, sus **bits de permiso**, su **contenido** si es archivo regular y su
+**destino** si es symlink. Eso es lo que la frase "byte por byte, ningún archivo
+agregado ni quitado" promete. Deliberadamente *no* es un diff genérico de
+sistema de archivos: dueño, mtime, xattrs e inodos quedan fuera, porque ninguno
+es algo que la tarea le pida al agente conservar y cada uno haría fallar al
+brazo A una restauración que hizo bien.
+
+Hay **una sola implementación** de qué es un árbol, en `dev/bench-summary.py`;
+`dev/bench-external-agent.sh` la llama. Antes había dos —una tubería de `find`
+en el shell y el resumen razonando sobre lo que producía— que coincidían por
+casualidad y podían dejar de coincidir sin que fallara nada. Regla 5.
+
+Los siete falsos positivos —lectura que menciona el nombre nuevo, edición
+fallida que lo menciona, cero mutaciones, mutación sin restore, mutación con
+restore, agente terminado en error, verdad conocida incompleta— son casos
+nombrados en `dev/bench-summary.py --self-test`, y si alguno vuelve a pasar, el
+self-test falla.
 
 ### Y el brazo B se comprueba en dos pasos, a propósito
 
@@ -295,6 +362,77 @@ dev/bench-external-agent.sh --project … --symbol … --task reversible \
 Mientras no se haga, el resumen dice `restore_check: not_proven` y no supone
 nada. `THALYX_REQUIRE_RESTORE_CHECK=1` convierte ese salto en falla — regla 3,
 una variable por requisito.
+
+### Revisión — 2026-08-28: la frontera del espacio de trabajo era una comparación, no una frontera
+
+La comprobación de contención era:
+
+```
+canonicalize(el nombre)  →  ¿empieza con el espacio de trabajo?  →  el verbo abre el nombre original
+```
+
+Todos los pasos correctos, y la secuencia mal — porque es una secuencia. Entre
+la comparación y la apertura hay un momento, y cualquier cosa que pueda escribir
+adentro del espacio de trabajo puede gastar ese momento cambiando un directorio
+por un symlink a otro lado. Thalyx —que no está adentro del sandbox de nadie—
+abre entonces el destino nuevo con el alcance de Thalyx.
+
+No era teórico. La prueba que lo encontró cambia `src` entre un directorio real
+y un enlace a otro árbol mientras un agente lee `src/main.rs` en un ciclo:
+**57 de 4000 lecturas devolvieron el contenido de un archivo fuera del espacio de
+trabajo.** Con `editar`, `rm`, `cp` y `mv` la misma ventana escribe y borra
+afuera.
+
+Y era exactamente la secuencia que `crates/thalyx-core/src/api.rs` fue reescrito
+para dejar de usar, en la superficie de módulos, hace semanas. Dos filosofías
+distintas adentro del mismo sistema para la misma pregunta.
+
+**Ahora hay una.** `crates/thalyx-cli/src/confine.rs`: `openat2` con
+`RESOLVE_BENEATH` contra un descriptor del espacio de trabajo, abierto una vez
+cuando la sesión abre. El kernel se niega a resolver fuera de ese directorio
+*durante* la resolución, así que no hay respuesta intermedia que nadie pueda
+invalidar — la comprobación y la apertura son la misma llamada.
+
+Los verbos siguen recibiendo una ruta, porque reescribirlos todos para tomar
+descriptores sería una segunda capa de sistema de archivos al lado de la
+primera. Lo que reciben es `/proc/self/fd/N`: el descriptor que el kernel
+resolvió, que apunta al inodo y no al nombre. La ruta que la *respuesta* lleva
+no cambia — el agente sigue viendo `src/main.rs`. Son dos argumentos en la misma
+función, no una forma nueva para cada verbo.
+
+Dos anclajes, y cuál se usa lo decide sobre qué actúa la llamada al sistema:
+
+- **la cosa** — `leer`, `ls`, la lectura de `editar`: un descriptor *es* la cosa;
+- **la entrada de directorio** — `crear`, `rm`, `mv`, el destino de `cp`:
+  `unlink` y `rename` actúan sobre un nombre adentro de un directorio, y no hay
+  nombre adentro de un enlace de procfs. El padre queda fijado y el último
+  componente se busca adentro de él.
+
+**Lo que se perdió, dicho claro.** `RESOLVE_BENEATH` rechaza **todo symlink
+absoluto**, incluido uno que habría caído adentro del mismo espacio de trabajo.
+Un proyecto con `código → /home/proyecto/src` deja de funcionar; con
+`código → src` sigue funcionando, porque el kernel contiene un enlace relativo
+por construcción. Es la misma pérdida que `api.rs` aceptó y por la misma razón:
+decidir si un enlace absoluto cae adentro exige resolverlo en espacio de usuario
+primero, que es la comprobación de dos pasos que todo esto existe para eliminar.
+Y la dirección de la pérdida es la correcta — a un agente se le niega algo que
+debía permitírsele, que alguien nota y reporta, en vez de permitírsele algo que
+debía negársele, que no nota nadie.
+
+**Lo que sigue abierto.** Una ruta que se está *creando* no existe, así que no
+hay nada que anclar: se fija el padre y el último componente se busca adentro.
+Un symlink plantado en ese último componente entre la comprobación y la creación
+todavía se seguiría. Es más angosto que lo que reemplaza por cada directorio de
+la ruta, y está escrito en `confine.rs` en vez de quedar como diferencia entre lo
+que ese módulo afirma y lo que hace.
+
+Lo prueban cuatro tests adversariales en `external.rs`, uno por verbo
+—`leer`, `editar`, `rm`, `ls`— que corren el intercambio contra 4000 peticiones.
+Son de un solo lado, regla 7: una corrida donde el hilo que intercambia nunca
+ganó la carrera no prueba nada, así que la afirmación es sobre la dirección a la
+que el ruido no llega —**cero** escapes— y al lado va el control, el conteo de
+rechazos, sin el cual una corrida donde no pasó nada se vería igual. Se
+comprobaron quitando el confinamiento de la sesión: los cuatro fallan.
 
 ### Lo que todavía no está controlado, y hay que decidir
 

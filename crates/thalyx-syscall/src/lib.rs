@@ -967,6 +967,36 @@ pub const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 /// Refuse to cross a mount point during resolution.
 pub const RESOLVE_NO_XDEV: u64 = 0x01;
 
+/// Refuse to traverse **any** symlink, including one that stays inside.
+///
+/// Not what a workspace wants — a project with a relative link in it is an
+/// ordinary project, and `RESOLVE_BENEATH` already contains where such a link
+/// can land. It is here for a caller that needs to know a path names what it
+/// spells, with nothing standing in for anything.
+pub const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+/// Open for resolution only: no read, no write, no execute.
+///
+/// Re-exported rather than left to the caller so that a crate which does not
+/// depend on `libc` — every crate in this workspace but this one — can still
+/// name the flag `openat2` wants for an anchor.
+pub const O_PATH: i32 = libc::O_PATH;
+
+/// Not inherited across an `exec`.
+pub const O_CLOEXEC: i32 = libc::O_CLOEXEC;
+
+/// What `RESOLVE_BENEATH` answers for a path, or a symlink, that leaves the base.
+pub const EXDEV: i32 = libc::EXDEV;
+
+/// A symlink loop, and what `RESOLVE_NO_MAGICLINKS` answers for a magic link.
+pub const ELOOP: i32 = libc::ELOOP;
+
+/// There is nothing there.
+pub const ENOENT: i32 = libc::ENOENT;
+
+/// A component of the path is not a directory.
+pub const ENOTDIR: i32 = libc::ENOTDIR;
+
 /// Open a path relative to a directory, with the kernel enforcing containment.
 ///
 /// This exists because [`std::fs::canonicalize`] followed by `File::open` is

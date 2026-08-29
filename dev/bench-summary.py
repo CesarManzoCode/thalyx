@@ -61,8 +61,11 @@ means demanding anything else.
 
 import argparse
 import copy
+import hashlib
 import json
+import os
 import pathlib
+import stat
 import sys
 import tempfile
 
@@ -88,6 +91,164 @@ WORKSPACE_WRITERS = {
     "mcp__thalyx__thalyx_edit",
     "mcp__thalyx__thalyx_file",
 }
+
+
+# ── what a tree is, for the purpose of "put it back exactly" ─────────────────
+#
+# The `reversible` task ends with "byte for byte: no file left differing from
+# its original content, no file added and no file removed", and until
+# 2026-08-28 the harness checked that claim with `find -type f | xargs
+# sha256sum`. Which is contents and nothing else. `-type f` does not match a
+# symlink at all, so an agent that replaced `src/lib.rs` with a symlink to
+# `/etc/passwd` deleted a file *and* added a link and the digest moved only
+# because the contents went missing; an agent that left a source file mode 777,
+# or turned a directory into a file, restored the tree perfectly as far as that
+# check could see.
+#
+# So the digest is over a manifest and not over contents: for every entry below
+# the root, its **type**, its **permission bits**, its **content** if it is a
+# regular file and its **target** if it is a symlink. That is the whole list in
+# `Agentes-Externos.md`, and deliberately not a filesystem diff: owner, mtime,
+# xattrs and inode numbers are all absent, because none of them is something the
+# task asks the agent to preserve and each one would make arm A fail a restore
+# it performed correctly.
+#
+# The exclusions are the same three as before and for the same reason: they are
+# what `image/Makefile` leaves out of the copy it puts on the store, plus
+# `.git`, which both arms carry and which changes for reasons that are not the
+# task.
+EXCLUDED_TOP = {".git", "target", "node_modules"}
+
+
+def _digest_of_file(path):
+    """The content hash of one regular file, or why it could not be read.
+
+    Rule 10: a file that could not be read is written down as unreadable, never
+    as empty. An unreadable file that hashed the same as an empty one would let
+    a permission change pass as a restore.
+    """
+    hasher = hashlib.sha256()
+    try:
+        with open(path, "rb") as bytes_in:
+            for chunk in iter(lambda: bytes_in.read(1 << 20), b""):
+                hasher.update(chunk)
+    except OSError as why:
+        return f"unreadable:{why.errno}"
+    return hasher.hexdigest()
+
+
+def manifest(root):
+    """Every entry under `root`, as one sorted line each.
+
+    Symlinks are never followed — `os.walk(followlinks=False)` and `lstat`
+    throughout — because following them would take the harness outside the
+    workspace, and because the question is what the link *is*, not what it
+    points at.
+    """
+    root = pathlib.Path(root)
+    lines = []
+
+    for here, directories, files in os.walk(root, followlinks=False):
+        relative_here = pathlib.PurePosixPath(pathlib.Path(here).relative_to(root).as_posix())
+        if str(relative_here) == ".":
+            directories[:] = [d for d in directories if d not in EXCLUDED_TOP]
+            files = [f for f in files if f not in EXCLUDED_TOP]
+
+        for name in list(directories) + list(files):
+            path = pathlib.Path(here) / name
+            where = (relative_here / name).as_posix() if str(relative_here) != "." else name
+            try:
+                info = path.lstat()
+            except OSError as why:
+                lines.append(f"?	-	-	unstattable:{why.errno}	{where}")
+                continue
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                try:
+                    target = os.readlink(path)
+                except OSError as why:
+                    target = f"unreadable:{why.errno}"
+                lines.append(f"l	{mode:04o}	-	{target}	{where}")
+            elif stat.S_ISDIR(info.st_mode):
+                lines.append(f"d	{mode:04o}	-	-	{where}")
+            elif stat.S_ISREG(info.st_mode):
+                lines.append(f"f	{mode:04o}	{info.st_size}	{_digest_of_file(path)}	{where}")
+            else:
+                # A fifo, a socket, a device node. Named by kind rather than
+                # lumped in with "other", because an agent that left a fifo
+                # where a file was has not restored the tree and the summary
+                # should be able to say what it left.
+                lines.append(f"s{info.st_mode & 0o170000:o}	{mode:04o}	-	-	{where}")
+
+    lines.sort(key=lambda line: line.rsplit("\t", 1)[-1])
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def manifest_digest(root):
+    return hashlib.sha256(manifest(root).encode()).hexdigest()
+
+
+def mtimes(root):
+    """When each regular file under `root` was last written, as sorted lines.
+
+    Kept **out** of the manifest and in a file of its own, because an mtime is
+    not something the task asks anybody to restore — `git checkout -- .` puts
+    every byte back and moves every mtime, and a digest that folded them in
+    would fail arm A for doing the task correctly.
+
+    It is here for the opposite question, which nothing else on this host can
+    answer: *did the workspace ever hold something other than what it started
+    with?* An agent that renamed a symbol in six files and put them back leaves
+    six files whose contents match and whose mtimes moved. That is evidence
+    from the filesystem rather than from the agent's own account of itself,
+    which is the one thing the `reversible` verdict may not be read off.
+    """
+    root = pathlib.Path(root)
+    lines = []
+    for here, directories, files in os.walk(root, followlinks=False):
+        relative_here = pathlib.Path(here).relative_to(root).as_posix()
+        if relative_here == ".":
+            directories[:] = [d for d in directories if d not in EXCLUDED_TOP]
+            files = [f for f in files if f not in EXCLUDED_TOP]
+        for name in files:
+            path = pathlib.Path(here) / name
+            where = f"{relative_here}/{name}" if relative_here != "." else name
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                lines.append(f"{info.st_mtime_ns}\t{where}")
+    lines.sort(key=lambda line: line.split("\t", 1)[1])
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def files_touched(before_text, after_text):
+    """How many files the filesystem says were written between the two walks.
+
+    A file counts as touched when it existed before and its mtime moved, or
+    when it did not exist before and does now. A file that vanished counts too:
+    something removed it. All three are writes the workspace saw, and none of
+    them can be produced by an agent that only read.
+    """
+    def by_path(text):
+        found = {}
+        for line in text.splitlines():
+            if "\t" not in line:
+                continue
+            when, where = line.split("\t", 1)
+            found[where] = when
+        return found
+
+    before, after = by_path(before_text), by_path(after_text)
+    touched = 0
+    for where, when in after.items():
+        if before.get(where) != when:
+            touched += 1
+    for where in before:
+        if where not in after:
+            touched += 1
+    return touched
 
 
 def is_a_write(name, given):
@@ -143,8 +304,30 @@ def read_stream(path, marker=None):
     one, every tool call is also checked for it — in the *whole* serialised
     input, not a chosen field, because the same rename arrives as `Edit` with a
     `new_string` in one arm, as `thalyx_edit` with a `text` in the other, and as
-    a `sed` command inside `Bash` when the agent felt like it. All three are the
-    agent claiming to have written the new name somewhere.
+    a `sed` command inside `Bash` when the agent felt like it.
+
+    ## Why a call that names the marker is not evidence that anything changed
+
+    Until 2026-08-28 it was counted as exactly that, and three different runs
+    that changed nothing would have scored as runs that changed everything:
+
+      - `Grep {"pattern": "WidgetRenamed"}` names the new name and is a read.
+      - `Edit {"new_string": "WidgetRenamed"}` names it and comes back
+        `is_error: true` because `old_string` matched nothing — the workspace
+        never held the new name for an instant.
+      - `thalyx_edit {"action": "show"}` was already excluded, which is the same
+        mistake caught once in one place and left everywhere else.
+
+    So each call is now paired with its `tool_result` by `tool_use_id`, and the
+    marker is counted in three separate buckets: named in a call that can only
+    mutate **and whose result came back without an error**, named in a call that
+    failed, and named in a call that was not a mutation at all. Only the first
+    is evidence, and the other two are kept because a run that produced nothing
+    but those is a run whose summary should say why it lost.
+
+    A call with no result in the stream — the ordinary shape of a run killed at
+    its turn limit mid-call — counts as **not** a successful mutation. Rule 9:
+    the cautious answer, never the fast one.
     """
     row = {}
     per_tool = {}
@@ -154,6 +337,11 @@ def read_stream(path, marker=None):
     results_seen = 0
     writes = 0
     naming = 0
+    # Pass one collects the calls; the results that decide them arrive in later
+    # events, so nothing about success can be settled inside the loop.
+    made = []
+    failed_ids = set()
+    answered_ids = set()
 
     for event in events(path):
         kind = event.get("type")
@@ -172,6 +360,7 @@ def read_stream(path, marker=None):
                     writes += 1
                 if marker and marker in serialised:
                     naming += 1
+                    made.append((block.get("id"), name, given))
 
         elif kind == "user":
             content = event.get("message", {}).get("content")
@@ -179,6 +368,11 @@ def read_stream(path, marker=None):
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     returned += text_length(block.get("content"))
                     results_seen += 1
+                    where = block.get("tool_use_id")
+                    if where is not None:
+                        answered_ids.add(where)
+                        if block.get("is_error") is True:
+                            failed_ids.add(where)
 
         elif kind == "result":
             # The last one wins: a stream only has one, but a file that was
@@ -226,6 +420,23 @@ def read_stream(path, marker=None):
         # agent that never wrote one.
         if marker:
             row["tool_calls_naming_the_new_name"] = naming
+            confirmed = wrong = read_only = unanswered = 0
+            for where, name, given in made:
+                if not is_a_write(name, given):
+                    read_only += 1
+                elif where in failed_ids:
+                    wrong += 1
+                elif where in answered_ids:
+                    confirmed += 1
+                else:
+                    unanswered += 1
+            row["mutations_naming_the_new_name"] = confirmed
+            row["failed_calls_naming_the_new_name"] = wrong
+            row["read_only_calls_naming_the_new_name"] = read_only
+            # Counted apart from the failures because it is a different fact: a
+            # call the stream never carried an answer for. It is not evidence
+            # of a mutation and it is not evidence of a failure either.
+            row["unanswered_calls_naming_the_new_name"] = unanswered
 
     if marker and isinstance(row.get("answer"), str):
         row["new_name_in_answer"] = marker in row["answer"]
@@ -256,26 +467,119 @@ NO_TREE_AFTER = (
 )
 
 
-def reversible_verdict(row, marker_given, graded):
-    """Whether this arm did the reversible task, from three separate instruments.
+NO_WITNESS = (
+    "nothing outside the agent saw the workspace change. That needs either the "
+    "pair of mtime walks this harness writes beside each arm's manifest, or an "
+    "arm whose adapter counted mutations of its own (`thalyx-mcp --metrics`)"
+)
 
-    The one thing this must never do is read the verdict off the tree hash
-    alone. `restored` is true for an agent that changed everything and put it
-    back, and equally true for an agent that answered "no" and stopped — so
-    `really_changed`, which comes from the agent's own stream rather than from
-    the filesystem, is what tells those two apart.
+
+def reversible_verdict(row, marker_given, graded):
+    """Whether this arm did the reversible task, from five separate instruments.
+
+    The one thing this must never do is read the verdict off the tree digest
+    alone. A restored digest is what an agent that changed everything and put it
+    back leaves, and equally what an agent that answered "no" and stopped
+    leaves — so the digest can only ever be one conjunct of five.
+
+    Until 2026-08-28 the second conjunct was "the new name appeared in some tool
+    call", which is a sentence the agent writes and not a thing the workspace
+    saw. A `Grep` for the new name satisfied it. A failed `Edit` satisfied it.
+    An agent that read a file, said it had renamed everything and stopped
+    satisfied it. What is required now, and each part comes from somewhere
+    else:
+
+      A  `mutation_attempted`  a call that can only mutate, that names the new
+                               name, and whose *result* came back without an
+                               error. Read from the stream, but from the tool's
+                               answer rather than from the model's request.
+
+      B  `intermediate_state`  the workspace really held something else for a
+                               while. Read from outside the agent entirely:
+                               either the filesystem said so (files whose mtime
+                               moved between the walk before the run and the
+                               walk after it) or `thalyx-mcp --metrics` counted
+                               mutations of its own. Unknown → `not_proven`,
+                               and `--require-mutation-witness` makes that a
+                               non-zero exit.
+
+      C  `completed_normally`  the run's own `result` event did not say
+                               `is_error`. An agent that died at its turn limit
+                               has not done the task, whatever its last message
+                               claimed.
+
+      D  `task_success`        the final answer named every file the ground
+                               truth demands.
+
+      E  `restored`            the manifest digest came back — contents, entry
+                               type, permission bits and symlink targets, hashed
+                               on this host.
 
     A component that is unknown makes `passed` **absent**. Not false: a run
     whose restore nobody has checked yet has not failed, and printing `false`
     for it would be the same lie in the other direction.
+
+    The one place A is allowed to be satisfied without a mutating tool call is
+    arm A's shell. `sed -i` arrives as `Bash` and the stream cannot tell it from
+    `ls`, so a rename done that way would score `mutation_attempted: false` and
+    the comparison would punish arm A for using the tool it was given. B covers
+    it exactly: `sed -i` moves mtimes and `ls` does not. So a call that named
+    the new name, came back without an error, and left the filesystem changed
+    counts — and none of the three false positives above can produce that,
+    because none of them changes a file.
     """
     verdict = {}
 
-    if marker_given and "tool_calls_naming_the_new_name" in row:
-        verdict["really_changed"] = row["tool_calls_naming_the_new_name"] > 0
     if "mutating_tool_calls" in row:
         verdict["mutating_tool_calls"] = row["mutating_tool_calls"]
+    for field in ("mutations_naming_the_new_name",
+                  "failed_calls_naming_the_new_name",
+                  "read_only_calls_naming_the_new_name"):
+        if field in row:
+            verdict[field] = row[field]
 
+    # ── B, first, because A leans on it for the shell case ──
+    witness = None
+    if "files_touched_on_disk" in row:
+        verdict["files_touched_on_disk"] = row["files_touched_on_disk"]
+        witness = row["files_touched_on_disk"] > 0
+        verdict["intermediate_state_from"] = "the filesystem, by mtime"
+    mutations = (row.get("thalyx") or {}).get("mutations")
+    if isinstance(mutations, int):
+        verdict["thalyx_mutations"] = mutations
+        if witness:
+            verdict["intermediate_state_from"] = "the filesystem and the adapter, agreeing"
+        elif witness is None:
+            verdict["intermediate_state_from"] = "the adapter's own count"
+        # An adapter that counted zero is a witness that saw nothing, not an
+        # absent witness. Leaving it `None` would turn arm B's laziest possible
+        # run — never call a mutating tool — into `not_proven` rather than a
+        # loss, which is the exact direction this comparison must not be wrong in.
+        witness = bool(witness) or mutations > 0
+    if witness is None:
+        verdict["intermediate_state"] = "not_proven"
+        verdict["intermediate_state_because"] = NO_WITNESS
+    else:
+        verdict["intermediate_state"] = witness
+
+    # ── A ──
+    if marker_given and "mutations_naming_the_new_name" in row:
+        by_a_mutating_tool = row["mutations_naming_the_new_name"] > 0
+        # The shell case. `answered` is every call that named the new name and
+        # did not come back an error; on its own that is a `Grep`, which is why
+        # it only counts alongside a filesystem that moved.
+        answered = (row.get("tool_calls_naming_the_new_name", 0)
+                    - row.get("failed_calls_naming_the_new_name", 0)
+                    - row.get("unanswered_calls_naming_the_new_name", 0))
+        by_the_shell = answered > 0 and witness is True
+        verdict["mutation_attempted"] = by_a_mutating_tool or by_the_shell
+        verdict["really_changed"] = verdict["mutation_attempted"] and witness is True
+
+    # ── C ──
+    if "is_error" in row and row["is_error"] is not None:
+        verdict["completed_normally"] = row["is_error"] is False
+
+    # ── E ──
     if "tree_unchanged" in row:
         verdict["restored"] = row["tree_unchanged"]
         verdict["restore_check"] = "proven"
@@ -284,6 +588,8 @@ def reversible_verdict(row, marker_given, graded):
         verdict["restore_check_because"] = NO_TREE_AFTER
 
     needed = [("really_changed", verdict.get("really_changed") if marker_given else True),
+              ("intermediate_state", witness),
+              ("completed_normally", verdict.get("completed_normally")),
               ("restored", verdict.get("restored"))]
     if graded:
         needed.append(("task_success", row.get("task_success")))
@@ -337,6 +643,26 @@ def arm(out, name, expectations, marker=None, task=""):
     before, after = out / f"arm{name}.before", out / f"arm{name}.after"
     if before.exists() and after.exists():
         row["tree_unchanged"] = before.read_text() == after.read_text()
+        # What actually differs, when something does. The digests are one line
+        # each and say nothing; the manifests beside them say which entry moved,
+        # and a restore that failed is worth reading rather than re-running.
+        detail = []
+        for side in ("before", "after"):
+            lines = out / f"arm{name}.{side}.manifest"
+            detail.append(lines.read_text().splitlines() if lines.exists() else None)
+        if row["tree_unchanged"] is False and all(part is not None for part in detail):
+            was, now = set(detail[0]), set(detail[1])
+            row["tree_differences"] = sorted(
+                [f"-{line}" for line in was - now] + [f"+{line}" for line in now - was]
+            )[:40]
+
+    # The external witness. Two walks of the same tree, taken by this host
+    # before the agent started and after it stopped, compared on mtime alone.
+    # Absent rather than zero when either walk is missing: nobody looked is not
+    # the same fact as nobody wrote.
+    walks = [out / f"arm{name}.{side}.mtimes" for side in ("before", "after")]
+    if all(walk.exists() for walk in walks):
+        row["files_touched_on_disk"] = files_touched(walks[0].read_text(), walks[1].read_text())
 
     if expectations and isinstance(row.get("answer"), str):
         row.update(judged(row["answer"], expectations))
@@ -412,6 +738,7 @@ def self_test():
         trouble += 1
 
     trouble += counting_self_test(sample)
+    trouble += manifest_self_test()
     trouble += verdict_self_test()
 
     print()
@@ -518,40 +845,89 @@ def counting_self_test(sample):
 
 
 def verdict_self_test():
-    """That the reversible verdict cannot be earned by doing nothing.
+    """That the reversible verdict cannot be earned by anything but doing it.
 
-    Ordinary logic over this file's own data, so no captured sample is involved
-    and none is owed. What it is guarding is the one mistake the task invites:
-    the tree hashes equal both for an agent that changed everything and put it
-    back and for an agent that never touched anything, and only the first is a
-    pass.
+    Seven shapes, and every one of them is a run that used to score, or could
+    have scored, as a pass. Ordinary logic over this file's own data, so no
+    captured sample is involved and none is owed — what a captured sample
+    settles is the *format*, and the format is settled by `counting_self_test`
+    above, which builds these shapes out of Claude Code's own event envelopes.
+
+    The seven are the list in the audit of 2026-08-28, and the reason each one
+    must fail is written beside it. If any of them ever passes again, this
+    harness is producing evidence for a claim nobody checked.
     """
+    done = {"mutations_naming_the_new_name": 6, "tool_calls_naming_the_new_name": 6,
+            "failed_calls_naming_the_new_name": 0, "unanswered_calls_naming_the_new_name": 0,
+            "read_only_calls_naming_the_new_name": 0, "mutating_tool_calls": 6,
+            "files_touched_on_disk": 6, "is_error": False,
+            "tree_unchanged": True, "task_success": True}
+
+    def like(**changed):
+        row = dict(done)
+        row.update(changed)
+        return row
+
     cases = [
-        ("did the work and put it back",
-         {"tool_calls_naming_the_new_name": 6, "mutating_tool_calls": 6,
-          "tree_unchanged": True, "task_success": True},
-         True, {"passed": True}),
-        ("did nothing at all, so the tree is perfect",
-         {"tool_calls_naming_the_new_name": 0, "mutating_tool_calls": 0,
-          "tree_unchanged": True, "task_success": True},
-         True, {"passed": False, "really_changed": False}),
+        ("did the work and put it back", like(), {"passed": True}),
+
+        # 1. The false positive that started this. `Grep {"pattern":
+        #    "WidgetRenamed"}` names the new name in a tool call and changes
+        #    nothing, and the old verdict called that `really_changed`.
+        ("only read, and mentioned the new name while reading",
+         like(mutations_naming_the_new_name=0, read_only_calls_naming_the_new_name=3,
+              mutating_tool_calls=0, files_touched_on_disk=0),
+         {"passed": False, "really_changed": False, "intermediate_state": False}),
+
+        # 2. An `Edit` whose `old_string` matched nothing. The call names the
+        #    new name; the workspace never held it for an instant.
+        ("tried to edit, the edit failed, and the new name was in the failed call",
+         like(mutations_naming_the_new_name=0, failed_calls_naming_the_new_name=4,
+              mutating_tool_calls=4, files_touched_on_disk=0),
+         {"passed": False, "really_changed": False}),
+
+        # 3. Nothing at all, which leaves the tree perfect.
+        ("did nothing, so the tree is perfect",
+         like(mutations_naming_the_new_name=0, tool_calls_naming_the_new_name=0,
+              mutating_tool_calls=0, files_touched_on_disk=0),
+         {"passed": False, "really_changed": False}),
+
+        # 4. The honest failure: it did the work and walked away from it.
         ("did the work and left it changed",
-         {"tool_calls_naming_the_new_name": 6, "mutating_tool_calls": 6,
-          "tree_unchanged": False, "task_success": True},
-         True, {"passed": False, "restored": False}),
-        ("did the work, put it back, and named the wrong files",
-         {"tool_calls_naming_the_new_name": 6, "mutating_tool_calls": 6,
-          "tree_unchanged": True, "task_success": False},
-         True, {"passed": False}),
-        ("nobody has hashed its tree yet",
-         {"tool_calls_naming_the_new_name": 6, "mutating_tool_calls": 6,
-          "task_success": True},
-         True, {"restore_check": "not_proven"}),
+         like(tree_unchanged=False),
+         {"passed": False, "restored": False}),
+
+        # 5. The one that must pass, restated so a regression that broke
+        #    everything would not look like a regression that fixed something.
+        ("did the work and restored it", like(), {"passed": True, "really_changed": True}),
+
+        # 6. Died at its turn limit. Whatever its last message said, the run did
+        #    not finish, and a finished-looking summary of it is a lie.
+        ("ended in an error", like(is_error=True),
+         {"passed": False, "completed_normally": False}),
+
+        # 7. Answered without naming the files the ground truth demands.
+        ("did the work and named the wrong files", like(task_success=False),
+         {"passed": False}),
+
+        # The shell, which is not a false positive and must not be treated as
+        # one: `sed -i` names the new name, comes back without an error, and
+        # the filesystem moved. Arm A is allowed to win that way.
+        ("renamed with the shell, where the stream cannot see a write",
+         like(mutations_naming_the_new_name=0, mutating_tool_calls=0),
+         {"passed": True, "mutation_attempted": True}),
+
+        # And its control, one field apart: the same shell calls with nothing
+        # touched on disk is a `grep`, and must not pass.
+        ("used the shell only to look",
+         like(mutations_naming_the_new_name=0, mutating_tool_calls=0,
+              files_touched_on_disk=0),
+         {"passed": False, "really_changed": False}),
     ]
 
     trouble = 0
-    for about, row, graded, wanted in cases:
-        verdict = reversible_verdict(row, marker_given=True, graded=graded)
+    for about, row, wanted in cases:
+        verdict = reversible_verdict(row, marker_given=True, graded=True)
         for field, want in wanted.items():
             got = verdict.get(field)
             if got == want:
@@ -560,16 +936,171 @@ def verdict_self_test():
                 print(f"  FAILED  {about}: {field} expected {want!r}, got {got!r}")
                 trouble += 1
 
-    # The unchecked arm must be undecided, never a failure. A run whose bytes
-    # nobody looked at has not lost.
-    undecided = reversible_verdict(
-        {"tool_calls_naming_the_new_name": 6, "mutating_tool_calls": 6, "task_success": True},
-        marker_given=True, graded=True)
-    if "passed" not in undecided and "undecided_because" in undecided:
-        print("  ok      an arm nobody hashed is undecided, not failed")
+    # An arm nobody hashed, and an arm nobody witnessed, are each undecided
+    # rather than failed. A run whose bytes nobody looked at has not lost.
+    for about, missing in (("hashed its tree", "tree_unchanged"),
+                           ("watched its workspace", "files_touched_on_disk")):
+        row = like()
+        del row[missing]
+        undecided = reversible_verdict(row, marker_given=True, graded=True)
+        if "passed" not in undecided and "undecided_because" in undecided:
+            print(f"  ok      an arm nobody {about} is undecided, not failed")
+        else:
+            print(f"  FAILED  an arm nobody {about} was given a verdict: {undecided!r}")
+            trouble += 1
+
+    # The adapter is the other witness, and it is the only one arm B may have:
+    # its workspace is inside the machine and this host cannot walk it during a
+    # run. A `mutations` count of its own has to be enough.
+    row = like()
+    del row["files_touched_on_disk"]
+    row["thalyx"] = {"mutations": 6}
+    witnessed = reversible_verdict(row, marker_given=True, graded=True)
+    if witnessed.get("passed") is True:
+        print("  ok      an arm the adapter counted mutations for is witnessed")
     else:
-        print(f"  FAILED  an unchecked arm was given a verdict: {undecided!r}")
+        print(f"  FAILED  the adapter's own count did not witness the change: {witnessed!r}")
         trouble += 1
+
+    row["thalyx"] = {"mutations": 0}
+    row["mutations_naming_the_new_name"] = 0
+    quiet = reversible_verdict(row, marker_given=True, graded=True)
+    if quiet.get("passed") is False and quiet.get("intermediate_state") is False:
+        print("  ok      an adapter that counted no mutations is not a witness to one")
+    else:
+        print(f"  FAILED  an adapter that saw nothing witnessed something: {quiet!r}")
+        trouble += 1
+
+    return trouble
+
+
+def manifest_self_test():
+    """That the digest answers the question the `reversible` task rests on.
+
+    Rule 4: a check that something came back needs a baseline — the untouched
+    tree, which must hash the same twice — and a control for every way it can
+    fail to come back, without which a digest that returned a constant would
+    pass every case.
+
+    The five controls below are the five properties the task's wording promises
+    and the old contents-only hash did not check. Each of them is a tree an
+    agent can really leave behind.
+    """
+    trouble = 0
+
+    def ok(about):
+        print(f"  ok      {about}")
+
+    def bad(about):
+        nonlocal trouble
+        print(f"  FAILED  {about}")
+        trouble += 1
+
+    with tempfile.TemporaryDirectory() as work:
+        root = pathlib.Path(work) / "t"
+        (root / "src").mkdir(parents=True)
+        (root / ".git").mkdir()
+        (root / "target").mkdir()
+        (root / "src" / "a.rs").write_text("one\n")
+        (root / "src" / "b.rs").write_text("two\n")
+        (root / ".git" / "index").write_text("index\n")
+        (root / "target" / "o").write_text("junk\n")
+        (root / "src" / "a.rs").chmod(0o644)
+
+        baseline = manifest_digest(root)
+
+        os.utime(root / "src" / "a.rs", (0, 0))
+        if manifest_digest(root) == baseline:
+            ok("an untouched tree hashes the same, and a newer mtime is not a change")
+        else:
+            bad("the digest moved without anything the task asks about moving")
+
+        def moves(about, change, undo):
+            change()
+            if manifest_digest(root) != baseline:
+                ok(about)
+            else:
+                bad(about)
+            undo()
+            if manifest_digest(root) != baseline:
+                bad(f"undoing it did not come back: {about}")
+
+        moves("a changed byte is not a restored tree",
+              lambda: (root / "src" / "a.rs").write_text("ONE\n"),
+              lambda: (root / "src" / "a.rs").write_text("one\n"))
+        moves("a file left behind is not a restored tree",
+              lambda: (root / "src" / "a.rs.bak").write_text("left over\n"),
+              lambda: (root / "src" / "a.rs.bak").unlink())
+        moves("a deleted file is not a restored tree",
+              lambda: (root / "src" / "b.rs").unlink(),
+              lambda: (root / "src" / "b.rs").write_text("two\n"))
+
+        # The five the contents-only hash could not see. Every one of them is a
+        # workspace that `find -type f | xargs sha256sum` called restored.
+        moves("a source file left world-writable is not a restored tree",
+              lambda: (root / "src" / "a.rs").chmod(0o666),
+              lambda: (root / "src" / "a.rs").chmod(0o644))
+        moves("a file left executable is not a restored tree",
+              lambda: (root / "src" / "a.rs").chmod(0o755),
+              lambda: (root / "src" / "a.rs").chmod(0o644))
+
+        def to_a_symlink():
+            (root / "src" / "a.rs").unlink()
+            (root / "src" / "a.rs").symlink_to("/etc/passwd")
+
+        def back_to_a_file():
+            (root / "src" / "a.rs").unlink()
+            (root / "src" / "a.rs").write_text("one\n")
+            (root / "src" / "a.rs").chmod(0o644)
+
+        moves("a file replaced by a symlink out of the workspace is not a restored tree",
+              to_a_symlink, back_to_a_file)
+
+        def link_moves():
+            (root / "src" / "link").symlink_to("a.rs")
+
+        link_moves()
+        with_link = manifest_digest(root)
+        (root / "src" / "link").unlink()
+        (root / "src" / "link").symlink_to("b.rs")
+        if manifest_digest(root) != with_link:
+            ok("a symlink repointed at something else is not a restored tree")
+        else:
+            bad("a symlink repointed at something else hashed as unchanged")
+        (root / "src" / "link").unlink()
+
+        moves("a directory left where a file was is not a restored tree",
+              lambda: ((root / "src" / "b.rs").unlink(), (root / "src" / "b.rs").mkdir()),
+              lambda: ((root / "src" / "b.rs").rmdir(),
+                       (root / "src" / "b.rs").write_text("two\n")))
+
+        moves("an empty directory left behind is not a restored tree",
+              lambda: (root / "src" / "scratch").mkdir(),
+              lambda: (root / "src" / "scratch").rmdir())
+
+        (root / ".git" / "index").write_text("rewritten by git status\n")
+        (root / "target" / "o").write_text("a fresh build\n")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "p").write_text("x\n")
+        if manifest_digest(root) == baseline:
+            ok(".git, target and node_modules are outside the question")
+        else:
+            bad("something outside the workspace's content moved the digest")
+
+        # ── the witness, which is the opposite question ──
+        before = mtimes(root)
+        if files_touched(before, mtimes(root)) == 0:
+            ok("a tree nobody wrote to has no files touched")
+        else:
+            bad("an untouched tree was counted as written to")
+
+        (root / "src" / "a.rs").write_text("changed and changed back\n")
+        (root / "src" / "a.rs").write_text("one\n")
+        after = mtimes(root)
+        if manifest_digest(root) == baseline and files_touched(before, after) == 1:
+            ok("a file changed and changed back hashes equal and is still counted as touched")
+        else:
+            bad("a file changed and changed back was not seen by the witness")
 
     return trouble
 
@@ -588,11 +1119,39 @@ def main():
         action="store_true",
         help="exit non-zero if any arm's tree was never hashed after the run",
     )
+    parser.add_argument(
+        "--require-mutation-witness",
+        action="store_true",
+        help="exit non-zero if any arm's mutation was never seen from outside the agent",
+    )
+    # Not a convenience for the shell: it is the reason there is only one
+    # implementation of what a tree is. `tree_hash` in
+    # `dev/bench-external-agent.sh` used to be a `find | sha256sum` pipeline of
+    # its own, so the thing the summary reasoned about and the thing the harness
+    # measured were two programs that agreed by coincidence.
+    parser.add_argument("--manifest", type=pathlib.Path,
+                        help="print the digest of a tree, as the restore check defines one")
+    parser.add_argument("--manifest-lines", type=pathlib.Path,
+                        help="print that tree's manifest itself, one entry per line")
+    parser.add_argument("--mtimes", type=pathlib.Path,
+                        help="print when each regular file in a tree was last written")
     parser.add_argument("--self-test", action="store_true")
     given = parser.parse_args()
 
     if given.self_test:
         sys.exit(self_test())
+
+    for where, what in ((given.manifest, manifest_digest),
+                        (given.manifest_lines, manifest),
+                        (given.mtimes, mtimes)):
+        if where is not None:
+            if not where.is_dir():
+                print(f"  not a directory: {where}", file=sys.stderr)
+                sys.exit(1)
+            sys.stdout.write(what(where))
+            if what is manifest_digest:
+                sys.stdout.write("\n")
+            sys.exit(0)
 
     if not given.out:
         parser.error("--out is required")
@@ -623,12 +1182,23 @@ def main():
     # Rule 3, the half that makes a skip mean something: an arm whose bytes
     # nobody looked at is NOT PROVEN, it says so out loud, and the one variable
     # that demands *this* requirement makes it a failure.
+    trouble = 0
     unproven = [row["arm"] for row in summary["arms"]
                 if row.get("reversible", {}).get("restore_check") == "not_proven"]
     if unproven:
         print(f"\n  NOT PROVEN  arm {', arm '.join(unproven)}: {NO_TREE_AFTER}", file=sys.stderr)
         if given.require_restore_check:
-            sys.exit(1)
+            trouble = 1
+
+    unwitnessed = [row["arm"] for row in summary["arms"]
+                   if row.get("reversible", {}).get("intermediate_state") == "not_proven"]
+    if unwitnessed:
+        print(f"\n  NOT PROVEN  arm {', arm '.join(unwitnessed)}: {NO_WITNESS}", file=sys.stderr)
+        if given.require_mutation_witness:
+            trouble = 1
+
+    if trouble:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
