@@ -208,8 +208,12 @@ pub const BTRFS_IOC_SNAP_CREATE_V2: u64 = 0x5000_9417;
 /// `BTRFS_IOC_SNAP_DESTROY`:
 /// `_IOW(BTRFS_IOCTL_MAGIC, 15, struct btrfs_ioctl_vol_args)`.
 ///
-/// A subvolume is not a directory and `rmdir` will not have it, so this is the
-/// only way to let one go without the `btrfs` binary.
+/// This is the only way to let a subvolume go without the `btrfs` binary, and the
+/// reason is narrower than it looks: since Linux 4.18 `rmdir(2)` does take an
+/// **empty** subvolume away, so the difference is not *a subvolume is not a
+/// directory*. It is that this one ioctl drops a populated subvolume — the whole
+/// tree, in one operation — where `std::fs` could only walk it and unlink every
+/// file, and could not touch a subvolume nested inside it at all.
 pub const BTRFS_IOC_SNAP_DESTROY: u64 = 0x5000_940f;
 
 /// `BTRFS_SUBVOL_RDONLY`, the one flag of `btrfs_ioctl_vol_args_v2` used here.

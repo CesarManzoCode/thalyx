@@ -15,9 +15,21 @@
 //! Only the boundary [`thalyx_snapshot::Native`] is: the kernel answers about a
 //! subvolume that a `btrfs` binary made, the snapshot it takes is read-only *by
 //! the flag the kernel reports* and not merely by a write failing, the restore is
-//! writable, and the delete removes something `rmdir` cannot. Naming, ordering and
-//! every other decision stay where they were, exercised against the directory fake
-//! on machines with no Btrfs at all.
+//! writable, and the delete takes away something `stat(2)` says was a subvolume.
+//! Naming, ordering and every other decision stay where they were, exercised
+//! against the directory fake on machines with no Btrfs at all.
+//!
+//! ## The check that measured the kernel instead of the object
+//!
+//! That last sentence used to read *the delete removes something `rmdir` cannot*,
+//! and the test that stood behind it asked whether `remove_dir_all` failed. It
+//! does not fail: since Linux 4.18 `rmdir(2)` takes an **empty** subvolume away
+//! like any other directory, so the recursive remove unlinked the one file inside
+//! the copy and then unlinked the subvolume, and an assertion written to say
+//! *this is a subvolume* reported that it was not. It was one — the ioctl beside
+//! it had already said so. The check was measuring the kernel's `rmdir` policy,
+//! which is rule 5 of `Estrategia-de-Pruebas.md` and the same shape as
+//! `chrt --other` measuring util-linux. What replaced it asks `stat(2)`.
 //!
 //! Two things are here on purpose that a smaller test would leave out.
 //!
@@ -84,6 +96,33 @@ fn unproven(what: &str) {
 fn flags(path: &Path) -> u64 {
     let directory = std::fs::File::open(path).expect("the subvolume opens");
     thalyx_syscall::btrfs_subvolume_flags(directory.as_fd()).expect("it is a subvolume")
+}
+
+/// `BTRFS_FIRST_FREE_OBJECTID`, from `include/uapi/linux/btrfs_tree.h`.
+///
+/// The inode number the root of every Btrfs subvolume has. `thalyx-syscall`
+/// declines to *implement* `is_subvolume` with this number, for a stated reason —
+/// it is true of Btrfs today and it is not an interface anybody promised. Grading
+/// with it is the opposite situation: what a test needs is a source that is not
+/// the one under test, and this one is not.
+const BTRFS_FIRST_FREE_OBJECTID: u64 = 256;
+
+/// What `stat(2)` calls a path: its inode number and its device.
+///
+/// The independent witness, and independence is the whole of it.
+/// [`thalyx_snapshot::Native::is_subvolume`] asks `BTRFS_IOC_SUBVOL_GETFLAGS`, and
+/// so does [`flags`] above, so a test that graded a subvolume by either of them
+/// would be checking one ioctl against itself. These two numbers come from
+/// `stat(2)`: on Btrfs the root of a subvolume is inode
+/// [`BTRFS_FIRST_FREE_OBJECTID`], and the kernel hands every subvolume its own
+/// anonymous device, so its `st_dev` is not the one of the directory holding it.
+/// That pair is what `libbtrfsutil`'s `btrfs_util_is_subvolume` looks at, which is
+/// why it is a second source rather than a guess invented here.
+fn names(path: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+
+    let about = std::fs::metadata(path).expect("stat(2) has something to say about it");
+    (about.ino(), about.dev())
 }
 
 fn clean(subvolume: &Path) {
@@ -219,9 +258,30 @@ fn restoring_makes_a_writable_copy_and_deleting_takes_it_away_again() {
     let reported = flags(&copy);
     let written = std::fs::write(copy.join("notes.txt"), "and it can be written\n").is_ok();
 
-    // `rmdir` will not have a subvolume, and neither will `remove_dir_all` — which
-    // is the whole reason `delete` is an ioctl and not a call to `std::fs`.
-    let by_hand = std::fs::remove_dir_all(&copy).is_err();
+    // That the thing being deleted is a subvolume, asked of `stat(2)` and of the
+    // `btrfs` command — never of the ioctl the code under test uses, and never of
+    // whether some other way of removing it failed.
+    let holder = names(&snapshots.directory());
+    let witness = names(&copy);
+
+    // The negative control, made in the same directory on the same filesystem: an
+    // ordinary directory must not carry the witness. Without it a witness that
+    // said *subvolume* about everything would pass.
+    let ordinary = snapshots.directory().join("an-ordinary-directory");
+    std::fs::create_dir_all(&ordinary).expect("a directory beside the copy");
+    let control = names(&ordinary);
+
+    // And the second opinion where btrfs-progs is installed, asked about the same
+    // two paths, the way `the_kernel_is_asked_whether_something_is_a_subvolume`
+    // asks it.
+    let command = thalyx_snapshot::Btrfs::new();
+    let agreed = match (command.is_subvolume(&copy), command.is_subvolume(&ordinary)) {
+        (Ok(true), Ok(false)) => "yes",
+        _ => "no btrfs-progs here to ask",
+    };
+    eprintln!("the `btrfs` command was asked the same question and agreed: {agreed}");
+    let _ = std::fs::remove_dir_all(&ordinary);
+
     let deleted = Native.delete(&copy);
     let gone = !copy.exists();
 
@@ -238,10 +298,29 @@ fn restoring_makes_a_writable_copy_and_deleting_takes_it_away_again() {
         written,
         "the copy a restore swaps in could not be written to"
     );
-    assert!(
-        by_hand,
-        "an ordinary recursive remove took the subvolume away, so this test is not \
-         about a subvolume"
+    assert_eq!(
+        witness.0, BTRFS_FIRST_FREE_OBJECTID,
+        "the copy a restore swaps in is inode {} and the root of a subvolume is \
+         inode {BTRFS_FIRST_FREE_OBJECTID}, so this test is not about a subvolume",
+        witness.0
+    );
+    assert_ne!(
+        witness.1, holder.1,
+        "the copy a restore swaps in shares device {:#x} with the directory holding \
+         it, and the kernel gives every subvolume its own, so this test is not \
+         about a subvolume",
+        witness.1
+    );
+    assert_ne!(
+        control.0, BTRFS_FIRST_FREE_OBJECTID,
+        "an ordinary directory came back as inode {BTRFS_FIRST_FREE_OBJECTID}, so \
+         the witness above says `subvolume` about everything and proves nothing"
+    );
+    assert_eq!(
+        control.1, holder.1,
+        "an ordinary directory has device {:#x} and the directory holding it has \
+         {:#x}, so the witness above says `subvolume` about everything",
+        control.1, holder.1
     );
     deleted.expect("the kernel deleted the subvolume");
     assert!(gone, "the subvolume is still there after being deleted");
