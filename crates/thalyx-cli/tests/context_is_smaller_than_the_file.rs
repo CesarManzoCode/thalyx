@@ -21,15 +21,17 @@ fn thalyx() -> &'static str {
 }
 
 /// Rule 3: one variable per requirement, and a skip that says it skipped.
+///
+/// The search is `thalyx_rust`'s and not this file's. It used to walk
+/// `$HOME/.rustup/toolchains` on its own, which is the exact failure
+/// `toolchain.rs` was written to end: `sudo` hands root a `HOME` of `/root`,
+/// so under `dev/verify.sh` all five of these tests reported `NOT PROVEN`
+/// about a machine whose analyzer the same script had just found and named in
+/// `THALYX_RUST_ANALYZER`. A second discovery implementation is a second
+/// answer to "does this machine have one", and the wrong one was the one being
+/// believed.
 fn analyzer_or_skip(what: &str) -> bool {
-    let found = std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".rustup").join("toolchains"))
-        .and_then(|toolchains| std::fs::read_dir(toolchains).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|entry| entry.path().join("bin").join("rust-analyzer").is_file());
-    if found {
+    if thalyx_rust::analyzer::find().is_some() {
         return true;
     }
     let message = format!(

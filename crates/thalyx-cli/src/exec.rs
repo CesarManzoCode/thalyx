@@ -1239,7 +1239,16 @@ fn run_check(
             // Nothing added to its environment. A check that names a program
             // has named a program, and telling it where a Rust toolchain is
             // would be this verb deciding what somebody else's binary is for.
-            let outcome = run_confined(asked, program, arguments, &[], &[], &[], metrics);
+            let outcome = run_confined(
+                asked,
+                program,
+                arguments,
+                &[],
+                &[],
+                &[],
+                thalyx_sandbox::profile::MODULE_STANDARD,
+                metrics,
+            );
             CheckRecord {
                 key: String::new(),
                 check: format!("program `{program}`"),
@@ -1275,6 +1284,10 @@ struct Ran {
 /// arrives as [`Verdict::NotProven`]: **a check that could not run is not a
 /// check that passed.** This container is such a machine, which is why the
 /// tests that exercise this arm say so out loud rather than pretending.
+// Eight, and the eighth is the profile. Folding the grants and the profile into
+// a struct would hide the one thing a reader of a launch has to be able to see
+// at the call site: which confinement this program is getting.
+#[allow(clippy::too_many_arguments)]
 fn run_confined(
     asked: &Asked<'_>,
     program: &str,
@@ -1282,6 +1295,7 @@ fn run_confined(
     also_readable: &[PathBuf],
     also_writable: &[PathBuf],
     environment: &[(String, String)],
+    profile: &'static str,
     metrics: &mut Metrics,
 ) -> Ran {
     use thalyx_manifest::{Permission, PermissionKind};
@@ -1341,7 +1355,13 @@ fn run_confined(
             grants,
             helper: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thalyx")),
             request_id: asked.request_id.clone(),
-            profile: thalyx_sandbox::profile::MODULE_STANDARD,
+            // Named by the caller, because the two callers are not the same
+            // thing. A `rust` check runs a compiler tree and asks for the
+            // profile that confines one; a check that names somebody's program
+            // gets the profile every unsigned program gets, and widening that
+            // to suit Cargo would hand every named program a compiler tree's
+            // filter and six gigabytes for nothing.
+            profile,
             environment: environment.to_vec(),
         },
     );
@@ -1566,6 +1586,15 @@ fn rust_check(
         &readable,
         std::slice::from_ref(&build_into),
         &environment,
+        // **The compiler tree's profile, not the module one.** Cargo runs a
+        // `rustc` per unit and a build script per dependency that has one, so
+        // it makes calls an ordinary module does not — see
+        // `thalyx_sandbox::seccomp::semantic_provider`, which names all four.
+        // Until 2026-08-30 this ran under the module filter and Cargo was
+        // killed on `flock`, with `159` as the only thing anybody could read.
+        // It is also the tree rust-analyzer starts from the other direction,
+        // under this same profile.
+        thalyx_sandbox::profile::SEMANTIC_PROVIDER,
         metrics,
     );
 
