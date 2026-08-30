@@ -267,3 +267,111 @@ fn a_rename_of_the_name_that_means_one_thing_goes_through() {
     // question.
     assert!(gamma.contains("pub struct Config"), "{gamma}");
 }
+
+#[test]
+fn every_semantic_answer_says_what_stood_behind_the_process_that_gave_it() {
+    // **The gap this closes, stated as an assertion.**
+    //
+    // rust-analyzer was started as an ordinary host process and described in
+    // this repository as "a reader" — true of the LSP protocol, false of the
+    // process tree. It runs `cargo metadata`, and answering anything about a
+    // workspace with a proc-macro or a build script in it means compiling and
+    // running them: arbitrary code from a registry, at analysis time.
+    //
+    // It now goes through `thalyx_core::start_foreign` — cgroup, kernel policy,
+    // private root filesystem, own user, pid namespace, network namespace,
+    // seccomp — and falls back to a host process only where nothing can
+    // enforce, which is this container and any Fedora that has not run
+    // `make -C lsm load`.
+    //
+    // What this test demands is the honesty, which holds on **every** machine:
+    // the answer says which of the two happened, and never nothing. Whether
+    // this machine confined it is `dev/verify.sh`'s question, not this one's.
+    if !analyzer_or_skip("that an answer says what confined the provider") {
+        return;
+    }
+    let (_held, tree, store) = three_configs();
+
+    let output = piped(
+        &store,
+        &[
+            "structured on".to_string(),
+            format!("cd {}", tree.display()),
+            "contexto Unmistakable".to_string(),
+            "salir".to_string(),
+        ],
+    );
+    let said = objects(&output);
+    let answer = answer_to(&said, "context");
+
+    assert_eq!(answer["source"], serde_json::json!("rust-analyzer"));
+    assert!(
+        answer["analyzer_confined"].is_boolean(),
+        "the answer does not say whether the provider was confined: {answer:#}"
+    );
+    let how = answer["analyzer_how"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the answer does not say what started it: {answer:#}"));
+    assert!(
+        how.starts_with("confined:") || how.starts_with("host"),
+        "`analyzer_how` is `{how}`, which is neither"
+    );
+    // The two must agree. A `confined: true` beside a `host` phrase would be
+    // the worst possible shape: two fields, one of them wrong, and no way to
+    // tell which.
+    assert_eq!(
+        answer["analyzer_confined"],
+        serde_json::json!(how.starts_with("confined:")),
+        "{answer:#}"
+    );
+}
+
+#[test]
+fn a_machine_that_can_enforce_can_demand_that_it_did() {
+    // Rule 3, for the confinement: one environment variable per requirement.
+    // With `THALYX_REQUIRE_CONFINED_ANALYZER=1` the fallback is not a fallback,
+    // it is a refusal — so a machine that *can* confine the provider can insist
+    // that it was, rather than silently getting a host process on the day the
+    // LSM failed to load.
+    //
+    // Asserted from the failing side, which is the side this container can
+    // show: nothing here can enforce, so the demand must produce a refusal and
+    // not an answer.
+    if !analyzer_or_skip("that the confinement can be demanded") {
+        return;
+    }
+    let (_held, tree, store) = three_configs();
+
+    let mut child = Command::new(thalyx())
+        .arg("session")
+        .env("THALYX_ROOT", &store)
+        .env("THALYX_REQUIRE_CONFINED_ANALYZER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the session");
+    let typed = format!(
+        "structured on\ncd {}\ncontexto Unmistakable\nsalir\n",
+        tree.display()
+    );
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(typed.as_bytes())
+        .expect("feeding the session");
+    let output = child.wait_with_output().expect("waiting");
+    let said = objects(&output);
+    let answer = answer_to(&said, "context");
+
+    // It did not resolve anything with a compiler frontend, and it did not
+    // pretend to: the answer falls back to the index and says so, which is the
+    // existing contract for "there is no rust-analyzer here".
+    assert_ne!(
+        answer["source"],
+        serde_json::json!("rust-analyzer"),
+        "the demand was ignored and a host process answered anyway: {answer:#}"
+    );
+}

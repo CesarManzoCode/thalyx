@@ -246,6 +246,15 @@ pub struct Tally {
     /// Times a rust-analyzer was started. The expensive number: about 25
     /// seconds on this workspace, and the reason the cache exists.
     pub analyzer_starts: usize,
+    /// Whether the running analyzer is under Thalyx's confinement.
+    ///
+    /// `None` when none is running. **Never assumed**: a machine whose kernel
+    /// cannot deny runs the provider as a host process, and an answer that did
+    /// not say so would let a reader believe a whole compiler tree had been
+    /// confined when it had not. See `analyzer::Spawn`.
+    pub analyzer_confined: Option<bool>,
+    /// One phrase saying what started it: `confined: <profile>`, or `host`.
+    pub analyzer_how: Option<String>,
     /// Times Cargo was asked to describe the workspace.
     pub cargo_calls: usize,
 }
@@ -268,6 +277,18 @@ pub struct Provider {
     /// second question does not pay the 25 seconds again to be told the same
     /// thing — and so the answer can say *which* failure it was.
     analyzer_refused: Option<String>,
+    /// Who starts the analyzer's process, and under whose authority.
+    ///
+    /// Defaults to [`analyzer::OnTheHost`], which is what a crate that knows
+    /// nothing about cgroups can do by itself and which says `confined: false`
+    /// on every answer. The authority that can do better hands one in with
+    /// [`Provider::spawning`].
+    spawner: std::sync::Arc<dyn analyzer::Spawn>,
+    /// Where the analyzer must be able to read outside the workspace.
+    readable: Vec<PathBuf>,
+    /// Where its toolchain is, for a process that is not the user who
+    /// installed it.
+    environment: Vec<(String, String)>,
     pub tally: Tally,
 }
 
@@ -280,8 +301,51 @@ impl Provider {
             workspace: None,
             analyzer: None,
             analyzer_refused: None,
+            spawner: std::sync::Arc::new(analyzer::OnTheHost),
+            readable: Vec::new(),
+            environment: Vec::new(),
             tally: Tally::default(),
         }
+    }
+
+    /// The same, with somebody else starting the analyzer's process.
+    ///
+    /// The authority above this crate hands in a spawner that puts the server
+    /// — and every `cargo`, `rustc` and build script under it — in a cgroup
+    /// with a policy, a private root filesystem holding only the workspace and
+    /// the toolchain, no network, its own user and the seccomp filter. See
+    /// [`analyzer::Spawn`].
+    pub fn spawning(mut self, spawner: std::sync::Arc<dyn analyzer::Spawn>) -> Self {
+        self.spawner = spawner;
+        self
+    }
+
+    /// What the analyzer must be able to read outside the workspace, and where
+    /// its toolchain is.
+    ///
+    /// Both, together, because they are the same fact twice: a grant on
+    /// `~/.cargo` and a `CARGO_HOME` that names it are the permission and the
+    /// address, and one without the other is a process that may read a
+    /// directory it will never look in.
+    pub fn reaching(mut self, readable: Vec<PathBuf>, environment: Vec<(String, String)>) -> Self {
+        self.readable = readable;
+        self.environment = environment;
+        self
+    }
+
+    /// Whether the running analyzer is under Thalyx's confinement.
+    ///
+    /// `None` when none is running. Reported rather than assumed: a machine
+    /// that cannot enforce runs the provider on the host, and an answer that
+    /// did not say so would let a reader believe a compiler tree had been
+    /// confined when it had not.
+    pub fn analyzer_confined(&self) -> Option<bool> {
+        self.analyzer.as_ref().map(Analyzer::confined)
+    }
+
+    /// One phrase saying what started the running analyzer.
+    pub fn analyzer_how(&self) -> Option<&str> {
+        self.analyzer.as_ref().map(Analyzer::how)
     }
 
     /// The same, told where to put anything it builds.
@@ -705,8 +769,22 @@ impl Provider {
                 return Err(RustError::NoAnalyzer(why));
             };
             self.tally.analyzer_starts += 1;
-            match Analyzer::start(&self.root, &binary, self.build_into.as_deref()) {
-                Ok(analyzer) => self.analyzer = Some(analyzer),
+            match Analyzer::start(
+                &self.root,
+                &binary,
+                self.build_into.as_deref(),
+                &self.readable,
+                &self.environment,
+                self.spawner.as_ref(),
+            ) {
+                Ok(analyzer) => {
+                    // Recorded at the moment of the start, so a caller that
+                    // subtracts two tallies around a request still learns what
+                    // stood behind the process that answered it.
+                    self.tally.analyzer_confined = Some(analyzer.confined());
+                    self.tally.analyzer_how = Some(analyzer.how().to_string());
+                    self.analyzer = Some(analyzer);
+                }
                 Err(error) => {
                     self.analyzer_refused = Some(error.to_string());
                     return Err(error);

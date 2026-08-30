@@ -193,11 +193,207 @@ pub fn run_foreign(
     }
 }
 
-fn run_inner(
+/// A confined program that is still running, and everything needed to end it.
+///
+/// **Holding one owns the teardown.** [`ForeignProcess::shutdown`] kills the
+/// process — which, under a profile with a pid namespace, kills every
+/// descendant with it, because the kernel reaps a namespace when its init
+/// dies — and then withdraws the policy and removes the cgroup. Dropping one
+/// without that kills the process and leaves the cgroup and its kernel policy
+/// behind, which the [`Drop`] below does as the half that can be done without
+/// a policy store.
+///
+/// It exists for the semantic provider: rust-analyzer costs about 25 seconds to
+/// start and 20 milliseconds to answer, so it is started once and asked many
+/// times — its confinement outlives the call that established it, and a
+/// [`thalyx_sandbox::Confinement`] borrows the store and cannot be kept
+/// anywhere but in that frame. That is exactly what `Held` is for, and this is
+/// the second caller of it after the resident engine.
+pub struct ForeignProcess {
+    /// The process Thalyx spawned, until somebody takes it.
+    ///
+    /// An `Option` because the one caller for this needs to *own* the child —
+    /// `Analyzer` holds a conversation over its pipes — while the confinement
+    /// stays here to be torn down. The first shape of this handed the child out
+    /// and left a placeholder process behind, which meant `thalyx` depended on
+    /// there being a `/bin/true` on the machine. The image holds the Linux
+    /// kernel and one program. There is no `/bin/true`.
+    child: Option<std::process::Child>,
+    held: Option<thalyx_sandbox::Held>,
+    pub program: PathBuf,
+    pub name: String,
+    pub cgroup_id: u64,
+    pub policy: thalyx_permd::Policy,
+    pub isolation: String,
+    pub isolated: bool,
+    pub uid: Option<u32>,
+}
+
+impl ForeignProcess {
+    /// Take the process, leaving the confinement here to be torn down.
+    ///
+    /// For a caller that talks to what it started: it needs the pipes, and the
+    /// cgroup and the policy are not its to hold. Whoever takes the child still
+    /// has to call [`ForeignProcess::shutdown`] — and killing the child alone
+    /// is not enough, because the cgroup and its kernel policy would be left.
+    pub fn take_child(&mut self) -> Option<std::process::Child> {
+        self.child.take()
+    }
+
+    /// Kill it and everything it started, then take the confinement down.
+    pub fn shutdown(mut self, policies: &dyn PolicyStore) {
+        self.end(policies);
+    }
+
+    fn end(&mut self, policies: &dyn PolicyStore) {
+        // The cgroup first, and it is not belt and braces. A pid namespace's
+        // init dying takes the namespace with it — but the window between
+        // `spawn` and the re-exec that *becomes* that init is a window where
+        // the tree is ordinary processes, and a `cargo` started in it would
+        // outlive the kill. `cgroup.kill` covers every process in the cgroup
+        // whatever stage it is at, and it covers the case where the child was
+        // taken by somebody else and is not here to be killed.
+        if let Some(held) = &self.held {
+            let _ = held.cgroup().kill();
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        // `release` is a no-op while anything is still inside, and `SIGKILL` is
+        // delivered rather than completed: a compiler tree of forty processes
+        // does not vanish on the instruction after the write. Without this wait
+        // the release finds the cgroup occupied, declines, and leaves the
+        // directory and its map entry behind — which is not a leak of memory,
+        // it is a kernel policy outliving what it was written for.
+        //
+        // Bounded, and it gives up rather than blocking: a cgroup that will not
+        // empty is a fact to report, not a reason for Thalyx to stop.
+        if let Some(held) = &self.held {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if held.cgroup().is_empty().unwrap_or(true) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        if let Some(held) = self.held.take() {
+            let _ = held.release(policies);
+        }
+    }
+}
+
+impl Drop for ForeignProcess {
+    /// Half a teardown, which is all that can be done from here.
+    ///
+    /// Withdrawing a policy needs a policy store and this holds no borrow of
+    /// one — that is the whole reason `Held` exists. So the process is killed,
+    /// and the cgroup and its map entry are left for the next start of the same
+    /// program to reuse. A handle dropped without
+    /// [`ForeignProcess::shutdown`] is a bug; this keeps it from being a live
+    /// compiler nobody is holding.
+    fn drop(&mut self) {
+        if let Some(held) = &self.held {
+            let _ = held.cgroup().kill();
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Start a foreign program under confinement and hand it back still running.
+///
+/// The same establishment `run_foreign` does — the same enforcement gate, the
+/// same user, the same cgroup, the same root filesystem, the same filter — up
+/// to the moment the process exists. `stdin` is a pipe whose only writer is
+/// Thalyx, because the one caller for this talks to what it starts.
+pub fn start_foreign(
     store: &Store,
     policies: &dyn PolicyStore,
     request: &ForeignRequest<'_>,
-) -> Result<ForeignOutcome> {
+) -> Result<ForeignProcess> {
+    let (program, home, name, profile, uid) = establish(store, policies, request)?;
+
+    let parent = thalyx_sandbox::cgroup::parent()?;
+    let confinement = Confinement::establish(
+        policies,
+        &parent,
+        &name,
+        profile,
+        &request.grants,
+        thalyx_permd::boot_ns(),
+        thalyx_permd::DEFAULT_JIT_LIFETIME_NS,
+    )?;
+
+    let cgroup_id = confinement.cgroup_id();
+    let policy = confinement.policy();
+    let isolation = confinement.profile().describe();
+    let isolated = confinement.profile().isolates();
+
+    let child = confinement.spawn_talking(
+        &request.helper,
+        &home,
+        &program,
+        uid,
+        &request.args,
+        &request.environment,
+    )?;
+
+    let journal = Journal::open(store.journal_path())?;
+    let _ = journal.append(&Entry {
+        timestamp: thalyx_journal::now(),
+        operation: "start_foreign".to_string(),
+        module_id: Some(program.display().to_string()),
+        version: None,
+        outcome: if isolated {
+            Outcome::Success
+        } else {
+            Outcome::Degraded {
+                reason: isolation.clone(),
+            }
+        },
+        request_id: request.request_id.clone(),
+        origin: Origin::UserUtterance,
+        snapshot: None,
+        notes: vec![format!("started under {isolation}, held open")],
+    });
+
+    Ok(ForeignProcess {
+        child: Some(child),
+        held: Some(confinement.detach()),
+        program,
+        name,
+        cgroup_id,
+        policy,
+        isolation,
+        isolated,
+        uid,
+    })
+}
+
+/// Everything both starts do before a cgroup exists.
+///
+/// Lifted out so there is one enforcement gate and one uid assignment rather
+/// than two, which is the same argument `run::start` makes for the resident
+/// module: a second launcher is a second place for the checks to drift.
+type Established = (
+    PathBuf,
+    PathBuf,
+    String,
+    thalyx_sandbox::Profile,
+    Option<u32>,
+);
+
+fn establish(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &ForeignRequest<'_>,
+) -> Result<Established> {
     let program = resolve_program(request.program)?;
 
     // The directory the binary lives in becomes its `/module` inside the pivot.
@@ -214,7 +410,6 @@ fn run_inner(
         })?
         .to_path_buf();
 
-    // The name, before anything is created with it.
     let name = cgroup_name(&program);
 
     // Resolved before the kernel is asked anything, for the reason `run.rs`
@@ -269,6 +464,20 @@ fn run_inner(
         None
     };
 
+    Ok((program, home, name, profile, uid))
+}
+
+fn run_inner(
+    store: &Store,
+    policies: &dyn PolicyStore,
+    request: &ForeignRequest<'_>,
+) -> Result<ForeignOutcome> {
+    // The same establishment `start_foreign` does, through the same function.
+    // Two copies of the enforcement gate and the uid assignment would be two
+    // places for them to drift, and the one that drifts is always the one
+    // nobody runs on the machine that can enforce.
+    let (program, home, name, profile, uid) = establish(store, policies, request)?;
+
     let parent = thalyx_sandbox::cgroup::parent()?;
     let confinement = Confinement::establish(
         policies,
@@ -285,8 +494,6 @@ fn run_inner(
     let isolation = confinement.profile().describe();
     let isolated = confinement.profile().isolates();
 
-    // `None` for the channel, and that is the decree rather than an omission.
-    // See this module's header: a guest is not handed the API.
     // No channel, and that is the decree rather than an omission. See this
     // module's header: a guest is not handed the API.
     let mut child = confinement.spawn_with(

@@ -445,6 +445,18 @@ pub struct Metrics {
     pub validation_cache_misses: usize,
     /// How many crates the change was found to reach.
     pub affected_packages: usize,
+    /// Whether the semantic provider that answered was under Thalyx's
+    /// confinement.
+    ///
+    /// `None` when nothing semantic was asked. Never assumed: rust-analyzer
+    /// runs Cargo, which compiles and runs build scripts, and a run that
+    /// reported nothing about where that happened would let a reader believe a
+    /// compiler tree had been confined when it had not.
+    #[serde(default)]
+    pub analyzer_confined: Option<bool>,
+    /// One phrase saying what started it.
+    #[serde(default)]
+    pub analyzer_how: Option<String>,
 
     // ── what the programmable form produced ────────────────────────────────
     //
@@ -839,6 +851,8 @@ pub fn carry_out<V: Volumes>(
     metrics.analyzer_starts = semantics
         .analyzer_starts
         .saturating_sub(semantics_before.analyzer_starts);
+    metrics.analyzer_confined = semantics.analyzer_confined;
+    metrics.analyzer_how = semantics.analyzer_how.clone();
     metrics.machine_time_ms = started.elapsed().as_millis();
     evidence.metrics = metrics;
     evidence
@@ -1729,6 +1743,11 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
             json!(evidence.metrics.semantic_cache_hits),
         ),
         ("analyzer_starts", json!(evidence.metrics.analyzer_starts)),
+        (
+            "analyzer_confined",
+            json!(evidence.metrics.analyzer_confined),
+        ),
+        ("analyzer_how", json!(evidence.metrics.analyzer_how)),
         (
             "validation_cache_hits",
             json!(evidence.metrics.validation_cache_hits),

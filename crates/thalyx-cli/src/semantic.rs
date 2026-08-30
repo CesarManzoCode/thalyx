@@ -37,6 +37,7 @@
 use crate::files::{Face, Where};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use thalyx_core::Store;
 use thalyx_know::{Knowledge, Standing};
 use thalyx_rust::{At, Provider};
 
@@ -127,6 +128,194 @@ pub fn build_directory(store_root: &Path, tree: &Path) -> PathBuf {
     store_root.join("state").join("rust-target").join(key)
 }
 
+// ── the provider's own process, under Thalyx's authority ─────────────────────
+
+/// Starts the semantic provider the way Thalyx starts a program nobody signed.
+///
+/// `vault/03-Primitivas/Semantica-Compilada.md`, revised 2026-08-30. The
+/// provider used to be an ordinary host process, justified by "it is a
+/// reader" — which is true of the LSP protocol and false of the process tree.
+/// rust-analyzer runs `cargo metadata`, and answering anything about a
+/// workspace with a proc-macro or a build script in it means **compiling and
+/// running them**: arbitrary code from a registry, executing at analysis time,
+/// with whatever reach the process that started it had.
+///
+/// So it goes through `thalyx_core::start_foreign` — the same establishment
+/// `ejecutar` uses: an enforcement gate that refuses when nothing can deny, its
+/// own user, its own cgroup with a policy in the kernel, its own root
+/// filesystem holding the workspace and the toolchain and nothing else, its own
+/// pid namespace so killing the one process Thalyx holds kills every compiler
+/// under it, its own network namespace, and the seccomp filter.
+///
+/// What it is granted, and nothing else:
+///
+/// - the **workspace**, read and write. Write because rust-analyzer's first act
+///   on a workspace with no `Cargo.lock` is to write one, and a provider that
+///   could not would answer every question about a tree it had failed to
+///   describe;
+/// - the **toolchain and the registry**, read-only;
+/// - a **build directory outside the workspace**, both ways — outside because
+///   a `target/` inside the tree is inside the snapshot, and a rollback would
+///   destroy the build cache that makes the next question cheap.
+struct UnderThalyx {
+    store: Store,
+    request_id: String,
+}
+
+impl thalyx_rust::analyzer::Spawn for UnderThalyx {
+    fn start(
+        &self,
+        asked: thalyx_rust::analyzer::Launching<'_>,
+    ) -> thalyx_rust::Result<thalyx_rust::analyzer::Started> {
+        use thalyx_manifest::{Permission, PermissionKind};
+
+        let mut grants = Vec::new();
+        let mut grant = |path: &Path, write: bool| {
+            grants.push(Permission {
+                resource: path.display().to_string(),
+                action: "read".to_string(),
+                kind: PermissionKind::Session,
+            });
+            if write {
+                grants.push(Permission {
+                    resource: path.display().to_string(),
+                    action: "write".to_string(),
+                    kind: PermissionKind::Session,
+                });
+            }
+        };
+        grant(asked.root, true);
+        if let Some(target) = asked.build_into {
+            // Made here rather than left to Cargo: a grant on a directory that
+            // does not exist yet is a grant on nothing, and `RootFs` refuses a
+            // granted path that is not there.
+            let _ = std::fs::create_dir_all(target);
+            grant(target, true);
+        }
+        for path in asked.readable {
+            if path.is_dir() {
+                grant(path, false);
+            }
+        }
+
+        let mut environment: Vec<(String, String)> = asked
+            .environment
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        if let Some(target) = asked.build_into {
+            environment.push(("CARGO_TARGET_DIR".to_string(), target.display().to_string()));
+        }
+
+        let started = match thalyx_core::start_foreign(
+            &self.store,
+            &thalyx_permd::KernelStore::default_map(),
+            &thalyx_core::ForeignRequest {
+                program: asked.program,
+                args: Vec::new(),
+                grants,
+                helper: std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("thalyx")),
+                request_id: self.request_id.clone(),
+                profile: thalyx_sandbox::profile::SEMANTIC_PROVIDER,
+                environment,
+            },
+        ) {
+            Ok(started) => started,
+            // **The fallback, and it is not a soft spot left open for
+            // convenience.**
+            //
+            // `start_foreign` refuses on a machine whose kernel is not denying.
+            // That is `Programas-Ajenos.md`'s decree and it is right — but a
+            // Thalyx that could therefore not resolve a symbol *at all* would
+            // be a machine where the programming face does not exist, and this
+            // container is such a machine, as is any Fedora that has not run
+            // `make -C lsm load`.
+            //
+            // So it falls back to what this crate could always do, and every
+            // answer that came through it says `analyzer_confined: false` with
+            // the reason attached. `THALYX_REQUIRE_CONFINED_ANALYZER=1` turns
+            // it into a refusal, which is rule 3's shape: one variable per
+            // requirement, so a machine that can enforce can demand that it did.
+            Err(why) => {
+                if std::env::var("THALYX_REQUIRE_CONFINED_ANALYZER").as_deref() == Ok("1") {
+                    return Err(thalyx_rust::RustError::NoAnalyzer(format!(
+                        "THALYX_REQUIRE_CONFINED_ANALYZER=1 and the semantic provider could \
+                         not be confined: {why}. Nothing was started"
+                    )));
+                }
+                let mut fell_back =
+                    thalyx_rust::analyzer::Spawn::start(&thalyx_rust::analyzer::OnTheHost, asked)?;
+                fell_back.how = format!("host (not confined: {why})");
+                fell_back.confined = false;
+                return Ok(fell_back);
+            }
+        };
+
+        let how = format!("confined: {}", started.isolation);
+        let confined = started.isolated;
+        let mut started = started;
+        // The child moves out — `Analyzer` owns the conversation over its
+        // pipes — and the confinement stays behind to be torn down. That split
+        // is why `ForeignProcess` holds an `Option<Child>` and not a `Child`:
+        // the first shape left a placeholder process behind, which made this
+        // depend on a `/bin/true` existing. The image holds the Linux kernel
+        // and one program.
+        let child = started.take_child().ok_or_else(|| {
+            thalyx_rust::RustError::NoAnalyzer(
+                "the confinement started nothing to talk to".to_string(),
+            )
+        })?;
+
+        Ok(thalyx_rust::analyzer::Started {
+            child,
+            release: Some(Box::new(move || {
+                started.shutdown(&thalyx_permd::KernelStore::default_map());
+            })),
+            how,
+            confined,
+        })
+    }
+}
+
+/// The provider for a tree, confined where this machine can confine anything.
+///
+/// **Falls back to a host process, says so, and can be made to refuse.**
+///
+/// The fallback is not a soft spot left open for convenience: `start_foreign`
+/// refuses on a machine whose kernel is not denying, which is
+/// `Programas-Ajenos.md`'s decree and is right — and a Thalyx that therefore
+/// could not resolve a symbol at all would be a machine where the programming
+/// face does not exist. This container is such a machine, and so is any Fedora
+/// that has not run `make -C lsm load`.
+///
+/// So it is reported rather than hidden: every answer carries
+/// `analyzer_confined`, and `THALYX_REQUIRE_CONFINED_ANALYZER=1` turns the
+/// fallback into a refusal. Rule 3's shape — one variable per requirement — so
+/// a machine that can enforce can demand that it did.
+fn provider_for(store_root: &Path, tree: &Path) -> Provider {
+    let provider = Provider::open(tree, knowledge(store_root, tree))
+        .building_into(&build_directory(store_root, tree))
+        .reaching(
+            thalyx_rust::toolchain::readable(),
+            thalyx_rust::toolchain::environment()
+                .into_iter()
+                .map(|(name, path)| (name.to_string(), path.display().to_string()))
+                .collect(),
+        );
+    match Store::open(store_root) {
+        Ok(store) => provider.spawning(std::sync::Arc::new(UnderThalyx {
+            store,
+            request_id: crate::new_request_id(),
+        })),
+        // No store is no journal and no uid registry, which are two of the
+        // things confining a program needs. Said as what it is rather than
+        // becoming a silent host process: the answer's `analyzer_confined`
+        // will be `false` and `analyzer_how` will be `host`.
+        Err(_) => provider,
+    }
+}
+
 /// Do something with the provider for a tree, starting or reusing one.
 ///
 /// Reused rather than rebuilt because the expensive half is the rust-analyzer
@@ -147,11 +336,7 @@ pub fn with_provider<T>(
             if live.len() >= MOST_LIVE {
                 live.remove(0);
             }
-            live.push((
-                tree.to_path_buf(),
-                Provider::open(tree, knowledge(store_root, tree))
-                    .building_into(&build_directory(store_root, tree)),
-            ));
+            live.push((tree.to_path_buf(), provider_for(store_root, tree)));
         }
     }
     let (_, provider) = live.last_mut().expect("just pushed");
@@ -335,6 +520,13 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         why,
     } = gather(&asked);
 
+    let confinement = with_provider(store_root, &tree, |provider| {
+        (
+            provider.analyzer_confined(),
+            provider.analyzer_how().map(str::to_string),
+        )
+    });
+
     let (returned, used, omitted) = fit(&entries, budget);
 
     // What the model did *not* have to read: the whole of every file these
@@ -373,6 +565,13 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 // up on the ambiguous day is a field nobody handles on the
                 // ambiguous day.
                 ("resolution", json!(resolution)),
+                // What stood behind the process that answered. rust-analyzer
+                // runs Cargo, which compiles and runs build scripts, so this
+                // is a fact about arbitrary code having executed — reported
+                // rather than assumed, on every answer, including the ones the
+                // index gave where it is `null`.
+                ("analyzer_confined", json!(confinement.0)),
+                ("analyzer_how", json!(confinement.1)),
                 ("detail", json!(why)),
             ],
         ));

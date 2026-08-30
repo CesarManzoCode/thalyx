@@ -120,6 +120,10 @@ pub const MODULE_STANDARD: &str = "module_standard";
 /// degraded, exactly like `--unconfined`.
 pub const DIAGNOSTIC: &str = "diagnostic";
 
+/// What a semantic provider — rust-analyzer, and its whole compiler tree — is
+/// confined by. See [`semantic_provider`].
+pub const SEMANTIC_PROVIDER: &str = "semantic_provider";
+
 /// Look up a profile by the name a contract declared.
 ///
 /// An unknown name is an error rather than a fallback to something safe. A
@@ -128,8 +132,52 @@ pub const DIAGNOSTIC: &str = "diagnostic";
 pub fn resolve(name: &str) -> Result<Profile> {
     match name {
         MODULE_STANDARD => Ok(module_standard()),
+        SEMANTIC_PROVIDER => Ok(semantic_provider()),
         DIAGNOSTIC => Ok(diagnostic()),
         other => Err(SandboxError::UnknownProfile(other.to_string())),
+    }
+}
+
+/// The profile a semantic provider runs under.
+///
+/// `vault/03-Primitivas/Semantica-Compilada.md`. rust-analyzer was described
+/// in this repository as "a reader" and started as an ordinary host process,
+/// with Thalyx's own reach over the whole filesystem and the network. The
+/// description was wrong in a way that matters: **rust-analyzer runs Cargo**,
+/// and Cargo compiles build scripts and proc-macro crates, which are arbitrary
+/// code from a registry executing at analysis time. "It does not apply edits,
+/// therefore it is read-only" is a sentence about the LSP protocol and not
+/// about the process tree.
+///
+/// So it is `module_standard` with two numbers changed, and nothing else. It
+/// is not a service framework and there is exactly one of these: a plugin
+/// architecture written before its second plugin is a guess about the second
+/// plugin.
+///
+/// - **Memory.** A module gets a gigabyte. rust-analyzer on a twenty-eight
+///   crate workspace does not fit in one, and neither does the `rustc` it
+///   starts — so a provider under the module ceiling would be killed partway
+///   through indexing and report as "the analyzer timed out", which is a true
+///   sentence about the wrong thing.
+/// - **Processes.** A module gets 512. This one is a process *tree*: the
+///   server, a `cargo metadata`, a `cargo check` per crate, a `rustc` per unit
+///   and a build script per dependency that has one.
+///
+/// Everything else is the module's: its own user, its own root filesystem
+/// holding only what was granted, its own pid namespace — so killing the one
+/// process Thalyx holds kills every compiler underneath it — its own network
+/// namespace, which is what "network denied by default" means here, and the
+/// same seccomp filter.
+pub fn semantic_provider() -> Profile {
+    Profile {
+        name: SEMANTIC_PROVIDER,
+        limits: Limits {
+            memory_max: Some(6 << 30), // 6 GiB
+            pids_max: Some(2048),
+            cpu_max: None,
+        },
+        hostname: "thalyx-semantics",
+        ..module_standard()
     }
 }
 
