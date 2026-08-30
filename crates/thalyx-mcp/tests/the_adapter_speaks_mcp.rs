@@ -54,9 +54,41 @@ fn start() -> Stack {
 }
 
 fn started_with(surface: &str) -> Stack {
-    let home = tempfile::tempdir().expect("tempdir");
+    // `tempfile::tempdir()` and nothing else is what stood here, and on
+    // 2026-08-30 it made two tests on a machine with Btrfs report that there
+    // was none: `/tmp` on Fedora is tmpfs, so the workspace this hands the
+    // bridge could never be a subvolume, and the same run had just proven two
+    // stages of `dev/verify.sh` against real Btrfs. The harness already said
+    // where to go — it sets `THALYX_BTRFS_SCRATCH` beside
+    // `THALYX_REQUIRE_BTRFS_TESTS=1`, after physically making a subvolume
+    // there — and this fixture was the one thing ignoring it.
+    //
+    // Still a `TempDir`, and still one per fixture: the scratch holds every
+    // Btrfs test of the whole workspace at once, so a shared name is a test
+    // deleting the tree another is working in (rule 11's entry of 2026-08-29).
+    let scratch = std::env::var_os("THALYX_BTRFS_SCRATCH");
+    let home = match &scratch {
+        Some(base) => tempfile::Builder::new()
+            .prefix("thalyx-mcp-")
+            .tempdir_in(base)
+            .expect("a temporary directory on THALYX_BTRFS_SCRATCH"),
+        None => tempfile::tempdir().expect("tempdir"),
+    };
     let workspace = home.path().join("project");
     let store = home.path().join("store");
+    // Being *on* Btrfs is not enough: `hacer` opens its boundary on the
+    // subvolume the session stands in and never looks upwards for one, so a
+    // plain directory on the scratch answers `not_a_subvolume` exactly as tmpfs
+    // does. Best effort and unchecked — where the scratch turns out not to be
+    // Btrfs the create fails, the `create_dir_all` below makes an ordinary
+    // directory instead, and the `NOT PROVEN` skips say so rather than this
+    // panicking about a machine it was never promised.
+    if scratch.is_some() {
+        let _ = Command::new("btrfs")
+            .args(["subvolume", "create"])
+            .arg(&workspace)
+            .output();
+    }
     std::fs::create_dir_all(workspace.join("src")).expect("src");
     std::fs::create_dir_all(&store).expect("store");
     std::fs::write(
