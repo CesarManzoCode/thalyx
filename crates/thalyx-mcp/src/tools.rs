@@ -6,7 +6,29 @@
 //! arguments, and the machine does the rest — which is why this file is a table
 //! and not a program.
 //!
-//! ## Why there are eleven of these and not forty
+//! ## Why the default surface is three
+//!
+//! **The list is the prompt.** Every tool an agent is shown arrives with every
+//! inference of every session, and it is a branch the model has to consider
+//! before any work happens. A surface of fourteen low-level operations spends
+//! attention on choosing between them — which is the tool proliferation the
+//! research named as a hazard in its own right rather than a matter of taste.
+//!
+//! Since 2026-08-30 `thalyx_exec` takes a **program**, so an operation no
+//! longer needs a schema to be reachable: `thalyx.read`, `thalyx.grep`,
+//! `thalyx.substitute` and thirty others are one line each inside it, and cost
+//! nothing until one is used. That is the research's conclusion exactly — one
+//! always-available programmable capability, with the specific operations
+//! beneath it.
+//!
+//! So the default is `thalyx_context`, `thalyx_exec` and `thalyx_evidence`:
+//! what a name is, do a stretch of work, and fetch what the work did not send
+//! back. Everything else is [`Surface::Legacy`] — **still here, still tested,
+//! still one flag away** — because those tools are the control column for
+//! every measurement of what the small surface buys, and an ablation you have
+//! deleted is one you cannot run.
+//!
+//! ## Why there were eleven of these and not forty
 //!
 //! Because the list is a prompt. Every tool an agent is shown is a branch it has
 //! to consider on every turn, and a surface that offers one tool per verb spends
@@ -25,9 +47,48 @@
 
 use serde_json::{Value, json};
 
+/// Which surface a tool is on.
+///
+/// **The list is the prompt.** Every tool an agent is shown is a branch it has
+/// to consider on every turn, and the schemas arrive with every inference of
+/// every session — so a catalogue of fourteen low-level operations spends the
+/// model's attention on choosing between them, forever, before any work
+/// happens.
+///
+/// The research that produced `hacer`'s programmable form concluded the same
+/// thing from the other direction: **one always-available programmable
+/// capability, with the specific operations beneath it.** A capability does
+/// not need its own schema to be reachable — `thalyx.read`, `thalyx.grep`,
+/// `thalyx.substitute` and thirty others are one line each inside a program,
+/// and none of them costs a token until a program uses one.
+///
+/// So the default surface is three tools. Nothing is deleted: every tool below
+/// is still here, still tested, and still reachable — which matters because
+/// they are the *control column* for every measurement of what the small
+/// surface buys, and an ablation you have deleted is one you cannot run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// Offered always. Three, and each earns it: what a name is, do a stretch
+    /// of work, and fetch what the work did not send back.
+    Hot,
+    /// Offered when the caller asks for the whole catalogue.
+    Legacy,
+}
+
+/// The whole catalogue, for a caller that wants the old surface.
+///
+/// `THALYX_MCP_SURFACE=legacy`, or `--surface legacy`. It exists for
+/// compatibility, for debugging, for the benchmarks already run against the
+/// fourteen-tool surface, and — the reason it will not be removed — as the
+/// control column: "the small surface is better" is a comparison, and a
+/// comparison needs the other arm to still exist.
+pub const LEGACY_SURFACE: &str = "legacy";
+
 /// One tool, and the verb it becomes.
 pub struct Tool {
     pub name: &'static str,
+    /// Which surface it is on. See [`Surface`].
+    pub surface: Surface,
     /// The verb ids this tool needs the machine to have. Checked against what
     /// the machine said in its hello, so a tool whose verb is gone is never
     /// advertised — see `main::usable`.
@@ -214,6 +275,7 @@ fn limit(arguments: &Value) -> Option<String> {
 pub const TOOLS: &[Tool] = &[
     Tool {
         name: "thalyx_state",
+        surface: Surface::Legacy,
         verbs: &["where", "state", "attempt"],
         description: "\
 What this Thalyx machine is right now: where the workspace is, what the machine \
@@ -231,6 +293,7 @@ otherwise take several commands and several guesses.",
     },
     Tool {
         name: "thalyx_list",
+        surface: Surface::Legacy,
         verbs: &["list"],
         description: "\
 What is in a directory of the workspace. Sizes are exact and nothing is hidden. \
@@ -255,6 +318,7 @@ Use it to orient; use thalyx_symbol or thalyx_dependencies to find code.",
     },
     Tool {
         name: "thalyx_read",
+        surface: Surface::Legacy,
         verbs: &["read"],
         description: "\
 The text of one file, with its exact size and its sha256. A file that is not \
@@ -274,6 +338,7 @@ opening any of them.",
     },
     Tool {
         name: "thalyx_context",
+        surface: Surface::Hot,
         verbs: &["context"],
         description: "\
 What a name IS, resolved by a compiler frontend rather than matched as text: \
@@ -338,6 +403,7 @@ the machine last looked. Believe them.",
     },
     Tool {
         name: "thalyx_symbol",
+        surface: Surface::Legacy,
         verbs: &["symbol", "index_build"],
         description: "\
 Where a name is defined and every place it is used, from Thalyx's parsed \
@@ -368,6 +434,7 @@ is exact and case-sensitive, so `login` does not find `login_user`.",
     },
     Tool {
         name: "thalyx_dependencies",
+        surface: Surface::Legacy,
         verbs: &["depends_on", "depended_on_by"],
         description: "\
 Which files depend on one file, or which it depends on, from the index and \
@@ -417,6 +484,7 @@ thalyx_symbol is the finer question.",
     },
     Tool {
         name: "thalyx_index",
+        surface: Surface::Legacy,
         verbs: &["index_build"],
         description: "\
 Read the workspace and record what refers to what. thalyx_symbol and \
@@ -442,6 +510,7 @@ are skipped.",
     },
     Tool {
         name: "thalyx_find",
+        surface: Surface::Legacy,
         verbs: &["find", "grep"],
         description: "\
 Search the workspace by file name pattern, or for a literal string inside \
@@ -491,6 +560,7 @@ is exact where this is not.",
     },
     Tool {
         name: "thalyx_attempt",
+        surface: Surface::Legacy,
         verbs: &["attempt"],
         description: "\
 A reversible boundary around a task. `begin` takes a snapshot of the whole \
@@ -585,35 +655,73 @@ here between the steps — use thalyx_exec instead.",
     },
     Tool {
         name: "thalyx_exec",
+        surface: Surface::Hot,
         verbs: &["exec"],
         description: "\
-Do a whole deterministic stretch of work in ONE call. Give Thalyx the list of \
-operations you already know you want, plus what must be true afterwards, and it \
-opens a reversible boundary, runs every operation in order, observes what really \
-changed, runs the checks, and then keeps the work or puts the workspace back \
-exactly as it was — without coming back to you in between. \
-Reach for this whenever the next several steps do not need you to think between \
-them: a rename across files then a search proving the old name is gone; an edit \
-then a compile; make files, change them, verify, and undo it all if the \
-verification fails. That is the normal case, not the exotic one. \
-`steps` are ordinary Thalyx requests — the same verbs and arguments the other \
-tools send, so anything you could do in five calls you can do here in one. Two \
-are worth knowing by name: `rename` takes a Rust symbol and a new name and \
-rewrites every place that really refers to it, resolved by a compiler frontend, \
-including the aliased imports a search would miss; and the `rust` check \
-compiles exactly the crates your change reaches — the ones it is in and the \
-ones that depend on them, worked out from Cargo's graph — and reuses the answer \
-when this machine has already compiled these exact bytes. They \
-run in order and stop at the first refusal. `validate` decides the outcome: if \
-every check passes the work is committed, and otherwise the whole thing is \
-rolled back and the workspace is byte-for-byte what it was. A check that could \
-not be run counts as failure, never as success. \
-The answer is deliberately small — status, what changed, how each check went, \
-and an `evidence` id. Every answer, every search hit and every line of compiler \
-output stays inside the machine; thalyx_evidence fetches any of it if you \
-actually need it. \
-Do not use it for exploring: if you need to read an answer before choosing the \
-next step, that is a real decision and belongs in its own call.",
+Do a whole stretch of work in ONE call by sending Thalyx a short PROGRAM. \
+Thalyx opens a reversible boundary, runs your program, watches what really \
+changed, and then keeps the work or puts the workspace back exactly as it was \
+— without coming back to you in between. \
+\
+`run` is JavaScript. It has variables, if/else, loops, arrays, string methods \
+and JSON, and it calls Thalyx through a `thalyx` object. **The point is that \
+what one call returns decides what you do next, locally**: list a directory \
+and loop over what came back; read each file and edit only the ones whose \
+contents say to; validate, look at the verdict, and branch on it. None of that \
+costs you a turn. \
+\
+What `thalyx` gives you: \
+`state()`, `where()`, `list(path)`, `read(path)`, `window(path, line, around)`, \
+`grep(text)`, `find(pattern)`, `symbol(name)`, `dependsOn(path)`, \
+`dependedOnBy(path)`; `context(query)` — what a NAME is, resolved by a compiler \
+frontend, and `rename(from, to)` — rewrite every place that really refers to a \
+Rust symbol, aliased imports included; `substitute(path, old, new)`, \
+`edit(path, action, …)`, `write(path, line, text)`, `append(path, text)`, \
+`makeFile(...)`, `makeDirectory(...)`, `copy(from,to)`, `move(from,to)`, \
+`remove(...)`; `changed()` — what the tree really shows changed so far; \
+`validate(check)`; `assert(condition, message)`; `mustWork(answer, message)` \
+and `mustPass(record, message)`; `needModel(value)`; `log(text)`; and \
+`call(verb, args)` for anything else. \
+\
+Every call answers an object with `ok` on it. A refusal is a value, not an \
+error — read it and decide. `mustWork(...)` turns 'it answered' into 'it \
+worked', which is the mistake to guard against on every mutating call. \
+\
+`validate({check: …})` is the same set of checks the machine runs for itself: \
+`text` (a string is absent from, or still present in, the workspace), `parses` \
+(every changed source file still has balanced brackets — what a mechanical \
+edit breaks), `rust` (cargo over exactly the crates your change REACHES, \
+worked out from Cargo's graph, reusing the answer when this machine has \
+already compiled these exact bytes), and `program` (run an absolute path, \
+confined, require exit 0). Each answers `{verdict, summary, output}` where \
+verdict is `passed`, `failed` or `not_proven` — and `not_proven` is never a \
+pass. \
+\
+`assert(condition, message)` stops the run there and then; it cannot be caught. \
+Use it for premises: exactly N candidates, no occurrence left, the process \
+exited 0. Failing early is far cheaper than discovering it after twenty edits. \
+\
+Return a small value at the end — that is all that comes back to you. \
+Everything else — whole files, every reference, all the compiler output — \
+stays in the machine under an `evidence` id, and thalyx_evidence fetches any \
+of it if the summary was not enough. Keeping the reading local and the answer \
+small is the whole point. \
+\
+If you meet a decision a machine should not make — an ambiguous symbol, a \
+design choice — call `thalyx.needModel({...})`. The workspace is put back \
+untouched and you are asked, rather than a guess being committed. \
+\
+The transaction: if the program returns and every check that ran passed, the \
+work is committed. Otherwise the whole thing is rolled back and the workspace \
+is byte-for-byte what it was. `on_failure: \"keep\"` leaves the failed tree in \
+place to look at. \
+\
+There are ceilings — wall time, memory, how many things you may ask the \
+machine, how many processes may start. An infinite loop is stopped, and \
+stopping is a rollback. \
+\
+`steps` is the older form: a plain list of requests when the work really is \
+known in advance. Send `run` or `steps`, never both.",
         schema: || {
             json!({
                 "type": "object",
@@ -622,11 +730,20 @@ next step, that is a real decision and belongs in its own call.",
                         "type": "string",
                         "description": "What this piece of work is about, for the journal."
                     },
+                    "run": {
+                        "type": "string",
+                        "description": "The program: JavaScript, using the `thalyx` object. \
+                                        Return the small value you want back. Example: \
+                                        `const refs = thalyx.context('LauncherError'); \
+                                        if (refs.resolution === 'ambiguous') { return \
+                                        thalyx.needModel(refs.entries); } ...`"
+                    },
                     "steps": {
                         "type": "array",
-                        "description": "The operations, in order. Each is a Thalyx verb and \
-                                        its arguments — exactly what the single-purpose \
-                                        tools send. They stop at the first refusal.",
+                        "description": "The older form: operations in order, when nothing \
+                                        needs to be decided from an intermediate answer. \
+                                        Each is a Thalyx verb and its arguments. Do not \
+                                        send this together with `run`.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -635,16 +752,14 @@ next step, that is a real decision and belongs in its own call.",
                                     "description": "One of: edit, make_file, make_directory, \
                                                     copy, move, remove, read, list, grep, \
                                                     find, symbol, depends_on, \
-                                                    depended_on_by, index_build, where, \
-                                                    state, describe, rehearse."
+                                                    depended_on_by, context, rename, \
+                                                    index_build, where, state, describe, \
+                                                    rehearse."
                                 },
                                 "arguments": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "The verb's arguments, in order. For \
-                                                    `edit`: [path, action, …] where action \
-                                                    is sustituir | sustituir-lote | poner | \
-                                                    cambiar | borrar."
+                                    "description": "The verb's arguments, in order."
                                 }
                             },
                             "required": ["verb"]
@@ -652,8 +767,10 @@ next step, that is a real decision and belongs in its own call.",
                     },
                     "validate": {
                         "type": "array",
-                        "description": "What must be true for the work to be kept. An empty \
-                                        list commits whatever the steps did.",
+                        "description": "Checks that must hold for the work to be kept, run \
+                                        after the program finishes. A program can also \
+                                        call `thalyx.validate(...)` itself and branch on \
+                                        the answer; both gate the commit.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -661,15 +778,12 @@ next step, that is a real decision and belongs in its own call.",
                                     "type": "string",
                                     "enum": ["text", "parses", "rust", "program"],
                                     "description": "`text`: a string must be absent from (or \
-                                                    present in) the workspace — the way to \
-                                                    prove a rename left nothing behind. \
-                                                    `parses`: every changed source file \
-                                                    still has balanced brackets, strings and \
-                                                    comments, which is what a mechanical \
-                                                    edit breaks. `rust`: cargo over the \
-                                                    packages the changed files belong to. \
-                                                    `program`: run an absolute path, \
-                                                    confined, and require exit 0."
+                                                    present in) the workspace. `parses`: \
+                                                    every changed source file still has \
+                                                    balanced brackets, strings and \
+                                                    comments. `rust`: cargo over the crates \
+                                                    the change reaches. `program`: run an \
+                                                    absolute path, confined, require exit 0."
                                 },
                                 "text": {"type": "string", "description": "For `text`."},
                                 "expect": {
@@ -680,14 +794,19 @@ next step, that is a real decision and belongs in its own call.",
                                 },
                                 "in": {
                                     "type": "string",
-                                    "description": "For `text`: a folder to look in. \
-                                                    Defaults to the whole workspace."
+                                    "description": "For `text`: a folder to look in."
                                 },
                                 "mode": {
                                     "type": "string",
                                     "enum": ["check", "test"],
                                     "description": "For `rust`: `cargo check` (default) or \
                                                     `cargo test`."
+                                },
+                                "packages": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "For `rust`: check these crates instead \
+                                                    of the ones the change reaches."
                                 },
                                 "program": {
                                     "type": "string",
@@ -705,36 +824,50 @@ next step, that is a real decision and belongs in its own call.",
                     "on_failure": {
                         "type": "string",
                         "enum": ["rollback", "keep"],
-                        "description": "What to do when a step is refused or a check does \
-                                        not hold. `rollback` is the default and is almost \
-                                        always what you want; `keep` leaves the failed tree \
-                                        in place for you to look at."
+                        "description": "What to do when the program stops short or a check \
+                                        does not hold. `rollback` is the default and is \
+                                        almost always what you want; `keep` leaves the \
+                                        failed tree in place for you to look at."
                     }
-                },
-                "required": ["steps"]
+                }
             })
         },
         // The whole program travels as **one** argument, and that is the shape
         // rather than an encoding trick: a request is a verb and a list of
         // strings, and a program is structured. Serialised here, read by the
-        // verb, and every step inside it then checked by the machine against
+        // verb, and every request inside it then checked by the machine against
         // the same table a single request is checked against.
         calls: |arguments| {
             let mut program = serde_json::Map::new();
-            let Some(steps) = arguments.get("steps") else {
+            let has_run = arguments
+                .get("run")
+                .and_then(Value::as_str)
+                .is_some_and(|source| !source.trim().is_empty());
+            let has_steps = arguments
+                .get("steps")
+                .and_then(Value::as_array)
+                .is_some_and(|steps| !steps.is_empty());
+            if !has_run && !has_steps {
                 return Err(
-                    "`thalyx_exec` needs `steps`, the operations to run in order".to_string(),
-                );
-            };
-            if steps.as_array().is_none_or(Vec::is_empty) {
-                return Err(
-                    "`steps` is empty; there is nothing to do and nothing to be \
-                            transactional about"
+                    "`thalyx_exec` needs `run` — a short JavaScript program — or `steps`, \
+                     a list of operations. With neither there is nothing to do and \
+                     nothing to be transactional about"
                         .to_string(),
                 );
             }
-            program.insert("steps".to_string(), steps.clone());
-            for name in ["label", "validate", "on_failure"] {
+            // Refused here rather than passed on, for the reason every other
+            // refusal in this file is: a shape this adapter can see is wrong
+            // costs the caller one corrected call, and a shape it passes on
+            // costs a round trip into the machine first.
+            if has_run && has_steps {
+                return Err(
+                    "send `run` or `steps`, not both: they are two different ideas about \
+                     what to do, and which one was meant is not something the machine \
+                     will decide inside a transaction"
+                        .to_string(),
+                );
+            }
+            for name in ["label", "run", "steps", "validate", "on_failure"] {
                 if let Some(value) = arguments.get(name) {
                     program.insert(name.to_string(), value.clone());
                 }
@@ -744,6 +877,7 @@ next step, that is a real decision and belongs in its own call.",
     },
     Tool {
         name: "thalyx_evidence",
+        surface: Surface::Hot,
         verbs: &["evidence"],
         description: "\
 Everything a thalyx_exec run did and did not send back: each step's full answer, \
@@ -776,6 +910,7 @@ id from the run; add `step` to get one step's answer whole.",
     },
     Tool {
         name: "thalyx_changed",
+        surface: Surface::Legacy,
         verbs: &["attempt"],
         description: "\
 What has changed in the workspace since the open attempt began — files made, \
@@ -787,6 +922,7 @@ with none, it answers that none is open.",
     },
     Tool {
         name: "thalyx_edit",
+        surface: Surface::Legacy,
         verbs: &["edit"],
         description: "\
 Change a file. For anything repeated or mechanical — a rename, a changed \
@@ -935,6 +1071,7 @@ one call and not two.",
     },
     Tool {
         name: "thalyx_file",
+        surface: Surface::Legacy,
         verbs: &["make_file", "make_directory", "remove", "move", "copy"],
         description: "\
 Create, delete, move or copy a file or directory in the workspace. Every answer \
