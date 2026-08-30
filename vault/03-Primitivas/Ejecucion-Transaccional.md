@@ -140,3 +140,34 @@ devuelva de verdad el árbol: `dev/verify.sh`, etapa **56**.
 
 Y `rust`/`program` no corren en ningún lado donde el kernel no deniegue, así que
 aquí sólo dicen `NOT PROVEN`.
+
+---
+
+## Revisión 2026-08-30: la lista de pasos era batching
+
+Lo de arriba sigue valiendo entero —la frontera, la validación, el testigo, la
+evidencia— y **la forma del trabajo cambió**. `steps` obligaba al modelo a saber
+cada operación y cada argumento antes de que corriera nada, lo cual no puede
+expresar «preguntar, mirar la respuesta, decidir qué sigue»: exactamente lo que
+un agente gasta sus turnos haciendo.
+
+`hacer` toma ahora `run`, un programa. El decreto completo está en
+[[Transaccion-Programable]].
+
+`steps` **se queda y no está deprecado**: es la forma correcta cuando el trabajo
+de verdad se conoce por adelantado, y es la columna de control de toda medición
+de lo que la forma programable compra — un uso que no caduca. Se manda una o la
+otra, nunca las dos: son dos ideas distintas de qué hacer, y cuál se quiso no es
+algo que esta máquina vaya a decidir adentro de una transacción.
+
+Dos cosas de aquí cambiaron por el programa:
+
+- **El commit se decide por el último veredicto de cada check.** Un programa
+  valida, ve que falla, arregla y valida otra vez —patrón que una lista no puede
+  hacer—, y una transacción que devolviera el árbol porque un intento anterior
+  falló haría ese patrón imposible de escribir. `not_proven` sigue sin contar
+  como pasar.
+- **`intento` y `hacer` se niegan desde adentro de un programa**, en el momento
+  de la llamada y no al leer el programa, porque un programa alcanza verbos por
+  nombre en tiempo de ejecución y no hay nada que inspeccionar por adelantado.
+  Ver [[Transaccion-Programable]] para lo que una prueba encontró ahí.

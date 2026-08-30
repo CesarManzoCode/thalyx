@@ -255,11 +255,32 @@ first one found out and a stale answer says it is stale.
 
 The whole of that is one call: resolve the symbol, rewrite every real use, see
 what changed, work out what to compile, reuse what still holds, compile the rest,
-commit or put the tree back — with no model inference in between. What is proven
-in a container is stage 57 of `verify.sh`; the vertical over a real Btrfs
-subvolume with the compiler running confined is stage 58, and whether any of it
-makes a frontier agent do more correct work with less effort is **not measured**.
-It is built to be measured next; no benchmark was run.
+commit or put the tree back — with no model inference in between.
+
+**And the operations no longer have to be known in advance.** `hacer` takes a
+short JavaScript program, run inside the same reversible boundary by a QuickJS
+compiled into the binary: variables, loops, conditions, assertions, and calls to
+the machine whose answers the next line reads. So a request can list a directory
+nobody has described, loop over what came back, read each file, change only the
+ones whose contents say to, watch what the tree really shows, validate, and
+branch on the verdict — none of which is writable in advance, because writing it
+would mean already having the answer. The program is untrusted code: QuickJS
+ships no filesystem, no network and no process API, every call it makes goes
+through the same door and the same workspace boundary a single request goes
+through, and eight separate ceilings mean `while (true) {}` terminates and rolls
+back. When it meets a decision a machine should not make — an ambiguous symbol
+resolving to three crates — it stops with the workspace untouched and asks,
+rather than committing a guess.
+
+The agent-facing surface is three tools: what a name is, do a stretch of work,
+fetch what the work did not send back. The other eleven are still there behind
+`--surface legacy`, as the control column.
+
+What is proven in a container is stage 57 of `verify.sh` and the program run
+against a directory-backed boundary; the vertical over a real Btrfs subvolume
+with the compiler running confined is stages 58 and 59. Whether any of it makes
+a frontier agent do more correct work with less effort is **not measured**. It is
+built to be measured next; no benchmark was run.
 
 **Not proven.** `thalyx_watch` — the filesystem watcher, ten BPF hooks against
 the LSM's two — has never been loaded by Thalyx's own loader; `bpftool` still
