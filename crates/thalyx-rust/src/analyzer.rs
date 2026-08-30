@@ -38,10 +38,11 @@
 //! exist: a failure to read is not a failure to exist.
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{Result, RustError};
@@ -148,10 +149,15 @@ impl Spawn for OnTheHost {
             .current_dir(asked.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Its log is noise on the way to an answer, and a pipe nobody
+            // It was the null device, for the reason that a pipe nobody
             // drains is a server that blocks on a full buffer halfway through
-            // indexing — which would look exactly like a server that hung.
-            .stderr(Stdio::null())
+            // indexing — which looks exactly like a server that hung. Somebody
+            // drains it now: `Analyzer::start` reads it continuously and keeps
+            // only the last of it, so the log costs nothing while the server
+            // lives and is there the moment it dies. The confined path has
+            // always had this pipe; having it here too means a death is
+            // diagnosed the same way whichever spawner started the process.
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
                 RustError::NoAnalyzer(format!("{}: {error}", asked.program.display()))
@@ -162,6 +168,153 @@ impl Spawn for OnTheHost {
             how: "host".to_string(),
             confined: false,
         })
+    }
+}
+
+// ── what the server said on its way out ──────────────────────────────────────
+
+/// How much of the server's `stderr` is kept for the moment it dies.
+///
+/// A ceiling and not a buffer that grows: rust-analyzer logs while it indexes,
+/// and a server held for the length of a session can write more than anybody
+/// will ever read. Four kilobytes is a panic with its message, a linker error
+/// or a runtime's complaint — which is what is wanted at the one moment this
+/// gets read.
+const STDERR_KEPT: usize = 4096;
+
+/// How long to wait for the process's status once its channel has closed.
+///
+/// The pipe closing and the process being reaped are two events, in that order,
+/// and asking for the status at the instant of the first would answer "still
+/// running" for a process that has already died. Bounded, because a diagnosis
+/// that blocks is worse than one that is vague.
+const EPITAPH_GRACE: Duration = Duration::from_millis(500);
+
+/// The tail of what the server wrote to `stderr`, and how much of it there was.
+///
+/// The **last** bytes and not the first. A process that dies says why on the
+/// way out, and one that logged its way through an indexing pass first would
+/// otherwise fill any buffer with progress before reaching the sentence that
+/// matters.
+#[derive(Default)]
+struct LastWords {
+    tail: Vec<u8>,
+    total: usize,
+    /// Whether the pipe reached its end. Read before the tail is quoted, so a
+    /// diagnosis is not written while the dying process's last line is still in
+    /// flight — rule 5, where the instrument is this reader.
+    closed: bool,
+}
+
+impl LastWords {
+    fn push(&mut self, bytes: &[u8]) {
+        self.total += bytes.len();
+        self.tail.extend_from_slice(bytes);
+        if self.tail.len() > STDERR_KEPT {
+            self.tail.drain(..self.tail.len() - STDERR_KEPT);
+        }
+    }
+
+    /// Rendered into a sentence, saying plainly when something was dropped.
+    ///
+    /// Control characters go and newlines and tabs stay: rust-analyzer colours
+    /// its log, and an escape sequence pasted into a diagnosis is a diagnosis
+    /// that repaints the terminal somebody reads it on.
+    fn spoken(&self) -> String {
+        if self.total == 0 {
+            return "it wrote nothing to stderr".to_string();
+        }
+        let text: String = String::from_utf8_lossy(&self.tail)
+            .chars()
+            .map(|c| {
+                if c == '\n' || c == '\t' || !c.is_control() {
+                    c
+                } else {
+                    ' '
+                }
+            })
+            .collect();
+        let text = text.trim();
+        if self.total > self.tail.len() {
+            format!(
+                "its stderr, the last {} of {} bytes: {text}",
+                self.tail.len(),
+                self.total
+            )
+        } else {
+            format!("its stderr, {} bytes: {text}", self.total)
+        }
+    }
+}
+
+/// Drain a dying server's `stderr` into a bounded tail, forever.
+///
+/// **Drained and not merely piped.** `launch::spawn` has always given a
+/// confined program a `stderr` pipe, and nothing on this path ever read it: a
+/// pipe whose reader never empties it blocks the writer on a full buffer, which
+/// is a server that stops mid-indexing and looks exactly like one that hung.
+/// Reading it continuously and keeping only the end is what makes the pipe safe
+/// to have at all.
+fn keep_last_words(stderr: Option<std::process::ChildStderr>) -> Arc<Mutex<LastWords>> {
+    let kept = Arc::new(Mutex::new(LastWords::default()));
+    let Some(mut stderr) = stderr else {
+        // No pipe is not "the pipe has not closed yet". Saying so here is what
+        // stops `epitaph` from spending its grace waiting for an end that
+        // cannot come.
+        held(&kept).closed = true;
+        return kept;
+    };
+    let into = Arc::clone(&kept);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 1024];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => held(&into).push(&chunk[..read]),
+            }
+        }
+        held(&into).closed = true;
+    });
+    kept
+}
+
+/// The tail, whoever poisoned the lock.
+///
+/// A panicking drain thread must not turn a diagnosis into a second panic: the
+/// whole reason this exists is to be readable at the worst moment.
+fn held(kept: &Arc<Mutex<LastWords>>) -> std::sync::MutexGuard<'_, LastWords> {
+    kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The name of a signal, for a number nobody should have to look up.
+///
+/// Spelled here rather than taken from a crate: this crate has no `libc`
+/// dependency, and taking one on to name thirty constants would be a build-time
+/// dependency for a string. The numbers are Linux's on x86-64 and aarch64,
+/// which is what Thalyx runs on. `SIGSYS` is the one this was written for — a
+/// process killed by the seccomp filter dies of it, and 31 on its own tells the
+/// person reading nothing.
+fn signal_name(number: i32) -> &'static str {
+    match number {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        10 => "SIGUSR1",
+        11 => "SIGSEGV",
+        12 => "SIGUSR2",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        24 => "SIGXCPU",
+        25 => "SIGXFSZ",
+        31 => "SIGSYS",
+        _ => "unnamed here",
     }
 }
 
@@ -240,6 +393,9 @@ pub struct Analyzer {
     /// Whether Thalyx's confinement stands behind it.
     confined: bool,
     stdin: ChildStdin,
+    /// The tail of what it wrote to `stderr`, drained continuously and read
+    /// only when it dies. See [`Analyzer::epitaph`].
+    noise: Arc<Mutex<LastWords>>,
     incoming: Receiver<Value>,
     next_id: i64,
     root: PathBuf,
@@ -289,6 +445,9 @@ impl Analyzer {
         let stdout = child.stdout.take().ok_or_else(|| {
             RustError::NoAnalyzer("rust-analyzer was started without a stdout".to_string())
         })?;
+        // Started before the first byte is sent, because the death this is for
+        // happens during `initialize` and what it said is on its way out then.
+        let noise = keep_last_words(child.stderr.take());
 
         // A reader thread and a channel rather than reading in line: every read
         // here needs a deadline, and a blocking read on a pipe has none. A
@@ -309,6 +468,7 @@ impl Analyzer {
             how,
             confined,
             stdin,
+            noise,
             incoming,
             next_id: 1,
             root: root.to_path_buf(),
@@ -571,6 +731,65 @@ impl Analyzer {
         }
     }
 
+    /// What became of the server, said at the moment its channel closes.
+    ///
+    /// Until 2026-08-30 a server that died during `initialize` produced exactly
+    /// one sentence — *«the server stopped»* — which is the shape rule 10 is
+    /// about: it reports that the reading failed and nothing about what
+    /// happened. A process killed by the seccomp filter, a process that could
+    /// not find its toolchain and a process that panicked all closed a pipe,
+    /// and on Fedora on 2026-08-30 they were indistinguishable events. Stage 58
+    /// could say `analyzer_starts=1` and then that the server stopped, with
+    /// `ausearch -m SECCOMP` showing nothing, and no way to tell which of the
+    /// three it had been.
+    ///
+    /// So the two things the kernel already knows get read: how the process
+    /// ended — a status, or the signal that killed it — and the last of what it
+    /// wrote on the way out.
+    ///
+    /// Bounded on both sides. The wait for the status is [`EPITAPH_GRACE`] and
+    /// then it says the process was still running, rather than becoming a
+    /// diagnosis that hangs; the stderr quoted is the last [`STDERR_KEPT`]
+    /// bytes, and it says so when there was more.
+    fn epitaph(&mut self) -> String {
+        let deadline = Instant::now() + EPITAPH_GRACE;
+        let mut ended: Option<std::result::Result<std::process::ExitStatus, String>> = None;
+        loop {
+            if ended.is_none() {
+                match self.child.try_wait() {
+                    Ok(Some(status)) => ended = Some(Ok(status)),
+                    Ok(None) => {}
+                    // Rule 10: a failure to read is not a failure to exist, and
+                    // "could not be asked" is not "was still running".
+                    Err(error) => ended = Some(Err(error.to_string())),
+                }
+            }
+            if (ended.is_some() && held(&self.noise).closed) || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let how = match ended {
+            Some(Ok(status)) => {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    format!(
+                        "the process was killed by signal {signal} ({})",
+                        signal_name(signal)
+                    )
+                } else if let Some(code) = status.code() {
+                    format!("the process exited with status {code}")
+                } else {
+                    format!("the process ended as {status}")
+                }
+            }
+            Some(Err(why)) => format!("how the process ended could not be read: {why}"),
+            None => format!("the process was still running {EPITAPH_GRACE:?} later"),
+        };
+        format!("{how}; {}", held(&self.noise).spoken())
+    }
+
     fn request_once(&mut self, method: &str, params: Value, ceiling: Duration) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -584,7 +803,13 @@ impl Analyzer {
                     return Err(RustError::Silent(format!("`{method}` after {ceiling:?}")));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(RustError::Silent(format!("`{method}`: the server stopped")));
+                    // The one place the death is visible, and until this said
+                    // more than "it stopped" there was nothing to diagnose it
+                    // with. See [`Analyzer::epitaph`].
+                    let epitaph = self.epitaph();
+                    return Err(RustError::Silent(format!(
+                        "`{method}`: the server stopped — {epitaph}"
+                    )));
                 }
             };
             if message.get("id").and_then(Value::as_i64) != Some(id) {
@@ -612,11 +837,25 @@ impl Analyzer {
         let body = serde_json::to_vec(&message).map_err(|error| {
             RustError::Silent(format!("a request could not be written: {error}"))
         })?;
-        self.stdin
+        let written = self
+            .stdin
             .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
             .and_then(|()| self.stdin.write_all(&body))
-            .and_then(|()| self.stdin.flush())
-            .map_err(|error| RustError::Silent(format!("the server stopped listening: {error}")))
+            .and_then(|()| self.stdin.flush());
+        // The same death seen from the writing side, and it is a real race
+        // rather than a second case: a server that dies before the request is
+        // written fails here with `EPIPE`, and one that dies just after fails
+        // as a disconnected channel above. Which of the two happens is timing,
+        // so both carry the epitaph or the diagnosis is a coin toss.
+        match written {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let epitaph = self.epitaph();
+                Err(RustError::Silent(format!(
+                    "the server stopped listening: {error} — {epitaph}"
+                )))
+            }
+        }
     }
 }
 
