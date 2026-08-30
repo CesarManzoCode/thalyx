@@ -14,6 +14,84 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
+## Thalyx como máquina para Claude Code: los costes de la traza, atacados — 2026-08-30
+
+**Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+La corrida A/B compacta (`/var/tmp/thalyx-bench-compact-1/`) quedó físicamente
+cerrada con los dos brazos VÁLIDOS. Demostró **la propiedad buena**: Claude sí
+delegó trabajo compuesto y Thalyx hizo 36 operaciones internas en 3 programas.
+Y demostró que eso **no bajó las rondas**: 5 llamadas contra 4 de Linux, y más
+del doble de trabajo de API.
+
+Este sprint ataca las causas visibles en la traza. Ninguna es de diseño; todas
+son de **superficie y de arnés**.
+
+### El defecto del banco, primero
+
+`dev/bench-expect/<nombre>.txt` —el archivo contra el que el corrector califica
+la respuesta final, o sea **la hoja de respuestas**— vive dentro del checkout
+que la corrida usa como corpus, y el brazo B **lo abrió**. Una llamada MCP
+entera se gastó leyendo la respuesta. Ninguna cifra de esa corrida sobre *cuánto
+cuesta encontrar algo* es una cifra sobre encontrar nada.
+
+Ahora hay un guardia que corre **antes de gastar un solo centavo**: hashea lo
+que se pasó como `--expect-file` y se niega si esos bytes están en cualquier
+lugar de `--project` que un agente pueda abrir. No sabe nada del símbolo, de los
+archivos ni de la tarea; y falla cerrado en las dos direcciones —una llave que
+no se pudo leer detiene la corrida, porque *«no pude revisar»* jamás debe leerse
+como *«no hay fuga»*.
+
+### Lo que cambió, y qué coste ataca cada cosa
+
+- **La ronda de `ToolSearch` desapareció por configuración.** Claude Code
+  difiere las herramientas de un servidor MCP detrás de una búsqueda; el
+  `mcp.json` del banco ahora lleva `alwaysLoad: true`. Medido con línea base y
+  control contra un servidor de utilería: sin la bandera, `ToolSearch` y luego
+  la herramienta; con ella, la herramienta directa. `dev/toolsearch-check.sh` es
+  esa medición, re-ejecutable — la afirmación es sobre un CLI que este
+  repositorio no controla.
+- **Las instrucciones ya no pueden mentir.** Decían *«prefiere thalyx_symbol y
+  thalyx_dependencies»* y *«pasa `attempt: begin` a thalyx_edit»* a un modelo
+  que tenía tres herramientas y ninguna de ésas. Ahora se arman desde la
+  superficie realmente ofrecida: una frase por herramienta, viviendo al lado de
+  la herramienta que nombra, y una prueba mecánica que rechaza cualquier
+  `thalyx_…` que no esté ofrecido.
+- **Las tres descripciones calientes caben en su presupuesto.** `thalyx_exec`
+  pesaba 3 649 bytes y ahora 2 037; el techo es 2 048 y hay pruebas de bytes
+  sobre las tres y sobre las instrucciones. Se paga en cada inferencia de cada
+  sesión: un coste que nadie pesa es un coste que crece.
+- **Una transacción exitosa también puede terminar restaurada.**
+  `on_success: "rollback"` — el programa corre, muta, consulta `changed()`,
+  valida y devuelve, y **después** se restaura la frontera. Sirve para un
+  refactor exploratorio, un preview, un what-if, medir impacto, un cambio
+  temporal, una migración ensayada. No es una operación llamada «benchmark»: es
+  un campo de la transacción que ya existía.
+- **`renombrar-simbolo` devuelve lo que ya sabía.** `edits_by_file` sale del
+  `WorkspaceEdit` que rust-analyzer entregó, contado **mientras se aplica**,
+  nunca re-escaneando el árbol. Y `definition` aparece sólo cuando el lugar se
+  alcanzó *a través* de la declaración del símbolo; dado `archivo:línea:columna`
+  el llamador apuntó a algún lado y el campo se omite en vez de inventarse.
+- **La respuesta de `hacer` bajó de 1 416 a 469 bytes** sobre la misma forma
+  sintética, −67%. De 38 campos de primer nivel a 8. Nada se borró: los ids de
+  instantánea, los dos testigos de estado, cada contador y cada línea que el
+  programa imprimió están completos en la evidencia, a una llamada del handle
+  que toda respuesta lleva.
+
+### Lo que este sprint NO pudo contestar
+
+Qué contestaron exactamente `context('UidRegistry')` y `rename(...)` en la
+primera llamada del brazo B, y por qué hubo tres llamadas más. El NDJSON está en
+la máquina de Cesar y no en el contenedor. Hay ahora un lector para eso —
+`dev/bench-summary.py --transcript --out <dir>` imprime cada llamada entera con
+lo que la contestó — pero **hay un límite real que conviene saber antes de
+mirar**: las respuestas de `context` y `rename` ocurrieron *dentro* del
+programa, y sólo cruzaron de vuelta si el programa las devolvió. Si no, viven en
+la evidencia de la máquina y nada en el host las tiene. Eso es la compresión
+funcionando, y es exactamente por qué el handle va en toda respuesta.
+
+Ver `vault/07-Adopcion-y-Fases/Agentes-Externos.md`.
+
 ## El vertical físico, cerrado: la ventana de denegación es de quien la necesita — 2026-08-30
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.

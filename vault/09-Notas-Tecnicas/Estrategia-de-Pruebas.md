@@ -5939,3 +5939,89 @@ abre una frontera reversible, que es exactamente el trabajo que esta medición
 trata de no tener — y sobre un anfitrión cuyo espacio de trabajo no es un
 subvolumen Btrfs se niega, con lo que el número sería el costo de una negativa
 con nombre de medición.
+
+## Regla derivada: la hoja de respuestas dentro del corpus no la ve ningún resumen — 2026-08-30
+
+La corrida A/B compacta se calificó contra `dev/bench-expect/<nombre>.txt`, y ese
+archivo vive **dentro del checkout que la corrida usa como corpus**. El brazo B
+lo abrió. Gastó una llamada MCP entera en leer la respuesta.
+
+Los dos brazos contestaron correctamente. Los dos brazos quedaron VÁLIDOS. Cada
+número era real. Lo único que no era cierto era **de qué eran números**: no del
+trabajo de encontrar una definición y sus dependientes, sino del trabajo de abrir
+un archivo que ya lo decía.
+
+Ningún resumen podía distinguirlo, porque nada en el arnés había hecho jamás la
+pregunta. Es la regla 5 con un disfraz nuevo: el instrumento incluye el arnés, y
+aquí el arnés le había puesto la respuesta al sujeto en la mano.
+
+**La regla: antes de gastar un brazo, el arnés comprueba que la llave no esté
+dentro de la cerradura.** Y comprueba los *bytes*, no la ruta — el mismo
+contenido con otro nombre filtra igual. Se niega también cuando no puede leer la
+llave, porque «no pude revisar» leído como «no hay fuga» es exactamente el modo
+de fallo que esta regla existe para cerrar.
+
+Lo que hace general al guardia es lo que **no** sabe: no conoce el símbolo, ni
+los seis archivos, ni la tarea. Se prueba con un corpus sintético con un nombre
+inventado, porque un guardia probado contra el único archivo que filtró es un
+guardia que sólo conoce ese archivo.
+
+## Regla derivada: un campo que se mueve a la evidencia se lo deja de leer quien lo leía — 2026-08-30
+
+La respuesta de `hacer` se recortó de 38 campos a 8, y los contadores se movieron
+bajo una llave anidada o a la evidencia. **Tres lectores distintos leían esos
+campos del sitio viejo**, y ninguno de los tres lo dice en la respuesta:
+
+- `thalyx-mcp/src/metrics.rs`, que escribe el archivo de métricas que *es* toda
+  la medición del experimento de agentes externos;
+- la etapa de `hacer` de `verify.sh`;
+- la etapa del programa de `verify.sh`, que además lee si el proveedor semántico
+  estuvo confinado y cómo arrancó.
+
+Un lector que pide un campo que ya no está no explota: contesta `absent`, o suma
+cero. Es decir, **una medición que dejó de medir se ve exactamente igual que una
+máquina que no pudo ser medida** — que es la entrada dieciocho de la regla 5,
+llegando por la puerta de al lado.
+
+La regla: mover un campo es un cambio de contrato, y el contrato tiene lectores
+que no están en el mismo crate ni en el mismo lenguaje. Antes de mover, se busca
+quién lee; después de mover, el lector se apunta al sitio nuevo **y se afirma
+sobre el valor**, nunca sólo se imprime. La etapa que ahora lee la evidencia por
+handle es la demostración de que mover no fue borrar.
+
+## Regla derivada: una variable de ciclo con el nombre de una función la vuelve local en toda la función — 2026-08-30
+
+`for arm in ("A", "B")` dentro de `main()`, en un archivo donde `arm(...)` es una
+función del módulo que `main` llama cien líneas más abajo. Python decide el
+alcance por función completa, no por rama: `arm` pasó a ser local de `main`, y el
+resumen murió con `UnboundLocalError` en un camino que esa rama nunca toca.
+
+No lo vio la sintaxis, no lo vio ninguna prueba del código nuevo, y no lo habría
+visto ninguna prueba *del código nuevo* — el camino roto era el viejo. Lo que lo
+encontró fue el auto-test del arnés, que corre el resumen completo.
+
+La regla: un cambio que añade una rama a una función larga se verifica corriendo
+**las otras ramas**. Y en Python, un nombre de ciclo que coincide con algo que la
+misma función llama es un error de alcance esperando el día en que alguien tome
+el otro camino.
+
+## Regla derivada: un techo que no puede comprobarse contra el cliente sigue justificándose por el coste — 2026-08-30
+
+Las descripciones de las tres herramientas calientes ahora tienen un techo de
+2 048 bytes con pruebas sobre los bytes. La razón que se dio para ese número fue
+que Claude Code trunca ahí.
+
+**No pude confirmar ese truncamiento en el paquete de la versión 2.1.251 de esta
+máquina.** Busqué la constante y las funciones que normalizan las herramientas de
+un servidor MCP; lo que hay ahí recorta esquemas, no descripciones.
+
+El techo se queda, y la nota dice por qué: se paga en **cada inferencia de cada
+sesión**, y eso lo justifica sin ayuda. Lo que no se queda es la afirmación de
+que el cliente trunca — está escrita en el código como lo que es, algo que no
+verifiqué, para que nadie la cite después como si sí.
+
+La regla general: cuando un límite viene de un programa que este repositorio no
+controla, se dice de quién es la afirmación y quién la comprobó. Un presupuesto
+que sólo es correcto en el cliente que alguien revisó una vez no es un
+presupuesto.
+

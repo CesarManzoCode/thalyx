@@ -1068,14 +1068,14 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
 
     let tree = tree_of(here);
     let resolved = with_provider(store_root, &tree, |provider| {
-        let (file, line, column) = place(provider, &tree, &anchor)?;
+        let at = place(provider, &tree, &anchor)?;
         provider
-            .rename_texts(&file, line, column, &to)
-            .map(|texts| (texts, file, line, column))
+            .rename_texts(&at.file, at.line, at.column, &to)
+            .map(|texts| (texts, at))
             .map_err(|error| Unplaced::of("unresolved", error.to_string()))
     });
 
-    let (texts, file, line, column) = match resolved {
+    let (texts, at) = match resolved {
         Ok(all) => all,
         Err(why) => {
             // **Nothing has been written at this point, and that is the whole
@@ -1121,7 +1121,8 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
     // it compiles nowhere and looks like it worked — so the paths are all
     // checked before any of them is opened.
     let mut anchored = Vec::with_capacity(texts.len());
-    for (path, _) in &texts {
+    for change in &texts {
+        let path = &change.path;
         match here.anchor(path) {
             Ok(held) => anchored.push(held),
             Err(error) => {
@@ -1136,8 +1137,15 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
         }
     }
 
+    // Built while the edits are applied, from the plan rust-analyzer already
+    // handed over. Never by scanning the tree afterwards: a second pass would be
+    // a textual count of a string, which is the answer this verb exists to be
+    // better than, and it would be wrong wherever the new name was already
+    // there for some other reason.
     let mut written = Vec::with_capacity(texts.len());
-    for (held, (path, text)) in anchored.iter().zip(texts.iter()) {
+    let mut edits_by_file = Vec::with_capacity(texts.len());
+    for (held, change) in anchored.iter().zip(texts.iter()) {
+        let (path, text) = (&change.path, &change.text);
         if let Err(error) = std::fs::write(held.path(), text) {
             declined(
                 face,
@@ -1152,37 +1160,57 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
             );
             return Ok(());
         }
-        written.push(
-            path.strip_prefix(&tree)
-                .unwrap_or(path)
-                .display()
-                .to_string(),
-        );
+        let named = path
+            .strip_prefix(&tree)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        edits_by_file.push(json!({"path": named, "edits": change.edits}));
+        written.push(named);
     }
 
+    let where_it_started = format!(
+        "{}:{}:{}",
+        at.file.strip_prefix(&tree).unwrap_or(&at.file).display(),
+        at.line,
+        at.column
+    );
+    let total: usize = edits_by_file
+        .iter()
+        .filter_map(|entry| entry["edits"].as_u64())
+        .map(|count| count as usize)
+        .sum();
+
     if face.is_machine() {
-        face.say(thalyx_files::machine::answer(
-            RENAME_OP,
-            vec![
-                ("from", json!(anchor)),
-                ("to", json!(to)),
-                (
-                    "resolved_at",
-                    json!(format!(
-                        "{}:{line}:{column}",
-                        file.strip_prefix(&tree).unwrap_or(&file).display()
-                    )),
-                ),
-                ("files", json!(written)),
-                ("files_changed", json!(written.len())),
-                ("source", json!("rust-analyzer")),
-            ],
-        ));
+        let mut carried = vec![
+            ("from", json!(anchor)),
+            ("to", json!(to)),
+            ("resolved_at", json!(where_it_started)),
+            ("files", json!(written)),
+            ("files_changed", json!(written.len())),
+            // Per file, in the order the files were written, which is the order
+            // rust-analyzer listed them. A caller that wants to know what a
+            // rename did no longer needs a second question to find out.
+            ("edits_by_file", json!(edits_by_file)),
+            ("edits", json!(total)),
+            ("source", json!("rust-analyzer")),
+        ];
+        // **Only when it is really known.** Given a name, this verb reaches the
+        // place through the symbol's declaration and the answer can say so.
+        // Given `file:line:column`, the caller pointed somewhere and this has no
+        // idea whether that is the declaration or one of its uses — so the field
+        // is absent rather than a guess, and a caller can tell the difference
+        // between "it is here" and "nobody asked".
+        if at.is_the_declaration {
+            carried.push(("definition", json!(where_it_started)));
+        }
+        face.say(thalyx_files::machine::answer(RENAME_OP, carried));
     } else {
         println!(
-            "\n  {} renamed to {} across {} file(s)\n",
+            "\n  {} renamed to {} — {} edit(s) across {} file(s)\n",
             anchor,
             to,
+            total,
             written.len()
         );
     }
@@ -1215,18 +1243,39 @@ impl Unplaced {
 
 /// Where the thing to rename is: a position if the caller gave one, and
 /// otherwise the declaration of the name.
-fn place(
-    provider: &mut Provider,
-    tree: &Path,
-    anchor: &str,
-) -> Result<(PathBuf, u32, u32), Unplaced> {
+/// A place in the tree, and whether it is known to be where the name is
+/// *declared*.
+///
+/// The two cases really are different and were reported as one. Given a name,
+/// the resolution comes back with `defined`, and the place taken is the
+/// declaration — that is a fact about the symbol. Given `file:line:column`, the
+/// caller pointed at somewhere, and that somewhere is very often a use site.
+/// Answering `definition` for both would be inventing the half that is not
+/// known, which is the one thing a caller of a semantic surface must be able to
+/// rule out.
+struct Placed {
+    file: PathBuf,
+    line: u32,
+    column: u32,
+    /// True only when this place was reached *through* the name's declaration.
+    is_the_declaration: bool,
+}
+
+fn place(provider: &mut Provider, tree: &Path, anchor: &str) -> Result<Placed, Unplaced> {
     let parts: Vec<&str> = anchor.rsplitn(3, ':').collect();
     if parts.len() == 3
         && let (Ok(column), Ok(line)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
     {
         let file = tree.join(parts[2]);
         if file.is_file() {
-            return Ok((file, line, column));
+            // The caller pointed here. Nothing on this path knows whether it is
+            // a declaration or a use, and nothing here is going to guess.
+            return Ok(Placed {
+                file,
+                line,
+                column,
+                is_the_declaration: false,
+            });
         }
         return Err(Unplaced::of(
             "absent",
@@ -1295,7 +1344,14 @@ fn place(
             format!("`{anchor}` is known but has no declaration"),
         )
     })?;
-    Ok((tree.join(&at.path), at.line, at.column))
+    Ok(Placed {
+        file: tree.join(&at.path),
+        line: at.line,
+        column: at.column,
+        // Reached through `known.defined`, which is the declaration and nothing
+        // else.
+        is_the_declaration: true,
+    })
 }
 
 // ── what the provider has cost, for the metrics of a run ─────────────────────

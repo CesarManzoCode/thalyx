@@ -330,6 +330,124 @@ def manifest_digest(root):
     return hashlib.sha256(manifest(root).encode()).hexdigest()
 
 
+# ── the answer key must not be inside the corpus ─────────────────────────────
+#
+# `--expect-file` is what the grader checks the final answer against. It is the
+# answer key. On the compact run of 2026-08-30 that key was
+# `dev/bench-expect/<name>.txt` — a file *of the checkout the benchmark uses as
+# its corpus* — and arm B spent one whole MCP call reading it. Every number that
+# run produced about how much work an arm did to find something is therefore a
+# number about how much work it took to read the answer.
+#
+# Nothing about that defect is specific to the symbol, the six files or the task,
+# so nothing here is: the guard hashes whatever was passed as `--expect-file` and
+# looks for those bytes anywhere the agent could reach.
+#
+# ## Why the scope is wider than `_entries`
+#
+# `_entries` is what a *restore* is judged over, and it prunes `.git` and
+# `image/build` because they move for reasons that are not the task. Neither of
+# those is a reason an agent cannot read them: arm A's copy is `tar` minus
+# `target` and `node_modules`, so `.git` is right there. A guard that reused the
+# restore boundary would have declared a key in `.git/` safe.
+#
+# So the walk here prunes only what neither arm is given, and it errs the one
+# way a guard is allowed to err — refusing a run that was fine costs a sentence,
+# and allowing one that leaked costs both arms and the conclusion drawn from
+# them. Rule 9.
+NEVER_STAGED = ("target", "node_modules")
+
+
+def _reachable(root):
+    """Every regular file an arm could open, with only the never-staged pruned."""
+    root = pathlib.Path(root)
+    for here, directories, files in os.walk(root, followlinks=False):
+        base = pathlib.Path(here).relative_to(root).as_posix()
+        prefix = "" if base == "." else base + "/"
+        directories[:] = [d for d in directories
+                          if (prefix + d) not in NEVER_STAGED
+                          and not any((prefix + d).startswith(r + "/") for r in NEVER_STAGED)]
+        for name in files:
+            where = prefix + name
+            path = pathlib.Path(here) / name
+            # Never followed, so a link cannot walk this guard out of the tree,
+            # and a link is not the bytes anyway.
+            if path.is_symlink():
+                continue
+            yield where, path
+
+
+def answer_key_leak(expect, project):
+    """Whether the file the grader answers from is also inside the corpus.
+
+    Cheap on purpose — it runs before a cent is spent, so it must never be a
+    reason not to run it. One hash of the key, then a size comparison per file
+    and a hash only of the files whose size already matches.
+
+    Fails closed in both directions rule 9 cares about. A key that cannot be
+    read is not a key that did not leak: it is reported as `unreadable` and the
+    caller stops, because the one thing this must never do is answer "no leak"
+    for a question it could not ask.
+    """
+    report = {
+        "expect_file": str(expect),
+        "project": str(project),
+        "leaked": False,
+        "found": [],
+        "because": "",
+    }
+    try:
+        key = pathlib.Path(expect).read_bytes()
+    except OSError as why:
+        report["unreadable"] = f"{expect}: {why}"
+        report["because"] = (
+            f"the expect file could not be read ({why}), so whether it is inside "
+            f"the corpus is not something this run knows"
+        )
+        return report
+    report["expect_bytes"] = len(key)
+    report["expect_digest"] = hashlib.sha256(key).hexdigest()
+    if not key:
+        # A zero-byte key carries no answer, so it cannot leak one — and every
+        # empty file in the corpus would match it. Said out loud rather than
+        # silently passed: an empty answer key is its own defect.
+        report["because"] = "the expect file is empty, so it holds no answer to leak"
+        return report
+
+    try:
+        project = pathlib.Path(project).resolve()
+    except OSError as why:
+        report["unreadable"] = f"{project}: {why}"
+        report["because"] = f"the corpus could not be resolved ({why})"
+        return report
+
+    for where, path in _reachable(project):
+        try:
+            if path.stat().st_size != len(key):
+                continue
+            if path.read_bytes() != key:
+                continue
+        except OSError:
+            # Unreadable *here* is not fail-open: a file this process cannot
+            # read is one whose size already matched, and it is reported as a
+            # candidate rather than dismissed.
+            report["found"].append(f"{where} (same size, unreadable)")
+            continue
+        report["found"].append(where)
+
+    if report["found"]:
+        report["leaked"] = True
+        report["because"] = (
+            f"the answer key {expect} is byte-identical to "
+            + ", ".join(report["found"][:8])
+            + f" inside {project}. An agent that opens that file has been handed "
+              "the answer, so neither arm measures the work of finding it"
+        )
+    else:
+        report["because"] = "the answer key is nowhere inside the corpus"
+    return report
+
+
 def mtimes(root):
     """When each regular file of the workspace was last written, and last changed.
 
@@ -1974,6 +2092,95 @@ def work_between_inferences(row):
     if isinstance(returned, int) and returned > 0:
         out["thalyx_internal_bytes_per_returned_byte"] = round(internal / returned, 2)
     return out
+
+
+def transcript(path):
+    """Every call in one arm's stream, whole: what was asked and what answered.
+
+    `forensics` above is a *table* — one row per mutating call, with the answer
+    excerpted — and excerpting is the right thing for the question it asks
+    ("did those six Edit calls do anything"). It is the wrong thing for the
+    other question, the one that came up on 2026-08-30: **what exactly did the
+    first semantic rename say, and why did the model make three more calls
+    afterwards.** That is answered only by reading the whole of each request and
+    the whole of each answer, and no summary can stand in for it.
+
+    So this prints them untruncated, in order, and interprets nothing. It reads
+    a file that is already on disk, costs nothing, and can be pointed at a run
+    that is long over.
+
+    ## What it cannot recover, which is worth knowing before you look
+    -
+    A `thalyx_exec` answer carries what the program chose to `return`. The
+    answers to the calls the program made *inside* the machine — what
+    `context(...)` resolved, what `rename(...)` reported, whether it said
+    `rust-analyzer` or `index` — are in the machine's evidence, under the
+    `evidence` id in that answer, and they were never in the stream at all. If
+    the program did not return them, this will not show them and nothing on the
+    host can: `evidencia <id>` inside the machine is the only place they exist.
+    That is the compression working as designed, and it is also the reason the
+    handle is in every answer including the ones that went well.
+    """
+    calls, results = [], {}
+    for event in events(path):
+        kind = event.get("type")
+        if kind == "assistant":
+            for block in event.get("message", {}).get("content", []) or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    calls.append((block.get("id"), block.get("name") or "<unnamed>",
+                                  block.get("input", {})))
+                elif block.get("type") == "text" and (block.get("text") or "").strip():
+                    # What the model said between calls. Often the whole of the
+                    # answer to "why did it do that next".
+                    calls.append((None, "<said>", block.get("text")))
+        elif kind == "user":
+            content = event.get("message", {}).get("content")
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    results[block.get("tool_use_id")] = block
+
+    lines = []
+    number = 0
+    for where, name, given in calls:
+        if name == "<said>":
+            lines.append("")
+            lines.append("  ── the model said ─────────────────────────────────────────")
+            for line in str(given).splitlines():
+                lines.append(f"    {line}")
+            continue
+        number += 1
+        lines.append("")
+        lines.append(f"  ══ call {number}: {name} " + "═" * max(0, 48 - len(name)))
+        lines.append("  ── asked ──")
+        for key, value in (given if isinstance(given, dict) else {"input": given}).items():
+            if isinstance(value, str) and "\n" in value:
+                lines.append(f"    {key}:")
+                for line in value.splitlines():
+                    lines.append(f"      {line}")
+            else:
+                lines.append(f"    {key}: {value if isinstance(value, str) else json.dumps(value)}")
+        answer = results.get(where)
+        if answer is None:
+            # Rule 10: nothing answered is a different fact from an empty answer.
+            lines.append("  ── answered ── NOTHING. No tool_result carries this id.")
+            continue
+        text = answer.get("content")
+        if isinstance(text, list):
+            text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+        text = text if isinstance(text, str) else json.dumps(text)
+        flag = "  (isError)" if answer.get("is_error") else ""
+        lines.append(f"  ── answered ── {len(text)} bytes{flag}")
+        # Pretty-printed when it is JSON, because a Thalyx answer is an object
+        # and a one-line object is what makes a run unreadable afterwards.
+        try:
+            text = json.dumps(json.loads(text), indent=2)
+        except ValueError:
+            pass
+        for line in text.splitlines():
+            lines.append(f"    {line}")
+    return lines
 
 
 def forensics(path, marker=None):
@@ -3679,8 +3886,53 @@ def main():
                         help="the stamp `image/Makefile project-stage` wrote when it "
                              "imported the project into the machine, which is arm B's "
                              "half of that record")
+    parser.add_argument(
+        "--transcript", action="store_true",
+        help="print every call of an arm's stream whole — what was asked and what "
+             "answered, untruncated — for reconstructing a run that is over",
+    )
+    parser.add_argument(
+        "--leak-check", action="store_true",
+        help="exit non-zero if --expect-file, the answer key, is byte-identical to a "
+             "file inside --project, where an agent could simply read it",
+    )
     parser.add_argument("--self-test", action="store_true")
     given = parser.parse_args()
+
+    if given.transcript:
+        if not given.out:
+            parser.error("--transcript needs --out")
+        printed = False
+        # `side` and not `arm`: `arm` is a function of this module used further
+        # down in `main`, and a loop variable of that name makes Python treat
+        # every reference to it in this whole function as a local — so the
+        # summary died with `UnboundLocalError` on a code path this branch never
+        # touches. Caught by the harness self-test, which runs the summary.
+        for side in ("A", "B"):
+            stream = given.out / f"arm{side}.ndjson"
+            if not stream.exists():
+                continue
+            printed = True
+            print()
+            print(f"  ARM {side}  ({stream})")
+            for line in transcript(stream):
+                print(line)
+        if not printed:
+            print(f"  no arm stream in {given.out}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    if given.leak_check:
+        # Before either arm, and it exits non-zero for *both* the leak and the
+        # unanswerable question. A guard whose "I could not check" looked like
+        # its "nothing found" would be worth nothing at the one moment it is
+        # consulted.
+        if not given.expect_file or not given.project:
+            print("  --leak-check needs --expect-file and --project", file=sys.stderr)
+            sys.exit(2)
+        report = answer_key_leak(given.expect_file, given.project)
+        print(json.dumps(report, indent=2))
+        sys.exit(1 if (report["leaked"] or report.get("unreadable")) else 0)
 
     if given.exclusions:
         print(json.dumps(list(OUTSIDE_THE_WORKSPACE)))

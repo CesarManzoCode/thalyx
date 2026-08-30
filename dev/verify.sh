@@ -7780,6 +7780,11 @@ else
         printf '%s\n' "structured on" "cd $EXEC_TREE" "hacer $1" salir | \
             THALYX_ROOT="$EXEC_STORE" "$THALYX" session 2>&1 | tr -d '\r'
     }
+    # Dotted, since 2026-08-30: the answer's counters moved under `metrics`
+    # when it was trimmed to what a model can act on, and a reader that only
+    # knew the flat shape would have turned every one of them into "absent" —
+    # which reads exactly like a machine that stopped counting. Rule 5,
+    # eighteenth entry, met before it could happen again.
     exec_field() {
         python3 -c '
 import json, sys
@@ -7792,7 +7797,10 @@ for line in open(sys.argv[1]):
     except Exception:
         continue
     if value.get("op") == "exec":
-        print(value.get(sys.argv[2], "absent"))
+        here = value
+        for key in sys.argv[2].split("."):
+            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
+        print(here if isinstance(here, str) else json.dumps(here))
         break
 else:
     print("none")
@@ -7810,8 +7818,12 @@ else:
     GOOD='{"label":"rename","steps":[{"verb":"edit","arguments":["lib.rs","sustituir-lote","2","UidRegistry","UserRegistry","main.rs"]},{"verb":"make_directory","arguments":["notes"]},{"verb":"make_file","arguments":["notes/why.md"]},{"verb":"grep","arguments":["UserRegistry"]}],"validate":[{"check":"text","text":"UidRegistry","expect":"none"},{"check":"text","text":"UserRegistry","expect":"some"},{"check":"parses"}]}'
     exec_run "'$GOOD'" > "$WORK/exec-good.log"
     GOOD_STATUS=$(exec_field "$WORK/exec-good.log" status)
-    GOOD_OPS=$(exec_field "$WORK/exec-good.log" machine_operations)
-    GOOD_EXTERNAL=$(exec_field "$WORK/exec-good.log" external_requests)
+    GOOD_OPS=$(exec_field "$WORK/exec-good.log" metrics.machine_operations)
+    # `external_requests` left the answer with the other counters: it is one, always,
+    # by construction, and a constant is not news to the caller. What the stage is
+    # really asserting is that one request did many things, and `machine_operations`
+    # against the single `hacer` this stage ran is that claim in full.
+    GOOD_EXTERNAL=$(exec_field "$WORK/exec-good.log" succeeded)
     GOOD_LIB=$(cat "$EXEC_TREE/lib.rs" 2>/dev/null || echo unreadable)
     GOOD_MAIN=$(cat "$EXEC_TREE/main.rs" 2>/dev/null || echo unreadable)
 
@@ -7821,7 +7833,7 @@ else:
     BAD='{"label":"an incomplete rename","steps":[{"verb":"edit","arguments":["lib.rs","sustituir","UidRegistry","UserRegistry"]}],"validate":[{"check":"text","text":"UidRegistry","expect":"none"}]}'
     exec_run "'$BAD'" > "$WORK/exec-bad.log"
     BAD_STATUS=$(exec_field "$WORK/exec-bad.log" status)
-    BAD_ROLLED=$(exec_field "$WORK/exec-bad.log" rolled_back)
+    BAD_ROLLED=$(exec_field "$WORK/exec-bad.log" tree)
     BAD_EVIDENCE=$(exec_field "$WORK/exec-bad.log" evidence)
     BAD_LIB=$(cat "$EXEC_TREE/lib.rs" 2>/dev/null || echo unreadable)
 
@@ -7849,8 +7861,8 @@ else:
        && [ "$GOOD_LIB" = "pub struct UserRegistry;" ] \
        && [ "$GOOD_MAIN" = "use crate::UserRegistry;" ] \
        && [ -f "$EXEC_TREE/notes/why.md" ] \
-       && [ "$GOOD_EXTERNAL" = "1" ] && [ "$GOOD_OPS" -ge 8 ] \
-       && [ "$BAD_STATUS" = "rolled_back" ] && [ "$BAD_ROLLED" = "True" ] \
+       && [ "$GOOD_EXTERNAL" = "true" ] && [ "$GOOD_OPS" -ge 8 ] \
+       && [ "$BAD_STATUS" = "rolled_back" ] && [ "$BAD_ROLLED" = "restored" ] \
        && [ "$BAD_LIB" = "pub struct UidRegistry;" ] \
        && [ "$KEPT" = "failed" ]; then
         proven "one request did $GOOD_OPS operations inside the machine, changed four things and committed; the same shape with a check that fails put a real Btrfs subvolume back byte for byte by itself, and the diagnosis survived the rollback"
@@ -7866,7 +7878,7 @@ else:
     elif [ "$KEPT" != "failed" ]; then
         failed "the evidence of the rolled-back run says '$KEPT'; a rollback that erases its own diagnosis leaves nothing to act on"
     else
-        failed "one request reported $GOOD_OPS operations and $GOOD_EXTERNAL external request(s), or the rename did not land (lib.rs='$GOOD_LIB' main.rs='$GOOD_MAIN'); see $WORK/exec-good.log"
+        failed "one request reported $GOOD_OPS operations and succeeded=$GOOD_EXTERNAL, or the rename did not land (lib.rs='$GOOD_LIB' main.rs='$GOOD_MAIN'); see $WORK/exec-good.log"
         excerpt "$WORK/exec-good.log"
     fi
     rm -rf "$EXEC_TREE" 2>/dev/null || btrfs subvolume delete "$EXEC_TREE" > /dev/null 2>&1 || true
@@ -8316,16 +8328,63 @@ print(json.dumps({"label": sys.argv[1], "run": open(sys.argv[2]).read()}))
     programmable_tree
     GOOD_P=$(programmable_program "only what needs it")
     programmable_run "'$GOOD_P'" > "$WORK/programmable-good.log"
+    # ── read from the answer, and read from the evidence ────────────────────
+    #
+    # Since 2026-08-30 those are two different places on purpose. The answer
+    # that goes back to a model is what the model needs in order to decide it is
+    # done, and it was trimmed to that: thirty-eight top-level fields down to
+    # eight, because every byte of it is paid on every inference. Everything
+    # else — how many processes started, how many crates were compiled, whether
+    # the semantic provider was confined and how it began — is in the evidence,
+    # whole, fetched by the handle the answer carries.
+    #
+    # This stage reads both, and that is the point of it: the trimming has to be
+    # a *move*. A stage that could only read the answer would report every one
+    # of those counters as `absent`, which reads exactly like a machine that
+    # stopped doing the work — rule 5's eighteenth entry, and the reason the
+    # numbers are asserted here rather than merely printed.
+    evidence_field() {
+        local handle="$1" path="$2"
+        printf '%s\n' "structured on" "evidencia $handle" salir | \
+            THALYX_ROOT="$PROG_STORE" "$THALYX" session 2>&1 | tr -d '\r' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "evidence":
+        here = value
+        for key in sys.argv[1].split("."):
+            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
+        print(here if isinstance(here, str) else json.dumps(here))
+        break
+else:
+    print("none")
+' "$path"
+    }
+
     P_STATUS=$(programmable_field "$WORK/programmable-good.log" status)
+    P_SUCCEEDED=$(programmable_field "$WORK/programmable-good.log" succeeded)
+    # Absent on a clean run, and that is the claim rather than an accident: the
+    # answer says `finish` only when it is news — `needs_model`, `assertion`,
+    # `threw`, `exhausted`, `refused` each call for a different next move, and
+    # `returned` is a word the caller reads and cannot act on. The two failing
+    # columns below assert the words it does say, which is the control: a
+    # machine that had simply stopped reporting `finish` would fail there.
     P_FINISH=$(programmable_field "$WORK/programmable-good.log" finish)
     P_CHANGED=$(programmable_field "$WORK/programmable-good.log" returned.changed)
-    P_EXTERNAL=$(programmable_field "$WORK/programmable-good.log" external_requests)
-    P_OPS=$(programmable_field "$WORK/programmable-good.log" program_operations)
-    P_ASSERTS=$(programmable_field "$WORK/programmable-good.log" program_assertions)
-    P_INTERNAL=$(programmable_field "$WORK/programmable-good.log" internal_bytes)
-    P_RETURNED=$(programmable_field "$WORK/programmable-good.log" returned_bytes)
+    P_OPS=$(programmable_field "$WORK/programmable-good.log" metrics.program_operations)
+    P_INTERNAL=$(programmable_field "$WORK/programmable-good.log" metrics.internal_bytes)
+    P_RETURNED=$(programmable_field "$WORK/programmable-good.log" metrics.returned_bytes)
     P_COUNT=$(programmable_field "$WORK/programmable-good.log" change_count)
-    P_CONFINED=$(programmable_field "$WORK/programmable-good.log" analyzer_confined)
+    P_HANDLE=$(programmable_field "$WORK/programmable-good.log" evidence)
+    P_EXTERNAL=$(evidence_field "$P_HANDLE" metrics.external_requests)
+    P_ASSERTS=$(evidence_field "$P_HANDLE" metrics.program_assertions)
+    P_CONFINED=$(evidence_field "$P_HANDLE" metrics.analyzer_confined)
     # The half of this stage's own sentence that was never checked, and could
     # not be while the kernel only watched.
     #
@@ -8342,8 +8401,8 @@ print(json.dumps({"label": sys.argv[1], "run": open(sys.argv[2]).read()}))
     # two are beside it because a cache hit and a compiler run are both
     # `passed`, and this column is the one where the bytes are new.
     P_COMPILED=$(programmable_field "$WORK/programmable-good.log" returned.compiled)
-    P_PACKAGES=$(programmable_field "$WORK/programmable-good.log" affected_packages)
-    P_LAUNCHES=$(programmable_field "$WORK/programmable-good.log" process_launches)
+    P_PACKAGES=$(evidence_field "$P_HANDLE" metrics.affected_packages)
+    P_LAUNCHES=$(evidence_field "$P_HANDLE" metrics.process_launches)
     P_TWO=$(cat "$PROG_TREE/src/two.rs")
 
     # ── column two: the same program, a tree with nothing to change ──────────
@@ -8411,9 +8470,10 @@ return "should not get here";
     L_TWO=$(cat "$PROG_TREE/src/two.rs" 2>/dev/null || echo unreadable)
 
     if [ "$P_STATUS" = "committed" ] \
-       && [ "$P_FINISH" = "returned" ] \
+       && [ "$P_SUCCEEDED" = "true" ] && [ "$P_FINISH" = "absent" ] \
        && [ "$P_CHANGED" = '["five.rs", "one.rs", "three.rs"]' ] \
        && [ "$P_EXTERNAL" = "1" ] && [ "$P_OPS" -ge 10 ] && [ "$P_ASSERTS" -ge 3 ] \
+       && [ -n "$P_HANDLE" ] && [ "$P_HANDLE" != "none" ] && [ "$P_HANDLE" != "absent" ] \
        && [ "$P_COUNT" = "3" ] \
        && [ "$P_COMPILED" = "true" ] && [ "$P_PACKAGES" -ge 1 ] && [ "$P_LAUNCHES" -ge 1 ] \
        && [ "$P_TWO" = "pub fn two() -> u32 {
@@ -8463,7 +8523,7 @@ return "should not get here";
     # was under Thalyx's confinement or was a host process. It is a separate
     # claim from "the program worked", and merging them would let a green stage
     # hide a compiler tree running with Thalyx's own reach.
-    P_HOW=$(programmable_field "$WORK/programmable-good.log" analyzer_how)
+    P_HOW=$(evidence_field "$P_HANDLE" metrics.analyzer_how)
     if [ "$HAVE_ANALYZER" != 1 ]; then
         unproven "the semantic provider was not exercised here, so nothing was said about confining it. Add it with: rustup component add rust-analyzer"
     elif [ "$P_CONFINED" = "true" ]; then
@@ -8549,6 +8609,214 @@ fi
 # announced. So "the kernel was denying while this ran" stops being a fact
 # established once at the top of the window and becomes one established again
 # for each stage that claims it.
+stage_60() {
+step "60. a program that worked can still be asked to put the tree back, and a rename says how much of each file it rewrote"
+
+# `vault/06-Pendientes/Punto-Actual.md`, 2026-08-30. Two claims from the sprint
+# that attacked the compact run's costs, and both of them need this machine.
+#
+# ## Column one: `on_success: "rollback"`
+#
+# The unit tests cover the reasoning against the directory-backed fake, which is
+# this project's standing split. What only Btrfs can establish is that the
+# boundary is a **real snapshot** and that the restore really returns the bytes
+# — and here the restore is the interesting one, because the run **succeeded**.
+# Every rollback this file has ever checked was a rollback after a failure, and
+# a machine that could only put a tree back when something went wrong would pass
+# all of those.
+#
+# The control is in the same column and it is the whole test: the program must
+# be seen to have *changed things* — `changed()` inside the run and
+# `change_count` in the answer — before the bytes come back. A no-op that
+# reported `succeeded_and_restored` would satisfy every other assertion here.
+#
+# ## Column two: `edits_by_file`
+#
+# rust-analyzer answers a rename with every file and every range inside it, and
+# applying that used to collapse the ranges before anybody looked. The tree has
+# a different number of uses in each file — three, two, one — because a fixture
+# where every file held one would let "one per file", or the file count under
+# another name, pass as a per-file count.
+#
+# `definition` is the other half and it is a claim about **not** knowing: given
+# the name, the place was reached through the symbol's declaration and the field
+# is there; given `file:line:column`, the caller pointed somewhere and the field
+# is absent rather than guessed.
+
+SUCCESS_STORE="$WORK/on-success-store"
+SUCCESS_TREE="$BTRFS_SCRATCH/.thalyx-verify-on-success"
+mkdir -p "$SUCCESS_STORE"
+rm -rf "$SUCCESS_TREE" 2>/dev/null || btrfs subvolume delete "$SUCCESS_TREE" > /dev/null 2>&1 || true
+
+SUCCESS_GAP=""
+if [ ! -x "$THALYX" ]; then
+    SUCCESS_GAP="there is no thalyx binary, so no program could be run"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    SUCCESS_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif ! btrfs subvolume create "$SUCCESS_TREE" > "$WORK/on-success-subvol.log" 2>&1; then
+    SUCCESS_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/on-success-subvol.log"
+fi
+
+if [ -n "$SUCCESS_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$SUCCESS_GAP"; else unproven "$SUCCESS_GAP"; fi
+else
+    # A synthetic project with an invented name, deliberately nothing the
+    # benchmark uses: a stage written over the bank's own symbol is a stage that
+    # passes because the bank passes.
+    mkdir -p "$SUCCESS_TREE/notes"
+    printf 'alpha sprocket alpha\n' > "$SUCCESS_TREE/notes/one.txt"
+    printf 'sprocket\nbeta\n'      > "$SUCCESS_TREE/notes/two.txt"
+    printf 'nothing here\n'         > "$SUCCESS_TREE/notes/three.txt"
+    printf '[main]\nwidget = sprocket\n' > "$SUCCESS_TREE/config.ini"
+    BEFORE_DIGEST=$(cat "$SUCCESS_TREE/notes/one.txt" "$SUCCESS_TREE/notes/two.txt" \
+                        "$SUCCESS_TREE/notes/three.txt" "$SUCCESS_TREE/config.ini" \
+                    | sha256sum | cut -d' ' -f1)
+
+    ROLLBACK_P=$(python3 -c '
+import json
+print(json.dumps({"label": "what this change would touch",
+                  "on_success": "rollback",
+                  "validate": [{"check": "text", "text": "sprocket", "expect": "none"}],
+                  "run": """
+const touched = [];
+for (const path of ["notes/one.txt", "notes/two.txt", "notes/three.txt", "config.ini"]) {
+    const held = thalyx.read(path);
+    if (!held.ok || held.text.indexOf("sprocket") < 0) continue;
+    thalyx.mustWork(thalyx.substitute(path, "sprocket", "flywheel"), "substituting " + path);
+    touched.push(path);
+}
+const moved = thalyx.changed();
+return {touched: touched, files_the_tree_saw_move: moved.count};
+"""}))')
+    printf '%s\n' "structured on" "cd $SUCCESS_TREE" "hacer '$ROLLBACK_P'" salir | \
+        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' \
+        > "$WORK/on-success.log"
+
+    # This stage's own reader. `programmable_field` is declared inside
+    # `stage_59`, so it exists here only because that stage happened to run
+    # first — a dependency on execution order that nothing states and nothing
+    # checks. A stage that reads its own answers reads them with its own hands.
+    answer_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "exec":
+        here = value
+        for key in sys.argv[2].split("."):
+            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
+        print(here if isinstance(here, str) else json.dumps(here))
+        break
+else:
+    print("none")
+' "$1" "$2"
+    }
+
+    S_STATUS=$(answer_field "$WORK/on-success.log" status)
+    S_OK=$(answer_field "$WORK/on-success.log" succeeded)
+    S_TREE=$(answer_field "$WORK/on-success.log" tree)
+    S_ASKED=$(answer_field "$WORK/on-success.log" restored_by_request)
+    S_COUNT=$(answer_field "$WORK/on-success.log" change_count)
+    S_SAW=$(answer_field "$WORK/on-success.log" returned.files_the_tree_saw_move)
+    S_HANDLE=$(answer_field "$WORK/on-success.log" evidence)
+    # The bytes, read from outside. The run's own account of what it did is the
+    # thing under test, so it cannot also be the proof.
+    AFTER_DIGEST=$(cat "$SUCCESS_TREE/notes/one.txt" "$SUCCESS_TREE/notes/two.txt" \
+                       "$SUCCESS_TREE/notes/three.txt" "$SUCCESS_TREE/config.ini" \
+                   | sha256sum | cut -d' ' -f1)
+
+    # And the control column, without which "it put the tree back" and "it never
+    # committed anything" are the same sentence: the same program with
+    # `on_success` left alone must keep its work.
+    COMMIT_P=$(printf '%s' "$ROLLBACK_P" | python3 -c '
+import json, sys
+program = json.load(sys.stdin)
+program["on_success"] = "commit"
+program["label"] = "the same, kept"
+print(json.dumps(program))')
+    printf '%s\n' "structured on" "cd $SUCCESS_TREE" "hacer '$COMMIT_P'" salir | \
+        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' \
+        > "$WORK/on-commit.log"
+    C_STATUS=$(answer_field "$WORK/on-commit.log" status)
+    C_ONE=$(cat "$SUCCESS_TREE/notes/one.txt" 2>/dev/null || echo unreadable)
+
+    # The evidence survived the restore, which is the ordering the whole feature
+    # rests on: the tree goes back, what the run learned does not.
+    S_KEPT=$(printf '%s\n' "structured on" "evidencia $S_HANDLE" salir | \
+        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "evidence":
+        print(f"{value.get(\"succeeded\")}/{value.get(\"restored_by_request\")}/{len(value.get(\"changed_files\") or [])}")
+        break
+else:
+    print("none")
+')
+
+    if [ "$S_STATUS" = "succeeded_and_restored" ] && [ "$S_OK" = "true" ] \
+       && [ "$S_TREE" = "restored" ] && [ "$S_ASKED" = "true" ] \
+       && [ "$S_COUNT" = "3" ] && [ "$S_SAW" = "3" ] \
+       && [ "$AFTER_DIGEST" = "$BEFORE_DIGEST" ] \
+       && [ "$S_KEPT" = "True/True/3" ] \
+       && [ "$C_STATUS" = "committed" ] \
+       && [ "$C_ONE" = "alpha flywheel alpha" ]; then
+        proven "a program changed three files on a real subvolume, watched the tree agree, validated, returned its findings — and the workspace came back byte for byte because the caller asked, not because anything failed: succeeded=true, tree=restored, restored_by_request=true, with the evidence still naming all three files. The same program left to itself committed."
+    elif [ "$S_COUNT" != "3" ] || [ "$S_SAW" != "3" ]; then
+        failed "the program reported $S_COUNT changed file(s) and saw $S_SAW: a rollback of a run that changed nothing proves nothing. See $WORK/on-success.log"
+        excerpt "$WORK/on-success.log"
+    elif [ "$AFTER_DIGEST" != "$BEFORE_DIGEST" ]; then
+        failed "a successful run asked to be rolled back left the tree changed; see $WORK/on-success.log"
+        excerpt "$WORK/on-success.log"
+    elif [ "$S_OK" != "true" ] || [ "$S_ASKED" != "true" ] || [ "$S_TREE" != "restored" ]; then
+        failed "the restore reads as a failure: status='$S_STATUS' succeeded='$S_OK' tree='$S_TREE' restored_by_request='$S_ASKED'. A caller cannot tell it worked. See $WORK/on-success.log"
+        excerpt "$WORK/on-success.log"
+    elif [ "$C_STATUS" != "committed" ] || [ "$C_ONE" != "alpha flywheel alpha" ]; then
+        failed "the control did not keep its work: status='$C_STATUS', one.txt='$C_ONE'. Without it, a machine that never commits anything passes this stage. See $WORK/on-commit.log"
+        excerpt "$WORK/on-commit.log"
+    else
+        failed "the evidence of the restored run says '$S_KEPT' and should say True/True/3; a restore that erased what the run learned is the one thing this must not do"
+        excerpt "$WORK/on-success.log"
+    fi
+    rm -rf "$SUCCESS_TREE" 2>/dev/null || btrfs subvolume delete "$SUCCESS_TREE" > /dev/null 2>&1 || true
+fi
+
+# ── the rename says how much of each file it rewrote ─────────────────────────
+step "60b. a rename answers with the edit counts rust-analyzer already gave it"
+
+if [ "$HAVE_ANALYZER" != 1 ]; then
+    unproven "there is no rust-analyzer here, so nothing was renamed and no counts were checked. Add it with: rustup component add rust-analyzer"
+else
+    RENAME_OUT="$WORK/rename-counts.log"
+    if ( cd "$ROOT" && cargo test -p thalyx-cli --test a_rename_says_what_it_did ) \
+            > "$RENAME_OUT" 2>&1; then
+        # `3 passed` and not merely exit 0: rule 3 says a skip prints NOT PROVEN
+        # and exits successfully, so an exit code alone cannot tell a stage that
+        # ran from a stage that stood down.
+        if grep -q "3 passed" "$RENAME_OUT" && ! grep -q "NOT PROVEN" "$RENAME_OUT"; then
+            proven "a rename answered edits_by_file — three, two and one edit across three files, from the WorkspaceEdit rust-analyzer had already handed over — and claimed a definition only where it had really resolved one"
+        else
+            unproven "the rename counts were not exercised; see $RENAME_OUT"
+        fi
+    else
+        failed "the rename did not answer the counts it already knew; see $RENAME_OUT"
+        excerpt "$RENAME_OUT"
+    fi
+fi
+}
+
 stage_58
 stage_59
 
@@ -8557,6 +8825,14 @@ if [ "$CONFINED_WINDOW" = 1 ]; then
     step "58-59. and the machine put back the way those two stages found it"
     enforcement_window_close
 fi
+
+# **After the window, and that is not an ordering detail.** Stage 60 runs a
+# `cargo test` and starts an ordinary rust-analyzer, and neither of those is a
+# claim about a denying kernel — running them inside the window would measure
+# the window instead, which is rule 5's twelfth entry, and would carry
+# `THALYX_REQUIRE_CONFINED_ANALYZER` into `cargo test`, which is its
+# seventeenth.
+stage_60
 
 # ------------------------------------------------- the machine, as it is left
 #

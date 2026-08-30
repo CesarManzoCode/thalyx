@@ -94,6 +94,23 @@ pub struct Tool {
     /// advertised — see `main::usable`.
     pub verbs: &'static [&'static str],
     pub description: &'static str,
+    /// The one sentence the server instructions say about this tool, or empty.
+    ///
+    /// **The instructions are assembled from this and from nothing else.** They
+    /// used to be one paragraph written out by hand, and on 2026-08-30 that
+    /// paragraph was still telling a model on the three-tool surface to "prefer
+    /// thalyx_symbol and thalyx_dependencies" and to pass `attempt: begin` to
+    /// thalyx_edit — four tools that surface does not offer. A model cannot
+    /// call a tool it was not given, so the advice was not merely useless: the
+    /// first thing this machine said about itself was false.
+    ///
+    /// Written per tool so that cannot happen again. A tool that is not offered
+    /// contributes no sentence, and there is nowhere for a name to be typed
+    /// except beside the tool it names — which
+    /// `every_name_the_instructions_use_is_a_tool_that_is_offered` checks
+    /// mechanically anyway, because a rule that depends on nobody writing prose
+    /// in the wrong place is not a rule.
+    pub advice: &'static str,
     /// The JSON schema the agent's arguments are validated against by the
     /// client. Written out rather than derived, for the reason
     /// `thalyx_files::machine` gives for the same choice: a shape a caller
@@ -276,6 +293,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "thalyx_state",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["where", "state", "attempt"],
         description: "\
 What this Thalyx machine is right now: where the workspace is, what the machine \
@@ -294,6 +312,7 @@ otherwise take several commands and several guesses.",
     Tool {
         name: "thalyx_list",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["list"],
         description: "\
 What is in a directory of the workspace. Sizes are exact and nothing is hidden. \
@@ -319,6 +338,7 @@ Use it to orient; use thalyx_symbol or thalyx_dependencies to find code.",
     Tool {
         name: "thalyx_read",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["read"],
         description: "\
 The text of one file, with its exact size and its sha256. A file that is not \
@@ -339,6 +359,8 @@ opening any of them.",
     Tool {
         name: "thalyx_context",
         surface: Surface::Hot,
+        advice: "thalyx_context is for a semantic decision you must make before you can write \
+         the program; a program can call `thalyx.context(...)` for itself.",
         verbs: &["context"],
         description: "\
 What a name IS, resolved by a compiler frontend rather than matched as text: \
@@ -404,6 +426,7 @@ the machine last looked. Believe them.",
     Tool {
         name: "thalyx_symbol",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["symbol", "index_build"],
         description: "\
 Where a name is defined and every place it is used, from Thalyx's parsed \
@@ -435,6 +458,7 @@ is exact and case-sensitive, so `login` does not find `login_user`.",
     Tool {
         name: "thalyx_dependencies",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["depends_on", "depended_on_by"],
         description: "\
 Which files depend on one file, or which it depends on, from the index and \
@@ -485,6 +509,7 @@ thalyx_symbol is the finer question.",
     Tool {
         name: "thalyx_index",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["index_build"],
         description: "\
 Read the workspace and record what refers to what. thalyx_symbol and \
@@ -511,6 +536,7 @@ are skipped.",
     Tool {
         name: "thalyx_find",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["find", "grep"],
         description: "\
 Search the workspace by file name pattern, or for a literal string inside \
@@ -561,6 +587,7 @@ is exact where this is not.",
     Tool {
         name: "thalyx_attempt",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["attempt"],
         description: "\
 A reversible boundary around a task. `begin` takes a snapshot of the whole \
@@ -656,72 +683,44 @@ here between the steps — use thalyx_exec instead.",
     Tool {
         name: "thalyx_exec",
         surface: Surface::Hot,
+        advice: "thalyx_exec is the one to reach for: put a whole stretch of work in a single \
+         call — observe, decide, mutate, verify, then return the summary — and let the \
+         decisions in between happen inside the machine.",
         verbs: &["exec"],
         description: "\
-Do a whole stretch of work in ONE call by sending Thalyx a short PROGRAM. \
-Thalyx opens a reversible boundary, runs your program, watches what really \
-changed, and then keeps the work or puts the workspace back exactly as it was \
-— without coming back to you in between. \
+ONE CALL does a whole stretch of work. `run` is a short JavaScript program \
+Thalyx executes locally, inside a reversible boundary. Intermediate answers \
+stay in the machine: list, read, branch on what came back, edit only what that \
+says to, check the result — none of it costs a turn. \
 \
-`run` is JavaScript. It has variables, if/else, loops, arrays, string methods \
-and JSON, and it calls Thalyx through a `thalyx` object. **The point is that \
-what one call returns decides what you do next, locally**: list a directory \
-and loop over what came back; read each file and edit only the ones whose \
-contents say to; validate, look at the verdict, and branch on it. None of that \
-costs you a turn. \
+The `thalyx` object: `context(name)` — what a name IS, from a compiler \
+frontend; `rename(from, to)` — rewrite every place that really refers to a Rust \
+symbol, aliases included, answering `edits_by_file`; `read`, `window`, `list`, \
+`grep`, `find`, `symbol`, `dependsOn`, `dependedOnBy`; `edit`, `substitute`, \
+`write`, `append`, `makeFile`, `makeDirectory`, `copy`, `move`, `remove`; \
+`changed()` — what the tree really shows moved so far; `validate({check})` — \
+`text`, `parses`, `rust` or `program`, answering `{verdict, summary, output}`; \
+`not_proven` is never a pass; `assert`, `log`, `call(verb, args)`. \
 \
-What `thalyx` gives you: \
-`state()`, `where()`, `list(path)`, `read(path)`, `window(path, line, around)`, \
-`grep(text)`, `find(pattern)`, `symbol(name)`, `dependsOn(path)`, \
-`dependedOnBy(path)`; `context(query)` — what a NAME is, resolved by a compiler \
-frontend, and `rename(from, to)` — rewrite every place that really refers to a \
-Rust symbol, aliased imports included; `substitute(path, old, new)`, \
-`edit(path, action, …)`, `write(path, line, text)`, `append(path, text)`, \
-`makeFile(...)`, `makeDirectory(...)`, `copy(from,to)`, `move(from,to)`, \
-`remove(...)`; `changed()` — what the tree really shows changed so far; \
-`validate(check)`; `assert(condition, message)`; `mustWork(answer, message)` \
-and `mustPass(record, message)`; `needModel(value)`; `log(text)`; and \
-`call(verb, args)` for anything else. \
+Every call answers an object with `ok`: a refusal is a value, not a \
+throw. `mustWork(answer, why)` turns 'it answered' into 'it worked' — put it on \
+every mutating call. `needModel(value)` when a decision is genuinely yours: the \
+tree is put back untouched and you are asked. \
 \
-Every call answers an object with `ok` on it. A refusal is a value, not an \
-error — read it and decide. `mustWork(...)` turns 'it answered' into 'it \
-worked', which is the mistake to guard against on every mutating call. \
+**Return a small value. That is all that comes back.** Whole files, every \
+reference, compiler output and every `log` line stay behind the \
+answer's `evidence` id, which thalyx_evidence fetches. \
 \
-`validate({check: …})` is the same set of checks the machine runs for itself: \
-`text` (a string is absent from, or still present in, the workspace), `parses` \
-(every changed source file still has balanced brackets — what a mechanical \
-edit breaks), `rust` (cargo over exactly the crates your change REACHES, \
-worked out from Cargo's graph, reusing the answer when this machine has \
-already compiled these exact bytes), and `program` (run an absolute path, \
-confined, require exit 0). Each answers `{verdict, summary, output}` where \
-verdict is `passed`, `failed` or `not_proven` — and `not_proven` is never a \
-pass. \
+The transaction: program returns and every check holds → the work is kept; \
+anything else → the workspace is byte-for-byte what it was. **`on_success: \
+\"rollback\"` puts the tree back even though it worked** — the program still \
+runs, mutates, reads `changed()`, validates and returns; only the workspace is \
+undone. For a preview, a what-if, an impact measurement, or a task that must \
+end restored. The answer says `succeeded: true`, `tree: \"restored\"` — not \
+the failure case. `on_failure: \"keep\"` leaves a failed tree in place. \
 \
-`assert(condition, message)` stops the run there and then; it cannot be caught. \
-Use it for premises: exactly N candidates, no occurrence left, the process \
-exited 0. Failing early is far cheaper than discovering it after twenty edits. \
-\
-Return a small value at the end — that is all that comes back to you. \
-Everything else — whole files, every reference, all the compiler output — \
-stays in the machine under an `evidence` id, and thalyx_evidence fetches any \
-of it if the summary was not enough. Keeping the reading local and the answer \
-small is the whole point. \
-\
-If you meet a decision a machine should not make — an ambiguous symbol, a \
-design choice — call `thalyx.needModel({...})`. The workspace is put back \
-untouched and you are asked, rather than a guess being committed. \
-\
-The transaction: if the program returns and every check that ran passed, the \
-work is committed. Otherwise the whole thing is rolled back and the workspace \
-is byte-for-byte what it was. `on_failure: \"keep\"` leaves the failed tree in \
-place to look at. \
-\
-There are ceilings — wall time, memory, how many things you may ask the \
-machine, how many processes may start. An infinite loop is stopped, and \
-stopping is a rollback. \
-\
-`steps` is the older form: a plain list of requests when the work really is \
-known in advance. Send `run` or `steps`, never both.",
+Resources are capped; being stopped is a rollback. `steps` is the older form, \
+a plain list of requests; send one or the other, never both.",
         schema: || {
             json!({
                 "type": "object",
@@ -828,6 +827,17 @@ known in advance. Send `run` or `steps`, never both.",
                                         does not hold. `rollback` is the default and is \
                                         almost always what you want; `keep` leaves the \
                                         failed tree in place for you to look at."
+                    },
+                    "on_success": {
+                        "type": "string",
+                        "enum": ["commit", "rollback"],
+                        "description": "What to do when the program returns and every \
+                                        check holds. `commit` is the default. `rollback` \
+                                        keeps everything the run learned — the returned \
+                                        value, the evidence — and puts the workspace back \
+                                        anyway: a preview, a what-if, an impact \
+                                        measurement, or a task whose own terms are to \
+                                        leave the tree as you found it."
                     }
                 }
             })
@@ -867,7 +877,14 @@ known in advance. Send `run` or `steps`, never both.",
                         .to_string(),
                 );
             }
-            for name in ["label", "run", "steps", "validate", "on_failure"] {
+            for name in [
+                "label",
+                "run",
+                "steps",
+                "validate",
+                "on_failure",
+                "on_success",
+            ] {
                 if let Some(value) = arguments.get(name) {
                     program.insert(name.to_string(), value.clone());
                 }
@@ -878,6 +895,7 @@ known in advance. Send `run` or `steps`, never both.",
     Tool {
         name: "thalyx_evidence",
         surface: Surface::Hot,
+        advice: "thalyx_evidence is for when a run's summary was not enough.",
         verbs: &["evidence"],
         description: "\
 Everything a thalyx_exec run did and did not send back: each step's full answer, \
@@ -911,6 +929,7 @@ id from the run; add `step` to get one step's answer whole.",
     Tool {
         name: "thalyx_changed",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["attempt"],
         description: "\
 What has changed in the workspace since the open attempt began — files made, \
@@ -923,6 +942,7 @@ with none, it answers that none is open.",
     Tool {
         name: "thalyx_edit",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["edit"],
         description: "\
 Change a file. For anything repeated or mechanical — a rename, a changed \
@@ -1072,6 +1092,7 @@ one call and not two.",
     Tool {
         name: "thalyx_file",
         surface: Surface::Legacy,
+        advice: "",
         verbs: &["make_file", "make_directory", "remove", "move", "copy"],
         description: "\
 Create, delete, move or copy a file or directory in the workspace. Every answer \
@@ -1702,5 +1723,144 @@ mod tests {
         let read = TOOLS.iter().find(|t| t.name == "thalyx_read").unwrap();
         assert!((read.calls)(&json!({})).is_err());
         assert!((read.calls)(&json!({"path": 3})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod what_the_surface_weighs {
+    use super::*;
+
+    /// The ceiling on one hot tool's description, in bytes.
+    ///
+    /// Every one of these arrives with **every inference of every session** —
+    /// that is what a small surface is for, and it is also what makes each of
+    /// them expensive in a way nothing about a single call reveals. Claude Code
+    /// is documented as truncating a tool description at 2 KiB, so a
+    /// description over that is not merely costly, it is *silently cut*: the
+    /// model would be given three quarters of a contract and no sign that
+    /// anything was missing.
+    ///
+    /// I could not find that truncation in the 2.1.251 bundle on this host, so
+    /// the number is not being reported here as a verified property of the
+    /// client. It does not need to be. The ceiling earns its place on cost
+    /// alone, and the version that does truncate is a version this repository
+    /// does not control — a budget that is only correct on the client you last
+    /// checked is not a budget.
+    ///
+    /// `thalyx_exec`'s description was 3 649 bytes on 2026-08-30, which is how
+    /// this test came to exist.
+    const MOST_DESCRIPTION_BYTES: usize = 2048;
+
+    /// The ceiling on the server instructions.
+    ///
+    /// The same argument, and the same limit, for the same reason: it is read
+    /// once per turn for the life of the session and it is the first thing the
+    /// model is told.
+    const MOST_INSTRUCTION_BYTES: usize = 2048;
+
+    fn hot() -> Vec<&'static Tool> {
+        TOOLS.iter().filter(|t| t.surface == Surface::Hot).collect()
+    }
+
+    #[test]
+    fn every_hot_description_fits_in_the_budget_it_is_paid_for() {
+        for tool in hot() {
+            let bytes = tool.description.len();
+            assert!(
+                bytes <= MOST_DESCRIPTION_BYTES,
+                "`{}`'s description is {bytes} bytes and the ceiling is \
+                 {MOST_DESCRIPTION_BYTES}. This is read on every inference of every \
+                 session. Long-form documentation belongs in `docs/` and in the vault, \
+                 where it is read once by somebody who wanted it",
+                tool.name
+            );
+            // The other half, without which a ceiling is satisfied by deleting
+            // the description: a tool the model cannot work out how to call is
+            // a tool that costs a turn instead of a paragraph.
+            assert!(
+                bytes > 200,
+                "`{}`'s description is {bytes} bytes, which is not a contract",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_thing_thalyx_exec_says_is_what_it_is_for() {
+        // The budget decides how much is read; the order decides what is read
+        // *first*, and under truncation it decides what is read at all. The one
+        // sentence that has to survive is the one that says this is not a
+        // fourteenth small tool.
+        let exec = TOOLS.iter().find(|t| t.name == "thalyx_exec").unwrap();
+        let opening = &exec.description[..120];
+        assert!(opening.contains("ONE CALL"), "{opening}");
+        assert!(opening.contains("JavaScript"), "{opening}");
+    }
+
+    #[test]
+    fn the_compact_instructions_fit_and_name_only_tools_that_are_there() {
+        // The defect this is written against: the instructions that shipped on
+        // 2026-08-30 told a model with three tools to prefer two it did not
+        // have and to pass an argument to two more it did not have. It could
+        // not act on a word of it.
+        let compact: Vec<&'static Tool> =
+            TOOLS.iter().filter(|t| t.surface == Surface::Hot).collect();
+        let said = crate::instructions_for("/w/project", &compact);
+        assert!(
+            said.len() <= MOST_INSTRUCTION_BYTES,
+            "the instructions are {} bytes and the ceiling is {MOST_INSTRUCTION_BYTES}",
+            said.len()
+        );
+        for tool in &compact {
+            assert!(said.contains(tool.name), "`{}` is not named", tool.name);
+        }
+        assert!(said.contains("/w/project"), "{said}");
+    }
+
+    #[test]
+    fn every_name_the_instructions_use_is_a_tool_that_is_offered() {
+        // Mechanical, and over both surfaces, because the failure is not "a
+        // typo" — it is a sentence that was true of a surface this machine is
+        // not serving. Anything spelled `thalyx_…` anywhere in the instructions
+        // has to be a tool the same call just offered.
+        for whole in [false, true] {
+            let offered: Vec<&'static Tool> = TOOLS
+                .iter()
+                .filter(|t| whole || t.surface == Surface::Hot)
+                .collect();
+            let said = crate::instructions_for("/w", &offered);
+            let names: Vec<&str> = offered.iter().map(|t| t.name).collect();
+            let mut rest = said.as_str();
+            while let Some(at) = rest.find("thalyx_") {
+                rest = &rest[at..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                let named = &rest[..end];
+                assert!(
+                    names.contains(&named),
+                    "the instructions name `{named}`, which is not offered on this \
+                     surface. A model cannot call it, so this sentence is not advice — \
+                     it is a false statement about the machine. Offered: {names:?}"
+                );
+                rest = &rest[end..];
+            }
+        }
+    }
+
+    #[test]
+    fn a_tool_that_is_not_offered_contributes_no_advice() {
+        // The control for the test above: advice keyed to the offered set only
+        // proves something if some tool's advice is actually left out.
+        let only_evidence: Vec<&'static Tool> = TOOLS
+            .iter()
+            .filter(|t| t.name == "thalyx_evidence")
+            .collect();
+        let said = crate::instructions_for("/w", &only_evidence);
+        assert!(said.contains("thalyx_evidence"), "{said}");
+        assert!(
+            !said.contains("thalyx_exec") && !said.contains("thalyx_context"),
+            "advice for a tool nobody was given: {said}"
+        );
     }
 }
