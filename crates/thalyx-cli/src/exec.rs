@@ -177,10 +177,36 @@ pub enum OnFailure {
     Keep,
 }
 
+/// The most bytes of program source one request may carry.
+///
+/// Not a guess about complexity — a bound on what arrives from outside. Sixty
+/// four kilobytes is far more than any program a model writes in one inference
+/// and small enough that a caller sending a file by mistake is refused rather
+/// than parsed.
+pub const MOST_PROGRAM_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Program {
     #[serde(default = "agent")]
     pub label: String,
+    /// A program: JavaScript, run locally, with the machine's capabilities and
+    /// none of its authority.
+    ///
+    /// **This is the form that made the verb worth having.** `steps` below
+    /// requires every operation and every argument to be known before anything
+    /// runs, which cannot express the thing an agent actually spends its turns
+    /// on — ask, look at the answer, decide. A program can: the references a
+    /// query returned are a variable, the ones worth changing are an `if`, and
+    /// the validation that decides whether any of it is kept is a call whose
+    /// result the next line reads.
+    #[serde(default)]
+    pub run: Option<String>,
+    /// The older form: a list of requests, in order.
+    ///
+    /// Kept, and not deprecated. It is the right shape when the work really is
+    /// known in advance — and it is the control column for every measurement
+    /// of what the programmable form buys, which is a use that does not expire.
+    #[serde(default)]
     pub steps: Vec<Step>,
     #[serde(default)]
     pub validate: Vec<Check>,
@@ -207,12 +233,37 @@ impl Program {
             )
         })?;
 
-        if program.steps.is_empty() {
+        let has_source = program
+            .run
+            .as_ref()
+            .is_some_and(|source| !source.trim().is_empty());
+        // Exactly one, and refused rather than resolved by precedence. A
+        // caller that sent both has two ideas about what it wants done, and a
+        // rule that silently ran one of them would be Thalyx picking which —
+        // inside a transaction, over somebody's files.
+        if has_source && !program.steps.is_empty() {
             return Err(
-                "`steps` is empty; a program with no requests in it changes \
-                        nothing and there is nothing to be transactional about"
+                "a program is either `run` — code — or `steps` — a list of requests — \
+                 and this has both. Which one was meant is not something this machine \
+                 will decide inside a transaction"
                     .to_string(),
             );
+        }
+        if !has_source && program.steps.is_empty() {
+            return Err(
+                "there is nothing to run: give `run`, a short JavaScript program, or \
+                 `steps`, a list of requests. A program with neither changes nothing \
+                 and there is nothing to be transactional about"
+                    .to_string(),
+            );
+        }
+        if let Some(source) = &program.run
+            && source.len() > MOST_PROGRAM_BYTES
+        {
+            return Err(format!(
+                "the program is {} bytes and this verb takes at most {MOST_PROGRAM_BYTES}",
+                source.len()
+            ));
         }
         if program.steps.len() > MOST_STEPS {
             return Err(format!(
@@ -270,6 +321,16 @@ pub struct StepRecord {
 /// One check, as the evidence records it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckRecord {
+    /// What was asked for, exactly, so two runs of the same check can be
+    /// recognised as the same question.
+    ///
+    /// It exists because a **program** can validate more than once — the
+    /// ordinary shape being *check, see it fail, fix it, check again* — and a
+    /// transaction that rolled back because an earlier attempt had failed
+    /// would make that shape impossible to write. What gates the commit is the
+    /// last verdict per key; every attempt is still in the evidence.
+    #[serde(default)]
+    pub key: String,
     pub check: String,
     /// Three outcomes and not two. A check that could not run is not a check
     /// that failed and is not a check that passed — rule 10, and here it
@@ -321,6 +382,27 @@ pub struct Evidence {
     pub changed: Vec<String>,
     pub change_count: usize,
     pub metrics: Metrics,
+
+    /// The source of the program, when there was one.
+    ///
+    /// Kept because a run is not auditable without it: the steps say what
+    /// happened and only this says what was *asked for*, and the two differ
+    /// exactly where the interesting behaviour is.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// How the program ended: `returned`, `needs_model`, `assertion`,
+    /// `threw`, `exhausted` or `refused`.
+    #[serde(default)]
+    pub finish: Option<String>,
+    /// One sentence saying why it ended that way.
+    #[serde(default)]
+    pub finish_why: Option<String>,
+    /// What it handed back, or what it asked the model about.
+    #[serde(default)]
+    pub returned: Value,
+    /// What the program said with `thalyx.log`, bounded.
+    #[serde(default)]
+    pub printed: Vec<String>,
 }
 
 /// What the machine did, as numbers, so the hypothesis this verb exists to test
@@ -363,6 +445,27 @@ pub struct Metrics {
     pub validation_cache_misses: usize,
     /// How many crates the change was found to reach.
     pub affected_packages: usize,
+
+    // ── what the programmable form produced ────────────────────────────────
+    //
+    // Zeroes on a run that sent `steps`, and said anyway: a field that only
+    // appears on the interesting day is a field nobody handles on the
+    // interesting day.
+    /// Things the program asked the machine for: requests, validations and
+    /// observations of the tree.
+    ///
+    /// **The numerator of the whole claim**, against `external_requests`, which
+    /// is one. A static list of steps could produce a big number here too; what
+    /// it could not produce is a big number where the *later* operations were
+    /// chosen from the answers to the earlier ones.
+    pub program_operations: usize,
+    /// Premises the program checked, held or not.
+    pub program_assertions: usize,
+    /// Times the engine's interrupt handler fired. A rough measure of how much
+    /// the program actually did, and the units the `ticks` ceiling is in.
+    pub program_ticks: u64,
+    /// Whether the program was the code form.
+    pub programmable: bool,
 }
 
 // ── the evidence store ───────────────────────────────────────────────────────
@@ -413,6 +516,15 @@ fn keep(store: &Store, evidence: &Evidence) -> std::io::Result<()> {
 /// Everything one run needs that is not the program.
 pub struct Asked<'a> {
     pub store: &'a Store,
+    /// What a program of this request may spend.
+    ///
+    /// Carried rather than read from the environment where it is used, and
+    /// that is rule 11: a test that wanted a one-second ceiling would
+    /// otherwise have to set a variable of *this whole process*, which is a
+    /// global switch with no owner whose value is some other test's
+    /// precondition. The verb reads the environment once, here; everything
+    /// below takes what it is given.
+    pub limits: thalyx_program::Limits,
     /// The tree the boundary is about. Where the session stands, exactly, and
     /// never an ancestor — `crate::attempt::subvolume_to_attempt` is why.
     pub subvolume: PathBuf,
@@ -458,6 +570,11 @@ pub fn carry_out<V: Volumes>(
         changed: Vec::new(),
         change_count: 0,
         metrics: metrics.clone(),
+        program: program.run.clone(),
+        finish: None,
+        finish_why: None,
+        returned: Value::Null,
+        printed: Vec::new(),
     };
 
     // ── the boundary, before anything is written ────────────────────────────
@@ -481,50 +598,72 @@ pub fn carry_out<V: Volumes>(
     let start = thalyx_snapshot::witness(&asked.subvolume);
     evidence.start_state = start.is_complete().then(|| start.id.clone());
 
-    // ── the steps ───────────────────────────────────────────────────────────
+    // ── the work ────────────────────────────────────────────────────────────
     let boundary = here.confined_to().map(Path::to_path_buf);
     let mut refused = None;
-    for (index, step) in program.steps.iter().enumerate() {
-        metrics.machine_operations += 1;
-        let answered = crate::external::one(
-            asked.store,
+
+    if let Some(source) = &program.run {
+        let ran = drive(
+            asked,
+            &snapshots,
+            &opened.snapshot,
             here,
             boundary.as_deref(),
-            &step.verb,
-            &step.arguments,
+            source,
+            &mut metrics,
+            &mut evidence,
         );
-        let (ok, answer) = match answered {
-            Ok(answer) => {
-                // A verb that answered is not a verb that succeeded: every
-                // refusal on this surface is a well-formed object with
-                // `ok: false` in it, and reading "it answered" as "it worked"
-                // is how a program carries on past the edit that did not
-                // happen and validates a tree nobody changed.
-                let ok = answer.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                (ok, answer)
+        // A program that did not run to the end is a program whose work is
+        // half done, whatever it managed before it stopped — and that includes
+        // `needs_model`, which is not a failure and is not a success either.
+        // The transaction settles it the same way it settles a failed check:
+        // put it back, unless the caller asked to keep it.
+        if !ran {
+            refused = Some(0);
+        }
+    } else {
+        for (index, step) in program.steps.iter().enumerate() {
+            metrics.machine_operations += 1;
+            let answered = crate::external::one(
+                asked.store,
+                here,
+                boundary.as_deref(),
+                &step.verb,
+                &step.arguments,
+            );
+            let (ok, answer) = match answered {
+                Ok(answer) => {
+                    // A verb that answered is not a verb that succeeded: every
+                    // refusal on this surface is a well-formed object with
+                    // `ok: false` in it, and reading "it answered" as "it worked"
+                    // is how a program carries on past the edit that did not
+                    // happen and validates a tree nobody changed.
+                    let ok = answer.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                    (ok, answer)
+                }
+                Err(refusal) => (
+                    false,
+                    json!({
+                        "ok": false,
+                        "word": refusal.word,
+                        "remedy": refusal.remedy,
+                        "message": refusal.message,
+                    }),
+                ),
+            };
+
+            metrics.internal_bytes += answer.to_string().len();
+            evidence.steps.push(StepRecord {
+                verb: step.verb.clone(),
+                arguments: step.arguments.clone(),
+                ok,
+                answer,
+            });
+
+            if !ok {
+                refused = Some(index);
+                break;
             }
-            Err(refusal) => (
-                false,
-                json!({
-                    "ok": false,
-                    "word": refusal.word,
-                    "remedy": refusal.remedy,
-                    "message": refusal.message,
-                }),
-            ),
-        };
-
-        metrics.internal_bytes += answer.to_string().len();
-        evidence.steps.push(StepRecord {
-            verb: step.verb.clone(),
-            arguments: step.arguments.clone(),
-            ok,
-            answer,
-        });
-
-        if !ok {
-            refused = Some(index);
-            break;
         }
     }
 
@@ -559,9 +698,9 @@ pub fn carry_out<V: Volumes>(
     // against it would answer a question about a state the program never meant
     // to produce. The failure is already known.
     if refused.is_none() {
-        for check in &program.validate {
+        for (index, check) in program.validate.iter().enumerate() {
             metrics.validations += 1;
-            let record = run_check(
+            let mut record = run_check(
                 asked,
                 here,
                 boundary.as_deref(),
@@ -569,18 +708,38 @@ pub fn carry_out<V: Volumes>(
                 &difference,
                 &mut metrics,
             );
+            // Position and not content: two identical checks in a declarative
+            // list are two things the caller asked for, and collapsing them
+            // under one key would let the second silently answer for the
+            // first. A program's repeated check is the opposite case and is
+            // keyed by what it asked — see `CheckRecord::key`.
+            record.key = format!("declared:{index}");
             metrics.internal_bytes += record.output.to_string().len();
             evidence.checks.push(record);
         }
     }
 
-    let everything_held = refused.is_none()
-        && evidence
-            .checks
-            .iter()
-            .all(|record| record.verdict == Verdict::Passed);
+    // The last verdict of each distinct check, and every one of them must have
+    // passed. `Passed` is never assumed for a check that did not run: a
+    // `not_proven` is a failure here, which is rule 9 — a commit that believed
+    // it had been checked would be a commit lying about itself.
+    let mut last: std::collections::BTreeMap<&str, Verdict> = std::collections::BTreeMap::new();
+    for record in &evidence.checks {
+        last.insert(record.key.as_str(), record.verdict);
+    }
+    let everything_held =
+        refused.is_none() && last.values().all(|verdict| *verdict == Verdict::Passed);
 
-    evidence.reason = if let Some(index) = refused {
+    evidence.reason = if program.run.is_some() && refused.is_some() {
+        // The program's own word for how it stopped, which is the only thing
+        // that distinguishes "it asked for the model" from "it threw" from "it
+        // ran out of time" — three outcomes with the same effect on the tree
+        // and three different next moves for whoever reads this.
+        evidence
+            .finish_why
+            .clone()
+            .unwrap_or_else(|| "the program did not run to the end".to_string())
+    } else if let Some(index) = refused {
         let step = &evidence.steps[index];
         format!(
             "step {} (`{}`) was refused, so the rest of the program did not run",
@@ -593,11 +752,10 @@ pub fn carry_out<V: Volumes>(
             n => format!("every step went through and all {n} check(s) held"),
         }
     } else {
-        let failed: Vec<&str> = evidence
-            .checks
+        let failed: Vec<&str> = last
             .iter()
-            .filter(|record| record.verdict != Verdict::Passed)
-            .map(|record| record.check.as_str())
+            .filter(|(_, verdict)| **verdict != Verdict::Passed)
+            .map(|(key, _)| *key)
             .collect();
         format!(
             "every step went through and {} did not hold",
@@ -686,6 +844,261 @@ pub fn carry_out<V: Volumes>(
     evidence
 }
 
+// ── the programmable form ────────────────────────────────────────────────────
+
+/// The machine, as a program is allowed to see it.
+///
+/// **Every field here is a borrow of something that already existed.** There is
+/// no second store, no second session, no second boundary and no second
+/// checker: a program's request goes through [`crate::external::one`], its
+/// validation through [`run_check`], and its view of what changed through
+/// `thalyx_snapshot::difference` — the same three things the static form uses,
+/// called from a different place. If that were not true this would be the
+/// parallel API `Agentes-Externos.md` forbids, and the workspace boundary would
+/// hold for a list of steps and not for a loop.
+struct Runner<'a, V: Volumes> {
+    asked: &'a Asked<'a>,
+    snapshots: &'a Snapshots<V>,
+    snapshot: &'a str,
+    here: &'a mut Where,
+    boundary: Option<&'a Path>,
+    metrics: &'a mut Metrics,
+    /// Every validation the program asked for, in order, with what it found.
+    checks: Vec<CheckRecord>,
+}
+
+impl<V: Volumes> Runner<'_, V> {
+    /// What the tree really shows changed since the boundary opened.
+    ///
+    /// Recomputed on every call and never remembered, which is the whole point
+    /// of it being available *inside* a program: after the third edit the
+    /// answer is different from what it was after the second, and a program
+    /// that could only see the difference at the end could not decide anything
+    /// from it.
+    fn difference(&self) -> thalyx_snapshot::Difference {
+        match self.snapshots.find(self.snapshot) {
+            Ok(found) => thalyx_snapshot::difference(&self.asked.subvolume, &found.path),
+            // Rule 10, and it matters more here than in the static form: a
+            // program that got an empty difference would read it as "nothing
+            // changed" and commit. So this is empty *and* the settling below
+            // reports the snapshot as gone, which is what stops the commit.
+            Err(_) => Default::default(),
+        }
+    }
+}
+
+/// The two verbs a program may not reach, and why they are checked here.
+///
+/// `Program::read` refuses a *step* named `exec` or `attempt` before a snapshot
+/// is taken, which is the right place for a list: the list is a value something
+/// can look at. **A program is not.** It reaches verbs by name at runtime, so
+/// there is nothing to inspect in advance and the check has to be at the
+/// moment of the call.
+///
+/// Found by a test on 2026-08-30 that asked for `attempt abandonar` from inside
+/// a program and got `ok: true` with a `confirm_with` line in it — carrying the
+/// snapshot name and the exact state witness the machine had just computed. The
+/// next two lines of that program would have been to send it back, and the
+/// transaction would have been abandoned from inside itself, mid-run, with
+/// `carry_out` still holding a boundary that no longer existed. Nothing was
+/// destroyed in the test because a one-call abandon needs a state claim; what
+/// the test found is that the machine hands the claim over on request.
+///
+/// So it is the same rule as the static form's, applied where it can be
+/// applied. It is not an argument check and does not belong in `EXPOSED`: those
+/// verbs are legitimately reachable by a session, and what is illegitimate is
+/// reaching them *from inside the transaction they would settle*.
+const NOT_FROM_INSIDE: &[&str] = &[OP, "attempt"];
+
+impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
+    fn request(&mut self, verb: &str, arguments: &[String]) -> Value {
+        self.metrics.machine_operations += 1;
+
+        if NOT_FROM_INSIDE.contains(&verb) {
+            return json!({
+                "ok": false,
+                "word": "not_from_inside",
+                "error": "not_from_inside",
+                "remedy": "let_the_program_end",
+                "message": format!(
+                    "`{verb}` is what this program is running *inside*. The boundary is                      opened around the whole program and settled by what the checks say;                      `on_failure` chooses which way. Return a value, or call                      `thalyx.needModel(…)`"
+                ),
+            });
+        }
+        let answer =
+            crate::external::one(self.asked.store, self.here, self.boundary, verb, arguments);
+        match answer {
+            Ok(answer) => answer,
+            // A refusal is a value and not an end. The program branches on
+            // `ok`, exactly as the static form's runtime does, and a mistake it
+            // can recover from does not cost a round trip to whoever wrote it.
+            Err(refusal) => json!({
+                "ok": false,
+                "word": refusal.word,
+                "error": refusal.word,
+                "remedy": refusal.remedy,
+                "message": refusal.message,
+            }),
+        }
+    }
+
+    fn validate(&mut self, asked: &Value) -> Value {
+        self.metrics.validations += 1;
+        self.metrics.machine_operations += 1;
+
+        // Read as the same object the declarative `validate` list takes, so
+        // there is one shape of check on this machine and not two. A program
+        // that sends something else is told what a check looks like rather
+        // than having one guessed for it.
+        let check: Check = match serde_json::from_value(asked.clone()) {
+            Ok(check) => check,
+            Err(error) => {
+                return json!({
+                    "verdict": "not_proven",
+                    "summary": format!(
+                        "that is not a check this machine knows: {error}. A check is \
+                         {{\"check\":\"text\"|\"parses\"|\"rust\"|\"program\", …}}"
+                    ),
+                });
+            }
+        };
+
+        let difference = self.difference();
+        let mut record = run_check(
+            self.asked,
+            self.here,
+            self.boundary,
+            &check,
+            &difference,
+            self.metrics,
+        );
+        record.key = asked.to_string();
+        self.metrics.internal_bytes += record.output.to_string().len();
+        let answer = json!({
+            "check": record.check,
+            "verdict": record.verdict.word(),
+            "passed": record.verdict == Verdict::Passed,
+            "summary": record.summary,
+            // The whole of it, because this side of the boundary is the cheap
+            // side. What crosses back to a model is whatever the program
+            // decides to return, and that is a separate decision made later.
+            "output": record.output.clone(),
+        });
+        self.checks.push(record);
+        answer
+    }
+
+    fn changed(&mut self) -> Value {
+        self.metrics.machine_operations += 1;
+        let difference = self.difference();
+        json!({
+            "count": difference.added_total + difference.modified_total + difference.removed_total,
+            "added": difference.added,
+            "modified": difference.modified,
+            "removed": difference.removed,
+        })
+    }
+
+    fn process_launches(&self) -> usize {
+        self.metrics.process_launches
+    }
+
+    fn verbs(&self) -> Vec<String> {
+        crate::external::ExternalAgentSession::verbs()
+    }
+}
+
+/// What a program may spend, on this machine.
+///
+/// Read from the environment so a person can loosen or tighten it without a
+/// rebuild, and defaulted to [`thalyx_program::Limits`]'s own numbers. Every
+/// variable is separate, which is rule 3's shape applied to resources: a
+/// machine that has time to spare and not memory must be able to say which.
+fn limits() -> thalyx_program::Limits {
+    let mut limits = thalyx_program::Limits::default();
+    let number = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    if let Some(seconds) = number("THALYX_PROGRAM_SECONDS") {
+        limits.wall = std::time::Duration::from_secs(seconds.max(1));
+    }
+    if let Some(megabytes) = number("THALYX_PROGRAM_MEGABYTES") {
+        limits.memory_bytes = (megabytes.max(1) as usize) * 1024 * 1024;
+    }
+    if let Some(calls) = number("THALYX_PROGRAM_CALLS") {
+        limits.calls = calls.max(1) as usize;
+    }
+    if let Some(launches) = number("THALYX_PROGRAM_LAUNCHES") {
+        limits.process_launches = launches as usize;
+    }
+    limits
+}
+
+/// Run one program inside the boundary, and say whether it ran to the end.
+///
+/// The transaction settles on the answer: `true` lets the checks decide, and
+/// `false` puts the tree back unless the caller asked to keep it. Everything
+/// the program did is in `evidence` either way — a run that stopped halfway is
+/// the run whose record is most worth having.
+#[allow(clippy::too_many_arguments)]
+fn drive<V: Volumes>(
+    asked: &Asked<'_>,
+    snapshots: &Snapshots<V>,
+    snapshot: &str,
+    here: &mut Where,
+    boundary: Option<&Path>,
+    source: &str,
+    metrics: &mut Metrics,
+    evidence: &mut Evidence,
+) -> bool {
+    let mut runner = Runner {
+        asked,
+        snapshots,
+        snapshot,
+        here,
+        boundary,
+        metrics,
+        checks: Vec::new(),
+    };
+    let outcome = thalyx_program::run(source, &mut runner, &asked.limits);
+    let checks = std::mem::take(&mut runner.checks);
+
+    // Every call the program made becomes a step, in order, with its answer
+    // whole. Deliberately the same shape the static form produces, so
+    // `evidencia <id> paso=N` fetches a program's ninth operation exactly as it
+    // fetches a list's ninth step — one shape for "what happened", and not a
+    // second one that only programs have.
+    for call in &outcome.calls {
+        if call.kind == "validate" {
+            // Already a check. Keeping it here too would put the compiler's
+            // whole output in the evidence twice.
+            continue;
+        }
+        evidence.steps.push(StepRecord {
+            verb: call.verb.clone(),
+            arguments: call.arguments.clone(),
+            ok: call.ok,
+            answer: call.answer.clone(),
+        });
+    }
+    evidence.checks.extend(checks);
+    evidence.printed = outcome.printed.clone();
+    evidence.finish = Some(outcome.finish.word().to_string());
+    evidence.finish_why = Some(outcome.finish.why());
+    evidence.returned = outcome.value();
+
+    metrics.programmable = true;
+    metrics.program_operations =
+        outcome.metrics.requests + outcome.metrics.validations + outcome.metrics.observations;
+    metrics.program_assertions = outcome.metrics.assertions;
+    metrics.program_ticks = outcome.metrics.ticks;
+    metrics.internal_bytes += outcome.metrics.answer_bytes;
+
+    outcome.finish.went_through()
+}
+
 // ── validation ───────────────────────────────────────────────────────────────
 
 /// Run one check and say what it found.
@@ -718,6 +1131,7 @@ fn run_check(
                 Ok(answer) => answer,
                 Err(refusal) => {
                     return CheckRecord {
+                        key: String::new(),
                         check: format!("text `{text}` {expect}"),
                         verdict: Verdict::NotProven,
                         summary: format!("the search could not be made: {}", refusal.message),
@@ -747,6 +1161,7 @@ fn run_check(
             };
             let hits = total.unwrap_or(0);
             CheckRecord {
+                key: String::new(),
                 check: format!("text `{text}` {expect}"),
                 verdict,
                 summary: match verdict {
@@ -792,6 +1207,7 @@ fn run_check(
                 Verdict::Passed
             };
             CheckRecord {
+                key: String::new(),
                 check: "parses".to_string(),
                 verdict,
                 summary: match verdict {
@@ -811,6 +1227,7 @@ fn run_check(
             // would be this verb deciding what somebody else's binary is for.
             let outcome = run_confined(asked, program, arguments, &[], &[], &[], metrics);
             CheckRecord {
+                key: String::new(),
                 check: format!("program `{program}`"),
                 verdict: outcome.verdict,
                 summary: outcome.summary,
@@ -991,6 +1408,7 @@ fn rust_check(
         crate::semantic::selection(asked.store.root(), &asked.subvolume, &changed, named)
     else {
         return CheckRecord {
+            key: String::new(),
             check: format!("cargo {subcommand}"),
             verdict: Verdict::NotProven,
             summary: "this workspace is not one Cargo can describe, so there is nothing \
@@ -1004,6 +1422,7 @@ fn rust_check(
 
     if packages.is_empty() {
         return CheckRecord {
+            key: String::new(),
             check: format!("cargo {subcommand}"),
             verdict: Verdict::NotProven,
             summary: format!("nothing was compiled: {}", selection.why),
@@ -1029,6 +1448,7 @@ fn rust_check(
     {
         metrics.validation_cache_hits += 1;
         return CheckRecord {
+            key: String::new(),
             check: format!("cargo {subcommand} over {}", packages.join(", ")),
             verdict: record.verdict,
             // Said out loud. A caller told a check passed, when what happened
@@ -1058,6 +1478,7 @@ fn rust_check(
         // nothing, and the sentence gave nobody a way to notice that the
         // toolchain was one directory away under `$SUDO_USER`'s home.
         return CheckRecord {
+            key: String::new(),
             check: format!("cargo {subcommand}"),
             verdict: Verdict::NotProven,
             summary: found.why_not(
@@ -1154,6 +1575,7 @@ fn rust_check(
     }
 
     CheckRecord {
+        key: String::new(),
         check: format!("cargo {subcommand} over {}", packages.join(", ")),
         verdict: outcome.verdict,
         summary: outcome.summary,
@@ -1254,7 +1676,7 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
             })
         });
 
-    vec![
+    let mut carried = vec![
         ("status", json!(evidence.status)),
         ("transaction", json!(evidence.transaction)),
         ("attempt", json!(evidence.label)),
@@ -1319,7 +1741,37 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
             "affected_packages",
             json!(evidence.metrics.affected_packages),
         ),
-    ]
+    ];
+
+    // The programmable form's own fields, and only on a run that was one. This
+    // is the one place in this file where a field is conditional, and the
+    // reason is that `steps_run` already means something for a list of steps:
+    // `returned` on a run that had no program would be a null every caller has
+    // to special-case, and `finish` would be a word about something that did
+    // not happen.
+    if evidence.metrics.programmable {
+        carried.extend([
+            ("finish", json!(evidence.finish)),
+            ("finish_why", json!(evidence.finish_why)),
+            // **What the program handed back.** The whole of the compression is
+            // that this is small and everything it was computed from is not:
+            // the program read whole files, walked every reference and ran the
+            // compiler, and what crosses back is whatever it decided mattered.
+            ("returned", evidence.returned.clone()),
+            (
+                "program_operations",
+                json!(evidence.metrics.program_operations),
+            ),
+            (
+                "program_assertions",
+                json!(evidence.metrics.program_assertions),
+            ),
+            ("program_ticks", json!(evidence.metrics.program_ticks)),
+            ("printed", json!(evidence.printed)),
+        ]);
+    }
+
+    carried
 }
 
 /// `hacer <programa>` — the verb, in whichever face is asking.
@@ -1382,6 +1834,7 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
 
     let asked = Asked {
         store,
+        limits: limits(),
         subvolume,
         request_id: request_id.to_string(),
     };
@@ -1393,6 +1846,15 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
 
     if face == Face::Machine {
         let mut carried = answer_object(&evidence);
+        // Measured on the object that actually leaves, not estimated. The
+        // whole claim of this verb is a ratio between this and
+        // `internal_bytes`, and a numerator nobody weighed is a ratio nobody
+        // can check.
+        let leaving: usize = carried
+            .iter()
+            .map(|(name, value)| name.len() + value.to_string().len() + 4)
+            .sum();
+        carried.push(("returned_bytes", json!(leaving)));
         if let Err(error) = &kept {
             carried.push(("evidence_kept", json!(false)));
             carried.push(("evidence_why_not", json!(error.to_string())));
@@ -1723,9 +2185,27 @@ mod tests {
     }
 
     fn run(store: &Store, tree: &Path, here: &mut Where, program: &Program) -> Evidence {
+        run_within(
+            store,
+            tree,
+            here,
+            program,
+            thalyx_program::Limits::default(),
+        )
+    }
+
+    /// The same, with a ceiling of this test's own.
+    fn run_within(
+        store: &Store,
+        tree: &Path,
+        here: &mut Where,
+        program: &Program,
+        limits: thalyx_program::Limits,
+    ) -> Evidence {
         carry_out(
             &Asked {
                 store,
+                limits,
                 subvolume: tree.to_path_buf(),
                 request_id: format!("t-{}", std::process::id()),
             },
@@ -2096,6 +2576,536 @@ mod tests {
         assert!(
             found.looked_at.iter().any(|path| path.ends_with("cargo")),
             "the search names no candidate at all: {found:?}"
+        );
+    }
+
+    // ── the programmable form ────────────────────────────────────────────
+
+    /// A tree whose files differ in a way nothing outside it can know in
+    /// advance.
+    ///
+    /// Five modules; three of them use `old_api` and two do not, and **which
+    /// three is not visible from the file names**. That is the property the
+    /// fixture exists for: a caller composing a static list of steps would
+    /// have to read all five first — five answers, five round trips — or edit
+    /// all five and be wrong about two.
+    fn a_tree_that_has_to_be_looked_at() -> (tempfile::TempDir, Store, PathBuf, Where) {
+        a_workspace(&[
+            (
+                "Cargo.toml",
+                "[workspace]\n\n[package]\nname = \"vertical\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub mod one;\npub mod two;\npub mod three;\npub mod four;\npub mod five;\n",
+            ),
+            ("src/one.rs", "pub fn one() -> u32 {\n    old_api(1)\n}\n"),
+            ("src/two.rs", "pub fn two() -> u32 {\n    2\n}\n"),
+            (
+                "src/three.rs",
+                "pub fn three() -> u32 {\n    old_api(3)\n}\n",
+            ),
+            ("src/four.rs", "pub fn four() -> u32 {\n    4\n}\n"),
+            ("src/five.rs", "pub fn five() -> u32 {\n    old_api(5)\n}\n"),
+        ])
+    }
+
+    /// The program the fixtures below run, in one place so the three columns
+    /// differ only in what they are run against.
+    ///
+    /// Read it as the claim: **nothing in it names a file.** The list comes
+    /// from the machine, the choice comes from what each file says, and the
+    /// last decision comes from what a check answered.
+    const LOOK_THEN_CHANGE: &str = r#"
+        const listing = thalyx.list("src");
+        thalyx.assert(listing.ok, "src could not be listed", listing);
+
+        const sources = (listing.entries || [])
+            .map((entry) => entry.name)
+            .filter((name) => name.endsWith(".rs") && name !== "lib.rs")
+            .sort();
+        thalyx.assert(sources.length >= 4, "this tree should have several modules", sources);
+
+        // The loop that could not have been written in advance: what is in each
+        // file decides whether it is touched.
+        const touched = [];
+        const skipped = [];
+        for (const name of sources) {
+            const path = "src/" + name;
+            const source = thalyx.read(path);
+            if (!source.ok) { skipped.push(name); continue; }
+            if (source.text.includes("old_api")) {
+                thalyx.mustWork(
+                    thalyx.substitute(path, "old_api", "new_api"),
+                    "the substitution in " + path + " did not happen"
+                );
+                touched.push(name);
+            } else {
+                skipped.push(name);
+            }
+        }
+
+        // What the tree says, not what the edits claimed.
+        const seen = thalyx.changed();
+        thalyx.assert(
+            seen.count === touched.length,
+            "the tree shows " + seen.count + " change(s) and the program made " + touched.length,
+            seen
+        );
+
+        // And the branch on a validation, which is the last decision and the
+        // one a static list has to hand back to a model to make.
+        const parses = thalyx.validate({ check: "parses" });
+        if (parses.verdict !== "passed") {
+            return { gave_up: true, why: parses.summary };
+        }
+
+        const left = thalyx.grep("old_api");
+        thalyx.assert(left.total === 0, "old_api is still somewhere", left);
+
+        return {
+            changed: touched,
+            left_alone: skipped.length,
+            still_there: left.total,
+        };
+    "#;
+
+    #[test]
+    fn one_request_looks_at_a_tree_and_changes_only_what_the_looking_says_to() {
+        // **The defining fixture of the programmable form.**
+        //
+        // One external request. Inside it: a listing whose contents were not
+        // known, a loop over that listing, a read per entry, a decision per
+        // read, a mutation for three of them and none for two, an observation
+        // of what really changed, a validation, a branch on the validation, and
+        // a compact answer. Not one of those decisions went back to a model.
+        //
+        // A `Vec<Step>` cannot express this. To produce the same result it
+        // would have to already contain the three file names — which is the
+        // answer, so producing it *is* the work this is doing.
+        let (_base, store, tree, mut here) = a_tree_that_has_to_be_looked_at();
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "only what needs it",
+                "run": LOOK_THEN_CHANGE,
+            })),
+        );
+
+        assert_eq!(evidence.status, "committed", "{}", evidence.reason);
+        assert_eq!(evidence.finish.as_deref(), Some("returned"));
+        assert_eq!(
+            evidence.returned["changed"],
+            serde_json::json!(["five.rs", "one.rs", "three.rs"]),
+            "the program changed the wrong set: {}",
+            evidence.returned
+        );
+        assert_eq!(evidence.returned["left_alone"], serde_json::json!(2));
+        assert_eq!(evidence.returned["still_there"], serde_json::json!(0));
+
+        // The bytes, which is the claim rather than the count.
+        for name in ["one", "three", "five"] {
+            let text = std::fs::read_to_string(tree.join(format!("src/{name}.rs"))).expect(name);
+            assert!(text.contains("new_api"), "src/{name}.rs: {text}");
+        }
+        for name in ["two", "four"] {
+            let text = std::fs::read_to_string(tree.join(format!("src/{name}.rs"))).expect(name);
+            assert!(
+                !text.contains("new_api") && !text.contains("old_api"),
+                "src/{name}.rs was touched and had no reason to be: {text}"
+            );
+        }
+
+        // And the numbers the hypothesis is stated in.
+        assert_eq!(evidence.metrics.external_requests, 1);
+        assert!(
+            evidence.metrics.program_operations >= 10,
+            "one request did {} things inside the machine: {:?}",
+            evidence.metrics.program_operations,
+            evidence.metrics
+        );
+        assert!(
+            evidence.metrics.program_assertions >= 3,
+            "{:?}",
+            evidence.metrics
+        );
+        assert_eq!(evidence.change_count, 3);
+    }
+
+    #[test]
+    fn what_the_program_read_is_far_more_than_what_came_back() {
+        // The compression, as two numbers from the same run. Without it "the
+        // answer is small" is a sentence about a JSON blob rather than a
+        // measurement against what producing it cost.
+        let (_base, store, tree, mut here) = a_tree_that_has_to_be_looked_at();
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({"label": "measured", "run": LOOK_THEN_CHANGE})),
+        );
+
+        let returned = serde_json::to_string(&evidence.returned)
+            .expect("the answer")
+            .len();
+        assert!(
+            evidence.metrics.internal_bytes > returned * 8,
+            "the machine handled {} bytes and handed back {returned}; the whole point \
+             of running the program here is that those two numbers are far apart",
+            evidence.metrics.internal_bytes
+        );
+    }
+
+    #[test]
+    fn a_program_whose_validation_fails_puts_every_one_of_its_changes_back() {
+        // **The control**, and the reason the fixture above is safe to use. The
+        // same program, over a tree with a file that will not parse after the
+        // substitution: the program mutates three files, the check says no, and
+        // a real boundary puts all three back byte for byte.
+        let (_base, store, tree, mut here) = a_workspace(&[
+            ("src/one.rs", "pub fn one() -> u32 {\n    old_api(1)\n}\n"),
+            // The trap: substituting here leaves an unbalanced brace, which is
+            // exactly what `parses` is for.
+            ("src/two.rs", "pub fn two() -> u32 {\n    old_api(2) }}\n"),
+            ("src/three.rs", "pub fn three() -> u32 {\n    3\n}\n"),
+        ]);
+        let before: Vec<String> = ["src/one.rs", "src/two.rs", "src/three.rs"]
+            .iter()
+            .map(|name| std::fs::read_to_string(tree.join(name)).expect(name))
+            .collect();
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "it does not hold",
+                "run": r#"
+                    const listing = thalyx.list("src");
+                    for (const entry of listing.entries || []) {
+                        const path = "src/" + entry.name;
+                        const source = thalyx.read(path);
+                        if (source.ok && source.text.includes("old_api")) {
+                            thalyx.substitute(path, "old_api", "new_api(");
+                        }
+                    }
+                    const parses = thalyx.validate({ check: "parses" });
+                    thalyx.mustPass(parses, "a changed file no longer parses");
+                    return "should not get here";
+                "#,
+            })),
+        );
+
+        assert_eq!(evidence.status, "rolled_back", "{}", evidence.reason);
+        assert!(evidence.rolled_back);
+        assert_eq!(evidence.finish.as_deref(), Some("assertion"));
+        for (name, was) in ["src/one.rs", "src/two.rs", "src/three.rs"]
+            .iter()
+            .zip(before.iter())
+        {
+            assert_eq!(
+                &std::fs::read_to_string(tree.join(name)).expect(name),
+                was,
+                "{name} did not come back"
+            );
+        }
+        // And the diagnosis survived the rollback, because it was never in the
+        // tree the rollback replaced.
+        assert!(
+            evidence
+                .checks
+                .iter()
+                .any(|record| record.verdict == Verdict::Failed),
+            "{:?}",
+            evidence.checks
+        );
+    }
+
+    #[test]
+    fn a_program_that_asks_for_the_model_has_changed_nothing() {
+        // The third column, and the one the ambiguity contract needs: a program
+        // that meets a decision it will not make stops **before** mutating and
+        // says what it needs decided. Not a failure, not a success, and — the
+        // part that matters — not a guess.
+        let (_base, store, tree, mut here) = a_tree_that_has_to_be_looked_at();
+        let before = std::fs::read_to_string(tree.join("src/one.rs")).expect("one.rs");
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "not my decision",
+                "run": r#"
+                    const listing = thalyx.list("src");
+                    const many = (listing.entries || []).filter(
+                        (entry) => entry.name.endsWith(".rs")
+                    );
+                    if (many.length > 2) {
+                        return thalyx.needModel({
+                            question: "which of these should be migrated",
+                            candidates: many.map((entry) => entry.name).sort(),
+                        });
+                    }
+                    thalyx.substitute("src/one.rs", "old_api", "new_api");
+                    return "changed it";
+                "#,
+            })),
+        );
+
+        assert_eq!(evidence.finish.as_deref(), Some("needs_model"));
+        assert_eq!(evidence.status, "rolled_back", "{}", evidence.reason);
+        assert_eq!(evidence.change_count, 0, "{:?}", evidence.changed);
+        assert_eq!(
+            std::fs::read_to_string(tree.join("src/one.rs")).expect("one.rs"),
+            before
+        );
+        assert!(
+            evidence.returned["candidates"].is_array(),
+            "the question came back without what it is about: {}",
+            evidence.returned
+        );
+    }
+
+    #[test]
+    fn the_answer_of_one_operation_decides_whether_a_third_runs() {
+        // **The composition test.** Written so that a hardcoded list of steps
+        // cannot satisfy it: operation A is a search whose answer is a number
+        // nothing outside the tree knows, B is an arithmetic decision on that
+        // number, and C happens only on one side of it. The assertion is on
+        // which requests reached the machine.
+        let (_base, store, tree, mut here) =
+            a_workspace(&[("a.txt", "needle\nneedle\n"), ("b.txt", "nothing here\n")]);
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "a decides c",
+                "run": r#"
+                    const found = thalyx.grep("needle");           // A
+                    const many = found.total >= 2;                  // B
+                    if (many) {                                     // C
+                        thalyx.substitute("a.txt", "needle", "pin");
+                    } else {
+                        thalyx.substitute("b.txt", "nothing", "something");
+                    }
+                    return { total: found.total, took: many ? "a" : "b" };
+                "#,
+            })),
+        );
+
+        assert_eq!(evidence.status, "committed", "{}", evidence.reason);
+        assert_eq!(evidence.returned["took"], serde_json::json!("a"));
+        assert_eq!(evidence.returned["total"], serde_json::json!(2));
+        assert_eq!(
+            std::fs::read_to_string(tree.join("a.txt")).expect("a.txt"),
+            "pin\npin\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join("b.txt")).expect("b.txt"),
+            "nothing here\n",
+            "the branch that should not have run, ran"
+        );
+
+        // And the same program over a tree where A answers differently takes
+        // the other branch, with nothing in the program changed. Without this
+        // column, a program that always edited `a.txt` would pass everything
+        // above.
+        let (_base, store, tree, mut here) =
+            a_workspace(&[("a.txt", "needle\n"), ("b.txt", "nothing here\n")]);
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "a decides c, the other way",
+                "run": r#"
+                    const found = thalyx.grep("needle");
+                    const many = found.total >= 2;
+                    if (many) {
+                        thalyx.substitute("a.txt", "needle", "pin");
+                    } else {
+                        thalyx.substitute("b.txt", "nothing", "something");
+                    }
+                    return { total: found.total, took: many ? "a" : "b" };
+                "#,
+            })),
+        );
+        assert_eq!(evidence.returned["took"], serde_json::json!("b"));
+        assert_eq!(
+            std::fs::read_to_string(tree.join("a.txt")).expect("a.txt"),
+            "needle\n",
+            "the branch that should not have run, ran"
+        );
+    }
+
+    #[test]
+    fn a_program_reaches_no_verb_and_no_path_a_single_request_could_not() {
+        // The boundary, put to the form that could most easily have escaped it.
+        // A loop can try a hundred paths where a list of steps tries one, so
+        // the check has to be in the door rather than in the composing — and it
+        // is: `Runner::request` is `external::one`.
+        let (_base, store, tree, mut here) = a_workspace(&[("inside.txt", "here\n")]);
+        std::fs::write(tree.parent().expect("a parent").join("outside.txt"), "no\n")
+            .expect("a file outside");
+
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "trying every door",
+                "run": r#"
+                    const tried = [];
+                    for (const path of ["../outside.txt", "/etc/passwd",
+                                        "inside/../../outside.txt"]) {
+                        tried.push(thalyx.read(path).ok === true);
+                    }
+                    // And a verb that is not exposed at all.
+                    tried.push(thalyx.call("install_at", ["/dev/sda"]).ok === true);
+                    return { any: tried.some((got) => got), tried: tried.length };
+                "#,
+                "on_failure": "keep",
+            })),
+        );
+
+        assert_eq!(
+            evidence.returned["any"],
+            serde_json::json!(false),
+            "{evidence:?}"
+        );
+        assert_eq!(evidence.returned["tried"], serde_json::json!(4));
+    }
+
+    #[test]
+    fn a_program_may_not_open_a_boundary_or_settle_one() {
+        // The same rule the static form has, and it has to be checked here too
+        // because a program reaches verbs by name at runtime rather than in a
+        // list something looked at first.
+        let (_base, store, tree, mut here) = a_workspace(&[("a.txt", "x\n")]);
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "settling its own boundary",
+                "run": r#"
+                    const opened = thalyx.call("attempt", ["abandonar", "agent"]);
+                    return { ok: opened.ok === true, word: opened.word || opened.error };
+                "#,
+                "on_failure": "keep",
+            })),
+        );
+        assert_eq!(
+            evidence.returned["ok"],
+            serde_json::json!(false),
+            "{evidence:?}"
+        );
+        assert_eq!(
+            evidence.returned["word"],
+            serde_json::json!("not_from_inside"),
+            "{evidence:?}"
+        );
+        assert_eq!(evidence.change_count, 0);
+
+        // And the fact this test was written for. Before 2026-08-30 the call
+        // above answered `ok: true` with a `confirm_with` line carrying the
+        // snapshot name and the exact state witness — everything a second call
+        // needs to abandon the transaction from inside itself. So the assertion
+        // is not only that it was refused: it is that the answer hands over
+        // nothing to try again with.
+        assert!(
+            evidence.returned.get("confirm_with").is_none(),
+            "the refusal handed the program what it needs to retry: {}",
+            evidence.returned
+        );
+
+        // The other half of the pair, and the one a list of steps is refused
+        // for by name.
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "a program inside a program",
+                "run": r#"
+                    const inner = thalyx.call("exec", ['{"steps":[{"verb":"state"}]}']);
+                    return { ok: inner.ok === true, word: inner.word || inner.error };
+                "#,
+                "on_failure": "keep",
+            })),
+        );
+        assert_eq!(
+            evidence.returned["word"],
+            serde_json::json!("not_from_inside"),
+            "{evidence:?}"
+        );
+    }
+
+    #[test]
+    fn a_program_and_a_list_of_steps_are_not_both_accepted() {
+        let error = Program::read(
+            &serde_json::json!({"run": "return 1;", "steps": [{"verb": "state"}]}).to_string(),
+        )
+        .expect_err("two ideas about what to do");
+        assert!(error.contains("both"), "{error}");
+    }
+
+    #[test]
+    fn a_request_with_neither_says_what_it_is_missing() {
+        let error = Program::read(&serde_json::json!({"label": "empty"}).to_string())
+            .expect_err("nothing to run");
+        assert!(error.contains("run"), "{error}");
+        assert!(error.contains("steps"), "{error}");
+    }
+
+    #[test]
+    fn a_program_that_never_stops_stops_and_the_tree_is_untouched() {
+        // Rule: a limit failure produces evidence and rolls back. Nothing here
+        // is about the program being malicious — a loop with a bad condition is
+        // the commonest bug there is, and the machine's answer to it must not
+        // be to hold the session open forever.
+        let (_base, store, tree, mut here) = a_workspace(&[("a.txt", "x\n")]);
+        let started = std::time::Instant::now();
+        let evidence = run_within(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "forever",
+                "run": "thalyx.substitute('a.txt', 'x', 'y'); while (true) {}",
+            })),
+            // Its own ceiling, handed to this run and to nothing else. A
+            // variable would be a global switch with no owner — rule 11, and
+            // the thing it would break is every other test's patience.
+            thalyx_program::Limits {
+                wall: std::time::Duration::from_secs(1),
+                ..thalyx_program::Limits::default()
+            },
+        );
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
+        assert_eq!(
+            evidence.finish.as_deref(),
+            Some("exhausted"),
+            "{}",
+            evidence.reason
+        );
+        assert_eq!(evidence.status, "rolled_back", "{}", evidence.reason);
+        assert_eq!(
+            std::fs::read_to_string(tree.join("a.txt")).expect("a.txt"),
+            "x\n",
+            "the edit it made before it hung was kept"
+        );
+        assert!(
+            evidence.reason.contains("stopped") || evidence.reason.contains("all"),
+            "{}",
+            evidence.reason
         );
     }
 

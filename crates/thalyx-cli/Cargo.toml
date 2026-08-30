@@ -27,6 +27,7 @@ thalyx-manifest.workspace = true
 thalyx-graph.workspace = true
 thalyx-know.workspace = true
 thalyx-rust.workspace = true
+thalyx-program.workspace = true
 thalyx-parser.workspace = true
 thalyx-memory.workspace = true
 thalyx-watch.workspace = true

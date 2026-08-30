@@ -16,6 +16,7 @@ members = [
     "crates/thalyx-graph",
     "crates/thalyx-know",
     "crates/thalyx-rust",
+    "crates/thalyx-program",
     "crates/thalyx-memory",
     "crates/thalyx-watch",
     "crates/thalyx-journal",
@@ -61,6 +62,7 @@ thalyx-install = { path = "crates/thalyx-install" }
 thalyx-graph = { path = "crates/thalyx-graph" }
 thalyx-know = { path = "crates/thalyx-know" }
 thalyx-rust = { path = "crates/thalyx-rust" }
+thalyx-program = { path = "crates/thalyx-program" }
 thalyx-memory = { path = "crates/thalyx-memory" }
 thalyx-watch = { path = "crates/thalyx-watch" }
 thalyx-journal = { path = "crates/thalyx-journal" }
