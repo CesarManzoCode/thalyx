@@ -8613,207 +8613,76 @@ stage_60() {
 step "60. a program that worked can still be asked to put the tree back, and a rename says how much of each file it rewrote"
 
 # `vault/06-Pendientes/Punto-Actual.md`, 2026-08-30. Two claims from the sprint
-# that attacked the compact run's costs, and both of them need this machine.
+# that attacked the compact run's costs, and both need this machine — one needs
+# Btrfs, the other a rust-analyzer.
 #
-# ## Column one: `on_success: "rollback"`
+# ## This stage is wiring, and that is deliberate
 #
-# The unit tests cover the reasoning against the directory-backed fake, which is
-# this project's standing split. What only Btrfs can establish is that the
-# boundary is a **real snapshot** and that the restore really returns the bytes
-# — and here the restore is the interesting one, because the run **succeeded**.
-# Every rollback this file has ever checked was a rollback after a failure, and
-# a machine that could only put a tree back when something went wrong would pass
-# all of those.
+# The claims are checked in `crates/thalyx-cli/tests/`, where the one
+# implementation lives, and stage 5 already runs the whole suite with
+# `THALYX_REQUIRE_BTRFS_TESTS` and `THALYX_REQUIRE_RUST_ANALYZER` set — so a
+# skip there is already a failure. Rewriting either battery in shell here would
+# be a second set of tests over the same code, which is how two implementations
+# get written in the first place, and the shell one would be the weaker.
 #
-# The control is in the same column and it is the whole test: the program must
-# be seen to have *changed things* — `changed()` inside the run and
-# `change_count` in the answer — before the bytes come back. A no-op that
-# reported `succeeded_and_restored` would satisfy every other assertion here.
+# What this adds is that the two claims are **named in the report**. Stage 5
+# says "the test suite"; a person reading the run should be able to see, in a
+# sentence, that a successful program put a real subvolume back on request and
+# that a rename answered its own edit counts.
 #
-# ## Column two: `edits_by_file`
+# ## What each of them is about
 #
-# rust-analyzer answers a rename with every file and every range inside it, and
-# applying that used to collapse the ranges before anybody looked. The tree has
-# a different number of uses in each file — three, two, one — because a fixture
-# where every file held one would let "one per file", or the file count under
-# another name, pass as a per-file count.
+# `on_success: "rollback"`: every rollback this file has ever checked is a
+# rollback *after a failure*. A machine that could only put a tree back when
+# something went wrong would pass all of them. The test has the control in the
+# same run — the same program with `on_success` left alone must keep its work —
+# because a machine that never commits anything would otherwise pass too.
 #
-# `definition` is the other half and it is a claim about **not** knowing: given
-# the name, the place was reached through the symbol's declaration and the field
-# is there; given `file:line:column`, the caller pointed somewhere and the field
-# is absent rather than guessed.
+# `edits_by_file`: rust-analyzer answers a rename with every file and every
+# range inside it, and applying that used to collapse the ranges before anybody
+# looked. The fixture holds a different number of uses in each file — three,
+# two, one — so "one per file", or the file count under another name, cannot
+# pass as a per-file count.
 
-SUCCESS_STORE="$WORK/on-success-store"
-SUCCESS_TREE="$BTRFS_SCRATCH/.thalyx-verify-on-success"
-mkdir -p "$SUCCESS_STORE"
-rm -rf "$SUCCESS_TREE" 2>/dev/null || btrfs subvolume delete "$SUCCESS_TREE" > /dev/null 2>&1 || true
-
-SUCCESS_GAP=""
-if [ ! -x "$THALYX" ]; then
-    SUCCESS_GAP="there is no thalyx binary, so no program could be run"
-elif [ -z "$BTRFS_SCRATCH" ]; then
-    SUCCESS_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
-elif ! btrfs subvolume create "$SUCCESS_TREE" > "$WORK/on-success-subvol.log" 2>&1; then
-    SUCCESS_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/on-success-subvol.log"
-fi
-
-if [ -n "$SUCCESS_GAP" ]; then
-    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$SUCCESS_GAP"; else unproven "$SUCCESS_GAP"; fi
-else
-    # A synthetic project with an invented name, deliberately nothing the
-    # benchmark uses: a stage written over the bank's own symbol is a stage that
-    # passes because the bank passes.
-    mkdir -p "$SUCCESS_TREE/notes"
-    printf 'alpha sprocket alpha\n' > "$SUCCESS_TREE/notes/one.txt"
-    printf 'sprocket\nbeta\n'      > "$SUCCESS_TREE/notes/two.txt"
-    printf 'nothing here\n'         > "$SUCCESS_TREE/notes/three.txt"
-    printf '[main]\nwidget = sprocket\n' > "$SUCCESS_TREE/config.ini"
-    BEFORE_DIGEST=$(cat "$SUCCESS_TREE/notes/one.txt" "$SUCCESS_TREE/notes/two.txt" \
-                        "$SUCCESS_TREE/notes/three.txt" "$SUCCESS_TREE/config.ini" \
-                    | sha256sum | cut -d' ' -f1)
-
-    ROLLBACK_P=$(python3 -c '
-import json
-print(json.dumps({"label": "what this change would touch",
-                  "on_success": "rollback",
-                  "validate": [{"check": "text", "text": "sprocket", "expect": "none"}],
-                  "run": """
-const touched = [];
-for (const path of ["notes/one.txt", "notes/two.txt", "notes/three.txt", "config.ini"]) {
-    const held = thalyx.read(path);
-    if (!held.ok || held.text.indexOf("sprocket") < 0) continue;
-    thalyx.mustWork(thalyx.substitute(path, "sprocket", "flywheel"), "substituting " + path);
-    touched.push(path);
-}
-const moved = thalyx.changed();
-return {touched: touched, files_the_tree_saw_move: moved.count};
-"""}))')
-    printf '%s\n' "structured on" "cd $SUCCESS_TREE" "hacer '$ROLLBACK_P'" salir | \
-        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' \
-        > "$WORK/on-success.log"
-
-    # This stage's own reader. `programmable_field` is declared inside
-    # `stage_59`, so it exists here only because that stage happened to run
-    # first — a dependency on execution order that nothing states and nothing
-    # checks. A stage that reads its own answers reads them with its own hands.
-    answer_field() {
-        python3 -c '
-import json, sys
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    try:
-        value = json.loads(line)
-    except Exception:
-        continue
-    if value.get("op") == "exec":
-        here = value
-        for key in sys.argv[2].split("."):
-            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
-        print(here if isinstance(here, str) else json.dumps(here))
-        break
-else:
-    print("none")
-' "$1" "$2"
-    }
-
-    S_STATUS=$(answer_field "$WORK/on-success.log" status)
-    S_OK=$(answer_field "$WORK/on-success.log" succeeded)
-    S_TREE=$(answer_field "$WORK/on-success.log" tree)
-    S_ASKED=$(answer_field "$WORK/on-success.log" restored_by_request)
-    S_COUNT=$(answer_field "$WORK/on-success.log" change_count)
-    S_SAW=$(answer_field "$WORK/on-success.log" returned.files_the_tree_saw_move)
-    S_HANDLE=$(answer_field "$WORK/on-success.log" evidence)
-    # The bytes, read from outside. The run's own account of what it did is the
-    # thing under test, so it cannot also be the proof.
-    AFTER_DIGEST=$(cat "$SUCCESS_TREE/notes/one.txt" "$SUCCESS_TREE/notes/two.txt" \
-                       "$SUCCESS_TREE/notes/three.txt" "$SUCCESS_TREE/config.ini" \
-                   | sha256sum | cut -d' ' -f1)
-
-    # And the control column, without which "it put the tree back" and "it never
-    # committed anything" are the same sentence: the same program with
-    # `on_success` left alone must keep its work.
-    COMMIT_P=$(printf '%s' "$ROLLBACK_P" | python3 -c '
-import json, sys
-program = json.load(sys.stdin)
-program["on_success"] = "commit"
-program["label"] = "the same, kept"
-print(json.dumps(program))')
-    printf '%s\n' "structured on" "cd $SUCCESS_TREE" "hacer '$COMMIT_P'" salir | \
-        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' \
-        > "$WORK/on-commit.log"
-    C_STATUS=$(answer_field "$WORK/on-commit.log" status)
-    C_ONE=$(cat "$SUCCESS_TREE/notes/one.txt" 2>/dev/null || echo unreadable)
-
-    # The evidence survived the restore, which is the ordering the whole feature
-    # rests on: the tree goes back, what the run learned does not.
-    S_KEPT=$(printf '%s\n' "structured on" "evidencia $S_HANDLE" salir | \
-        THALYX_ROOT="$SUCCESS_STORE" "$THALYX" session 2>&1 | tr -d '\r' | python3 -c '
-import json, sys
-for line in sys.stdin:
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    try:
-        value = json.loads(line)
-    except Exception:
-        continue
-    if value.get("op") == "evidence":
-        print(f"{value.get(\"succeeded\")}/{value.get(\"restored_by_request\")}/{len(value.get(\"changed_files\") or [])}")
-        break
-else:
-    print("none")
-')
-
-    if [ "$S_STATUS" = "succeeded_and_restored" ] && [ "$S_OK" = "true" ] \
-       && [ "$S_TREE" = "restored" ] && [ "$S_ASKED" = "true" ] \
-       && [ "$S_COUNT" = "3" ] && [ "$S_SAW" = "3" ] \
-       && [ "$AFTER_DIGEST" = "$BEFORE_DIGEST" ] \
-       && [ "$S_KEPT" = "True/True/3" ] \
-       && [ "$C_STATUS" = "committed" ] \
-       && [ "$C_ONE" = "alpha flywheel alpha" ]; then
-        proven "a program changed three files on a real subvolume, watched the tree agree, validated, returned its findings — and the workspace came back byte for byte because the caller asked, not because anything failed: succeeded=true, tree=restored, restored_by_request=true, with the evidence still naming all three files. The same program left to itself committed."
-    elif [ "$S_COUNT" != "3" ] || [ "$S_SAW" != "3" ]; then
-        failed "the program reported $S_COUNT changed file(s) and saw $S_SAW: a rollback of a run that changed nothing proves nothing. See $WORK/on-success.log"
-        excerpt "$WORK/on-success.log"
-    elif [ "$AFTER_DIGEST" != "$BEFORE_DIGEST" ]; then
-        failed "a successful run asked to be rolled back left the tree changed; see $WORK/on-success.log"
-        excerpt "$WORK/on-success.log"
-    elif [ "$S_OK" != "true" ] || [ "$S_ASKED" != "true" ] || [ "$S_TREE" != "restored" ]; then
-        failed "the restore reads as a failure: status='$S_STATUS' succeeded='$S_OK' tree='$S_TREE' restored_by_request='$S_ASKED'. A caller cannot tell it worked. See $WORK/on-success.log"
-        excerpt "$WORK/on-success.log"
-    elif [ "$C_STATUS" != "committed" ] || [ "$C_ONE" != "alpha flywheel alpha" ]; then
-        failed "the control did not keep its work: status='$C_STATUS', one.txt='$C_ONE'. Without it, a machine that never commits anything passes this stage. See $WORK/on-commit.log"
-        excerpt "$WORK/on-commit.log"
+BTRFS_CLAIM="$WORK/on-success-rollback.log"
+if [ "$HAVE_BTRFS" != 1 ]; then
+    unproven "there is no Btrfs here, so a successful program was never asked to put a real subvolume back"
+# `env` and not a bare prefix: `"NAME=$VALUE" cmd` is a *command name* to bash,
+# not an assignment — the quotes are what stop it being one — so the run would
+# have died with "command not found" on the one machine that can make this
+# check. Line 859 quotes the same pair correctly because there it is an array
+# element handed to `env` later.
+elif ( cd "$ROOT" && env THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH" \
+        cargo test -p thalyx-cli --test an_attempt_can_be_taken_back \
+        a_program_that_worked_can_be_asked_to_put_a_real_subvolume_back ) \
+        > "$BTRFS_CLAIM" 2>&1; then
+    # `1 passed` and not merely exit 0. Rule 3 says a skip prints NOT PROVEN and
+    # exits successfully, so an exit code alone cannot tell a check that ran from
+    # one that stood down — and this test skips on a machine without Btrfs.
+    if grep -q "1 passed" "$BTRFS_CLAIM" && ! grep -q "NOT PROVEN" "$BTRFS_CLAIM"; then
+        proven "a program changed three files on a real subvolume, watched the tree agree, validated, returned what it found — and the workspace came back byte for byte because the caller asked and not because anything failed (succeeded=true, tree=restored, restored_by_request=true), with the same program left to itself keeping its work as the control"
     else
-        failed "the evidence of the restored run says '$S_KEPT' and should say True/True/3; a restore that erased what the run learned is the one thing this must not do"
-        excerpt "$WORK/on-success.log"
+        unproven "the successful rollback was not exercised; see $BTRFS_CLAIM"
     fi
-    rm -rf "$SUCCESS_TREE" 2>/dev/null || btrfs subvolume delete "$SUCCESS_TREE" > /dev/null 2>&1 || true
+else
+    failed "a successful program asked to put the tree back did not; see $BTRFS_CLAIM"
+    excerpt "$BTRFS_CLAIM"
 fi
 
-# ── the rename says how much of each file it rewrote ─────────────────────────
-step "60b. a rename answers with the edit counts rust-analyzer already gave it"
-
+RENAME_OUT="$WORK/rename-counts.log"
 if [ "$HAVE_ANALYZER" != 1 ]; then
-    unproven "there is no rust-analyzer here, so nothing was renamed and no counts were checked. Add it with: rustup component add rust-analyzer"
-else
-    RENAME_OUT="$WORK/rename-counts.log"
-    if ( cd "$ROOT" && cargo test -p thalyx-cli --test a_rename_says_what_it_did ) \
-            > "$RENAME_OUT" 2>&1; then
-        # `3 passed` and not merely exit 0: rule 3 says a skip prints NOT PROVEN
-        # and exits successfully, so an exit code alone cannot tell a stage that
-        # ran from a stage that stood down.
-        if grep -q "3 passed" "$RENAME_OUT" && ! grep -q "NOT PROVEN" "$RENAME_OUT"; then
-            proven "a rename answered edits_by_file — three, two and one edit across three files, from the WorkspaceEdit rust-analyzer had already handed over — and claimed a definition only where it had really resolved one"
-        else
-            unproven "the rename counts were not exercised; see $RENAME_OUT"
-        fi
+    unproven "there is no rust-analyzer here, so nothing was renamed and no edit counts were checked. Add it with: rustup component add rust-analyzer"
+elif ( cd "$ROOT" && env THALYX_REQUIRE_RUST_ANALYZER=1 \
+        cargo test -p thalyx-cli --test a_rename_says_what_it_did ) \
+        > "$RENAME_OUT" 2>&1; then
+    if grep -q "3 passed" "$RENAME_OUT" && ! grep -q "NOT PROVEN" "$RENAME_OUT"; then
+        proven "a rename answered edits_by_file — three, two and one edit across three files, counted from the WorkspaceEdit rust-analyzer had already handed over — and claimed a definition only where it had really resolved one"
     else
-        failed "the rename did not answer the counts it already knew; see $RENAME_OUT"
-        excerpt "$RENAME_OUT"
+        unproven "the rename counts were not exercised; see $RENAME_OUT"
     fi
+else
+    failed "a rename did not answer the counts it already knew; see $RENAME_OUT"
+    excerpt "$RENAME_OUT"
 fi
 }
 

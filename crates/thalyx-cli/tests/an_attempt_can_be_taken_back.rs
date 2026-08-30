@@ -524,3 +524,153 @@ fn abandoning_an_attempt_takes_back_a_whole_batch_and_not_only_its_last_operatio
 
     discard(&work);
 }
+
+#[test]
+fn a_program_that_worked_can_be_asked_to_put_a_real_subvolume_back() {
+    // **The one rollback this suite had never checked: the one after a success.**
+    //
+    // `on_success: "rollback"` — 2026-08-30. Every rollback above, and every
+    // rollback `dev/verify.sh` has ever exercised, is a rollback *after
+    // something went wrong*. A machine that could only put a tree back when a
+    // check failed would pass all of them and fail this, which is the whole
+    // reason it is written separately.
+    //
+    // The unit tests in `thalyx-cli::exec` cover the reasoning against a
+    // directory-backed fake, which is this project's standing split. What only a
+    // machine with Btrfs can establish is that the boundary here is a **real
+    // snapshot** and that the bytes really come back.
+    //
+    // The workspace is synthetic and the names are invented: a regression
+    // written over the benchmark's own symbol is a regression that passes
+    // because the benchmark passes.
+    let Some(work) = btrfs_scratch("on-success-rollback") else {
+        assert!(
+            std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
+            "THALYX_REQUIRE_BTRFS_TESTS is set and no Btrfs subvolume could be made"
+        );
+        eprintln!(
+            "NOT PROVEN: a successful program was never shown to put a real subvolume \
+             back on request. It needs a writable Btrfs filesystem \
+             (THALYX_BTRFS_SCRATCH=<path on btrfs>) and btrfs-progs."
+        );
+        return;
+    };
+    let root = tempfile::tempdir().expect("a store");
+
+    std::fs::create_dir_all(work.join("notes")).expect("a directory");
+    let files = [
+        ("notes/one.txt", "alpha sprocket alpha\n"),
+        ("notes/two.txt", "sprocket\nbeta\n"),
+        ("notes/three.txt", "nothing here\n"),
+        ("config.ini", "[main]\nwidget = sprocket\n"),
+    ];
+    for (path, text) in files {
+        std::fs::write(work.join(path), text).expect("a file");
+    }
+    // Read from outside the machine, before anything runs. The program's own
+    // account of what it did is the thing under test, so it cannot also be the
+    // proof.
+    let before: Vec<Vec<u8>> = files
+        .iter()
+        .map(|(path, _)| std::fs::read(work.join(path)).expect("a file"))
+        .collect();
+
+    let program = serde_json::json!({
+        "label": "what this change would touch",
+        "on_success": "rollback",
+        "validate": [{"check": "text", "text": "sprocket", "expect": "none"}],
+        "run": "const touched = [];\n\
+                for (const path of ['notes/one.txt','notes/two.txt','notes/three.txt','config.ini']) {\n\
+                  const held = thalyx.read(path);\n\
+                  if (!held.ok || held.text.indexOf('sprocket') < 0) continue;\n\
+                  thalyx.mustWork(thalyx.substitute(path, 'sprocket', 'flywheel'), 'edit ' + path);\n\
+                  touched.push(path);\n\
+                }\n\
+                const moved = thalyx.changed();\n\
+                return {touched: touched, files_the_tree_saw_move: moved.count};"
+    })
+    .to_string();
+
+    let said = objects(&piped(
+        root.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            &format!("hacer {program}"),
+            "salir",
+        ],
+    ));
+    let answer = answer_to(&said, "exec");
+
+    // It worked, and the tree is back, and those are two facts and not one.
+    assert_eq!(answer["ok"], serde_json::json!(true), "{answer:#}");
+    assert_eq!(answer["succeeded"], serde_json::json!(true), "{answer:#}");
+    assert_eq!(
+        answer["status"],
+        serde_json::json!("succeeded_and_restored"),
+        "{answer:#}"
+    );
+    assert_eq!(answer["tree"], serde_json::json!("restored"), "{answer:#}");
+    assert_eq!(
+        answer["restored_by_request"],
+        serde_json::json!(true),
+        "a caller cannot tell this from the failure case: {answer:#}"
+    );
+
+    // The baseline, and it is the assertion that gives all the others meaning:
+    // a program that changed nothing leaves a perfect tree behind too. Three
+    // files really moved, and the tree — not the program — is what says so.
+    assert_eq!(answer["change_count"], serde_json::json!(3), "{answer:#}");
+    assert_eq!(
+        answer["returned"]["files_the_tree_saw_move"],
+        serde_json::json!(3),
+        "{answer:#}"
+    );
+    assert_eq!(
+        answer["returned"]["touched"],
+        serde_json::json!(["notes/one.txt", "notes/two.txt", "config.ini"]),
+        "{answer:#}"
+    );
+
+    // The bytes, from outside, on a real subvolume.
+    for ((path, _), was) in files.iter().zip(before.iter()) {
+        assert_eq!(
+            &std::fs::read(work.join(path)).expect("the file is still there"),
+            was,
+            "{path} did not come back byte for byte"
+        );
+    }
+
+    // And the control, without which "it put the tree back" and "it never kept
+    // anything" are the same sentence: the same program, `on_success` left
+    // alone, must keep its work on the same subvolume.
+    let kept = serde_json::from_str::<serde_json::Value>(&program)
+        .map(|mut value| {
+            value["on_success"] = serde_json::json!("commit");
+            value["label"] = serde_json::json!("the same, kept");
+            value.to_string()
+        })
+        .expect("the program parses");
+    let said = objects(&piped(
+        root.path(),
+        &[
+            "structured on",
+            &format!("cd {}", work.display()),
+            &format!("hacer {kept}"),
+            "salir",
+        ],
+    ));
+    let answer = answer_to(&said, "exec");
+    assert_eq!(
+        answer["status"],
+        serde_json::json!("committed"),
+        "{answer:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("notes/one.txt")).expect("the file"),
+        "alpha flywheel alpha\n",
+        "the control did not keep its work, so the test above proves nothing"
+    );
+
+    discard(&work);
+}
