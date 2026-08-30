@@ -426,6 +426,30 @@ impl Analyzer {
         environment: &[(String, String)],
         spawner: &dyn Spawn,
     ) -> Result<Self> {
+        // The loader path the binary's own `RUNPATH` cannot reach from where it
+        // is executed. See [`crate::toolchain::loader_path`]: confined, this
+        // server runs as `/module/rust-analyzer`, so its `$ORIGIN/../lib` is
+        // `/lib`, `librustc_driver-<hash>.so` is not there, and the process
+        // exits 127 before its first byte of LSP — with no `SIGSYS` and nothing
+        // in `ausearch`, which reads exactly like the filter killing it.
+        //
+        // Added here, where the binary's real directory is still known, rather
+        // than by each spawner: two spawners assembling it is two answers to
+        // where a toolchain keeps its libraries. A caller that named the
+        // variable itself is left alone — an explicit value is somebody's
+        // decision and this is a default.
+        let mut environment = environment.to_vec();
+        if !environment
+            .iter()
+            .any(|(name, _)| name == crate::toolchain::LOADER_PATH_VARIABLE)
+            && let Some(lib) = crate::toolchain::loader_path(binary)
+        {
+            environment.push((
+                crate::toolchain::LOADER_PATH_VARIABLE.to_string(),
+                lib.display().to_string(),
+            ));
+        }
+
         let Started {
             mut child,
             release,
@@ -436,7 +460,7 @@ impl Analyzer {
             root,
             build_into,
             readable,
-            environment,
+            environment: &environment,
         })?;
 
         let stdin = child.stdin.take().ok_or_else(|| {

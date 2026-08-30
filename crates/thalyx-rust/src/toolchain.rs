@@ -332,6 +332,50 @@ pub fn environment() -> Vec<(&'static str, PathBuf)> {
     environment
 }
 
+/// The environment variable that names where the loader looks first.
+pub const LOADER_PATH_VARIABLE: &str = "LD_LIBRARY_PATH";
+
+/// The directory a toolchain binary's own `RUNPATH` means, resolved from where
+/// the binary really is rather than from where it is executed.
+///
+/// ## The failure this exists to stop
+///
+/// Every binary rustup installs carries `RUNPATH: [$ORIGIN/../lib]`, and
+/// `librustc_driver-<hash>.so` — which `rust-analyzer` cannot start without —
+/// is what it is there to find. **`$ORIGIN` is the directory the loader finds
+/// the binary in**, and inside a confinement that is not where it was
+/// installed: `foreign::establish` mounts the program's own directory at
+/// `/module`, so a `rust-analyzer` living in `<toolchain>/bin` is executed as
+/// `/module/rust-analyzer`, `$ORIGIN/../lib` becomes `/lib`, and the process
+/// dies before its first byte of LSP saying
+///
+/// ```text
+/// error while loading shared libraries: librustc_driver-<hash>.so:
+/// cannot open shared object file: No such file or directory
+/// ```
+///
+/// That is status 127 with no `SIGSYS` and nothing in `ausearch` — a death
+/// that looks exactly like the seccomp filter killing the process and is not
+/// the filter at all. Cargo does not meet it because `cargo` needs no
+/// `librustc_driver`, and the `rustc` it starts is started at its own absolute
+/// path, where `$ORIGIN` still means what it was linked to mean.
+///
+/// ## And why naming it is not a widening
+///
+/// The directory is inside the toolchain [`readable`] already grants
+/// read-only, a grant keeps its absolute path inside the root filesystem, and
+/// a `LD_LIBRARY_PATH` entry naming something nobody granted names something
+/// that is not there. Nothing new is reachable; the loader is told the one
+/// place its own `RUNPATH` meant.
+///
+/// Derived from the binary and never spelled: no hash, no version, no
+/// toolchain name. `None` when there is no such directory, so a binary laid
+/// out some other way is left to its own `RUNPATH`.
+pub fn loader_path(binary: &Path) -> Option<PathBuf> {
+    let lib = binary.parent()?.parent()?.join("lib");
+    lib.is_dir().then_some(lib)
+}
+
 /// Everything a confined toolchain run must be able to read.
 ///
 /// The registry and the toolchain, and nothing else. Named here rather than at
