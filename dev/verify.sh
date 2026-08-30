@@ -45,6 +45,34 @@ red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 # noticed sends the reader to the wrong file.
 LAST_STEP="the start of the run"
 
+# ------------------------------------ a requirement about this run, taken out
+#                                      of the environment before anything runs
+#
+# `THALYX_REQUIRE_CONFINED_ANALYZER=1` is rule 3's shape: a machine that can
+# confine the semantic provider gets to demand that it did. What it is *not* is
+# a statement about every process this script starts — and on 2026-08-30 that
+# is exactly what it became.
+#
+# The run was `sudo THALYX_REQUIRE_CONFINED_ANALYZER=1 ./dev/verify.sh`, so the
+# variable was in the environment of everything below, `cargo test --workspace`
+# included. This script keeps the machine **observing** as its baseline, on
+# purpose; `start_foreign` refuses on a kernel that only watches, correctly; so
+# the ordinary unit tests — which are about what a rename does, on any machine —
+# refused to start an analyzer at all and reported a rename that never ran.
+# `a_failing_check_puts_the_rename_back_and_keeps_the_evidence` said *«the
+# diagnosis was rolled back along with the change»*, which is a true sentence
+# about a test that never got as far as a diagnosis. Rule 5, again: the
+# instrument included the environment, and the environment was the harness.
+#
+# So the requirement is read once, here, and **removed from the environment**.
+# It means "this run must contain a proof that the provider was confined", and
+# the stage that establishes it is the one that also establishes the kernel it
+# needs — see the enforcement window at the bottom of this script. Nothing about
+# it is weakened: the production default is unchanged, and a run that demands
+# the proof and cannot make it is a `FAILED` rather than a quiet pass.
+REQUIRE_CONFINED_ANALYZER="${THALYX_REQUIRE_CONFINED_ANALYZER:-0}"
+unset THALYX_REQUIRE_CONFINED_ANALYZER
+
 step() {
     printf '\n'
     bold "── $* "
@@ -137,7 +165,9 @@ parallel_stages() {
         fi
         (
             PROVEN=0; UNPROVEN=0; FAILED=0; NOTES=()
-            GUARD_EXPECT_OBSERVING=0
+            # Empty is "do not ask": the parent asked once for the whole group,
+            # above, and nothing inside a group may write the switch anyway.
+            GUARD_EXPECT=
             "$fn"
             printf '%s %s %s\n' "$PROVEN" "$UNPROVEN" "$FAILED" > "$log.count"
             printf '%s\n' "$LAST_STEP" > "$log.step"
@@ -206,7 +236,23 @@ for row in rows:
 # The two stages that arm the machine need no exception for the same reason:
 # the check runs when the stage is announced, before it has armed anything, so
 # it reads what the *previous* stage left behind — which is the question.
-GUARD_EXPECT_OBSERVING=1
+#
+# ## Why this is a mode and not a boolean
+#
+# It said `GUARD_EXPECT_OBSERVING=1` until 2026-08-30, which is the question
+# "is the machine still observing?" and can only be asked about observing. The
+# run of that day found the other half: stages 58 and 59 say *«under a kernel
+# that is actually denying»* in their own text, and `run_foreign` refuses on a
+# kernel that only watches — so the compiler they claim to run never ran, the
+# request rolled back, and the report said the words rather than the failure.
+#
+# What was missing is not a way to arm the machine; §36 and §37 have had one for
+# months. It is that **a stage which needs a mode must own it**, and a window
+# that is owned has an inside as well as an outside. So this holds the mode the
+# script believes the machine is in right now — `0` observing, `1` enforcing,
+# empty for "do not ask", which is what a stage running beside others sets
+# because nothing inside a group may write a machine-global switch (rule 11).
+GUARD_EXPECT=0
 
 # Whether this machine's loop driver makes partitions at all.
 #
@@ -245,15 +291,114 @@ loop_partitions_work() {
 }
 
 guard_check() {
-    [ "$GUARD_EXPECT_OBSERVING" = 1 ] || return 0
+    [ -n "${GUARD_EXPECT:-}" ] || return 0
     [ "$LOADED" = 1 ] || return 0
     command -v bpftool > /dev/null 2>&1 || return 0
 
-    [ "$(mode_now)" = 1 ] || return 0
+    local now
+    now="$(mode_now)"
+    # A mode that cannot be read is not a mode that disagrees. Rule 10.
+    [ -n "$now" ] || return 0
+    [ "$now" != "$GUARD_EXPECT" ] || return 0
 
-    failed "the machine was left enforcing between [$LAST_STEP] and [$1]: whatever ran there armed it, and everything measured since was measured against a kernel this script never asked for"
-    make -C lsm observe > "$WORK/guard-restore.log" 2>&1 \
-        || red "   and it could not be put back; run: sudo make -C lsm observe"
+    local said want target
+    said=$([ "$now" = 1 ] && echo enforcing || echo observing)
+    if [ "$GUARD_EXPECT" = 1 ]; then want=denying; target=enforce; else want=observing; target=observe; fi
+    failed "the machine was left $said between [$LAST_STEP] and [$1], and this script was holding it $want: whatever ran there moved it, and everything measured since was measured against a kernel this script never asked for"
+    make -C lsm "$target" > "$WORK/guard-restore.log" 2>&1 \
+        || red "   and it could not be put back; run: sudo make -C lsm $target"
+}
+
+# ------------------------------------------- the window a stage owns for itself
+#
+# **A stage may not say «under a denying kernel» and hope the caller left one.**
+#
+# That is what stages 58 and 59 did until 2026-08-30. They were written for an
+# enforcing machine, they ran inside a script whose whole baseline is observing,
+# and nothing between the sentence and the run connected the two — so on the
+# Fedora machine that can do all of it, `run_foreign` refused, the confined
+# Cargo never launched, the semantic provider never started, the answer said
+# `analyzer_confined: null` and the request rolled back. Every assertion behaved
+# correctly. The claim was simply about a machine nobody had made.
+#
+# So the mode is a thing a stage takes, holds, and gives back — and every step
+# of that is read from the map rather than believed:
+#
+#   - what the mode was before, so there is something exact to restore to;
+#   - that arming took, read back with bpftool and not with Thalyx (rule 5: the
+#     subject must not be the one asked what mode the subject is in);
+#   - and, at the end, that the restore took as well.
+#
+# `make -C lsm enforce` and `mode_now` are the mechanisms §36 and §37 already
+# use. What is new here is only the ownership.
+ENFORCED_WINDOW_WAS=""
+ENFORCED_WINDOW_WHY=""
+
+enforcement_window_open() {
+    ENFORCED_WINDOW_WAS=""
+    ENFORCED_WINDOW_WHY=""
+
+    if [ "${LOADED:-0}" != 1 ]; then
+        ENFORCED_WINDOW_WHY="the LSM is not attached on this machine, so there is no kernel here that could deny anything"
+        return 1
+    fi
+    if ! command -v bpftool > /dev/null 2>&1; then
+        ENFORCED_WINDOW_WHY="there is no bpftool here to read the enforcement flag back, and a mode this script cannot read is a mode it must not claim"
+        return 1
+    fi
+
+    local was
+    was="$(mode_now)"
+    if [ -z "$was" ]; then
+        ENFORCED_WINDOW_WHY="the enforcement flag at $MODEPIN could not be read, so there would be nothing exact to put the machine back to"
+        return 1
+    fi
+
+    if ! make -C "$ROOT/lsm" enforce > "$WORK/window-arm.log" 2>&1; then
+        ENFORCED_WINDOW_WHY="the kernel could not be armed: $(head -1 "$WORK/window-arm.log")"
+        return 1
+    fi
+    # Held only once the arming command has run, so that a failed `make enforce`
+    # leaves nothing for the close to put back — and a successful one always
+    # does, whatever the readback says next.
+    ENFORCED_WINDOW_WAS="$was"
+
+    local now
+    now="$(mode_now)"
+    if [ "$now" != 1 ]; then
+        ENFORCED_WINDOW_WHY="\`make -C lsm enforce\` reported success and bpftool reads the flag back as '${now:-unreadable}', so nothing here would have been measured against a kernel that denies"
+        enforcement_window_close
+        return 1
+    fi
+
+    GUARD_EXPECT=1
+    return 0
+}
+
+enforcement_window_close() {
+    [ -n "$ENFORCED_WINDOW_WAS" ] || return 0
+    local want="$ENFORCED_WINDOW_WAS"
+    ENFORCED_WINDOW_WAS=""
+    GUARD_EXPECT="$want"
+
+    local target
+    if [ "$want" = 1 ]; then target=enforce; else target=observe; fi
+    if ! make -C "$ROOT/lsm" "$target" > "$WORK/window-restore.log" 2>&1; then
+        failed "the machine was armed for a stage and \`make -C lsm $target\` would not put it back; run: sudo make -C lsm $target"
+        excerpt "$WORK/window-restore.log" 10
+        return 1
+    fi
+
+    # Rule 5 again, on the way out. `make observe` reporting success and the map
+    # holding a 0 are two facts, and every stage after this one is written for
+    # the second one.
+    local now
+    now="$(mode_now)"
+    if [ "$now" = "$want" ]; then
+        proven "the stages that needed a denying kernel armed it themselves and gave it back $([ "$want" = 1 ] && echo enforcing || echo observing), which is how they found it"
+    else
+        failed "a stage armed this machine and it is now in mode '${now:-unreadable}' where it was '$want'; run: sudo make -C lsm $target"
+    fi
 }
 
 # ---------------------------------------------------------------- teardown
@@ -7368,10 +7513,36 @@ step "54. what the bridge costs, with no model and no QEMU"
 # ambient noise cannot reach on a number this small. What the stage is for is
 # that the number exists and keeps existing — a bridge that quietly grew a
 # per-call connect would show up here as milliseconds turning into tens of them.
-if bash "$ROOT/dev/bridge-cost.sh" --calls 60 > "$WORK/bridge-cost.log" 2>&1; then
+#
+# ## `--surface legacy`, said out loud
+#
+# thalyx-mcp's default surface became three tools on 2026-08-30, and the three
+# verbs this measurement is built on — `state`, `list`, `symbol` — are on the
+# legacy surface now. On the Fedora run of that day the script asked for them
+# anyway, every call was refused before it reached the wire, and this stage
+# printed NOT PROVEN with no number in it.
+#
+# The answer is not to put fourteen schemas back on the default surface: what is
+# under measurement here is the **wire**, and those three verbs are the cheapest
+# read-only work there is, so almost everything the clock sees is transport.
+# They are asked for by name. The compact surface's own cost is a different
+# question — `dev/bridge-cost.sh --surface compact` asks it — and it is a
+# different question because a `thalyx_exec` opens a reversible boundary, which
+# is exactly the work this stage is trying to have none of.
+if bash "$ROOT/dev/bridge-cost.sh" --calls 60 --surface legacy \
+        > "$WORK/bridge-cost.log" 2>&1; then
     proven "the adapter, the socket and the machine answer a question in well under a millisecond on this host, so the benchmark's missing seconds are not this path"
     grep -E "questions to the machine|in the machine|in the adapter" "$WORK/bridge-cost.log" \
         | sed 's/^/     /'
+elif grep -q "^FAILED:" "$WORK/bridge-cost.log"; then
+    # The two ways this stage can produce no number are not the same finding,
+    # and until 2026-08-30 both were NOT PROVEN. A host that cannot build or
+    # start the pair says nothing about Thalyx. A run where the calls went out
+    # and the surface did not answer them is the measurement having quietly
+    # stopped measuring, which is the one thing a stage like this must never do
+    # silently.
+    failed "the bridge measurement reached the adapter and came back with nothing to measure: $(grep -m1 '^FAILED:' "$WORK/bridge-cost.log")"
+    excerpt "$WORK/bridge-cost.log" 15
 else
     unproven "the bridge could not be measured on this host; see $WORK/bridge-cost.log"
     excerpt "$WORK/bridge-cost.log" 15
@@ -7885,6 +8056,14 @@ elif [ "$HAVE_ANALYZER" != 1 ]; then
     VERT_GAP="there is no rust-analyzer on this machine, so nothing could resolve a name. Add it with: rustup component add rust-analyzer"
 elif [ -z "$BTRFS_SCRATCH" ]; then
     VERT_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif [ "${CONFINED_WINDOW:-0}" != 1 ]; then
+    # Read rather than assumed, and reported as a skip rather than as a
+    # failure. The `rust` check below runs Cargo through `run_foreign`, which
+    # refuses on a kernel that only watches — so without the window this stage
+    # would report `not_proven`, roll back, and say that Thalyx cannot do
+    # something it was never given the machine to do. Rule 4: a stage with no
+    # baseline cannot tell a denial from an operation that never started.
+    VERT_GAP="the kernel here is not denying — ${ENFORCED_WINDOW_WHY:-no enforcement window was opened for this stage} — and the compiler this stage claims to run goes through \`run_foreign\`, which refuses on a kernel that only watches"
 elif ! btrfs subvolume create "$VERT_TREE" > "$WORK/vertical-subvol.log" 2>&1; then
     VERT_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/vertical-subvol.log"
 fi
@@ -8037,6 +8216,13 @@ if [ ! -x "$THALYX" ]; then
     PROG_GAP="there is no thalyx binary, so no program could be run"
 elif [ -z "$BTRFS_SCRATCH" ]; then
     PROG_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif [ "${CONFINED_WINDOW:-0}" != 1 ]; then
+    # The same reason as §58, and one more: this stage's last verdict is about
+    # whether the *semantic provider* was confined, and `start_foreign` refuses
+    # on a kernel that only watches too. Without the window the program reaches
+    # its validation, the confined Cargo is refused, the run rolls back, and the
+    # report reads as a defect in a program that did everything right.
+    PROG_GAP="the kernel here is not denying — ${ENFORCED_WINDOW_WHY:-no enforcement window was opened for this stage} — and both the compiler and the semantic provider this stage runs go through a confinement that refuses on a kernel that only watches"
 elif ! btrfs subvolume create "$PROG_TREE" > "$WORK/programmable-subvol.log" 2>&1; then
     PROG_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/programmable-subvol.log"
 fi
@@ -8140,6 +8326,24 @@ print(json.dumps({"label": sys.argv[1], "run": open(sys.argv[2]).read()}))
     P_RETURNED=$(programmable_field "$WORK/programmable-good.log" returned_bytes)
     P_COUNT=$(programmable_field "$WORK/programmable-good.log" change_count)
     P_CONFINED=$(programmable_field "$WORK/programmable-good.log" analyzer_confined)
+    # The half of this stage's own sentence that was never checked, and could
+    # not be while the kernel only watched.
+    #
+    # The `proven` line below has always said *«compiled what the change reaches
+    # under a denying kernel»*, and nothing under it read a field about a
+    # compiler. On 2026-08-30 that was exactly what went wrong and exactly what
+    # the report could not show: the Cargo check answered `not_proven`, the
+    # program's own branch took the `gave_up` arm, the transaction rolled back —
+    # and the only reason the stage failed at all was `status`, which says
+    # nothing about why.
+    #
+    # `compiled` is the program's own branch on the verdict, so it is the
+    # strongest of the three: a program that reached it saw `passed`. The other
+    # two are beside it because a cache hit and a compiler run are both
+    # `passed`, and this column is the one where the bytes are new.
+    P_COMPILED=$(programmable_field "$WORK/programmable-good.log" returned.compiled)
+    P_PACKAGES=$(programmable_field "$WORK/programmable-good.log" affected_packages)
+    P_LAUNCHES=$(programmable_field "$WORK/programmable-good.log" process_launches)
     P_TWO=$(cat "$PROG_TREE/src/two.rs")
 
     # ── column two: the same program, a tree with nothing to change ──────────
@@ -8211,6 +8415,7 @@ return "should not get here";
        && [ "$P_CHANGED" = '["five.rs", "one.rs", "three.rs"]' ] \
        && [ "$P_EXTERNAL" = "1" ] && [ "$P_OPS" -ge 10 ] && [ "$P_ASSERTS" -ge 3 ] \
        && [ "$P_COUNT" = "3" ] \
+       && [ "$P_COMPILED" = "true" ] && [ "$P_PACKAGES" -ge 1 ] && [ "$P_LAUNCHES" -ge 1 ] \
        && [ "$P_TWO" = "pub fn two() -> u32 {
     2
 }" ] \
@@ -8221,9 +8426,20 @@ return "should not get here";
        && [ -n "$B_EVIDENCE" ] && [ "$B_EVIDENCE" != "none" ] \
        && [ "$L_FINISH" = "exhausted" ] && [ "$L_STATUS" = "rolled_back" ] \
        && [ "$LOOP_TOOK" -lt 120 ]; then
-        proven "one request ran a program that listed a directory nobody had described, looped over it, read five files, changed the three that said to and left the two that did not, watched the real subvolume agree, compiled what the change reaches under a denying kernel and committed — $P_OPS machine operations and $P_ASSERTS checked premises for 1 external request, $P_INTERNAL bytes handled inside against $P_RETURNED returned. The same program over a tree with nothing to change changed nothing; the one whose check cannot pass put the subvolume back byte for byte with the diagnosis kept as $B_EVIDENCE; and an endless loop stopped in ${LOOP_TOOK}s and rolled back."
+        proven "one request ran a program that listed a directory nobody had described, looped over it, read five files, changed the three that said to and left the two that did not, watched the real subvolume agree, started $P_LAUNCHES process(es) to compile the $P_PACKAGES crate(s) the change reaches under a kernel that denies, branched on the verdict itself and committed — $P_OPS machine operations and $P_ASSERTS checked premises for 1 external request, $P_INTERNAL bytes handled inside against $P_RETURNED returned. The same program over a tree with nothing to change changed nothing; the one whose check cannot pass put the subvolume back byte for byte with the diagnosis kept as $B_EVIDENCE; and an endless loop stopped in ${LOOP_TOOK}s and rolled back."
     elif [ "$P_STATUS" != "committed" ]; then
-        failed "the program that should have committed answered '$P_STATUS' ($P_FINISH); see $WORK/programmable-good.log"
+        # The compiler's own three fields, carried in the message that names the
+        # status rather than left for the reader to go and find.
+        #
+        # On 2026-08-30 this line printed `'rolled_back' (returned)` and stopped,
+        # and it took reading the log to learn that the program had done every
+        # single thing right and the Cargo check had answered `not_proven` because
+        # nothing had armed the kernel. A status is what happened; these three are
+        # why.
+        failed "the program that should have committed answered '$P_STATUS' ($P_FINISH) — it reported compiled='$P_COMPILED' after $P_LAUNCHES process launch(es) over $P_PACKAGES affected package(s), and a validation that did not run is never a validation that passed. See $WORK/programmable-good.log"
+        excerpt "$WORK/programmable-good.log"
+    elif [ "$P_COMPILED" != "true" ] || [ "$P_LAUNCHES" -lt 1 ]; then
+        failed "the program committed and the compiler never ran for it: compiled='$P_COMPILED' after $P_LAUNCHES process launch(es) over $P_PACKAGES affected package(s). See $WORK/programmable-good.log"
         excerpt "$WORK/programmable-good.log"
     elif [ "$P_CHANGED" != '["five.rs", "one.rs", "three.rs"]' ]; then
         failed "the program changed $P_CHANGED, and the three files that use old_api are five.rs, one.rs and three.rs. Either the loop did not look, or it did not decide; see $WORK/programmable-good.log"
@@ -8247,12 +8463,24 @@ return "should not get here";
     # was under Thalyx's confinement or was a host process. It is a separate
     # claim from "the program worked", and merging them would let a green stage
     # hide a compiler tree running with Thalyx's own reach.
+    P_HOW=$(programmable_field "$WORK/programmable-good.log" analyzer_how)
     if [ "$HAVE_ANALYZER" != 1 ]; then
         unproven "the semantic provider was not exercised here, so nothing was said about confining it. Add it with: rustup component add rust-analyzer"
     elif [ "$P_CONFINED" = "true" ]; then
-        proven "the semantic provider ran under Thalyx's confinement — its own cgroup, its own root filesystem, no network, and every cargo and rustc under it inside its pid namespace"
+        # Both halves, together. `analyzer_confined` is a boolean and
+        # `analyzer_how` is the sentence behind it; a run where the two disagree
+        # is a run where one of them is decoration, and this is the field the
+        # whole verdict rests on.
+        case "$P_HOW" in
+            confined:*)
+                proven "the semantic provider ran under Thalyx's confinement — its own cgroup, its own root filesystem, no network, and every cargo and rustc under it inside its pid namespace. It says '$P_HOW', which is the spawner's own answer and not this stage's opinion of it" ;;
+            *)
+                failed "the answer says the semantic provider was confined and describes itself as '$P_HOW'; those are two answers to one question. See $WORK/programmable-good.log"
+                excerpt "$WORK/programmable-good.log" ;;
+        esac
     elif [ "$P_CONFINED" = "false" ]; then
-        unproven "the semantic provider ran as a host process on this machine, so rust-analyzer's Cargo — which compiles and runs build scripts — was not confined. It says so in analyzer_how. Demand it with THALYX_REQUIRE_CONFINED_ANALYZER=1 once the LSM is loaded and enforcing"
+        failed "the semantic provider ran as a host process ('$P_HOW') inside a window this run armed for it, so rust-analyzer's Cargo — which compiles and runs build scripts — was not confined on a machine that can confine it"
+        excerpt "$WORK/programmable-good.log"
     else
         failed "the answer says '$P_CONFINED' about whether the semantic provider was confined; a run that cannot say is a run that must not be believed either way. See $WORK/programmable-good.log"
         excerpt "$WORK/programmable-good.log"
@@ -8262,7 +8490,73 @@ return "should not get here";
 fi
 }
 
-parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56 stage_57 stage_58 stage_59
+parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56 stage_57
+
+# ------------------------------------------ and the two that need a denying kernel
+#
+# **Separated from the group above because they need a different machine, and
+# because 57 does not.**
+#
+# Stage 57's claim is that a name is *resolved* rather than matched — a compiler
+# frontend against a text substitution, on the same tree. That is true on any
+# machine with rust-analyzer on it, confined or not, and running it here would
+# tie a statement about semantics to a statement about a kernel. Those are two
+# claims and they get two stages; §59 is where confinement is established, and
+# it establishes it explicitly.
+#
+# Stages 58 and 59 are the other case. Both of them run `cargo` through
+# `run_foreign`, which refuses on a kernel that only watches — and 59 also asks
+# the semantic provider to come up under `start_foreign`, which refuses for the
+# same reason. Before 2026-08-30 they said *«under a kernel that is actually
+# denying»* and ran under whatever the caller had left behind, which on every
+# ordinary run of this script is an observing one. The window is theirs now:
+# opened here, read back from the map, closed here, and the restore read back
+# too.
+#
+# Inside it, and only inside it, the requirement goes back into the environment.
+# Enforcement is demonstrably on at this point, so a provider that comes up as a
+# host process is a defect rather than a machine doing what it can — which is
+# precisely the case rule 3's one-variable-per-requirement shape exists for.
+step "58-59. the kernel these two stages need, taken and given back"
+
+CONFINED_WINDOW=0
+if enforcement_window_open; then
+    CONFINED_WINDOW=1
+    proven "the machine was observing, is now denying, and bpftool reads that back from $MODEPIN — which is the precondition the two stages below are written against and used to assume"
+    # Exported for the `thalyx session` processes those two stages start, and
+    # for nothing else in this run.
+    export THALYX_REQUIRE_CONFINED_ANALYZER=1
+elif [ "$REQUIRE_CONFINED_ANALYZER" = 1 ]; then
+    # The requirement is about the run, so a run that asked for the proof and
+    # cannot make it fails here — rather than letting the two stages report
+    # their own skips and the summary finish without a `FAILED` in it. Rule 3.
+    failed "THALYX_REQUIRE_CONFINED_ANALYZER=1 was asked of this run and the kernel could not be armed to make it true: $ENFORCED_WINDOW_WHY"
+else
+    unproven "the two stages below need a kernel that denies and this run could not give them one: $ENFORCED_WINDOW_WHY"
+fi
+
+# One after the other, and not beside each other like every stage above.
+#
+# Two reasons, and the second is the one that matters. The first: both of them
+# start a confined rust-analyzer, and the confinement writes into a kernel policy
+# map this machine has exactly one of — two stages building that at the same time
+# is two programs writing one machine-global thing, which is rule 11 whether or
+# not it happens to work today.
+#
+# The second: `step` calls `guard_check`, and `guard_check` inside a group is
+# switched off, because nothing in a group may touch the switch. Run one after
+# the other, each of these two re-reads the mode **from the map** as it is
+# announced. So "the kernel was denying while this ran" stops being a fact
+# established once at the top of the window and becomes one established again
+# for each stage that claims it.
+stage_58
+stage_59
+
+if [ "$CONFINED_WINDOW" = 1 ]; then
+    unset THALYX_REQUIRE_CONFINED_ANALYZER
+    step "58-59. and the machine put back the way those two stages found it"
+    enforcement_window_close
+fi
 
 # ------------------------------------------------- the machine, as it is left
 #

@@ -813,3 +813,33 @@ El [[Criterio-de-Salida-Fase-1|criterio de salida de la Fase 1]] estaba diseñad
 ## Relacionado
 - [[00-Indice/Indice-Principal|Índice principal]]
 - [[Notas-Tecnicas-Implementacion]]
+
+## Cierre de integración física del TPV — 2026-08-30
+
+- [x] **La ventana de denegación es de la etapa que la necesita.** Las etapas 58
+      y 59 decían *«bajo un kernel que de verdad niega»* y corrían bajo lo que el
+      llamador hubiera dejado, que en cada corrida ordinaria de `dev/verify.sh` es
+      un kernel observando. Ahora `enforcement_window_open` recuerda el modo, arma,
+      lo lee de vuelta con `bpftool`, y `enforcement_window_close` restaura el modo
+      exacto y también lo lee de vuelta; las dos etapas corren adentro, en serie,
+      y `guard_check` —que era la pregunta «¿sigue observando?»— sabe ahora los dos
+      modos, así que sirve de los dos lados de la ventana. Ver
+      [[Estrategia-de-Pruebas]].
+- [x] **`THALYX_REQUIRE_CONFINED_ANALYZER` deja de envenenar el arnés.** Se lee
+      una vez arriba de `verify.sh`, se saca del ambiente, y la vuelve a poner sólo
+      la ventana. Si se pidió y ninguna etapa pudo armar el kernel, la corrida
+      **falla** en lugar de callarse. Nada bajó en producción. Ver
+      [[Semantica-Compilada]].
+- [x] **La 57 y la 59 reclaman cosas distintas.** Resolver un nombre en vez de
+      emparejarlo es cierto en cualquier máquina con rust-analyzer; que el proveedor
+      quedara confinado es otra pregunta y vive en la 59, con `analyzer_confined` y
+      `analyzer_how` obligados a decir lo mismo.
+- [x] **La etapa 54 vuelve a medir.** `dev/bridge-cost.sh` pide `--surface legacy`
+      por nombre y cuenta lo que mandó contra lo que llegó.
+- [x] **La 59 comprueba el compilador que su propia oración nombra.**
+      `returned.compiled`, `affected_packages` y `process_launches`: una validación
+      que no corrió nunca es una validación que pasó.
+
+**Lo que sigue abierto y sigue siendo de Cesar**: correr `sudo ./dev/verify.sh`
+en Fedora, sin variables, y ver 53 a 59 en `PROVEN` con `failed 0`. Después de
+eso, el banco.

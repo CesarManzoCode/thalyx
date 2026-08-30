@@ -5828,3 +5828,114 @@ código arbitrario de un registro.
 
 > **La autoridad de un proceso no se deduce de la forma de su API.** Se deduce
 > de qué arranca.
+
+## Regla derivada: una exigencia sobre una corrida no es una exigencia sobre cada proceso de la corrida — 2026-08-30
+
+La corrida en Fedora del 30 de agosto fue exactamente ésta:
+
+```
+sudo THALYX_REQUIRE_RUST_ANALYZER=1 THALYX_REQUIRE_CONFINED_ANALYZER=1 ./dev/verify.sh
+```
+
+Lo que esa segunda variable quiere decir es *«esta corrida tiene que contener
+una prueba de que el proveedor semántico corrió confinado»*. Lo que hizo fue
+otra cosa: quedó en el ambiente de **todo** lo que el script arranca, incluido
+`cargo test --workspace`.
+
+`verify.sh` mantiene la máquina **observando** de punta a punta, a propósito, y
+`start_foreign` se niega sobre un kernel que sólo mira —lo cual es el decreto de
+[[Programas-Ajenos]] y está bien. Así que dos pruebas unitarias que no son sobre
+kernels en absoluto —
+`one_request_resolves_a_symbol_edits_every_use_and_commits` y
+`a_failing_check_puts_the_rename_back_and_keeps_the_evidence`— pidieron un
+analizador, se les negó, el rename nunca corrió, y la segunda reportó:
+
+> *«el diagnóstico se revirtió junto con el cambio»*
+
+Una oración verdadera sobre una prueba que nunca llegó a tener un diagnóstico.
+Quien la lea va a ir a mirar la retención de evidencia, que es el único lugar
+donde no está el defecto. Regla 5 otra vez, y esta vez el arnés era el ambiente.
+
+> **Una variable de exigencia viaja a todos los hijos, y casi nunca es a todos
+> los hijos a quienes se les está exigiendo.** Se lee una vez, arriba, se saca
+> del ambiente, y la vuelve a poner exactamente la etapa que sí establece la
+> condición que la haría cumplible.
+
+Lo que **no** es la solución: bajar la exigencia. La caída al proceso del
+anfitrión sigue siendo lo que documenta [[Semantica-Compilada]], sigue diciendo
+`analyzer_confined: false`, y sigue siendo una negativa en producción cuando la
+variable está puesta. Lo que cambió es quién la pone.
+
+## Regla derivada: una etapa que nombra su precondición tiene que establecerla — 2026-08-30
+
+Las etapas 58 y 59 de `verify.sh` dicen, en su propio texto, *«el compilador
+corre bajo un kernel que de verdad niega»*. Las dos corren `cargo` por
+`run_foreign`, y la 59 además levanta el proveedor semántico por
+`start_foreign`; las dos cosas se niegan sobre un kernel que sólo observa.
+
+Nada entre la oración y la corrida conectaba las dos. La etapa esperaba que
+quien la llamara hubiera dejado la máquina armada, y quien la llama la deja
+observando en cada corrida ordinaria del script — porque ésa es su línea base
+declarada. Resultado en la máquina que sí puede hacerlo todo: el Cargo confinado
+nunca arrancó, la validación contestó `not_proven`, la transacción revirtió, y
+`analyzer_confined` salió `null`. Cada aserción se comportó bien. El reclamo era
+sobre una máquina que nadie había hecho.
+
+> **Una etapa no puede decir «bajo un kernel que niega» y confiar en que el
+> ambiente se lo dejó.** El modo es algo que la etapa toma, sostiene y devuelve
+> — y cada paso de eso se lee del mapa, no se cree: qué modo había antes, que el
+> armado sí tomó, y que la devolución también.
+
+La forma que quedó, en `dev/verify.sh`:
+
+```
+línea base observando
+  ↓ se abre la ventana: se recuerda el modo, se arma, se lee de vuelta con bpftool
+  las etapas que reclaman un kernel que niega, una tras otra
+  (cada una vuelve a leer el modo del mapa al anunciarse)
+  ↓ se cierra: se restaura el modo exacto, y también se lee de vuelta
+siguiente etapa
+```
+
+Una tras otra y no en paralelo, por dos razones. La chica: dos confinamientos
+construyéndose al mismo tiempo son dos programas escribiendo el mismo mapa de
+política del kernel, que es la regla 11 aunque hoy funcione. La que importa: el
+chequeo de modo está apagado adentro de un grupo —nada adentro de un grupo puede
+tocar el interruptor— así que en serie cada etapa vuelve a establecer, por sí
+misma, el hecho que dice tener.
+
+Y una consecuencia sobre qué reclama cada etapa. La 57 pregunta si un nombre se
+**resuelve** en vez de emparejarse: eso es cierto en cualquier máquina que tenga
+rust-analyzer, confinado o no. Corría junto a las otras dos y compartía su
+destino, así que una falla de confinamiento la hacía contestar desde el índice
+léxico — la respuesta vieja, con la etiqueta de la nueva. Son dos reclamos y
+ahora son dos etapas: la 57 prueba la semántica, la 59 prueba el confinamiento y
+lo dice explícitamente en un renglón propio.
+
+## Regla derivada: una herramienta que la superficie ya no ofrece se rechaza antes del cable, y la medición reporta cero sin decir por qué — 2026-08-30
+
+`thalyx-mcp` pasó a ofrecer tres herramientas por omisión el 30 de agosto.
+`dev/bridge-cost.sh` —que mide lo que cuestan el adaptador, el socket y la
+máquina, sin modelo y sin QEMU— siguió pidiendo `thalyx_state`, `thalyx_list` y
+`thalyx_symbol`, que quedaron en la superficie `legacy`.
+
+No falló nada. Una herramienta desconocida se rechaza antes de llegar a la
+máquina, así que la corrida hizo **cero** peticiones, escribió un archivo de
+métricas lleno de ceros, y la etapa 54 reportó `NOT PROVEN` sin un solo número.
+Una medición que dejó de medir se ve igual que una máquina que no se pudo medir.
+
+> **Un instrumento que puede reportar cero tiene que distinguir «cero porque no
+> pasó nada» de «cero porque no pregunté».** Se cuenta lo que se mandó y se
+> compara con lo que llegó; y una respuesta con `ok: false` no es una llamada
+> medida, es el costo de que te digan que no.
+
+El arreglo no fue devolver catorce esquemas a la superficie por omisión. Lo que
+se mide ahí es **el cable**, y los tres verbos que lo aíslan son los más baratos
+que hay —hacen casi nada, así que casi todo lo que ve el reloj es transporte—:
+se piden por nombre, con `--surface legacy`, que existe justamente para que una
+medición pueda seguir alcanzándolos. La superficie compacta tiene su propia
+columna, `--surface compact`, y es otra pregunta y no la misma: un `thalyx_exec`
+abre una frontera reversible, que es exactamente el trabajo que esta medición
+trata de no tener — y sobre un anfitrión cuyo espacio de trabajo no es un
+subvolumen Btrfs se niega, con lo que el número sería el costo de una negativa
+con nombre de medición.

@@ -212,6 +212,27 @@ respuesta semántica dice cuál de las dos ocurrió, los dos campos concuerdan, 
 ninguno falta nunca. **Si esta máquina de veras lo confina es pregunta de
 `dev/verify.sh`, etapa 59.**
 
+### Y a quién le aplica esa exigencia — corregido el 2026-08-30
+
+`THALYX_REQUIRE_CONFINED_ANALYZER=1` quiere decir *«esta corrida tiene que
+contener una prueba de que el proveedor corrió confinado»*. **No** quiere decir
+*«todo proceso de esta corrida tiene que ver un kernel que niega»*, y escrita en
+la línea de comandos de `dev/verify.sh` era exactamente lo segundo: quedó en el
+ambiente de `cargo test --workspace`, que corre contra la línea base observando
+del script a propósito, y dos pruebas unitarias sobre lo que hace un rename
+reportaron un rename que nunca arrancó.
+
+Así que la variable se lee una vez arriba del script, se saca del ambiente, y la
+vuelve a poner **únicamente** la ventana de denegación que las etapas 58 y 59
+abren para sí mismas — donde ya está demostrado, leyendo el mapa del kernel con
+`bpftool`, que la máquina niega. Ahí un proveedor que arranque como proceso del
+anfitrión es un defecto y no una máquina haciendo lo que puede.
+
+Nada de esto la debilita en producción: el valor por omisión no cambió, la caída
+sigue siendo una caída que se anuncia, y la variable sigue convirtiéndola en
+negativa donde se ponga. Lo que cambió es quién la pone. Ver
+[[Estrategia-de-Pruebas]].
+
 ### Y una lectura que muta el árbol
 
 Lo encontró la aserción del propio programa de la etapa 59, el 2026-08-30: *«el

@@ -153,7 +153,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened sixteen times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened eighteen times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -165,7 +165,19 @@ These were all learned by something going wrong. They are recorded in
    were not the agent's: a workspace boundary that counted **QEMU's own socket**
    as the tree failing to come back, and a mutation witness made only of mtimes
    — which the task's own last step, *put everything back*, is what erases. A
-   witness a correct answer can switch off is not a witness. The stale `main` is the cheapest of them, and it
+   witness a correct answer can switch off is not a witness. The seventeenth and
+   eighteenth are both `verify.sh` on 2026-08-30, and both are the harness being
+   the environment: `THALYX_REQUIRE_CONFINED_ANALYZER=1`, typed on the command
+   line, stayed in the environment of `cargo test --workspace` — so two unit
+   tests about what a rename does refused to start an analyzer under the
+   script's own observing baseline, and one of them said *«the diagnosis was
+   rolled back along with the change»* about a test that never reached a
+   diagnosis. Beside it, `dev/bridge-cost.sh` went on asking for three MCP tools
+   that had moved to the legacy surface; an unknown tool is refused before the
+   wire, so the run made zero requests, wrote a metrics file of zeroes, and the
+   stage reported NOT PROVEN with no number in it — a measurement that stopped
+   measuring looks exactly like a machine that could not be measured. The stale
+   `main` is the cheapest of them, and it
    came back on 2026-08-26 because the rule was written short: `main` and
    `origin/main` are different questions, **and `origin/main` is only a
    question about the repository after a `fetch`** — before that it is a

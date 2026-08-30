@@ -14,9 +14,85 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## La transacción programable: el modelo entrega un programa, no una lista — 2026-08-30
+## El vertical físico, cerrado: la ventana de denegación es de quien la necesita — 2026-08-30
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+La transacción programable estaba construida. La corrida real en Fedora sobre
+`8ff60fa` la ejerció completa y encontró defectos de **integración y arnés**, no
+de diseño — y todos colapsaban en una sola contradicción.
+
+`verify.sh` mantiene el kernel **observando** como su línea base declarada. Las
+etapas 58 y 59 dicen en su propio texto *«bajo un kernel que de verdad niega»* y
+corren Cargo por `run_foreign` y el proveedor semántico por `start_foreign`, que
+se niegan —correctamente— sobre un kernel que sólo mira. Nadie había conectado
+la oración con la máquina.
+
+De ahí salieron las seis fallas que parecían seis:
+
+- la 57 contestaba desde el índice léxico en vez del compilador;
+- la 58 revertía antes del rename semántico;
+- la 59 corría el programa entero **bien** —una petición, doce operaciones, seis
+  premisas, exactamente `one.rs`, `three.rs` y `five.rs` cambiados— y luego la
+  validación con Cargo contestaba `not_proven` y todo revertía;
+- `analyzer_confined` salía `null` porque el analizador nunca arrancó;
+- y dos pruebas unitarias que no son sobre kernels fallaban porque
+  `THALYX_REQUIRE_CONFINED_ANALYZER=1`, escrito en la línea de comandos del
+  usuario, quedó en el ambiente de `cargo test --workspace`.
+
+### Lo que hay ahora
+
+- **Una ventana de denegación con dueño.** `enforcement_window_open` recuerda el
+  modo, arma, y **lo lee de vuelta con bpftool** —no le pregunta a Thalyx en qué
+  modo está Thalyx—; `enforcement_window_close` restaura el modo exacto y
+  también lo lee de vuelta. Las etapas 58 y 59 corren adentro, una tras otra, y
+  cada una vuelve a leer el modo del mapa al anunciarse.
+- **`guard_check` sabe los dos modos.** Era la pregunta *«¿sigue observando?»* y
+  ahora es *«¿sigue en el modo que este script está sosteniendo?»*, que se puede
+  hacer de los dos lados de la ventana.
+- **La exigencia es sobre la corrida, no sobre cada proceso.**
+  `THALYX_REQUIRE_CONFINED_ANALYZER` se lee una vez arriba y se **saca del
+  ambiente**; la vuelve a poner únicamente la ventana, donde la denegación está
+  demostrada. Si se pidió y ninguna etapa pudo armar el kernel, eso es `FAILED`
+  y no un silencio.
+- **La 57 y la 59 reclaman cosas distintas.** La 57 prueba que un nombre se
+  resuelve en vez de emparejarse —cierto en cualquier máquina con
+  rust-analyzer— y corre afuera de la ventana. La 59 prueba el confinamiento, en
+  un renglón propio, y ahora exige que `analyzer_confined` y `analyzer_how`
+  digan lo mismo: un booleano y una oración que no coinciden son dos respuestas
+  a una pregunta.
+- **La etapa 54 vuelve a medir.** `dev/bridge-cost.sh` pedía tres herramientas
+  que la superficie compacta ya no ofrece; se rechazaban antes del cable, la
+  corrida hacía cero peticiones y la etapa reportaba `NOT PROVEN` sin un número.
+  Ahora pide `--surface legacy` por nombre —lo que se mide ahí es el cable, y
+  esos tres verbos son los que lo aíslan— y **cuenta lo que mandó contra lo que
+  llegó**, así que una superficie que cambie debajo falla en vez de callarse.
+
+Nada del producto cambió en este cierre: ni una herramienta MCP nueva, ni una
+función semántica nueva, ni una aserción borrada. Todo el diff está en
+`dev/verify.sh` y `dev/bridge-cost.sh`.
+
+### Lo que sólo la máquina de Cesar puede decir
+
+```
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+Sin variables. La ventana pone `THALYX_REQUIRE_CONFINED_ANALYZER=1` sola, donde
+es verdad. Lo que la corrida tiene que dar: 53 a 59 en `PROVEN`, `failed 0`, y
+la 59 con `analyzer_confined = true`.
+
+### Lo que sigue siendo hipótesis
+
+Lo mismo que antes, y sin moverse: que todo esto haga que Claude o Codex hagan
+más trabajo correcto con menos esfuerzo de modelo. **No está medido.** Ningún
+banco pagado se corrió en este cierre, a propósito.
+
+---
+
+> ## La transacción programable: el modelo entrega un programa, no una lista — 2026-08-30
+>
+> Cómo se llegó a lo de arriba.
 
 `hacer` tomaba un `Vec<Step>`, o sea que el modelo tenía que saber cada
 operación y cada argumento **antes** de que corriera nada. Eso es batching, y el
