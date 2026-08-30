@@ -30,6 +30,7 @@ pub mod affected;
 pub mod analyzer;
 pub mod edits;
 pub mod metadata;
+pub mod toolchain;
 
 pub use affected::{Affected, affected};
 pub use analyzer::{Analyzer, FileEdit, Ready, Spot};
@@ -524,9 +525,12 @@ impl Provider {
         }
         if self.analyzer.is_none() {
             let Some(binary) = analyzer::find() else {
-                let why = "no rust-analyzer was found on PATH, in ~/.rustup/toolchains, \
-                           or named by THALYX_RUST_ANALYZER"
-                    .to_string();
+                // Naming every place that was looked at, and not just the
+                // absence. On 2026-08-29 this said "no rust-analyzer" on a
+                // machine where `rustup component add rust-analyzer` had just
+                // succeeded — because `sudo` had made `$HOME` be `/root` and
+                // the sentence gave the person nothing to notice that with.
+                let why = analyzer::why_no_analyzer();
                 self.analyzer_refused = Some(why.clone());
                 return Err(RustError::NoAnalyzer(why));
             };

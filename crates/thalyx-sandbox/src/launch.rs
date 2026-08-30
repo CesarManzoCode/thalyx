@@ -542,10 +542,25 @@ pub fn spawn(
     spec: &LaunchSpec,
     args: &[OsString],
     stdin: crate::Stdin,
+    environment: &[(String, String)],
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
-    std::process::Command::new(helper)
+    let mut command = std::process::Command::new(helper);
+    // Set on the outermost process and carried the rest of the way by
+    // inheritance: both re-executions are `execve`, which preserves the
+    // environment, so naming these once here is naming them for the program.
+    //
+    // What they are for is a toolchain the confined program has to find. A
+    // `cargo` launched by a root that `sudo` gave `HOME=/root` looks for its
+    // registry under a home with nothing in it, fails `--offline`, and reports
+    // that as the change not compiling. The paths are granted separately —
+    // this only says where to look, and a name here reaches nothing that was
+    // not granted.
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command
         .args(argv(ENTER_MARKER, spec, args)?)
         .stdin(match stdin {
             crate::Stdin::Closed => Stdio::null(),

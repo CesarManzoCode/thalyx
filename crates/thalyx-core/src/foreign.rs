@@ -65,6 +65,16 @@ pub struct ForeignRequest<'a> {
     pub helper: PathBuf,
     pub request_id: String,
     pub profile: &'a str,
+    /// Environment variables the program is started with.
+    ///
+    /// **Not a widening.** A variable is a string, the root filesystem holds
+    /// only what was granted, and the LSM refuses every open the policy does
+    /// not name — so a path in here that nobody granted names something that
+    /// is not there. What it buys is the case Thalyx cannot avoid: a toolchain
+    /// installed by one user and run by another has to be *told* where its
+    /// registry is, and a `cargo` that cannot find one reports that as the
+    /// change not compiling.
+    pub environment: Vec<(String, String)>,
 }
 
 /// What happened, in the shape both faces read.
@@ -277,8 +287,16 @@ fn run_inner(
 
     // `None` for the channel, and that is the decree rather than an omission.
     // See this module's header: a guest is not handed the API.
-    let mut child =
-        confinement.spawn(&request.helper, &home, &program, uid, &request.args, None)?;
+    // No channel, and that is the decree rather than an omission. See this
+    // module's header: a guest is not handed the API.
+    let mut child = confinement.spawn_with(
+        &request.helper,
+        &home,
+        &program,
+        uid,
+        &request.args,
+        &request.environment,
+    )?;
 
     // Before the wait, never after. The program holds the writing end of two
     // pipes, and nobody emptying them means it stops on a full buffer while

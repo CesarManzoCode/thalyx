@@ -829,6 +829,9 @@ pub fn start(
                     Wiring::Collected => thalyx_sandbox::Stdin::Closed,
                     Wiring::Talks => thalyx_sandbox::Stdin::Piped,
                 },
+                // A module is described by a signed manifest and takes what it
+                // needs from that. Nothing here has anything to add.
+                environment: &[],
             },
         )?
     };

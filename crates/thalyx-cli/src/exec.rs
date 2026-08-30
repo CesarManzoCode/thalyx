@@ -806,7 +806,10 @@ fn run_check(
         }
 
         Check::Program { program, arguments } => {
-            let outcome = run_confined(asked, program, arguments, &[], &[], metrics);
+            // Nothing added to its environment. A check that names a program
+            // has named a program, and telling it where a Rust toolchain is
+            // would be this verb deciding what somebody else's binary is for.
+            let outcome = run_confined(asked, program, arguments, &[], &[], &[], metrics);
             CheckRecord {
                 check: format!("program `{program}`"),
                 verdict: outcome.verdict,
@@ -847,6 +850,7 @@ fn run_confined(
     arguments: &[String],
     also_readable: &[PathBuf],
     also_writable: &[PathBuf],
+    environment: &[(String, String)],
     metrics: &mut Metrics,
 ) -> Ran {
     use thalyx_manifest::{Permission, PermissionKind};
@@ -907,6 +911,7 @@ fn run_confined(
             helper: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thalyx")),
             request_id: asked.request_id.clone(),
             profile: thalyx_sandbox::profile::MODULE_STANDARD,
+            environment: environment.to_vec(),
         },
     );
 
@@ -991,7 +996,7 @@ fn rust_check(
             summary: "this workspace is not one Cargo can describe, so there is nothing \
                       this could have compiled"
                 .to_string(),
-            output: json!({"word": "not_a_cargo_workspace"}),
+            output: json!({"word": "not_a_cargo_workspace", "cached": false}),
         };
     };
     let packages = selection.packages;
@@ -1005,6 +1010,7 @@ fn rust_check(
             output: json!({
                 "packages": packages,
                 "why": selection.why,
+                "cached": false,
                 // Named rather than dropped. A changed file nobody could place
                 // is a reason this check might not cover the change, and a
                 // caller that only saw "no packages" would read it as a clean
@@ -1042,15 +1048,36 @@ fn rust_check(
     }
     metrics.validation_cache_misses += 1;
 
-    let Some(cargo) = find_cargo() else {
+    let found = thalyx_rust::toolchain::cargo();
+    let Some(cargo) = &found.path else {
         // Rule 10, in the place it matters most: a toolchain that is not here
         // is not a change that does not compile.
+        //
+        // It says *where it looked*, and that is the whole of the 2026-08-29
+        // failure: `sudo` had made `$HOME` be `/root`, the search found
+        // nothing, and the sentence gave nobody a way to notice that the
+        // toolchain was one directory away under `$SUDO_USER`'s home.
         return CheckRecord {
             check: format!("cargo {subcommand}"),
             verdict: Verdict::NotProven,
-            summary: "there is no `cargo` on this machine, so the change was not compiled"
-                .to_string(),
-            output: json!({"packages": packages, "word": "no_cargo"}),
+            summary: found.why_not(
+                "`cargo`",
+                "So the change was not compiled. Name one with THALYX_CARGO, or run \
+                 with RUSTUP_HOME and CARGO_HOME set",
+            ),
+            output: json!({
+                "packages": packages,
+                "word": "no_cargo",
+                // Present on every answer this check gives, whichever way it
+                // went. A field that disappears when a tool is missing is a
+                // field every caller has to write two readings of — and on
+                // 2026-08-29 it is what turned "there is no cargo here" into
+                // two assertions failing about a cache.
+                "cached": false,
+                "looked_at": found.looked_at.iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<String>>(),
+            }),
         };
     };
 
@@ -1078,21 +1105,32 @@ fn rust_check(
     // The toolchain, read-only. Without these `cargo` cannot find `rustc` or
     // the registry it already downloaded, and the run would fail for a reason
     // that has nothing to do with the change.
-    let mut readable = vec![cargo.parent().unwrap_or(Path::new("/")).to_path_buf()];
-    if let Some(home) = std::env::var_os("HOME") {
-        readable.push(PathBuf::from(&home).join(".cargo"));
-        readable.push(PathBuf::from(&home).join(".rustup"));
-    }
+    //
+    // Asked of `toolchain::readable` rather than assembled here: a grant list
+    // written twice is two grant lists, and the second one is always missing
+    // the entry that only matters on somebody else's machine — which under
+    // `sudo` is every entry, because they are all under a home this process
+    // does not have.
+    let readable = thalyx_rust::toolchain::readable();
 
     // Made here rather than left to Cargo: the grant names a path, and a
     // grant on a directory that does not exist yet is a grant on nothing.
     let _ = std::fs::create_dir_all(&build_into);
+    // Where the toolchain is, said rather than assumed. Under `sudo` the
+    // process running this has a `HOME` with no `.cargo` in it, and a Cargo
+    // that cannot find its registry fails `--offline` — which arrives as the
+    // change not compiling.
+    let environment: Vec<(String, String)> = thalyx_rust::toolchain::environment()
+        .into_iter()
+        .map(|(name, path)| (name.to_string(), path.display().to_string()))
+        .collect();
     let outcome = run_confined(
         asked,
         &cargo.display().to_string(),
         &arguments,
         &readable,
         std::slice::from_ref(&build_into),
+        &environment,
         metrics,
     );
 
@@ -1142,41 +1180,6 @@ fn rust_check(
 struct Remembered {
     verdict: Verdict,
     summary: String,
-}
-
-/// Where `cargo` is, if it is anywhere this machine can name.
-///
-/// The places are listed rather than searched for on `PATH`, because inside
-/// Thalyx there is no `PATH` and no shell to expand one — and because a
-/// validation that ran whichever `cargo` came first on a caller's environment
-/// would be a validation whose meaning depends on who started the session.
-fn find_cargo() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    // The **real** cargo of an installed toolchain first, before rustup's shim.
-    //
-    // `~/.cargo/bin/cargo` is a shim that re-executes `~/.cargo/bin/rustup`,
-    // and inside the confinement that is a second program the grants say
-    // nothing about — so the run is refused for naming `rustup`, which reads
-    // like a broken change and is a broken `PATH`. Rule 5, where the instrument
-    // is the installation layout.
-    if let Some(home) = std::env::var_os("HOME") {
-        let toolchains = PathBuf::from(&home).join(".rustup").join("toolchains");
-        if let Ok(entries) = std::fs::read_dir(&toolchains) {
-            let mut found: Vec<PathBuf> = entries
-                .flatten()
-                .map(|entry| entry.path().join("bin").join("cargo"))
-                .collect();
-            // Sorted, so that a machine with several toolchains picks the same
-            // one every time. A validation whose meaning depends on directory
-            // order is a validation nobody can reproduce.
-            found.sort();
-            candidates.extend(found);
-        }
-        candidates.push(PathBuf::from(&home).join(".cargo/bin/cargo"));
-    }
-    candidates.push(PathBuf::from("/usr/local/bin/cargo"));
-    candidates.push(PathBuf::from("/usr/bin/cargo"));
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 // ── the two faces ────────────────────────────────────────────────────────────
@@ -2014,6 +2017,86 @@ mod tests {
         assert_eq!(check.output["cached"], serde_json::json!(false));
         assert_eq!(evidence.metrics.validation_cache_hits, 0);
         assert_eq!(evidence.metrics.validation_cache_misses, 1);
+    }
+
+    #[test]
+    fn every_answer_the_rust_check_gives_says_whether_it_was_reused() {
+        // **The 2026-08-29 Fedora failure, as an assertion.**
+        //
+        // Two tests asserted `check.output["cached"] == false` and got `Null`,
+        // because the arm that answers "there is no cargo on this machine"
+        // never wrote the field. So the failure a person read was two
+        // assertions about a *cache*, and what had actually happened is that
+        // `sudo` put `HOME=/root` in front of a toolchain installed under
+        // `$SUDO_USER`'s home.
+        //
+        // A field that only appears on the days it is interesting is a field
+        // nobody handles on the interesting day. This walks every arm the
+        // check has and demands the shape be the same in all of them —
+        // including the two that cannot be reached on a machine that has
+        // everything, which is why it is a unit test over the arms and not a
+        // run that happens to take one of them.
+        let (_base, store, tree, mut here) = a_crate();
+        crate::semantic::release(&tree);
+
+        // Arm one: a tree Cargo cannot describe at all.
+        let (_plain_base, plain_store, plain_tree, mut plain_here) =
+            a_workspace(&[("notes.txt", "not a crate\n")]);
+        let plain = run(
+            &plain_store,
+            &plain_tree,
+            &mut plain_here,
+            &program(serde_json::json!({
+                "steps": [{"verb": "edit", "arguments": ["notes.txt", "sustituir", "not", "still not"]}],
+                "validate": [{"check": "rust"}],
+                "on_failure": "keep"
+            })),
+        );
+        let check = plain.checks.first().expect("the rust check ran");
+        assert_eq!(
+            check.output["cached"],
+            serde_json::json!(false),
+            "a tree Cargo cannot describe answered without saying whether it \
+             reused anything: {check:?}"
+        );
+
+        // Arm two: a real crate, whichever way the toolchain search goes on
+        // this machine. Both outcomes carry the field; only one of them can
+        // happen here, and the test is about the shape rather than the
+        // verdict.
+        let real = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "steps": [{"verb": "edit", "arguments": [
+                    "src/keystore.rs", "sustituir", "Keystore", "KeyVault"
+                ]}],
+                "validate": [{"check": "rust"}],
+                "on_failure": "keep"
+            })),
+        );
+        let check = real.checks.first().expect("the rust check ran");
+        assert!(
+            check.output["cached"].is_boolean(),
+            "the rust check answered `{}` for `cached`: {check:?}",
+            check.output["cached"]
+        );
+    }
+
+    #[test]
+    fn a_missing_toolchain_says_where_it_looked_and_never_says_the_change_failed() {
+        // Rule 10 with an address on it. "There is no cargo" is a sentence a
+        // person cannot act on when the cargo is right there under another
+        // home; the list of paths is what makes the `sudo` boundary visible at
+        // the moment somebody is looking at it.
+        let found = thalyx_rust::toolchain::cargo();
+        let why = found.why_not("`cargo`", "So nothing was compiled");
+        assert!(why.contains("place(s) this machine looks"), "{why}");
+        assert!(
+            found.looked_at.iter().any(|path| path.ends_with("cargo")),
+            "the search names no candidate at all: {found:?}"
+        );
     }
 
     #[test]

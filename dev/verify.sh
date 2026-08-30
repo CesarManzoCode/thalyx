@@ -437,9 +437,24 @@ fi
 # clippy three releases newer than the one the code was written against. This
 # guard is kept because the hazard is real and cost nothing to remove, not
 # because it explained anything.
+#
+# 2026-08-30, and this is the third time this block has been widened: it used to
+# be conditional on `$OWNER_HOME/.cargo/bin/cargo` being executable, which is a
+# question about rustup's *shims* rather than about the toolchain. The run that
+# found it had `rustup component add rust-analyzer` typed into the shell
+# immediately before it, and stages 57 and 58 both said there was no
+# rust-analyzer on the machine — because `HAVE_ANALYZER` below looked under
+# `$HOME`, which `sudo` had made `/root`.
+#
+# So the condition is now "is there a rustup installation there at all", and
+# `RUSTUP_HOME`/`CARGO_HOME` are exported whenever there is one. Those two are
+# rustup's own variables, which means exporting them is configuration and not a
+# workaround — and `thalyx_rust::toolchain` reads exactly them, so the binary
+# under test and this script look in the same place by construction rather than
+# by two searches that agree until they do not.
 if [ -n "${SUDO_USER:-}" ]; then
     OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-    if [ -x "$OWNER_HOME/.cargo/bin/cargo" ]; then
+    if [ -d "$OWNER_HOME/.rustup" ] || [ -d "$OWNER_HOME/.cargo" ]; then
         case ":$PATH:" in
             *":$OWNER_HOME/.cargo/bin:"*) ;;
             *) export PATH="$OWNER_HOME/.cargo/bin:$PATH" ;;
@@ -720,12 +735,48 @@ SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 # because `~/.cargo/bin/rust-analyzer` exists on every rustup install and is a
 # shim that answers `error: Unknown binary`. A search that stopped at the first
 # file it found would set this on a machine that cannot start one.
+#
+# **Looked for under `$RUSTUP_HOME` and not under `$HOME`.** This line said
+# `$HOME` until 2026-08-30, and under `sudo` that is `/root` — so on the machine
+# that had just installed the component, this said 0, stages 57 and 58 said
+# `NOT PROVEN`, and the message told the person to install what they had
+# installed. Rule 5: the instrument includes the harness, and the harness here
+# is the environment `sudo` hands over.
+#
+# The one that is found is then **named**, for the whole suite and for every
+# stage below. A search repeated in two places is two searches, and the second
+# one is the one that disagrees on somebody's machine; naming it makes the
+# binary under test and this script use the same file by construction.
 HAVE_ANALYZER=0
-for candidate in "${THALYX_RUST_ANALYZER:-}" "$HOME"/.rustup/toolchains/*/bin/rust-analyzer; do
+ANALYZER_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+for candidate in "${THALYX_RUST_ANALYZER:-}" "$ANALYZER_HOME"/toolchains/*/bin/rust-analyzer; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
-    if "$candidate" --version > /dev/null 2>&1; then HAVE_ANALYZER=1; break; fi
+    if "$candidate" --version > /dev/null 2>&1; then
+        HAVE_ANALYZER=1
+        export THALYX_RUST_ANALYZER="$candidate"
+        break
+    fi
 done
-[ "$HAVE_ANALYZER" = 1 ] && SUITE_ENV+=(THALYX_REQUIRE_RUST_ANALYZER=1)
+if [ "$HAVE_ANALYZER" = 1 ]; then
+    SUITE_ENV+=(THALYX_REQUIRE_RUST_ANALYZER=1)
+    SUITE_ENV+=("THALYX_RUST_ANALYZER=$THALYX_RUST_ANALYZER")
+    proven "rust-analyzer present ($THALYX_RUST_ANALYZER)"
+else
+    unproven "there is no rust-analyzer under $ANALYZER_HOME/toolchains; the semantic stages will say so. Add it with: rustup component add rust-analyzer"
+fi
+
+# And the cargo the confined checks will run, named the same way and for the
+# same reason. `thalyx_rust::toolchain` would find it — it reads `RUSTUP_HOME`
+# too — but a report that says which binary produced a verdict is worth the one
+# line it costs.
+if [ -n "${RUSTUP_HOME:-}" ]; then
+    for candidate in "$RUSTUP_HOME"/toolchains/*/bin/cargo; do
+        [ -x "$candidate" ] || continue
+        export THALYX_CARGO="$candidate"
+        SUITE_ENV+=("THALYX_CARGO=$candidate")
+        break
+    done
+fi
 
 # The seccomp filter, run over a real program rather than evaluated. Both halves
 # are read rather than assumed: a kernel built without CONFIG_SECCOMP_FILTER has

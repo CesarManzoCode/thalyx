@@ -244,6 +244,11 @@ pub fn execute(store: &Store, rest: &str, face: Face) -> Fallible {
             helper,
             request_id: crate::new_request_id(),
             profile: FOREIGN_PROFILE,
+            // Nothing added. What a person typed at a prompt runs with what
+            // Thalyx runs with, and a verb that quietly enriched the
+            // environment of a guest would be handing it something nobody
+            // confirmed.
+            environment: Vec::new(),
         },
     );
 

@@ -664,36 +664,18 @@ pub fn path_of(uri: &str) -> Option<PathBuf> {
 
 /// The rust-analyzer this machine has, or nothing.
 ///
-/// Every candidate is **run** rather than tested for existence, and the reason
-/// is this container: `~/.cargo/bin/rust-analyzer` is there, is executable, and
-/// is a rustup shim that answers `error: Unknown binary`. A search that stopped
-/// at the first file it found would pick it every time — rule 5, where the
-/// harness is the `PATH`.
+/// One line, because the search itself belongs to [`crate::toolchain`] and
+/// there used to be three of them that disagreed. Kept as a function here
+/// because this is where a reader of the LSP client looks for it.
 pub fn find() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(named) = std::env::var_os("THALYX_RUST_ANALYZER") {
-        candidates.push(PathBuf::from(named));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let toolchains = PathBuf::from(&home).join(".rustup").join("toolchains");
-        if let Ok(entries) = std::fs::read_dir(&toolchains) {
-            for entry in entries.flatten() {
-                candidates.push(entry.path().join("bin").join("rust-analyzer"));
-            }
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&path) {
-            candidates.push(directory.join("rust-analyzer"));
-        }
-    }
-    candidates.into_iter().find(|candidate| {
-        candidate.is_file()
-            && Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-    })
+    crate::toolchain::rust_analyzer().path.clone()
+}
+
+/// Why there is no rust-analyzer, naming every place that was looked at.
+pub fn why_no_analyzer() -> String {
+    crate::toolchain::rust_analyzer().why_not(
+        "rust-analyzer",
+        "Add it with: rustup component add rust-analyzer, or name one with \
+         THALYX_RUST_ANALYZER",
+    )
 }
