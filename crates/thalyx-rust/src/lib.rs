@@ -36,6 +36,23 @@ pub use affected::{Affected, affected};
 pub use analyzer::{Analyzer, FileEdit, Ready, Spot, Symbol};
 pub use metadata::{Package, Workspace};
 
+/// One file a rename would rewrite, and how much of it.
+///
+/// The count is the whole reason this is a struct rather than the pair it was.
+/// rust-analyzer answers a rename with a `WorkspaceEdit` — every file, and
+/// inside each one every range it decided really refers to the symbol — and
+/// applying it collapsed all of that into one new string per file. So a caller
+/// was told six files changed and had no way to learn that one of them changed
+/// in three places except by searching the tree again, textually, for the
+/// answer the compiler frontend had already given exactly.
+pub struct Renamed {
+    pub path: PathBuf,
+    /// What the file should say afterwards.
+    pub text: String,
+    /// How many separate places in this file the rename rewrote.
+    pub edits: usize,
+}
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thalyx_know::{Knowledge, Standing, Witness};
@@ -722,7 +739,7 @@ impl Provider {
         line: u32,
         column: u32,
         to: &str,
-    ) -> Result<Vec<(PathBuf, String)>> {
+    ) -> Result<Vec<Renamed>> {
         let plan = self.rename_plan(file, line, column, to)?;
         let utf8 = self
             .analyzer
@@ -736,7 +753,17 @@ impl Provider {
             })?;
             let after = edits::applied(&text, &change.edits, utf8)
                 .map_err(|why| RustError::Refused(format!("{}: {why}", change.path.display())))?;
-            written.push((change.path, after));
+            written.push(Renamed {
+                path: change.path,
+                text: after,
+                // Counted here, from the plan rust-analyzer handed over, and
+                // never by looking at the tree afterwards. A second pass would
+                // be a different question — it would count occurrences of a
+                // string, which is exactly the textual answer this whole path
+                // exists to avoid, and it would be wrong wherever the new name
+                // already appeared for some other reason.
+                edits: change.edits.len(),
+            });
         }
         Ok(written)
     }

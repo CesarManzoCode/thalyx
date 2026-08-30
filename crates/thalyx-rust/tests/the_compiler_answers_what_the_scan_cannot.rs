@@ -119,7 +119,14 @@ fn a_rename_is_described_and_nothing_is_written() {
 
     let mut changed: Vec<String> = texts
         .iter()
-        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|change| {
+            change
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     changed.sort();
     assert_eq!(
@@ -131,18 +138,29 @@ fn a_rename_is_described_and_nothing_is_written() {
 
     let boot = texts
         .iter()
-        .find(|(path, _)| path.ends_with("boot.rs"))
+        .find(|change| change.path.ends_with("boot.rs"))
         .expect("boot.rs");
     assert!(
-        boot.1.contains("use crate::keystore::KeyVault as Keys;"),
+        boot.text.contains("use crate::keystore::KeyVault as Keys;"),
         "the import should be rewritten and the local alias left alone, and it \
          came back as:\n{}",
-        boot.1
+        boot.text
     );
     assert!(
-        boot.1.contains("-> Keys"),
+        boot.text.contains("-> Keys"),
         "`Keys` is a different name and renaming `Keystore` must not touch it"
     );
+
+    // The count rust-analyzer already gave, kept rather than thrown away. It is
+    // per file and it is not the file count: `keystore.rs` declares the name and
+    // uses it twice more, `boot.rs` imports it once.
+    let keystore_edits = texts
+        .iter()
+        .find(|change| change.path.ends_with("keystore.rs"))
+        .expect("keystore.rs")
+        .edits;
+    assert_eq!(keystore_edits, 3, "the declaration and its two uses");
+    assert_eq!(boot.edits, 1, "the aliased import, and nothing else");
 }
 
 #[test]

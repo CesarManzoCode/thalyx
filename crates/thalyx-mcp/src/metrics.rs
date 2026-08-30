@@ -94,6 +94,9 @@ pub struct Metrics {
     internal_bytes: u64,
     programs_committed: u64,
     programs_rolled_back: u64,
+    /// Programs that came out right and whose tree was put back because the
+    /// caller asked for that. Neither a commit nor a failure.
+    programs_restored_on_purpose: u64,
 
     // ── the programming face ────────────────────────────────────────────────
     //
@@ -156,6 +159,7 @@ impl Metrics {
             internal_bytes: 0,
             programs_committed: 0,
             programs_rolled_back: 0,
+            programs_restored_on_purpose: 0,
             context_questions: 0,
             context_bytes: 0,
             context_bytes_held: 0,
@@ -186,7 +190,20 @@ impl Metrics {
     /// than at zero, because a counter that reset on a version skew would
     /// report the very thing this measures as having stopped happening.
     pub fn program(&mut self, answer: &Value) {
-        let number = |name: &str| answer.get(name).and_then(Value::as_u64).unwrap_or(0);
+        // Under `metrics` since 2026-08-30, when the answer was trimmed to what
+        // the model can act on. Read from either place, and that is not
+        // politeness to an older machine: this process is paired with whatever
+        // Thalyx is on the other end of the socket, and a version skew that
+        // silently zeroed these would report the very thing they measure as
+        // having stopped happening. Rule 5, eighteenth entry.
+        let nested = answer.get("metrics");
+        let number = |name: &str| {
+            nested
+                .and_then(|metrics| metrics.get(name))
+                .or_else(|| answer.get(name))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        };
         self.programs_run += 1;
         self.machine_operations += number("machine_operations");
         self.internal_bytes += number("internal_bytes");
@@ -198,6 +215,11 @@ impl Metrics {
         match answer.get("status").and_then(Value::as_str) {
             Some("committed") => self.programs_committed += 1,
             Some("rolled_back") => self.programs_rolled_back += 1,
+            // Counted apart from both, because it is neither. A program that
+            // worked and was put back on purpose is a success whose tree did
+            // not move, and folding it into either of the other two would make
+            // one of them mean two things.
+            Some("succeeded_and_restored") => self.programs_restored_on_purpose += 1,
             _ => {}
         }
     }
@@ -309,6 +331,7 @@ impl Metrics {
                 "run": self.programs_run,
                 "committed": self.programs_committed,
                 "rolled_back": self.programs_rolled_back,
+                "restored_on_purpose": self.programs_restored_on_purpose,
                 "machine_operations": self.machine_operations,
                 "internal_bytes": self.internal_bytes,
                 // The ratio, worked out here so that nobody reading a summary

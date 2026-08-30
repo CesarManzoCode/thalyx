@@ -177,6 +177,42 @@ pub enum OnFailure {
     Keep,
 }
 
+/// What to do when the program and every check say yes.
+///
+/// ## Why a successful run is allowed to end restored
+///
+/// Because "did this work, and what would it cost" is a question, and until
+/// this existed the only way to ask it was to do the work and then undo it —
+/// which is a second transaction, over a tree the first one already changed,
+/// authorised by a state nobody observed in between. A caller that wanted an
+/// answer rather than a change had to make the change.
+///
+/// It is deliberately **not** an operation called `preview` or `rehearse` or
+/// `benchmark`. Those would each be a second code path with its own idea of
+/// what a run is, and the three of them would drift. This is one field on the
+/// transaction that was already there: the program runs for real, mutates for
+/// real, sees `changed()` for real, is validated for real, and then the
+/// boundary settles the other way.
+///
+/// What it is for: an exploratory refactor, a preview, a what-if, measuring the
+/// blast radius of a change, a temporary edit, a rehearsed migration — and any
+/// task whose own terms are "leave it as you found it".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnSuccess {
+    /// Keep the work. The default, so that a caller that says nothing gets what
+    /// every caller of this verb got before the field existed.
+    #[default]
+    Commit,
+    /// Put the tree back **even though it worked**.
+    ///
+    /// The order matters and is the whole of the contract: the program's
+    /// `returned` value and all of its evidence are held first, and the
+    /// workspace is restored after. What the run learned survives; what it did
+    /// does not.
+    Rollback,
+}
+
 /// The most bytes of program source one request may carry.
 ///
 /// Not a guess about complexity — a bound on what arrives from outside. Sixty
@@ -212,6 +248,9 @@ pub struct Program {
     pub validate: Vec<Check>,
     #[serde(default)]
     pub on_failure: OnFailure,
+    /// What a *successful* run does with the tree. See [`OnSuccess`].
+    #[serde(default)]
+    pub on_success: OnSuccess,
 }
 
 fn agent() -> String {
@@ -376,6 +415,20 @@ pub struct Evidence {
     pub end_state: Option<String>,
     pub status: String,
     pub rolled_back: bool,
+    /// Whether the program and every check that ran said yes.
+    ///
+    /// Kept beside `status` and not derived from it by a reader, because the
+    /// two are genuinely independent now: a run can succeed and end restored,
+    /// and a reader that inferred success from `status == "committed"` would
+    /// call that a failure. Rule 10 in the small — "it did not work" and "it
+    /// worked and was put back" are different facts and each has to be able to
+    /// be said.
+    #[serde(default)]
+    pub succeeded: bool,
+    /// Whether the tree was put back because the caller asked for that on a
+    /// **successful** run, rather than because something went wrong.
+    #[serde(default)]
+    pub restored_by_request: bool,
     pub reason: String,
     pub steps: Vec<StepRecord>,
     pub checks: Vec<CheckRecord>,
@@ -576,6 +629,8 @@ pub fn carry_out<V: Volumes>(
         end_state: None,
         status: "refused".to_string(),
         rolled_back: false,
+        succeeded: false,
+        restored_by_request: false,
         reason: String::new(),
         steps: Vec::new(),
         checks: Vec::new(),
@@ -775,8 +830,27 @@ pub fn carry_out<V: Volumes>(
         )
     };
 
+    evidence.succeeded = everything_held;
+    // A successful run the caller asked to have put back says so in its own
+    // sentence, appended rather than replacing: what held is still what held,
+    // and the restore is a separate fact about the tree.
+    if everything_held && program.on_success == OnSuccess::Rollback {
+        evidence.reason = format!(
+            "{}; the workspace was put back because `on_success` is `rollback`, \
+             not because anything failed",
+            evidence.reason
+        );
+    }
+
     // ── commit, or put it back ──────────────────────────────────────────────
-    if everything_held || program.on_failure == OnFailure::Keep {
+    //
+    // Two independent questions, and they were one until 2026-08-30: *did it
+    // work* and *what happens to the tree*. `on_success` is the second half,
+    // and the whole reason it can exist is that `returned` and the evidence are
+    // already computed by the time this runs — a restore takes the tree back,
+    // it does not take back what the run learned.
+    let restoring_a_success = everything_held && program.on_success == OnSuccess::Rollback;
+    if (everything_held && !restoring_a_success) || program.on_failure == OnFailure::Keep {
         metrics.machine_operations += 1;
         match attempt::keep(asked.store, &snapshots, &asked.request_id) {
             Ok(_) => {
@@ -827,8 +901,18 @@ pub fn carry_out<V: Volumes>(
                 &asked.request_id,
             ) {
                 Ok(_) => {
-                    evidence.status = "rolled_back".to_string();
+                    // Two words and not one, because a caller that read
+                    // `rolled_back` on a run it had asked to be rolled back
+                    // would have no way to tell it from the run that failed.
+                    // The pair (`succeeded`, `status`) says both things and
+                    // neither is inferred from the other.
+                    evidence.status = if restoring_a_success {
+                        "succeeded_and_restored".to_string()
+                    } else {
+                        "rolled_back".to_string()
+                    };
                     evidence.rolled_back = true;
+                    evidence.restored_by_request = restoring_a_success;
                 }
                 Err(error) => {
                     evidence.status = "open".to_string();
@@ -1675,7 +1759,45 @@ fn shortened(text: &str) -> Value {
 /// The whole argument of this verb is in what this function leaves out. Every
 /// step's answer, every line a compiler printed, every hit of every search —
 /// all of it is in the evidence, none of it is here, and the handle is how to
-/// ask for the part that turns out to matter.
+/// What one run says to a **machine**: the small answer, and nothing that only
+/// a human or an auditor would read.
+///
+/// ## What this is a fix for
+///
+/// The compact run of 2026-08-30 sent 15 149 bytes back to the model across
+/// four calls, from a machine that had produced 148 591 internally. The verb's
+/// own stated philosophy is "return a small value; the raw material stays
+/// behind evidence" — and its answer was thirty-eight top-level fields, of
+/// which the model could act on about eight. Measured field by field on a
+/// synthetic run of the same shape, the answer was 1 416 bytes and 62% of it
+/// was snapshot ids, state witnesses, per-run counters and the program's own
+/// log lines. None of that changes what the model does next.
+///
+/// ## The rule
+///
+/// A field is top-level when the model needs it **to decide whether it is
+/// done**: did the program come out right, what did it hand back, what state
+/// the tree is in, why not if not, and the handle to everything else.
+/// Everything else is in the evidence, which is complete, kept before the
+/// answer is composed, and one call away.
+///
+/// ## Why the counters are still here, nested
+///
+/// Because they are not decoration: `thalyx-mcp` reads them off this answer to
+/// write the metrics file that is the entire measurement of the external-agent
+/// experiment, and rule 5's eighteenth entry is a measurement that stopped
+/// measuring looking exactly like a machine that could not be measured. So
+/// they are moved under one key the model can skip in one token rather than
+/// deleted — moving to evidence is not erasing, and neither is nesting.
+///
+/// ## And why several fields are conditional
+///
+/// A field that is always present and usually null is a field every caller
+/// special-cases and every inference pays for. `changed_files` is here only
+/// when there is no `returned` to carry it; `finish` only when the program did
+/// not simply return; `reason` only when something needs explaining. The shape
+/// is still deterministic — what decides each one is a fact about the run, not
+/// a taste.
 pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
     let checks: Vec<Value> = evidence
         .checks
@@ -1719,105 +1841,123 @@ pub fn answer_object(evidence: &Evidence) -> Vec<(&'static str, Value)> {
             })
         });
 
+    // One word for the tree, decided here rather than by a reader matching on
+    // `status`. `status` says what happened to the run; this says what the
+    // caller would find if it looked at the workspace now.
+    let tree = match evidence.status.as_str() {
+        "committed" | "kept_after_failure" => "committed",
+        "rolled_back" | "succeeded_and_restored" => "restored",
+        "open" => "open",
+        // Nothing was ever opened, so nothing was ever written.
+        _ => "untouched",
+    };
+
     let mut carried = vec![
+        // **The two that answer "am I done".** Independent on purpose: a
+        // successful run can end with a restored tree, and a reader that
+        // inferred one from the other would read that as a failure.
         ("status", json!(evidence.status)),
-        ("transaction", json!(evidence.transaction)),
-        ("attempt", json!(evidence.label)),
-        ("snapshot", json!(evidence.snapshot)),
-        ("start_state", json!(evidence.start_state)),
-        ("end_state", json!(evidence.end_state)),
-        ("steps_run", json!(evidence.steps.len())),
-        ("failed_step", json!(failed_step)),
-        ("change_count", json!(evidence.change_count)),
-        ("changed_files", json!(evidence.changed)),
-        (
-            "changed_files_cut",
-            json!(evidence.change_count > evidence.changed.len()),
-        ),
-        ("validations", json!(checks)),
-        ("rolled_back", json!(evidence.rolled_back)),
-        ("reason", json!(evidence.reason)),
-        // The handle, in every answer including the ones that went well. A
-        // caller that only gets it on failure cannot audit a success.
-        ("evidence", json!(evidence.transaction)),
-        (
-            "evidence_with",
-            json!(format!("evidencia {}", evidence.transaction)),
-        ),
-        (
-            "machine_operations",
-            json!(evidence.metrics.machine_operations),
-        ),
-        (
-            "external_requests",
-            json!(evidence.metrics.external_requests),
-        ),
-        ("process_launches", json!(evidence.metrics.process_launches)),
-        (
-            "filesystem_mutations",
-            json!(evidence.metrics.filesystem_mutations),
-        ),
-        (
-            "state_witness_checks",
-            json!(evidence.metrics.state_witness_checks),
-        ),
-        ("machine_time_ms", json!(evidence.metrics.machine_time_ms)),
-        ("internal_bytes", json!(evidence.metrics.internal_bytes)),
-        // The programming face's own numbers. Zeroes on a run that asked
-        // nothing semantic, and said anyway: a field that only appears on the
-        // interesting day is a field nobody handles on the interesting day.
-        ("semantic_queries", json!(evidence.metrics.semantic_queries)),
-        (
-            "semantic_cache_hits",
-            json!(evidence.metrics.semantic_cache_hits),
-        ),
-        ("analyzer_starts", json!(evidence.metrics.analyzer_starts)),
-        (
-            "analyzer_confined",
-            json!(evidence.metrics.analyzer_confined),
-        ),
-        ("analyzer_how", json!(evidence.metrics.analyzer_how)),
-        (
-            "validation_cache_hits",
-            json!(evidence.metrics.validation_cache_hits),
-        ),
-        (
-            "validation_cache_misses",
-            json!(evidence.metrics.validation_cache_misses),
-        ),
-        (
-            "affected_packages",
-            json!(evidence.metrics.affected_packages),
-        ),
+        ("succeeded", json!(evidence.succeeded)),
+        ("tree", json!(tree)),
     ];
 
-    // The programmable form's own fields, and only on a run that was one. This
-    // is the one place in this file where a field is conditional, and the
-    // reason is that `steps_run` already means something for a list of steps:
-    // `returned` on a run that had no program would be a null every caller has
-    // to special-case, and `finish` would be a word about something that did
-    // not happen.
-    if evidence.metrics.programmable {
-        carried.extend([
-            ("finish", json!(evidence.finish)),
-            ("finish_why", json!(evidence.finish_why)),
-            // **What the program handed back.** The whole of the compression is
-            // that this is small and everything it was computed from is not:
-            // the program read whole files, walked every reference and ran the
-            // compiler, and what crosses back is whatever it decided mattered.
-            ("returned", evidence.returned.clone()),
-            (
-                "program_operations",
-                json!(evidence.metrics.program_operations),
-            ),
-            (
-                "program_assertions",
-                json!(evidence.metrics.program_assertions),
-            ),
-            ("program_ticks", json!(evidence.metrics.program_ticks)),
-            ("printed", json!(evidence.printed)),
-        ]);
+    // Only on a tree that was put back, and then always — because that is the
+    // one place where "it worked" and "it failed" leave the same workspace
+    // behind, and the difference must never be something the caller infers.
+    if tree == "restored" {
+        carried.push(("restored_by_request", json!(evidence.restored_by_request)));
     }
+
+    if evidence.metrics.programmable {
+        // **What the program handed back.** The whole of the compression is
+        // that this is small and everything it was computed from is not: the
+        // program read whole files, walked every reference and ran the
+        // compiler, and what crosses back is whatever it decided mattered.
+        carried.push(("returned", evidence.returned.clone()));
+        // Only when it is news. `returned` is the ordinary ending and saying so
+        // in every answer is a word the model reads and cannot act on;
+        // `needs_model`, `assertion`, `threw`, `exhausted` and `refused` each
+        // call for a different next move.
+        if let Some(finish) = &evidence.finish
+            && finish != "returned"
+        {
+            carried.push(("finish", json!(finish)));
+        }
+    } else {
+        // The steps form has no `returned`, so what happened is the steps.
+        carried.push(("steps_run", json!(evidence.steps.len())));
+        if let Some(failed) = failed_step {
+            carried.push(("failed_step", failed));
+        }
+    }
+
+    carried.push(("change_count", json!(evidence.change_count)));
+    // The list, only when nothing else is carrying it. A program that returned
+    // a value has already said what it did in its own words, and the same paths
+    // twice is the redundancy this whole answer is being trimmed of.
+    if evidence.returned.is_null() && !evidence.changed.is_empty() {
+        carried.push(("changed_files", json!(evidence.changed)));
+        if evidence.change_count > evidence.changed.len() {
+            carried.push(("changed_files_cut", json!(true)));
+        }
+    }
+
+    if !checks.is_empty() {
+        carried.push(("validations", json!(checks)));
+    }
+
+    // Why, when there is a why. On a run that committed cleanly the sentence
+    // says "every step went through", which `succeeded` already said.
+    if !evidence.succeeded || evidence.status == "open" || evidence.restored_by_request {
+        carried.push(("reason", json!(evidence.reason)));
+    }
+
+    // The handle, in every answer including the ones that went well. A caller
+    // that only gets it on failure cannot audit a success.
+    carried.push(("evidence", json!(evidence.transaction)));
+
+    // ── the accounting, under one key ───────────────────────────────────────
+    //
+    // Seven numbers, and they are here for exactly one reason: `thalyx-mcp`
+    // reads them off this answer to write the metrics file that is the whole
+    // measurement of the external-agent experiment. Rule 5's eighteenth entry
+    // is a measurement that stopped measuring looking exactly like a machine
+    // that could not be measured, so this stays even though the model never
+    // reads it — under one key, which is one token to skip rather than
+    // twenty-two.
+    //
+    // **These seven, and no others.** Every other counter — process launches,
+    // filesystem mutations, state-witness checks, machine time, affected
+    // packages, the program's own operations, assertions and ticks, whether the
+    // analyzer was confined and how it started, the snapshot id, the two state
+    // witnesses, the label, and every line the program printed — is in the
+    // evidence, in full, keyed by the handle in this answer. Nothing was
+    // deleted; it stopped riding along on every inference. `evidencia <id>` is
+    // one call and it is the whole record.
+    //
+    // The adapter is not allowed to compose a view of an answer — that decree
+    // is in `thalyx-mcp/src/main.rs` and it is what keeps a second, disagreeing
+    // Thalyx from growing there — so what it needs has to be *in* the answer.
+    // This is the smallest thing that can be.
+    let m = &evidence.metrics;
+    let mut machine = serde_json::Map::new();
+    for (name, value) in [
+        ("machine_operations", json!(m.machine_operations)),
+        ("internal_bytes", json!(m.internal_bytes)),
+        ("semantic_queries", json!(m.semantic_queries)),
+        ("semantic_cache_hits", json!(m.semantic_cache_hits)),
+        ("analyzer_starts", json!(m.analyzer_starts)),
+        ("validation_cache_hits", json!(m.validation_cache_hits)),
+        ("validation_cache_misses", json!(m.validation_cache_misses)),
+        // The eighth, and it is not read by the adapter: it is the numerator of
+        // this project's whole claim — how many things the machine did between
+        // two inferences — and `dev/verify.sh` has a stage that asserts on it.
+        // Twenty-three bytes to keep the measurement measurable.
+        ("program_operations", json!(m.program_operations)),
+    ] {
+        machine.insert(name.to_string(), value);
+    }
+    carried.push(("metrics", Value::Object(machine)));
 
     carried
 }
@@ -1902,12 +2042,17 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
             .iter()
             .map(|(name, value)| name.len() + value.to_string().len() + 4)
             .sum();
-        carried.push(("returned_bytes", json!(leaving)));
+        if let Some((_, Value::Object(machine))) =
+            carried.iter_mut().find(|(name, _)| *name == "metrics")
+        {
+            machine.insert("returned_bytes".to_string(), json!(leaving));
+        }
+        // Only when it went wrong. A handle that names nothing is a lie the
+        // caller meets on its next call, so the failure has to be said; the
+        // success is said by the handle being there at all.
         if let Err(error) = &kept {
             carried.push(("evidence_kept", json!(false)));
             carried.push(("evidence_why_not", json!(error.to_string())));
-        } else {
-            carried.push(("evidence_kept", json!(true)));
         }
         face.say(thalyx_files::machine::answer(OP, carried));
         return Ok(());
@@ -1929,7 +2074,13 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
     }
     if evidence.rolled_back {
         println!();
-        println!("  The workspace is back as it was.");
+        if evidence.restored_by_request {
+            // The distinction a person needs most: nothing went wrong here.
+            println!("  It worked, and the workspace is back as it was because you asked");
+            println!("  for that. What it found is above and in the evidence.");
+        } else {
+            println!("  The workspace is back as it was.");
+        }
     }
     println!();
     println!("  `evidencia {}` has all of it.", evidence.transaction);
@@ -2105,6 +2256,12 @@ pub fn evidence(store: &Store, rest: &str, face: Face) -> Fallible {
                 ("status", json!(record.status)),
                 ("reason", json!(record.reason)),
                 ("rolled_back", json!(record.rolled_back)),
+                // Both, for the same reason the answer carries both: a tree
+                // that was put back on request and one that was put back after
+                // a failure look identical here otherwise, and this is the
+                // record somebody audits months later.
+                ("succeeded", json!(record.succeeded)),
+                ("restored_by_request", json!(record.restored_by_request)),
                 ("start_state", json!(record.start_state)),
                 ("end_state", json!(record.end_state)),
                 ("change_count", json!(record.change_count)),
@@ -3777,5 +3934,299 @@ mod tests {
         )
         .expect("a Cargo workspace");
         assert_eq!(asked.packages, vec!["two".to_string()]);
+    }
+
+    // ── what a successful run may do with the tree ───────────────────────────
+
+    /// A synthetic project, deliberately unlike anything the benchmark uses.
+    ///
+    /// Rule: a regression written over the bank's own symbol is a regression
+    /// that passes because the bank passes. Nothing here is a Rust crate, a
+    /// name the benchmark knows, or a file it names — what is under test is the
+    /// transaction, and the transaction does not know what Rust is.
+    /// The bytes of every file of a tree, as they were before anything ran.
+    ///
+    /// The witness a restore cannot fake: the program's own account of what it
+    /// did is the thing under test, so it cannot also be the proof.
+    type OriginalBytes = Vec<(String, Vec<u8>)>;
+
+    fn a_small_tree() -> (tempfile::TempDir, Store, PathBuf, Where, OriginalBytes) {
+        let files: Vec<(&str, &str)> = vec![
+            ("notes/one.txt", "alpha sprocket alpha\n"),
+            ("notes/two.txt", "sprocket\nbeta\n"),
+            ("notes/three.txt", "nothing here\n"),
+            ("config.ini", "[main]\nwidget = sprocket\n"),
+        ];
+        let (base, store, tree, here) = a_workspace(&files);
+        let before = files
+            .iter()
+            .map(|(path, _)| {
+                (
+                    (*path).to_string(),
+                    std::fs::read(tree.join(path)).expect("a file"),
+                )
+            })
+            .collect();
+        (base, store, tree, here, before)
+    }
+
+    #[test]
+    fn a_program_that_worked_can_still_be_asked_to_put_everything_back() {
+        let (_base, store, tree, mut here, before) = a_small_tree();
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "label": "what this change would touch",
+                // Reads, decides, mutates several files, then asks the tree
+                // what really moved — the whole of a real run, not a no-op
+                // dressed up as one.
+                "run": "const touched = [];\n\
+                        for (const path of ['notes/one.txt','notes/two.txt',\n\
+                                            'notes/three.txt','config.ini']) {\n\
+                          const held = thalyx.read(path);\n\
+                          if (!held.ok || held.text.indexOf('sprocket') < 0) continue;\n\
+                          thalyx.mustWork(thalyx.substitute(path, 'sprocket', 'flywheel'),\n\
+                                          'substituting in ' + path);\n\
+                          touched.push(path);\n\
+                        }\n\
+                        const moved = thalyx.changed();\n\
+                        return {touched: touched, files_the_tree_saw_move: moved.count};",
+                "validate": [{"check": "text", "text": "sprocket", "expect": "none"}],
+                "on_success": "rollback"
+            })),
+        );
+
+        // It worked. That is the half that must not be confused with the other.
+        assert!(
+            evidence.succeeded,
+            "a run that did everything it was asked was not recorded as a success: {}",
+            evidence.reason
+        );
+        assert_eq!(evidence.status, "succeeded_and_restored", "{evidence:#?}");
+        assert!(evidence.restored_by_request);
+        assert!(evidence.rolled_back);
+
+        // It really did the work: the tree saw three files move, and the
+        // program said which. A "rollback on success" that quietly did nothing
+        // would pass every assertion above.
+        assert_eq!(
+            evidence.returned["files_the_tree_saw_move"],
+            json!(3),
+            "the program did not actually change anything, so nothing was restored: \
+             {evidence:#?}"
+        );
+        assert_eq!(
+            evidence.returned["touched"],
+            json!(["notes/one.txt", "notes/two.txt", "config.ini"]),
+            "{evidence:#?}"
+        );
+        assert_eq!(evidence.change_count, 3, "{evidence:#?}");
+        assert_eq!(
+            evidence.checks.len(),
+            1,
+            "the checks were skipped, so the run was never really validated"
+        );
+        assert!(evidence.checks.iter().all(|c| c.verdict == Verdict::Passed));
+
+        // And the bytes came back, read from outside. Rule 1: the claim is
+        // about the workspace, so the workspace is what is asked.
+        for (path, bytes) in &before {
+            let now = std::fs::read(tree.join(path)).expect("the file is still there");
+            assert_eq!(&now, bytes, "{path} did not come back byte for byte");
+        }
+
+        // The evidence outlives the restore. It is the entire point of the
+        // ordering — the tree goes back, what was learned does not.
+        let stored = evidence_path(&store, &evidence.transaction);
+        keep(&store, &evidence).expect("the evidence is kept");
+        let read: Evidence =
+            serde_json::from_str(&std::fs::read_to_string(&stored).expect("it is on disk"))
+                .expect("it parses");
+        assert!(read.succeeded && read.restored_by_request);
+        assert_eq!(read.returned, evidence.returned);
+        assert_eq!(read.changed.len(), 3, "the evidence forgot what moved");
+    }
+
+    #[test]
+    fn the_answer_says_a_requested_restore_is_not_a_failure() {
+        // The confusion this exists to prevent: two runs that leave the same
+        // workspace behind, one because it worked and one because it did not.
+        // A caller must be able to tell them apart without reading prose.
+        let (_base, store, tree, mut here, _) = a_small_tree();
+        let asked = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "run": "thalyx.mustWork(thalyx.substitute('notes/one.txt', 'alpha', 'gamma'), \
+                        'the edit'); return {done: true};",
+                "on_success": "rollback"
+            })),
+        );
+        let failed = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "run": "thalyx.mustWork(thalyx.substitute('notes/one.txt', 'alpha', 'gamma'), \
+                        'the edit'); return {done: true};",
+                "validate": [{"check": "text", "text": "gamma", "expect": "none"}]
+            })),
+        );
+
+        let field = |carried: &[(&'static str, Value)], name: &str| {
+            carried
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.clone())
+        };
+        let good = answer_object(&asked);
+        let bad = answer_object(&failed);
+
+        assert_eq!(field(&good, "tree"), field(&bad, "tree"), "the premise");
+        assert_eq!(field(&good, "tree"), Some(json!("restored")));
+
+        assert_eq!(field(&good, "succeeded"), Some(json!(true)));
+        assert_eq!(field(&bad, "succeeded"), Some(json!(false)));
+        assert_eq!(field(&good, "restored_by_request"), Some(json!(true)));
+        assert_eq!(field(&bad, "restored_by_request"), Some(json!(false)));
+        assert_eq!(
+            field(&good, "status"),
+            Some(json!("succeeded_and_restored"))
+        );
+        assert_eq!(field(&bad, "status"), Some(json!("rolled_back")));
+    }
+
+    #[test]
+    fn a_caller_that_says_nothing_still_keeps_its_work() {
+        // The compatibility claim, as a test rather than as a default in a
+        // struct: every program written before `on_success` existed committed
+        // when it worked, and still does.
+        let (_base, store, tree, mut here, _) = a_small_tree();
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "run": "thalyx.mustWork(thalyx.substitute('notes/one.txt', 'alpha', 'gamma'), \
+                        'the edit'); return {done: true};"
+            })),
+        );
+        assert_eq!(evidence.status, "committed", "{}", evidence.reason);
+        assert!(evidence.succeeded && !evidence.rolled_back && !evidence.restored_by_request);
+        let now = std::fs::read_to_string(tree.join("notes/one.txt")).expect("the file");
+        assert!(now.contains("gamma"), "the work was not kept: {now}");
+    }
+
+    #[test]
+    fn a_run_that_failed_is_rolled_back_whatever_it_was_told_to_do_on_success() {
+        // `on_success` is about success. A caller that wrote `commit` and then
+        // failed must not have its half-finished tree committed by it.
+        let (_base, store, tree, mut here, before) = a_small_tree();
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "run": "thalyx.mustWork(thalyx.substitute('notes/one.txt', 'alpha', 'gamma'), \
+                        'the edit'); return {done: true};",
+                "validate": [{"check": "text", "text": "gamma", "expect": "none"}],
+                "on_success": "commit"
+            })),
+        );
+        assert!(!evidence.succeeded);
+        assert_eq!(evidence.status, "rolled_back");
+        assert!(!evidence.restored_by_request, "a failure is not a request");
+        for (path, bytes) in &before {
+            assert_eq!(
+                &std::fs::read(tree.join(path)).expect("the file"),
+                bytes,
+                "{path} was not put back after a failure"
+            );
+        }
+    }
+
+    // ── the answer that leaves is small, and stays small ─────────────────────
+
+    /// What the machine answer weighs, on a run shaped like the one that was
+    /// measured.
+    ///
+    /// The number is here because the alternative is a rule nobody can check.
+    /// `hacer`'s stated philosophy has always been "return a small value; the
+    /// raw material stays behind evidence", and on 2026-08-30 the answer to a
+    /// four-call run was 15 149 bytes — because nothing had ever weighed it.
+    /// The same synthetic shape measured 1 416 bytes before this ceiling
+    /// existed and 469 after, so the ceiling is set at 700: comfortably above
+    /// what the answer is, comfortably below what it was, and low enough that
+    /// putting any of the twenty-two counters back would trip it.
+    ///
+    /// It is a ceiling and not an equality on purpose — `returned` is the
+    /// program's and must be free to grow, and a test that pinned the exact
+    /// byte count would fail on a longer reason string, which is not the defect
+    /// this is guarding against.
+    #[test]
+    fn the_answer_that_goes_back_to_the_model_stays_small() {
+        let (_base, store, tree, mut here, _) = a_small_tree();
+        let evidence = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(json!({
+                "label": "a multi-file edit and a check",
+                "run": "const touched = [];\n\
+                        for (const path of ['notes/one.txt','notes/two.txt','config.ini']) {\n\
+                          thalyx.log('looking at ' + path);\n\
+                          const r = thalyx.substitute(path, 'sprocket', 'flywheel');\n\
+                          if (r.ok) touched.push(path);\n\
+                        }\n\
+                        return {touched: touched};",
+                "validate": [{"check": "text", "text": "sprocket", "expect": "none"}]
+            })),
+        );
+        let carried = answer_object(&evidence);
+        let weight: usize = carried
+            .iter()
+            .map(|(name, value)| name.len() + value.to_string().len() + 4)
+            .sum();
+        let named: Vec<&str> = carried.iter().map(|(name, _)| *name).collect();
+        assert!(
+            weight <= 700,
+            "the answer is {weight} bytes over {} fields and the ceiling is 700. Every \
+             byte here is paid on every inference; what a caller can fetch when it wants \
+             it belongs in the evidence. Fields: {named:?}",
+            named.len(),
+        );
+
+        // And the control, without which a ceiling that dropped everything
+        // would look exactly like a ceiling that works: the model still has
+        // what it needs to decide it is done.
+        for needed in ["status", "succeeded", "tree", "returned", "evidence"] {
+            assert!(
+                named.contains(&needed),
+                "`{needed}` left the answer: {named:?}"
+            );
+        }
+        assert!(
+            !named.contains(&"printed")
+                && !named.contains(&"snapshot")
+                && !named.contains(&"start_state")
+                && !named.contains(&"end_state"),
+            "the raw material came back into the answer: {named:?}"
+        );
+        // Moved, not deleted. The evidence still has all of it.
+        assert!(
+            !evidence.printed.is_empty(),
+            "the log lines were lost, not moved"
+        );
+        assert!(
+            evidence.snapshot.is_some(),
+            "the snapshot id was lost, not moved"
+        );
+        assert!(
+            evidence.metrics.program_operations > 0,
+            "the program's own counters were lost, not moved"
+        );
     }
 }

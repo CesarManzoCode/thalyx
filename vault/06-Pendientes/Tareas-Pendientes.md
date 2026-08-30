@@ -843,3 +843,41 @@ El [[Criterio-de-Salida-Fase-1|criterio de salida de la Fase 1]] estaba diseñad
 **Lo que sigue abierto y sigue siendo de Cesar**: correr `sudo ./dev/verify.sh`
 en Fedora, sin variables, y ver 53 a 59 en `PROVEN` con `failed 0`. Después de
 eso, el banco.
+
+## Thalyx como máquina para Claude Code: los costes de la traza — 2026-08-30
+
+Todo lo de abajo sale de la corrida A/B compacta, no de intuición. La propiedad
+buena está demostrada —Claude delegó trabajo compuesto y Thalyx hizo 36
+operaciones internas— y lo que no bajó fueron las rondas: 5 llamadas contra 4.
+
+- [x] **El banco no puede volver a calificar contra un archivo que el corpus
+      contiene.** La hoja de respuestas estaba dentro del checkout y el brazo B la
+      leyó. El guardia corre antes de cualquier brazo, compara **bytes** y no rutas,
+      y se niega también cuando no puede leer la llave. No sabe nada del símbolo, de
+      los archivos ni de la tarea; se prueba con un corpus sintético.
+- [x] **La ronda de `ToolSearch` desapareció.** `alwaysLoad: true` en el
+      `mcp.json` del brazo B. Medido con línea base y control contra un servidor de
+      utilería: `dev/toolsearch-check.sh`, re-ejecutable, porque la afirmación es
+      sobre un CLI que este repositorio no controla.
+- [x] **Las instrucciones dicen la verdad.** Se derivan de la superficie ofrecida,
+      una frase por herramienta, con una prueba mecánica que rechaza cualquier
+      `thalyx_…` que no esté ofrecido.
+- [x] **Las tres descripciones calientes caben en 2 KiB**, con pruebas sobre los
+      bytes. `thalyx_exec`: 3 649 → 2 037.
+- [x] **`on_success: "rollback"`**, capacidad general de la transacción y no una
+      operación con nombre de banco.
+- [x] **`renombrar-simbolo` devuelve `edits_by_file`** —contado del `WorkspaceEdit`
+      mientras se aplica— y `definition` sólo cuando de verdad lo resolvió.
+- [x] **La respuesta de `hacer` bajó 67%** sobre la misma forma sintética. Nada se
+      borró: la evidencia sigue completa y `verify.sh` ahora la lee por handle, que
+      es la demostración de que mover no fue borrar.
+
+**Lo que este sprint no pudo contestar, y por qué:** qué contestaron
+exactamente `context(...)` y `rename(...)` en la primera llamada del brazo B. El
+NDJSON vive en la máquina de Cesar. `dev/bench-summary.py --transcript --out
+<dir>` lo lee entero; **pero** las respuestas de esas dos llamadas ocurrieron
+dentro del programa y sólo cruzaron de vuelta si el programa las devolvió — si
+no, están en la evidencia de la máquina y nada en el anfitrión las tiene.
+
+**Lo que sigue abierto y sigue siendo de Cesar**: correr la validación de este
+sprint en Fedora antes de gastar otra corrida A/B pagada.

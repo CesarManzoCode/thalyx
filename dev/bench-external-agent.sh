@@ -535,6 +535,45 @@ changed in each, and a last line saying whether the project is back to its origi
     esac
 }
 
+# ── what arm B's client is told about this machine ───────────────────────────
+#
+# One function, called by the run and by the self-test, for the reason every
+# other one-implementation rule in this file exists: a config the self-test
+# builds itself is a config that can agree with the test and disagree with the
+# run.
+#
+# ## `alwaysLoad`, which is the whole of what makes a small surface small
+#
+# Without it Claude Code defers an MCP server's tools behind tool search: the
+# model is given names, not schemas, and cannot call anything until it has spent
+# a `ToolSearch` finding them. The compact run of 2026-08-30 opened with exactly
+# that — one whole inference before the first `thalyx_*` call, paid to discover
+# three tools whose entire point is that there are only three of them.
+#
+# The flag is in this build's stdio schema, and the build's own words for it are
+# "all tools from this server are always included in the prompt and never
+# deferred behind tool search. Equivalent to setting defer_loading: false on the
+# API." Measured on 2026-08-30 against a stub server with a baseline and a
+# control, which is the only way this could be believed:
+#
+#     without alwaysLoad:  ToolSearch, then mcp__thalyx__thalyx_exec
+#     with    alwaysLoad:  mcp__thalyx__thalyx_exec
+#
+# `dev/toolsearch-check.sh` is that measurement, re-runnable — it has to be, the
+# claim is about a CLI this repository does not own and cannot pin.
+#
+# Three tools is what makes it affordable. It is not a thing to do to the
+# fourteen-tool surface, and `--surface legacy` is deliberately not given it:
+# always-loading fourteen schemas is the cost the compact surface exists to
+# avoid, and the two arms of that comparison have to stay different.
+mcp_config() {
+    local into="$1" metrics="$2"
+    cat > "$into" <<JSON
+{"mcpServers":{"thalyx":{"type":"stdio","command":"$MCP","alwaysLoad":true,
+ "args":["--connect","$SOCKET","--metrics","$metrics"]}}}
+JSON
+}
+
 # ── the self-test ────────────────────────────────────────────────────────────
 #
 # What can be checked about this harness without spending a run, which is
@@ -652,6 +691,108 @@ self_test() {
         bad "the same output directory named from two places came out as $twice_a and $twice_b"
     fi
     rm -rf "$relative_from"
+
+    # ── arm B's client is told to load the three tools, not to search for them ──
+    #
+    # Free, and it is the wiring rather than the behaviour: whether the flag
+    # *works* is `dev/toolsearch-check.sh`, which costs two small inferences
+    # against a stub. What is checked here is that the config the run writes is
+    # the config that was measured — a flag proven once and then dropped from
+    # the generator is the failure this catches.
+    local cfg; cfg=$(mktemp -d)
+    ( MCP=/bin/true SOCKET=/tmp/x.sock mcp_config "$cfg/mcp.json" "$cfg/m.json" )
+    if python3 - "$cfg/mcp.json" <<'CHECK'
+import json, sys
+server = json.load(open(sys.argv[1]))["mcpServers"]["thalyx"]
+assert server.get("alwaysLoad") is True, server
+assert server.get("type") == "stdio", server
+CHECK
+    then
+        ok "arm B's MCP config is valid JSON and asks for the three tools to be always loaded"
+    else
+        bad "arm B's MCP config does not carry alwaysLoad, so the run pays a ToolSearch first"
+    fi
+    rm -rf "$cfg"
+
+    # ── the answer key is not allowed inside the corpus ──
+    #
+    # A synthetic corpus with an invented name in it, deliberately unlike the
+    # bank: what is being tested is the guard, and a guard tested against the
+    # one file that leaked would be a guard that only knows that file.
+    #
+    # Four cases, because "it refuses" is not the claim. The claim is that it
+    # refuses a key that is reachable, allows one that is not, still refuses when
+    # the key was moved to a different name inside the corpus — the bytes are the
+    # leak, not the path — and refuses rather than passing when it could not read
+    # the key at all.
+    local leak; leak=$(mktemp -d)
+    mkdir -p "$leak/corpus/src" "$leak/corpus/target" "$leak/keys" "$leak/out"
+    printf 'pub struct Sprocket;\n' > "$leak/corpus/src/lib.rs"
+    printf 'SprocketRenamed\nsrc/lib.rs\nsrc/main.rs\n' > "$leak/keys/outside.txt"
+
+    if python3 "$ROOT/dev/bench-summary.py" --leak-check \
+            --expect-file "$leak/keys/outside.txt" --project "$leak/corpus" \
+            > "$leak/out/clean.json" 2>&1; then
+        ok "a key that lives outside the corpus lets the run go ahead"
+    else
+        bad "a key outside the corpus was reported as a leak"
+    fi
+
+    # The defect itself: the key filed inside the tree the arms are given.
+    mkdir -p "$leak/corpus/expected"
+    cp "$leak/keys/outside.txt" "$leak/corpus/expected/answer.txt"
+    if python3 "$ROOT/dev/bench-summary.py" --leak-check \
+            --expect-file "$leak/corpus/expected/answer.txt" --project "$leak/corpus" \
+            > "$leak/out/leaked.json" 2>&1; then
+        bad "an answer key filed inside the corpus did not stop the run"
+    else
+        grep -q '"leaked": true' "$leak/out/leaked.json" \
+            && ok "an answer key inside the corpus stops the run and says which file it is" \
+            || bad "the guard exited non-zero without naming the leak"
+    fi
+
+    # The same bytes under another name, with the key itself outside. A guard
+    # that compared paths would call this clean.
+    cp "$leak/keys/outside.txt" "$leak/corpus/src/notes.txt"
+    rm -rf "$leak/corpus/expected"
+    if python3 "$ROOT/dev/bench-summary.py" --leak-check \
+            --expect-file "$leak/keys/outside.txt" --project "$leak/corpus" \
+            > "$leak/out/renamed.json" 2>&1; then
+        bad "the key's bytes under another name inside the corpus did not stop the run"
+    else
+        grep -q 'src/notes.txt' "$leak/out/renamed.json" \
+            && ok "the guard is about the bytes, not the path: a renamed copy still leaks" \
+            || bad "the guard missed the key's bytes under a different name"
+    fi
+    rm -f "$leak/corpus/src/notes.txt"
+
+    # A key that is not there at all. "I could not check" must not read as
+    # "nothing found" — rule 9, at the one moment the guard is consulted.
+    if python3 "$ROOT/dev/bench-summary.py" --leak-check \
+            --expect-file "$leak/keys/absent.txt" --project "$leak/corpus" \
+            > "$leak/out/absent.json" 2>&1; then
+        bad "an unreadable answer key was treated as a key that did not leak"
+    else
+        ok "a key the guard could not read stops the run instead of passing it"
+    fi
+
+    # And the wiring: the harness itself must refuse before it spends anything.
+    # `--arms A` is what makes this a paid path; nothing is paid because the
+    # guard stands before the preflight and before arm A is staged.
+    cp "$leak/keys/outside.txt" "$leak/corpus/expected-answer.txt"
+    if "${BASH_SOURCE[0]}" --project "$leak/corpus" --symbol Sprocket --task reversible \
+            --arms A --out "$leak/out/run" \
+            --expect-file "$leak/corpus/expected-answer.txt" > "$leak/out/log" 2>&1; then
+        bad "the harness ran an arm with the answer key inside the corpus"
+    else
+        grep -q 'REFUSED' "$leak/out/log" \
+            && ok "the harness stops before either arm and says which file leaked" \
+            || bad "the harness stopped for some other reason than the leak guard"
+        [ -f "$leak/out/run/armA.ndjson" ] \
+            && bad "an arm was run despite the leak" \
+            || ok "no arm was started, so nothing was paid for"
+    fi
+    rm -rf "$leak"
 
     # ── the wiring to the one implementation ──
     local work
@@ -846,6 +987,19 @@ self_test() {
             ok "the forensic table can be read out of a run that is over"
         else
             bad "the forensic table said nothing about a stream that is on disk"
+        fi
+
+        # And the whole of it, which is the other reading: `--forensics` is a
+        # table of mutating calls with the answers excerpted, and the question
+        # of 2026-08-30 — what did the first semantic rename actually say, and
+        # why were there three more calls — is answerable only from the
+        # untruncated request and the untruncated answer.
+        python3 "$ROOT/dev/bench-summary.py" --transcript --out "$bench" \
+            > "$work/transcript" 2>&1 || true
+        if grep -q 'ARM B' "$work/transcript" && grep -q '── answered ──' "$work/transcript"; then
+            ok "every call of a finished run can be read back whole, with what answered it"
+        else
+            bad "the transcript could not reconstruct a stream that is on disk"
         fi
 
         # And the control, without which "restored" and "never looked" are the
@@ -1152,6 +1306,38 @@ fi
 
 mkdir -p "$OUT"
 
+# ── the answer key must not be inside the corpus ──────────────────────────────
+#
+# Before the preflight, before arm A, before anything is paid for — because what
+# it can find makes the whole run void, and the cost of finding out afterwards is
+# both arms.
+#
+# The compact run of 2026-08-30 is why. It was graded against
+# `dev/bench-expect/<name>.txt`, that file lives in the checkout the run used as
+# its corpus, and arm B spent an entire MCP call opening it. Both arms answered
+# correctly and the numbers were real; what they were numbers *about* was
+# reading the answer key, not finding the answer. No summary could have told the
+# difference, because nothing in the harness had ever asked the question.
+#
+# Nothing here knows the symbol, the files or the task. It hashes whatever was
+# passed as `--expect-file` and refuses if those exact bytes are anywhere an
+# agent could open them.
+if [ -n "$EXPECT" ] && [ -n "$ARMS" ]; then
+    if ! python3 "$ROOT/dev/bench-summary.py" --leak-check \
+            --expect-file "$EXPECT" --project "$PROJECT" > "$OUT/leak-check.json" 2>&1; then
+        say
+        say "REFUSED: the answer key is reachable from inside the corpus, so this run"
+        say "would measure reading it rather than finding it. Nothing was paid for."
+        say
+        sed 's/^/    /' "$OUT/leak-check.json"
+        say
+        say "Move the expect file out of --project, or point --project at a tree that"
+        say "does not carry it."
+        exit 1
+    fi
+    say "arm gate: the answer key is not inside $PROJECT"
+fi
+
 # ── arm B is checked before arm A is paid for ────────────────────────────────
 #
 # Order matters and it is the whole point of this block being here rather than
@@ -1294,10 +1480,7 @@ fi
 # project — a comparison between two different trees is not a comparison.
 if [[ "$ARMS" == *B* ]]; then
     [ -S "$SOCKET" ] || { say "no agent channel at $SOCKET — is the machine up?"; exit 1; }
-    cat > "$OUT/mcp.json" <<JSON
-{"mcpServers":{"thalyx":{"type":"stdio","command":"$MCP",
- "args":["--connect","$SOCKET","--metrics","$OUT/armB.metrics.json"]}}}
-JSON
+    mcp_config "$OUT/mcp.json" "$OUT/armB.metrics.json"
     rm -f "$OUT/armB.metrics.json"
     # What arm B started from, hashed on this host.
     #

@@ -1,0 +1,10 @@
+# A tree whose only job is that a rename touches a different number of places in
+# each file: three, then two, then one. A fixture where every file held one
+# occurrence would let a count that was really "one per file" — or the file
+# count under another name — pass as a per-file edit count.
+[workspace]
+
+[package]
+name = "counted"
+version = "0.1.0"
+edition = "2021"

@@ -355,41 +355,53 @@ fn handle(
 
 /// What the agent is told about this machine before it does anything.
 ///
-/// Short on purpose. The tool descriptions carry the "when to use this", and a
-/// wall of prose here would be paid for on every single turn.
+/// Short on purpose. This text is paid for on every single turn, so a wall of
+/// prose here is a wall of prose the whole session is billed for; the tool
+/// descriptions carry the "when to use this".
 ///
-/// ## Why it names every tool
+/// ## Why every word of it is derived
 ///
-/// Because two of the three real runs in
-/// `vault/07-Adopcion-y-Fases/Evidencia-de-Agentes.md` spent **two** calls
-/// finding this surface, and the first of the two was a failed selection: the
-/// agent asked for tools by name, named them wrong, and had to search again. A
-/// client that defers tool schemas makes one lookup unavoidable; what is not
-/// unavoidable is guessing at the names, and this is the only text the model has
-/// read by then.
+/// Because on 2026-08-30 it was not, and it was wrong. The paragraph that stood
+/// here told a model on the three-tool surface to "prefer thalyx_symbol and
+/// thalyx_dependencies over reading or searching files" and to open a boundary
+/// by passing `attempt: begin` to thalyx_edit or thalyx_file — **four tools
+/// that surface does not offer**. A model cannot call a tool it was not given,
+/// so the first thing this machine said about itself was false, and it stayed
+/// false for as long as it did because nothing could tell: a hand-written
+/// paragraph is not checkable against a list computed somewhere else.
 ///
-/// So the list is generated from what this machine actually offers, never
-/// written out — a hand-kept copy would go stale exactly when a verb is missing
-/// from the hello, which is the one moment a wrong name costs the most.
+/// So the names come from what this machine actually offers, and the advice
+/// comes from [`tools::Tool::advice`] — one sentence living beside the tool it
+/// is about, contributed only when that tool is on the surface. There is
+/// nowhere left to write a name that is not offered, and
+/// `every_name_the_instructions_use_is_a_tool_that_is_offered` checks it anyway.
 fn instructions(machine: &Machine, offered: &[&'static tools::Tool]) -> String {
-    let greeting = machine.greeting();
+    instructions_for(&machine.greeting().workspace, offered)
+}
+
+/// The same, without a machine, so it can be measured and read in a test.
+///
+/// Split out for exactly that: the size of this string is a cost paid on every
+/// inference of every session, and a cost nobody can weigh is a cost that
+/// grows.
+fn instructions_for(workspace: &str, offered: &[&'static tools::Tool]) -> String {
     let names: Vec<&str> = offered.iter().map(|tool| tool.name).collect();
-    format!(
-        "You are working inside a Thalyx machine, not on this host. The workspace is {} \
-         and nothing outside it can be reached. This machine's tools are exactly these, \
-         and there are no others: {}. Load them in one lookup — every one begins with \
-         `thalyx_`. Thalyx answers with structured objects that carry an exact remedy \
-         when they refuse — read the `remedy` field rather than guessing. Prefer \
-         thalyx_symbol and thalyx_dependencies over reading or searching files. When \
-         the next several operations are ones you already know you want — a change and \
-         the search that proves it landed, a change and the build that checks it — put \
-         them in one thalyx_exec: it runs them inside a reversible boundary, checks the \
-         result, and keeps the work or undoes all of it without asking you again. For a \
-         single change on its own, open the boundary in the same call by passing \
-         `attempt: begin` to thalyx_edit or thalyx_file.",
-        greeting.workspace,
+    let mut said = format!(
+        "You are working inside a Thalyx machine, not on this host. The workspace is \
+         {workspace} and nothing outside it can be reached. This machine's tools are \
+         exactly these, and there are no others: {}. Thalyx answers with structured \
+         objects that carry an exact remedy when they refuse — read the `remedy` field \
+         rather than guessing.",
         names.join(", ")
-    )
+    );
+    for tool in offered {
+        if tool.advice.is_empty() {
+            continue;
+        }
+        said.push(' ');
+        said.push_str(tool.advice);
+    }
+    said
 }
 
 fn call(
