@@ -67,6 +67,10 @@ thalyx-btrfs.workspace = true
 thalyx-install.workspace = true
 thalyx-manifest.workspace = true
 thalyx-sandbox.workspace = true
+# So a test can ask whether this machine has a rust-analyzer the same way the
+# binary does. Rule 3's skip has to be decided by the same search the thing
+# under test uses, or the skip is about a different machine.
+thalyx-rust.workspace = true
 
 [lints]
 workspace = true

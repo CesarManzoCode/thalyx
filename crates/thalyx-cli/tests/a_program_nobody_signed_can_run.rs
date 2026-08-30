@@ -67,6 +67,7 @@ fn request<'a>(program: &'a Path, grants: Vec<Permission>) -> ForeignRequest<'a>
         helper: PathBuf::from(env!("CARGO_BIN_EXE_thalyx")),
         request_id: "test-request".to_string(),
         profile: thalyx_sandbox::profile::MODULE_STANDARD,
+        environment: Vec::new(),
     }
 }
 

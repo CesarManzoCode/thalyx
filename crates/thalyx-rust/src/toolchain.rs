@@ -419,9 +419,15 @@ mod tests {
         let found = look_for(
             "rust-analyzer",
             "THALYX_TEST_NOTHING_NAMES_THIS",
-            vec![PathBuf::from("/nonexistent/one"), PathBuf::from("/none/two")],
+            vec![
+                PathBuf::from("/nonexistent/one"),
+                PathBuf::from("/none/two"),
+            ],
         );
-        let why = found.why_not("rust-analyzer", "Add it with: rustup component add rust-analyzer");
+        let why = found.why_not(
+            "rust-analyzer",
+            "Add it with: rustup component add rust-analyzer",
+        );
         assert!(why.contains("/nonexistent/one/rust-analyzer"), "{why}");
         assert!(why.contains("/none/two/rust-analyzer"), "{why}");
         assert!(why.contains("rustup component add"), "{why}");

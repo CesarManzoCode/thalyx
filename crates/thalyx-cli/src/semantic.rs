@@ -194,6 +194,13 @@ struct Entry {
     package: Option<String>,
     file: String,
     line: u32,
+    /// One-based, as every other coordinate on this surface is.
+    ///
+    /// Carried so the entry can name *itself* precisely: `file:line:column` is
+    /// what `renombrar` takes and what resolves an ambiguity, and an answer
+    /// that described three candidates without saying how to ask about one of
+    /// them would be an answer a caller cannot act on.
+    column: u32,
     through: u32,
     signature: Option<String>,
     uses: usize,
@@ -215,6 +222,10 @@ impl Entry {
         }
         fields.insert("file".into(), json!(self.file));
         fields.insert("line".into(), json!(self.line));
+        fields.insert(
+            "at".into(),
+            json!(format!("{}:{}:{}", self.file, self.line, self.column)),
+        );
         fields.insert(
             "lines".into(),
             json!(self.through.saturating_sub(self.line) + 1),
@@ -316,7 +327,13 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         query: query.clone(),
         uses,
     };
-    let (entries, source, fresh, why) = gather(&asked);
+    let Answered {
+        entries,
+        source,
+        fresh,
+        resolution,
+        why,
+    } = gather(&asked);
 
     let (returned, used, omitted) = fit(&entries, budget);
 
@@ -351,11 +368,20 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 ("held_bytes", json!(held)),
                 ("source", json!(source)),
                 ("fresh", json!(fresh)),
+                // The field a program branches on. Always present, on every
+                // answer, whichever provider gave it — a field that only turns
+                // up on the ambiguous day is a field nobody handles on the
+                // ambiguous day.
+                ("resolution", json!(resolution)),
                 ("detail", json!(why)),
             ],
         ));
     } else {
         println!();
+        if resolution == "ambiguous" {
+            println!("  {why}");
+            println!();
+        }
         if returned.is_empty() {
             println!("  nothing named `{query}` — {why}");
         }
@@ -415,24 +441,51 @@ struct Asked {
     uses: usize,
 }
 
+/// What a query came back as.
+///
+/// `resolution` is the field this whole file turns on: `one` means a compiler
+/// frontend resolved the name to exactly one declaration, and **`ambiguous`
+/// means it resolved to several and this machine refused to pick**. A surface
+/// that answered a three-`Config` workspace with one `Config` and no word
+/// about the other two would be handing a model a confident wrong answer, and
+/// the thing that acts on it is a rename.
+struct Answered {
+    entries: Vec<Entry>,
+    source: &'static str,
+    fresh: &'static str,
+    resolution: &'static str,
+    why: String,
+}
+
 /// The entries for a query, from the compiler when there is one and from the
 /// index when there is not.
-fn gather(asked: &Asked) -> (Vec<Entry>, &'static str, &'static str, String) {
+fn gather(asked: &Asked) -> Answered {
     match from_analyzer(asked) {
-        Ok(Some((entries, fresh))) => (entries, "rust-analyzer", fresh, String::new()),
+        Ok(Some(answered)) => answered,
         // Named rather than swallowed. A model told `source: index` knows the
         // answer was matched and not resolved; one told nothing would act on a
         // scan believing it had a compiler.
         Ok(None) | Err(_) => {
             let (entries, fresh, why) = from_index(asked);
-            (entries, "index", fresh, why)
+            Answered {
+                entries,
+                source: "index",
+                fresh,
+                // Never `one` and never `ambiguous`. The index matches text; it
+                // cannot say a name resolves to one thing, so it must not be
+                // able to say a name resolves to several either — an ambiguity
+                // is a claim, and only the thing that can resolve names is
+                // entitled to make it.
+                resolution: "matched",
+                why,
+            }
         }
     }
 }
 
-/// Entries and the standing of the answer they came from, or `None` when this
-/// provider has nothing to say about the query at all.
-type Resolved = Option<(Vec<Entry>, &'static str)>;
+/// An answer, or `None` when this provider has nothing to say about the query
+/// at all.
+type Resolved = Option<Answered>;
 
 fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> {
     with_provider(&asked.store_root, &asked.tree, |provider| {
@@ -458,6 +511,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                     package: package.clone(),
                     file: item.at.path.clone(),
                     line: item.at.line,
+                    column: item.at.column,
                     through: item.through,
                     signature: None,
                     uses: 0,
@@ -466,7 +520,16 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                 })
                 .collect();
             remember_spans(provider, &entries);
-            return Ok(Some((entries, "current")));
+            return Ok(Some(Answered {
+                entries,
+                source: "rust-analyzer",
+                fresh: "current",
+                // A file's map is a list of everything in it and never a claim
+                // about which one a name means. There is no question here to
+                // be ambiguous about.
+                resolution: "file",
+                why: String::new(),
+            }));
         }
 
         // `Store::lock` — the last segment is the name and the first is the
@@ -477,9 +540,54 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             .next()
             .unwrap_or(&asked.query)
             .to_string();
-        let (known, standing, _) = provider.known(&name)?;
-        let Some(known) = known else {
-            return Ok(Some((Vec::new(), standing_word(&standing))));
+        let (resolution, standing, _) = provider.known(&name)?;
+        let fresh = standing_word(&standing);
+
+        if resolution.is_ambiguous() {
+            // **The refusal, as an answer rather than an error.** Every
+            // candidate comes back described and handled, so the caller —
+            // model or program — can choose one and ask again with
+            // `file:line:column`, which names exactly one declaration.
+            //
+            // Nothing here is ranked. A "most likely" candidate at the top of
+            // this list would be the heuristic guess this whole shape exists
+            // to remove, wearing a disclaimer.
+            let entries: Vec<Entry> = resolution
+                .candidates()
+                .iter()
+                .map(|candidate| Entry {
+                    handle: handle_for(&candidate.at.path, candidate.at.line, candidate.at.line),
+                    name: candidate.name.clone(),
+                    kind: candidate.kind.clone(),
+                    package: candidate.package.clone(),
+                    file: candidate.at.path.clone(),
+                    line: candidate.at.line,
+                    column: candidate.at.column,
+                    through: candidate.at.line,
+                    signature: candidate.signature.clone(),
+                    uses: 0,
+                    used_at: Vec::new(),
+                    source: "rust-analyzer",
+                })
+                .collect();
+            remember_spans(provider, &entries);
+            return Ok(Some(Answered {
+                why: resolution.ambiguity(&name),
+                entries,
+                source: "rust-analyzer",
+                fresh,
+                resolution: "ambiguous",
+            }));
+        }
+
+        let Some(known) = resolution.only() else {
+            return Ok(Some(Answered {
+                entries: Vec::new(),
+                source: "rust-analyzer",
+                fresh,
+                resolution: "nothing",
+                why: format!("nothing in this workspace declares `{name}`"),
+            }));
         };
         let at = known.defined.first().cloned().unwrap_or(At {
             path: String::new(),
@@ -503,6 +611,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             package: known.package.clone(),
             file: at.path.clone(),
             line: at.line,
+            column: at.column,
             through,
             signature: known.signature.clone(),
             uses: known.used.len(),
@@ -515,7 +624,13 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             source: "rust-analyzer",
         }];
         remember_spans(provider, &entries);
-        Ok(Some((entries, standing_word(&standing))))
+        Ok(Some(Answered {
+            entries,
+            source: "rust-analyzer",
+            fresh,
+            resolution: "one",
+            why: String::new(),
+        }))
     })
 }
 
@@ -579,6 +694,11 @@ fn from_index(asked: &Asked) -> (Vec<Entry>, &'static str, String) {
             package: None,
             file: definition.path.clone(),
             line: definition.line as u32,
+            // The index knows which line and not which column: it matched a
+            // name in a file. Said as 1 rather than left out, because an
+            // absent column would make `at` two different shapes depending on
+            // which provider answered.
+            column: 1,
             through: definition.line as u32,
             signature: None,
             uses,
@@ -749,20 +869,41 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
 
     let tree = tree_of(here);
     let resolved = with_provider(store_root, &tree, |provider| {
-        let (file, line, column) = match place(provider, &tree, &anchor) {
-            Ok(place) => place,
-            Err(why) => return Err(why),
-        };
+        let (file, line, column) = place(provider, &tree, &anchor)?;
         provider
             .rename_texts(&file, line, column, &to)
             .map(|texts| (texts, file, line, column))
-            .map_err(|error| error.to_string())
+            .map_err(|error| Unplaced::of("unresolved", error.to_string()))
     });
 
     let (texts, file, line, column) = match resolved {
         Ok(all) => all,
         Err(why) => {
-            declined(face, RENAME_OP, "unresolved", &why);
+            // **Nothing has been written at this point, and that is the whole
+            // claim.** `place` runs before `rename_texts`, `rename_texts`
+            // writes nothing anywhere, and the loop that opens files is below
+            // both. A rename that met three candidates leaves the workspace
+            // byte for byte what it was, and says which three.
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused_with(
+                    RENAME_OP,
+                    why.word,
+                    if why.word == "ambiguous" {
+                        "name_one_candidate"
+                    } else {
+                        "ask_context"
+                    },
+                    &why.message,
+                    vec![
+                        ("from", json!(anchor)),
+                        ("to", json!(to)),
+                        ("candidates", json!(why.candidates)),
+                        ("files_changed", json!(0)),
+                    ],
+                ));
+            } else {
+                println!("\n  {}\n", why.message);
+            }
             return Ok(());
         }
     };
@@ -849,13 +990,37 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
     Ok(())
 }
 
+/// Why a name could not be turned into a place.
+///
+/// A word and not only a sentence, because the caller that matters most here
+/// is a **program**: `renombrar` inside `hacer` is a step whose answer another
+/// step branches on, and "ambiguous, here are three handles" and "there is no
+/// such name" call for opposite next moves. A program handed one string for
+/// both would have to match on prose.
+pub struct Unplaced {
+    pub word: &'static str,
+    pub message: String,
+    /// The candidates, when the reason was that there were several.
+    pub candidates: Vec<Value>,
+}
+
+impl Unplaced {
+    fn of(word: &'static str, message: String) -> Self {
+        Self {
+            word,
+            message,
+            candidates: Vec::new(),
+        }
+    }
+}
+
 /// Where the thing to rename is: a position if the caller gave one, and
 /// otherwise the declaration of the name.
 fn place(
     provider: &mut Provider,
     tree: &Path,
     anchor: &str,
-) -> Result<(PathBuf, u32, u32), String> {
+) -> Result<(PathBuf, u32, u32), Unplaced> {
     let parts: Vec<&str> = anchor.rsplitn(3, ':').collect();
     if parts.len() == 3
         && let (Ok(column), Ok(line)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
@@ -864,21 +1029,73 @@ fn place(
         if file.is_file() {
             return Ok((file, line, column));
         }
-        return Err(format!("{} is not a file of this workspace", parts[2]));
+        return Err(Unplaced::of(
+            "absent",
+            format!("{} is not a file of this workspace", parts[2]),
+        ));
     }
 
-    let (known, standing, _) = provider.known(anchor).map_err(|error| error.to_string())?;
-    let known = known.ok_or_else(|| format!("nothing in this workspace declares `{anchor}`"))?;
+    let (resolution, standing, _) = provider
+        .known(anchor)
+        .map_err(|error| Unplaced::of("unresolved", error.to_string()))?;
+
+    // **Refused before anything is written, and refused by name.**
+    //
+    // The alternative was already in this file: `ask_about` took the first
+    // exact match rust-analyzer listed. A workspace with `crate_a::Config`,
+    // `crate_b::Config` and `crate_c::Config` in it would have had one of the
+    // three renamed across every file that uses it, chosen by index order, and
+    // the answer would have said `source: rust-analyzer` — which is true and
+    // is the reason it would have been believed.
+    //
+    // There is no heuristic here on purpose. A mutation is exactly the place
+    // where "probably this one" is worth less than nothing: a wrong guess
+    // costs a rollback and a lost round trip, and a *right* guess teaches the
+    // caller that the guessing is reliable.
+    if resolution.is_ambiguous() {
+        return Err(Unplaced {
+            word: "ambiguous",
+            message: resolution.ambiguity(anchor),
+            candidates: resolution
+                .candidates()
+                .iter()
+                .map(|candidate| {
+                    json!({
+                        "name": candidate.name,
+                        "kind": candidate.kind,
+                        "crate": candidate.package,
+                        "container": candidate.container,
+                        "at": candidate.handle,
+                        "file": candidate.at.path,
+                        "line": candidate.at.line,
+                        "signature": candidate.signature,
+                    })
+                })
+                .collect(),
+        });
+    }
+
+    let known = resolution.only().ok_or_else(|| {
+        Unplaced::of(
+            "unresolved",
+            format!("nothing in this workspace declares `{anchor}`"),
+        )
+    })?;
     if matches!(standing, Standing::Stale { .. }) {
         // Cannot happen through `known`, which never returns a stale answer;
         // written so that a future path that could is refused rather than
         // renaming against a tree that has moved.
-        return Err(format!("what is known about `{anchor}` is out of date"));
+        return Err(Unplaced::of(
+            "stale",
+            format!("what is known about `{anchor}` is out of date"),
+        ));
     }
-    let at = known
-        .defined
-        .first()
-        .ok_or_else(|| format!("`{anchor}` is known but has no declaration"))?;
+    let at = known.defined.first().ok_or_else(|| {
+        Unplaced::of(
+            "unresolved",
+            format!("`{anchor}` is known but has no declaration"),
+        )
+    })?;
     Ok((tree.join(&at.path), at.line, at.column))
 }
 
@@ -995,6 +1212,7 @@ mod tests {
             package: Some("a-crate".to_string()),
             file: "src/lib.rs".to_string(),
             line: 1,
+            column: 8,
             through: lines,
             signature: Some(format!("pub fn {name}() -> Result<()>")),
             uses: 17,

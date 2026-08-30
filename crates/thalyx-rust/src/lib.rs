@@ -33,7 +33,7 @@ pub mod metadata;
 pub mod toolchain;
 
 pub use affected::{Affected, affected};
-pub use analyzer::{Analyzer, FileEdit, Ready, Spot};
+pub use analyzer::{Analyzer, FileEdit, Ready, Spot, Symbol};
 pub use metadata::{Package, Workspace};
 
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,15 @@ pub type Result<T> = std::result::Result<T, RustError>;
 /// the key: a kind spelled two ways is two caches, and the second one is always
 /// the empty one somebody is confused by.
 pub const KIND_WORKSPACE: &str = "rust.workspace";
-pub const KIND_SYMBOL: &str = "rust.symbol";
+/// What is remembered about one name.
+///
+/// **`.2` and not `.1`.** What is stored under this key changed shape on
+/// 2026-08-30 — from "the one declaration, or nothing" to "nothing, one, or
+/// several" — and a store written by the older shape would deserialise as a
+/// miss on every question, forever, in silence. A new key throws the old
+/// entries away once instead of tripping over them every time. Rule 9: the
+/// cautious answer.
+pub const KIND_SYMBOL: &str = "rust.symbol.2";
 pub const KIND_IDENTITY: &str = "rust.identity";
 pub const KIND_OUTLINE: &str = "rust.outline";
 pub const KIND_VALIDATION: &str = "rust.validation";
@@ -129,6 +137,101 @@ pub struct Known {
     /// Every use, the declaration included. Kept whole in the machine; the
     /// surface returns a count and a window of it.
     pub used: Vec<At>,
+}
+
+/// One of the declarations a name could mean, when there is more than one.
+///
+/// Enough to choose between them without opening a file — which package, which
+/// module, what kind of thing, what it looks like — and a handle that names
+/// exactly this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub name: String,
+    pub kind: String,
+    /// The crate it is declared in, when it is inside one.
+    pub package: Option<String>,
+    /// The enclosing name the server gave, when it gave one.
+    pub container: Option<String>,
+    pub at: At,
+    pub signature: Option<String>,
+    /// The identity that resolves this one and no other: `path:line:column`.
+    ///
+    /// **Deliberately the shape `renombrar` and `contexto` already take.** A
+    /// new kind of handle would be a second identity for a place, and the
+    /// caller resolving an ambiguity would have to learn one thing to ask the
+    /// question and another to answer it.
+    pub handle: String,
+}
+
+/// What a name turns out to be.
+///
+/// Three answers and not two. Until 2026-08-30 this was `Option<Known>`, and
+/// `ask_about` produced it with `candidates.into_iter().find(|s| s.name ==
+/// name)` — so a workspace with `crate_a::Config`, `crate_b::Config` and
+/// `crate_c::Config` in it got whichever one rust-analyzer happened to list
+/// first, described as *the* `Config`, with nothing anywhere saying a choice
+/// had been made.
+///
+/// That is the worst shape a wrong answer can have: it is confident, it is
+/// well formed, and the caller that acts on it is a rename. So the several
+/// case is a value the caller has to handle, and a mutation against it refuses
+/// before it writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resolution", rename_all = "snake_case")]
+pub enum Resolution {
+    /// Nothing in this workspace declares it.
+    Nothing,
+    /// Exactly one declaration, and everything known about it.
+    One { known: Box<Known> },
+    /// Several, and choosing between them is not this machine's to do.
+    Several { candidates: Vec<Candidate> },
+}
+
+impl Resolution {
+    /// The one declaration, when there is exactly one.
+    ///
+    /// Named `only` rather than `known` so that a caller writing it is
+    /// visibly asserting the thing that might not be true.
+    pub fn only(&self) -> Option<&Known> {
+        match self {
+            Resolution::One { known } => Some(known),
+            _ => None,
+        }
+    }
+
+    /// The candidates, when there is more than one.
+    pub fn candidates(&self) -> &[Candidate] {
+        match self {
+            Resolution::Several { candidates } => candidates,
+            _ => &[],
+        }
+    }
+
+    pub fn is_ambiguous(&self) -> bool {
+        matches!(self, Resolution::Several { .. })
+    }
+
+    /// One sentence naming what could not be chosen between.
+    pub fn ambiguity(&self, name: &str) -> String {
+        let listed: Vec<String> = self
+            .candidates()
+            .iter()
+            .map(|candidate| {
+                let package = candidate.package.as_deref().unwrap_or("this workspace");
+                format!(
+                    "{} {} in {package} ({})",
+                    candidate.kind, candidate.name, candidate.handle
+                )
+            })
+            .collect();
+        format!(
+            "`{name}` names {} declarations here and this machine will not choose \
+             between them: {}. Ask again with one of the handles — \
+             `path:line:column` — which names exactly one",
+            listed.len(),
+            listed.join("; ")
+        )
+    }
 }
 
 /// What a query cost and where the answer came from.
@@ -297,33 +400,34 @@ impl Provider {
     ///
     /// Returns the answer **and its standing**, so a caller can never end up
     /// relaying a location from before four files moved without saying so.
-    pub fn known(&mut self, name: &str) -> Result<(Option<Known>, Standing, String)> {
+    pub fn known(&mut self, name: &str) -> Result<(Resolution, Standing, String)> {
         self.tally.queries += 1;
         let witness = self.source_witness()?;
         if let Some(held) = self.knowledge.recall_current(KIND_SYMBOL, name, &witness)?
-            && let Ok(known) = serde_json::from_str::<Option<Known>>(&held.value)
+            && let Ok(resolution) = serde_json::from_str::<Resolution>(&held.value)
         {
             self.tally.hits += 1;
-            return Ok((known, Standing::Current, held.source));
+            return Ok((resolution, Standing::Current, held.source));
         }
 
         self.tally.misses += 1;
         let name = name.to_string();
-        let (known, identity) = self.steady(
+        let (resolution, identity) = self.steady(
             |provider| provider.source_witness(),
             |provider| provider.ask_about(&name),
         )?;
 
-        let value = serde_json::to_string(&known).unwrap_or_else(|_| "null".into());
+        let value = serde_json::to_string(&resolution)
+            .unwrap_or_else(|_| r#"{"resolution":"nothing"}"#.into());
         match identity {
             Some(identity) => {
                 self.knowledge
                     .remember(KIND_SYMBOL, &name, &identity, "rust-analyzer", &value)?;
-                Ok((known, Standing::Current, "rust-analyzer".to_string()))
+                Ok((resolution, Standing::Current, "rust-analyzer".to_string()))
             }
             // Nothing is remembered, and the caller is told the answer has no
             // standing rather than being handed one it can rely on.
-            None => Ok((known, Standing::Unknown, "rust-analyzer".to_string())),
+            None => Ok((resolution, Standing::Unknown, "rust-analyzer".to_string())),
         }
     }
 
@@ -332,28 +436,94 @@ impl Provider {
     /// One place, so that the definition, the signature and the uses are always
     /// about the same declaration. Three call sites picking their own would be
     /// three chances to describe one symbol and cite another.
-    fn ask_about(&mut self, name: &str) -> Result<Option<Known>> {
+    fn ask_about(&mut self, name: &str) -> Result<Resolution> {
         let root = self.root.clone();
         let analyzer = self.analyzer()?;
-        let candidates = analyzer.symbols_named(name)?;
-        let Some(declaration) = candidates.into_iter().find(|symbol| symbol.name == name) else {
-            return Ok(None);
-        };
-        let at = declaration.at.clone();
-        let signature = analyzer.signature(&at.path, at.line, at.character)?;
-        let used = analyzer.references(&at.path, at.line, at.character)?;
-        let package = self
-            .workspace()?
-            .package_of(&at.path)
-            .map(|package| package.name.clone());
-        Ok(Some(Known {
-            name: name.to_string(),
-            kind: declaration.kind.to_string(),
-            package,
-            defined: vec![At::of(&at, &root)],
-            signature,
-            used: used.iter().map(|spot| At::of(spot, &root)).collect(),
-        }))
+        let mut exact: Vec<Symbol> = analyzer
+            .symbols_named(name)?
+            .into_iter()
+            .filter(|symbol| symbol.name == name)
+            .collect();
+
+        // Two entries at one place are one declaration. rust-analyzer answers a
+        // workspace-symbol query out of several indexes and the same item can
+        // come back twice; counting that as an ambiguity would refuse a rename
+        // over a workspace that has exactly one `Config` in it, which is a
+        // false alarm nobody can act on. Sorted first so the order a caller
+        // sees is the same on every run.
+        exact.sort_by(|left, right| {
+            (&left.at.path, left.at.line, left.at.character).cmp(&(
+                &right.at.path,
+                right.at.line,
+                right.at.character,
+            ))
+        });
+        exact.dedup_by(|left, right| {
+            left.at.path == right.at.path
+                && left.at.line == right.at.line
+                && left.at.character == right.at.character
+        });
+
+        match exact.len() {
+            0 => Ok(Resolution::Nothing),
+            1 => {
+                let declaration = exact.remove(0);
+                let at = declaration.at.clone();
+                let signature = analyzer.signature(&at.path, at.line, at.character)?;
+                let used = analyzer.references(&at.path, at.line, at.character)?;
+                let package = self
+                    .workspace()?
+                    .package_of(&at.path)
+                    .map(|package| package.name.clone());
+                Ok(Resolution::One {
+                    known: Box::new(Known {
+                        name: name.to_string(),
+                        kind: declaration.kind.to_string(),
+                        package,
+                        defined: vec![At::of(&at, &root)],
+                        signature,
+                        used: used.iter().map(|spot| At::of(spot, &root)).collect(),
+                    }),
+                })
+            }
+            // Several. The signature of each is asked for and the *references*
+            // of none are: a caller looking at this has not decided which
+            // symbol it means yet, and asking rust-analyzer for the use sites
+            // of three declarations to answer a question about which one is
+            // meant is paying three times for an answer that is thrown away.
+            _ => {
+                // Everything the server has to be asked, asked while the
+                // server is borrowed; the workspace lookup happens after,
+                // because it borrows `self` too and a loop that alternated
+                // between them would not compile without releasing one of them
+                // every time round.
+                let mut described = Vec::with_capacity(exact.len());
+                for declaration in exact {
+                    let at = declaration.at.clone();
+                    let signature = analyzer.signature(&at.path, at.line, at.character)?;
+                    described.push((declaration, signature));
+                }
+
+                let mut candidates = Vec::with_capacity(described.len());
+                for (declaration, signature) in described {
+                    let package = self
+                        .workspace()?
+                        .package_of(&declaration.at.path)
+                        .map(|package| package.name.clone());
+                    let placed = At::of(&declaration.at, &root);
+                    candidates.push(Candidate {
+                        name: declaration.name.clone(),
+                        kind: declaration.kind.to_string(),
+                        package,
+                        container: declaration.container.clone(),
+                        handle: format!("{}:{}:{}", placed.path, placed.line, placed.column),
+                        at: placed,
+                        signature,
+                    });
+                }
+                Ok(Resolution::Several { candidates })
+            }
+        }
     }
 
     /// What the name written at this exact place *is*.
