@@ -165,9 +165,17 @@ pub fn resolve(name: &str) -> Result<Profile> {
 ///
 /// Everything else is the module's: its own user, its own root filesystem
 /// holding only what was granted, its own pid namespace — so killing the one
-/// process Thalyx holds kills every compiler underneath it — its own network
-/// namespace, which is what "network denied by default" means here, and the
-/// same seccomp filter.
+/// process Thalyx holds kills every compiler underneath it — and its own
+/// network namespace, which is what "network denied by default" means here.
+///
+/// - **The filter.** Two numbers changed was the whole difference until
+///   2026-08-30, when a kernel that actually denies was pointed at this profile
+///   for the first time and Cargo died on `SIGSYS`. A compiler tree makes two
+///   calls an ordinary module does not — see
+///   [`seccomp::semantic_provider`](crate::seccomp::semantic_provider), where
+///   both are named and neither is `socket`. They are added here and not to
+///   `module_standard`, because an ordinary module has no compiler under it and
+///   a permission nobody needs is a permission nobody is watching.
 pub fn semantic_provider() -> Profile {
     Profile {
         name: SEMANTIC_PROVIDER,
@@ -176,6 +184,7 @@ pub fn semantic_provider() -> Profile {
             pids_max: Some(2048),
             cpu_max: None,
         },
+        seccomp: Some(crate::seccomp::semantic_provider()),
         hostname: "thalyx-semantics",
         ..module_standard()
     }

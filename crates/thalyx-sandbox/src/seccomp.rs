@@ -161,6 +161,32 @@ impl Guard {
             permitted,
         }
     }
+
+    /// `socketpair`, for the one domain that cannot reach off this machine.
+    ///
+    /// A `socketpair` is two connected descriptors and nothing else — there is
+    /// no address, no route, nobody to accept it. But the syscall takes a
+    /// domain, and a filter that allowed it outright would be allowing whatever
+    /// domain a future kernel decides to implement `socketpair` for. `AF_UNIX`
+    /// is the one this needs and the one that is provably local, so it is the
+    /// only one on the list, for the same reason the scheduling guard names
+    /// three policies instead of excluding three.
+    ///
+    /// It is **not** in `module_standard`, and the asymmetry with `socket` is
+    /// the point: `socket` stays denied there and here, so nothing under either
+    /// filter can construct a descriptor that reaches the network. This one
+    /// exists because a Rust program that spawns a child process makes it —
+    /// `std::process` reports the child's `execve` failure back over a
+    /// `SOCK_SEQPACKET` pair — and a compiler tree is nothing but spawned
+    /// children.
+    pub fn local_socket_pairs() -> Self {
+        // `socketpair(domain, type, protocol, sv)`: the domain is the first.
+        Guard {
+            syscall: libc::SYS_socketpair,
+            argument: 0,
+            permitted: BTreeSet::from([libc::AF_UNIX as u32]),
+        }
+    }
 }
 
 /// The syscalls a confined module may make.
@@ -620,6 +646,19 @@ pub fn module_standard() -> Allowlist {
             libc::SYS_pause,
             // Synchronisation and time
             libc::SYS_futex,
+            // **Issued by the kernel, not by the program.** When a signal
+            // interrupts a blocking call the kernel rewrites the register to
+            // `restart_syscall` and re-enters — and seccomp filters that
+            // re-entry like any other call. So a filter without it kills any
+            // module that happens to be inside `futex`, `poll` or `wait4` when
+            // a signal arrives, at a moment nothing in the module chose. That
+            // is how `cargo` died on 2026-08-30: a `SIGCHLD` from `rustc`
+            // landed on a thread waiting in `futex`, and the resume was denied.
+            //
+            // It permits nothing new. The only call it can resume is one that
+            // was already entered, and a call is only entered if this filter
+            // let it through.
+            libc::SYS_restart_syscall,
             libc::SYS_nanosleep,
             libc::SYS_clock_nanosleep,
             libc::SYS_clock_gettime,
@@ -634,6 +673,61 @@ pub fn module_standard() -> Allowlist {
             libc::SYS_prlimit64,
             libc::SYS_getrusage,
         ])
+}
+
+/// The syscalls a semantic provider needs that an ordinary module does not.
+///
+/// `vault/03-Primitivas/Semantica-Compilada.md`, and measured rather than
+/// guessed — `dev/foreign-agent-needs.sh` traced a real `cargo check` against
+/// `module_standard` and named exactly two calls it makes that the filter does
+/// not permit. Both were found by running the thing, which is rule 1: before
+/// this, `cargo` under the module filter died on `SIGSYS` and `verify.sh`
+/// reported it as `cargo exited 159` — a number that says a program was killed
+/// and not which call killed it.
+///
+/// - **`flock`.** Cargo takes an advisory lock on `Cargo.lock`, on
+///   `$CARGO_HOME/.package-cache` and on the build directory, twenty times in
+///   the smallest possible build. It is the *first* of the two it reaches, so
+///   it is the one that was killing the process. A lock on a descriptor the
+///   process already holds reaches nothing it could not already read or write:
+///   the grant is what decided that, and this call cannot widen it.
+/// - **`linkat`.** `rustc` puts its output in place by hard-linking it —
+///   `target/debug/deps/lib….rmeta` gets a second name rather than a second
+///   copy — and this is the call that was killing `rustc` once Cargo could get
+///   far enough to start one. A hard link can only be made inside a directory
+///   the process can already write, so it reaches nothing the grant did not
+///   already hand over.
+/// - **`inotify_init1`, `inotify_add_watch`, `inotify_rm_watch`.**
+///   rust-analyzer starts a `VfsLoader` thread the moment it answers
+///   `initialize`, and that thread's first act is to open an inotify
+///   descriptor. It is a *thread* of the server, and the filter's action is
+///   `KILL_PROCESS` — so the whole language server died, and what the surface
+///   above it reported was `` `initialize`: the server stopped``, a sentence
+///   about a protocol rather than about a syscall. An inotify watch can only
+///   be placed on a path the process can already open, so the rootfs grant is
+///   still what bounds it; `inotify_init` — the legacy call with no flags,
+///   which nothing modern makes — is deliberately not here.
+/// - **`socketpair`, guarded to `AF_UNIX`.** Rust's `std::process` hands the
+///   child's `execve` errno — and its pidfd — back to the parent over a
+///   `SOCK_SEQPACKET` pair, on the fork path it takes whenever `posix_spawn`
+///   cannot serve the request. Cargo spawns `rustc` that way, and
+///   rust-analyzer spawns Cargo. See [`Guard::local_socket_pairs`] for why it
+///   is a guard and not a line.
+///
+/// Nothing else. In particular `socket`, `connect`, `bind`, `ptrace`, `mount`
+/// and `bpf` are as absent here as they are from `module_standard`: a compiler
+/// tree is confined *more* than an ordinary module in every dimension that
+/// costs — its own root filesystem holding only the granted tree, its own pid
+/// namespace, its own empty network namespace — and the only thing it gets more
+/// of is two calls and two numbers.
+pub fn semantic_provider() -> Allowlist {
+    module_standard()
+        .allow(libc::SYS_flock)
+        .allow(libc::SYS_linkat)
+        .allow(libc::SYS_inotify_init1)
+        .allow(libc::SYS_inotify_add_watch)
+        .allow(libc::SYS_inotify_rm_watch)
+        .guard(Guard::local_socket_pairs())
 }
 
 /// The syscalls a module needs to *use* an outbound network grant.
@@ -784,6 +878,123 @@ mod tests {
                 "syscall {syscall} is on the list but the filter denies it"
             );
         }
+    }
+
+    #[test]
+    fn a_module_may_resume_a_call_a_signal_interrupted() {
+        // `restart_syscall` is issued by the kernel, not by the program: when a
+        // signal interrupts a blocking call the register is rewritten and the
+        // syscall re-entered, and seccomp filters the re-entry. So a filter
+        // without it kills any module that is inside `futex`, `poll` or
+        // `nanosleep` when a signal lands — at a moment nothing in the module
+        // chose, which is the worst possible shape for a denial.
+        //
+        // This is asserted against the compiled program rather than by running
+        // something, and that is a real limit worth naming: producing a
+        // restarted syscall on purpose needs a signal handler with `SA_RESTART`,
+        // and `unsafe` lives in `thalyx-syscall`. What proved it is the kernel's
+        // own record of the kill — `comm="cargo" ... syscall=219` — and stage 59
+        // of `dev/verify.sh` is where it stays proven by a real Cargo.
+        let program = module_standard().compile().unwrap();
+        assert_eq!(
+            evaluate(&program, AUDIT_ARCH_X86_64, libc::SYS_restart_syscall),
+            SECCOMP_RET_ALLOW
+        );
+    }
+
+    #[test]
+    fn a_compiler_tree_may_watch_the_tree_it_was_given_and_a_module_may_not() {
+        // rust-analyzer's `VfsLoader` thread opens an inotify descriptor as
+        // soon as the server answers `initialize`, and the filter's action is
+        // `KILL_PROCESS` — so the whole language server went down and the
+        // surface above it reported that the server had stopped. `comm="VfsLoader"
+        // ... syscall=294` in the kernel's audit log is what named it.
+        //
+        // Both columns, for the same reason as everywhere else here: without
+        // the second, a filter that permitted everything would pass this.
+        let provider = semantic_provider().compile().unwrap();
+        let module = module_standard().compile().unwrap();
+        for syscall in [
+            libc::SYS_inotify_init1,
+            libc::SYS_inotify_add_watch,
+            libc::SYS_inotify_rm_watch,
+        ] {
+            assert_eq!(
+                evaluate(&provider, AUDIT_ARCH_X86_64, syscall),
+                SECCOMP_RET_ALLOW,
+                "a semantic provider cannot watch syscall {syscall}"
+            );
+            assert_eq!(
+                evaluate(&module, AUDIT_ARCH_X86_64, syscall),
+                SECCOMP_RET_KILL_PROCESS,
+                "an ordinary module was given syscall {syscall}, which nothing asked for"
+            );
+        }
+    }
+
+    #[test]
+    fn a_socket_pair_is_permitted_for_one_domain_and_no_other() {
+        // The guard, read the way the kernel reads it — including the top half
+        // of the register, which is the half a caller chooses and a guard that
+        // only ever saw 32-bit values would never look at.
+        let program = semantic_provider().compile().unwrap();
+        let call = |domain: u64| {
+            evaluate_call(
+                &program,
+                AUDIT_ARCH_X86_64,
+                libc::SYS_socketpair,
+                [domain, 0, 0, 0, 0, 0],
+            )
+        };
+        assert_eq!(call(libc::AF_UNIX as u64), SECCOMP_RET_ALLOW);
+        for refused in [
+            libc::AF_INET as u64,
+            libc::AF_INET6 as u64,
+            libc::AF_NETLINK as u64,
+            // The same value in the low half, with a top half the guard would
+            // miss if it read only the word it was shown.
+            (1u64 << 32) | libc::AF_UNIX as u64,
+        ] {
+            assert_eq!(
+                call(refused),
+                SECCOMP_RET_KILL_PROCESS,
+                "socketpair was permitted for domain {refused}"
+            );
+        }
+        // And the plain syscall stays absent on both, which is the decree the
+        // guard exists to keep: no module and no provider constructs a socket.
+        for allowlist in [semantic_provider(), module_standard()] {
+            assert_eq!(
+                evaluate(
+                    &allowlist.compile().unwrap(),
+                    AUDIT_ARCH_X86_64,
+                    libc::SYS_socket
+                ),
+                SECCOMP_RET_KILL_PROCESS
+            );
+        }
+    }
+
+    #[test]
+    fn the_provider_adds_to_the_module_filter_and_takes_nothing_away() {
+        // The relationship the whole arrangement rests on. If the provider's
+        // list were ever written out by hand instead of built from the
+        // module's, a syscall dropped from it would look like a tighter filter
+        // and be a different one.
+        let module = module_standard();
+        let provider = semantic_provider();
+        for syscall in module.syscalls() {
+            assert!(
+                provider.contains(syscall),
+                "syscall {syscall} is in module_standard and not in semantic_provider"
+            );
+        }
+        // Five plain allowances, and the socket pair is not among them: a
+        // guarded syscall is not in `len()` and reads as absent from
+        // `contains`, which is the cautious way round and the reason it gets
+        // its own assertion rather than a number.
+        assert_eq!(provider.len(), module.len() + 5);
+        assert_eq!(provider.guards().count(), module.guards().count() + 1);
     }
 
     #[test]
