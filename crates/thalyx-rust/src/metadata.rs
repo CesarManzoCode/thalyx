@@ -198,10 +198,16 @@ impl Workspace {
     }
 }
 
-/// The `cargo` to run: whatever `CARGO` names, which is what Cargo sets for
-/// anything it launches, and the plain name otherwise.
+/// The `cargo` to run.
+///
+/// `CARGO` when this process was started by one, and otherwise the single
+/// discovery in [`crate::toolchain`] — which is the only place that knows how
+/// to find a toolchain installed by the person who typed `sudo`.
 pub fn cargo() -> PathBuf {
+    // `CARGO` first, because when this process *is* a `cargo` subcommand or a
+    // build script Cargo has already said which one it is, and disagreeing
+    // with it would run a second toolchain inside the first.
     std::env::var_os("CARGO")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("cargo"))
+        .unwrap_or_else(crate::toolchain::cargo_command)
 }

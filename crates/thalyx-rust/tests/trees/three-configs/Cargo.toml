@@ -1,0 +1,10 @@
+# Three crates, one name.
+#
+# The fixture for the ambiguity contract, and it is a real Cargo workspace for
+# the same reason `chain` and `alias` are: rule 8 says a fake must model the
+# property under test, and a directory of `.rs` files that Cargo cannot
+# describe is not a small workspace, it is a different system. rust-analyzer
+# will not resolve names in a tree it cannot get metadata for.
+[workspace]
+resolver = "2"
+members = ["alpha", "beta", "gamma"]

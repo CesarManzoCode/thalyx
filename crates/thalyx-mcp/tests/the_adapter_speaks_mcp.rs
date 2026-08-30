@@ -43,7 +43,17 @@ fn thalyx_binary() -> std::path::PathBuf {
     here.join("thalyx")
 }
 
+/// The whole stack, with every tool offered.
+///
+/// `legacy` and not the default, because most of what these tests exercise is
+/// the *adapter* — framing, refusals, composition — and those are questions
+/// about a tool call rather than about which tools are advertised. Which tools
+/// are advertised has its own test below, and it uses the default.
 fn start() -> Stack {
+    started_with("legacy")
+}
+
+fn started_with(surface: &str) -> Stack {
     let home = tempfile::tempdir().expect("tempdir");
     let workspace = home.path().join("project");
     let store = home.path().join("store");
@@ -82,6 +92,7 @@ fn start() -> Stack {
     let server = Command::new(env!("CARGO_BIN_EXE_thalyx-mcp"))
         .args(["--connect", &socket.to_string_lossy()])
         .args(["--wait", "10"])
+        .args(["--surface", surface])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -314,4 +325,188 @@ fn asking_the_machine_what_it_is_takes_one_call_and_answers_three_questions() {
     assert_eq!(answers[0]["op"], serde_json::json!("where"));
     assert_eq!(answers[1]["op"], serde_json::json!("state"));
     assert_eq!(answers[2]["op"], serde_json::json!("attempt"));
+}
+
+#[test]
+fn the_default_surface_hands_a_model_three_tools_and_the_legacy_one_hands_it_all() {
+    // **The list is the prompt.** Every schema here arrives with every
+    // inference of every session, and a model that is shown fourteen low-level
+    // operations spends attention choosing between them before any work
+    // happens — which the research named as a hazard in its own right, not a
+    // matter of taste.
+    //
+    // Nothing was deleted. Everything the fourteen did is one line inside a
+    // `thalyx_exec` program, where it costs no schema until it is used; and the
+    // whole catalogue is still one flag away, because "the small surface is
+    // better" is a comparison and a comparison needs its other arm.
+    let mut stack = started_with("compact");
+    let listed = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/list"
+    }));
+    let names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .expect("a list of tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        names,
+        ["thalyx_context", "thalyx_exec", "thalyx_evidence"],
+        "the default surface changed"
+    );
+
+    // And a program reaches what the fourteen reached. One call, and the
+    // things it does are the things that used to be their own tools.
+    //
+    // Rule 3: `hacer` opens a real boundary, which needs a real subvolume, so
+    // on a machine with no Btrfs this half says it did not run rather than
+    // pretending. `THALYX_REQUIRE_BTRFS_TESTS=1` turns the skip into a failure.
+    if !a_boundary_can_be_opened(&mut stack) {
+        let message = "NOT PROVEN: that a program reaches what the fourteen tools \
+                       reached — there is no Btrfs here, so no boundary can be opened.";
+        assert!(
+            std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
+            "{message}"
+        );
+        eprintln!("{message}");
+        return;
+    }
+    let answered = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "thalyx_exec",
+            "arguments": {
+                "label": "reaching what the tools reached",
+                "run": "const seen = thalyx.list('.');\n\
+                        const state = thalyx.state();\n\
+                        const one = thalyx.read('src/lib.rs');\n\
+                        return { listed: seen.ok, stated: state.ok, \
+                                 read: one.ok, bytes: (one.text || '').length };",
+                "on_failure": "keep"
+            }
+        }
+    }));
+    let text = answered["result"]["content"][0]["text"]
+        .as_str()
+        .expect("an answer");
+    let object: serde_json::Value = serde_json::from_str(text).expect("an object");
+    assert_eq!(
+        object["returned"]["listed"],
+        serde_json::json!(true),
+        "{object:#}"
+    );
+    assert_eq!(
+        object["returned"]["stated"],
+        serde_json::json!(true),
+        "{object:#}"
+    );
+    assert_eq!(
+        object["returned"]["read"],
+        serde_json::json!(true),
+        "{object:#}"
+    );
+    assert!(
+        object["returned"]["bytes"].as_u64().unwrap_or(0) > 0,
+        "{object:#}"
+    );
+    // And the numbers: one external request, several operations inside it.
+    assert_eq!(
+        object["external_requests"],
+        serde_json::json!(1),
+        "{object:#}"
+    );
+    assert!(
+        object["program_operations"].as_u64().unwrap_or(0) >= 3,
+        "{object:#}"
+    );
+
+    let whole = started_with("legacy");
+    drop(whole);
+}
+
+/// Whether this machine can give `hacer` the boundary it needs.
+///
+/// Asked by *running* the smallest possible program rather than by looking at
+/// the filesystem: what decides is whether the verb can open a snapshot, and a
+/// test that inferred its own precondition from something adjacent is rule 5's
+/// eighth entry.
+fn a_boundary_can_be_opened(stack: &mut Stack) -> bool {
+    let answered = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9000, "method": "tools/call",
+        "params": {
+            "name": "thalyx_exec",
+            "arguments": {"label": "is there a boundary", "run": "return 1;"}
+        }
+    }));
+    let text = answered["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(text)
+        .map(|object| object["error"] != serde_json::json!("not_a_subvolume"))
+        .unwrap_or(false)
+}
+
+#[test]
+fn a_program_arrives_at_the_machine_as_a_program() {
+    // The adapter's own job, on the tool that matters most: `run` is a string
+    // of JavaScript with quotes and newlines in it, it travels as one argument
+    // through a line-oriented protocol, and it has to come out the other end
+    // byte for byte. A quote eaten anywhere on that path is a syntax error the
+    // model gets blamed for.
+    let mut stack = start();
+    if !a_boundary_can_be_opened(&mut stack) {
+        let message = "NOT PROVEN: that a program survives the adapter byte for byte — \
+                       there is no Btrfs here, so no boundary can be opened.";
+        assert!(
+            std::env::var("THALYX_REQUIRE_BTRFS_TESTS").is_err(),
+            "{message}"
+        );
+        eprintln!("{message}");
+        return;
+    }
+    let answered = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "thalyx_exec",
+            "arguments": {
+                "label": "quotes and newlines",
+                "run": "const said = \"a \\\"quoted\\\" thing\";\nreturn { said, lines: 2 };",
+                "on_failure": "keep"
+            }
+        }
+    }));
+    let text = answered["result"]["content"][0]["text"]
+        .as_str()
+        .expect("an answer");
+    let object: serde_json::Value = serde_json::from_str(text).expect("an object");
+    assert_eq!(
+        object["finish"],
+        serde_json::json!("returned"),
+        "{object:#}"
+    );
+    assert_eq!(
+        object["returned"]["said"],
+        serde_json::json!("a \"quoted\" thing"),
+        "{object:#}"
+    );
+}
+
+#[test]
+fn sending_a_program_and_a_list_of_steps_is_refused_before_the_machine_sees_it() {
+    let mut stack = start();
+    let answered = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "thalyx_exec",
+            "arguments": {
+                "run": "return 1;",
+                "steps": [{"verb": "state"}]
+            }
+        }
+    }));
+    let text = answered["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("both"), "{answered:#}");
+    assert_eq!(answered["result"]["isError"], serde_json::json!(true));
 }

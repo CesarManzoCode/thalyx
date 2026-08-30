@@ -437,9 +437,24 @@ fi
 # clippy three releases newer than the one the code was written against. This
 # guard is kept because the hazard is real and cost nothing to remove, not
 # because it explained anything.
+#
+# 2026-08-30, and this is the third time this block has been widened: it used to
+# be conditional on `$OWNER_HOME/.cargo/bin/cargo` being executable, which is a
+# question about rustup's *shims* rather than about the toolchain. The run that
+# found it had `rustup component add rust-analyzer` typed into the shell
+# immediately before it, and stages 57 and 58 both said there was no
+# rust-analyzer on the machine — because `HAVE_ANALYZER` below looked under
+# `$HOME`, which `sudo` had made `/root`.
+#
+# So the condition is now "is there a rustup installation there at all", and
+# `RUSTUP_HOME`/`CARGO_HOME` are exported whenever there is one. Those two are
+# rustup's own variables, which means exporting them is configuration and not a
+# workaround — and `thalyx_rust::toolchain` reads exactly them, so the binary
+# under test and this script look in the same place by construction rather than
+# by two searches that agree until they do not.
 if [ -n "${SUDO_USER:-}" ]; then
     OWNER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-    if [ -x "$OWNER_HOME/.cargo/bin/cargo" ]; then
+    if [ -d "$OWNER_HOME/.rustup" ] || [ -d "$OWNER_HOME/.cargo" ]; then
         case ":$PATH:" in
             *":$OWNER_HOME/.cargo/bin:"*) ;;
             *) export PATH="$OWNER_HOME/.cargo/bin:$PATH" ;;
@@ -720,12 +735,48 @@ SUITE_ENV+=(THALYX_REQUIRE_DEVICE_NODE_TESTS=1)
 # because `~/.cargo/bin/rust-analyzer` exists on every rustup install and is a
 # shim that answers `error: Unknown binary`. A search that stopped at the first
 # file it found would set this on a machine that cannot start one.
+#
+# **Looked for under `$RUSTUP_HOME` and not under `$HOME`.** This line said
+# `$HOME` until 2026-08-30, and under `sudo` that is `/root` — so on the machine
+# that had just installed the component, this said 0, stages 57 and 58 said
+# `NOT PROVEN`, and the message told the person to install what they had
+# installed. Rule 5: the instrument includes the harness, and the harness here
+# is the environment `sudo` hands over.
+#
+# The one that is found is then **named**, for the whole suite and for every
+# stage below. A search repeated in two places is two searches, and the second
+# one is the one that disagrees on somebody's machine; naming it makes the
+# binary under test and this script use the same file by construction.
 HAVE_ANALYZER=0
-for candidate in "${THALYX_RUST_ANALYZER:-}" "$HOME"/.rustup/toolchains/*/bin/rust-analyzer; do
+ANALYZER_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+for candidate in "${THALYX_RUST_ANALYZER:-}" "$ANALYZER_HOME"/toolchains/*/bin/rust-analyzer; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
-    if "$candidate" --version > /dev/null 2>&1; then HAVE_ANALYZER=1; break; fi
+    if "$candidate" --version > /dev/null 2>&1; then
+        HAVE_ANALYZER=1
+        export THALYX_RUST_ANALYZER="$candidate"
+        break
+    fi
 done
-[ "$HAVE_ANALYZER" = 1 ] && SUITE_ENV+=(THALYX_REQUIRE_RUST_ANALYZER=1)
+if [ "$HAVE_ANALYZER" = 1 ]; then
+    SUITE_ENV+=(THALYX_REQUIRE_RUST_ANALYZER=1)
+    SUITE_ENV+=("THALYX_RUST_ANALYZER=$THALYX_RUST_ANALYZER")
+    proven "rust-analyzer present ($THALYX_RUST_ANALYZER)"
+else
+    unproven "there is no rust-analyzer under $ANALYZER_HOME/toolchains; the semantic stages will say so. Add it with: rustup component add rust-analyzer"
+fi
+
+# And the cargo the confined checks will run, named the same way and for the
+# same reason. `thalyx_rust::toolchain` would find it — it reads `RUSTUP_HOME`
+# too — but a report that says which binary produced a verdict is worth the one
+# line it costs.
+if [ -n "${RUSTUP_HOME:-}" ]; then
+    for candidate in "$RUSTUP_HOME"/toolchains/*/bin/cargo; do
+        [ -x "$candidate" ] || continue
+        export THALYX_CARGO="$candidate"
+        SUITE_ENV+=("THALYX_CARGO=$candidate")
+        break
+    done
+fi
 
 # The seccomp filter, run over a real program rather than evaluated. Both halves
 # are read rather than assumed: a kernel built without CONFIG_SECCOMP_FILTER has
@@ -7284,13 +7335,18 @@ step "53. a reversible change is two round trips where it was four"
 # Whether any of it moves an agent's cost or clock is answered by running the
 # benchmark, not here.
 if cargo test -p thalyx-mcp > "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-program >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-cli --bin thalyx attempt:: >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-cli --bin thalyx exec:: >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-snapshot --test state_identity >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-core attempt >> "$WORK/round-trips.log" 2>&1 \
         && cargo test -p thalyx-cli --test an_attempt_can_be_taken_back \
+            >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-cli --test a_name_that_is_three_names_changes_nothing \
+            >> "$WORK/round-trips.log" 2>&1 \
+        && cargo test -p thalyx-rust --test a_name_that_means_three_things_names_three_things \
             >> "$WORK/round-trips.log" 2>&1; then
-    proven "opening an attempt and changing something is one round trip and two requests, abandoning is one call where it was two, a whole program is one call whatever it holds, and the one-call form refuses a state claim that stopped matching the tree — which is work somebody else did"
+    proven "opening an attempt and changing something is one round trip and two requests, abandoning is one call where it was two, a whole program is one call whatever it holds and its control flow continues here, the one-call abandon refuses a state claim that stopped matching the tree, and a name that means three things is not renamed by picking one"
 else
     failed "the reversible round trips do not hold their own claims; see $WORK/round-trips.log"
     excerpt "$WORK/round-trips.log" 25
@@ -7944,7 +8000,269 @@ fi
 }
 
 
-parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56 stage_57 stage_58
+stage_59() {
+step "59. one call programs the machine: it looks, it decides, it changes only what the looking said to"
+
+# **The sprint's own claim, on the only machine that can hold it.**
+#
+# Stage 58 proves the vertical with the operations known in advance: resolve a
+# symbol, rewrite its uses, compile what the change reaches. That is a `Vec<Step>`
+# with a rename in it, and everything about it could be written before anything ran.
+#
+# This one cannot be. The tree has five modules; three of them use `old_api` and
+# **which three is not visible from the file names**. A caller composing a static
+# list would have to read all five first — five answers, five round trips — or
+# edit all five and be wrong about two. The program lists, loops, reads, decides
+# per file, mutates three, observes what the tree really shows, validates with a
+# real compiler under a kernel that really denies, branches on the verdict, and
+# returns three names.
+#
+# Four columns, and the last three are what make the first safe to believe:
+#
+#   - **it works**: three changed, two untouched, committed;
+#   - **the branch is real**: the same program over a tree where nothing matches
+#     changes nothing and says so — without that, a program that always edited
+#     three files would pass the first column;
+#   - **it comes back**: a program whose validation cannot pass leaves a real
+#     Btrfs subvolume byte for byte, with the diagnosis in the store;
+#   - **it stops**: `while (true) {}` after a mutation terminates and rolls back.
+
+PROG_STORE="$WORK/programmable-store"
+PROG_TREE="$BTRFS_SCRATCH/.thalyx-verify-programmable"
+mkdir -p "$PROG_STORE"
+rm -rf "$PROG_TREE" 2>/dev/null || btrfs subvolume delete "$PROG_TREE" > /dev/null 2>&1 || true
+
+PROG_GAP=""
+if [ ! -x "$THALYX" ]; then
+    PROG_GAP="there is no thalyx binary, so no program could be run"
+elif [ -z "$BTRFS_SCRATCH" ]; then
+    PROG_GAP="there is nowhere on Btrfs here, so the boundary would not be a real snapshot"
+elif ! btrfs subvolume create "$PROG_TREE" > "$WORK/programmable-subvol.log" 2>&1; then
+    PROG_GAP="a subvolume could not be made under $BTRFS_SCRATCH; see $WORK/programmable-subvol.log"
+fi
+
+if [ -n "$PROG_GAP" ]; then
+    if [ "${THALYX_REQUIRE_BTRFS_TESTS:-0}" = 1 ]; then failed "$PROG_GAP"; else unproven "$PROG_GAP"; fi
+else
+    programmable_tree() {
+        mkdir -p "$PROG_TREE/src"
+        cat > "$PROG_TREE/Cargo.toml" <<'PROGEOF'
+[workspace]
+
+[package]
+name = "verify-programmable"
+version = "0.1.0"
+edition = "2021"
+PROGEOF
+        # A lockfile, because a real Rust workspace has one committed — and
+        # because without one the semantic provider *creates* it, which is a
+        # read that mutates the tree inside the transaction and shows up as a
+        # fourth changed file the program did not write. Found by the program's
+        # own assertion on 2026-08-30.
+        cat > "$PROG_TREE/Cargo.lock" <<'PROGLOCK'
+# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "verify-programmable"
+version = "0.1.0"
+PROGLOCK
+        printf 'pub mod one;\npub mod two;\npub mod three;\npub mod four;\npub mod five;\n' \
+            > "$PROG_TREE/src/lib.rs"
+        # Three of the five, and nothing in the names says which.
+        printf 'pub fn old_api() -> u32 { 0 }\npub fn one() -> u32 {\n    old_api()\n}\n' > "$PROG_TREE/src/one.rs"
+        printf 'pub fn two() -> u32 {\n    2\n}\n'   > "$PROG_TREE/src/two.rs"
+        printf 'pub fn three() -> u32 {\n    crate::one::old_api()\n}\n' > "$PROG_TREE/src/three.rs"
+        printf 'pub fn four() -> u32 {\n    4\n}\n'  > "$PROG_TREE/src/four.rs"
+        printf 'pub fn five() -> u32 {\n    crate::one::old_api()\n}\n'  > "$PROG_TREE/src/five.rs"
+    }
+    programmable_run() {
+        printf '%s\n' "structured on" "cd $PROG_TREE" "hacer $1" salir | \
+            THALYX_ROOT="$PROG_STORE" "$THALYX" session 2>&1 | tr -d '\r'
+    }
+    programmable_field() {
+        python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "exec":
+        here = value
+        for key in sys.argv[2].split("."):
+            if isinstance(here, list):
+                here = here[int(key)] if key.isdigit() and int(key) < len(here) else "absent"
+            elif isinstance(here, dict):
+                here = here.get(key, "absent")
+            else:
+                here = "absent"
+        print(json.dumps(here) if not isinstance(here, str) else here)
+        break
+else:
+    print("none")
+' "$1" "$2"
+    }
+
+    # The program, read from the file the Rust tests read.
+    #
+    # One source and not two: a program copied into this script and into a test
+    # is two programs, and the second is the one with the typo nobody finds
+    # until this stage runs on Fedora.
+    PROG_FILE="$ROOT/dev/programs/looking-decides.js"
+    if [ ! -r "$PROG_FILE" ]; then
+        failed "$PROG_FILE is not there, so this stage has no program to run"
+        return
+    fi
+
+    programmable_program() {
+        python3 -c '
+import json, sys
+print(json.dumps({"label": sys.argv[1], "run": open(sys.argv[2]).read()}))
+' "$1" "$PROG_FILE"
+    }
+
+    # ── column one: it looks, and changes only what the looking says to ──────
+    programmable_tree
+    GOOD_P=$(programmable_program "only what needs it")
+    programmable_run "'$GOOD_P'" > "$WORK/programmable-good.log"
+    P_STATUS=$(programmable_field "$WORK/programmable-good.log" status)
+    P_FINISH=$(programmable_field "$WORK/programmable-good.log" finish)
+    P_CHANGED=$(programmable_field "$WORK/programmable-good.log" returned.changed)
+    P_EXTERNAL=$(programmable_field "$WORK/programmable-good.log" external_requests)
+    P_OPS=$(programmable_field "$WORK/programmable-good.log" program_operations)
+    P_ASSERTS=$(programmable_field "$WORK/programmable-good.log" program_assertions)
+    P_INTERNAL=$(programmable_field "$WORK/programmable-good.log" internal_bytes)
+    P_RETURNED=$(programmable_field "$WORK/programmable-good.log" returned_bytes)
+    P_COUNT=$(programmable_field "$WORK/programmable-good.log" change_count)
+    P_CONFINED=$(programmable_field "$WORK/programmable-good.log" analyzer_confined)
+    P_TWO=$(cat "$PROG_TREE/src/two.rs")
+
+    # ── column two: the same program, a tree with nothing to change ──────────
+    rm -rf "$PROG_TREE" 2>/dev/null || btrfs subvolume delete "$PROG_TREE" > /dev/null 2>&1 || true
+    btrfs subvolume create "$PROG_TREE" > /dev/null 2>&1
+    mkdir -p "$PROG_TREE/src"
+    printf '[workspace]\n\n[package]\nname = "verify-programmable"\nversion = "0.1.0"\nedition = "2021"\n' \
+        > "$PROG_TREE/Cargo.toml"
+    cat > "$PROG_TREE/Cargo.lock" <<'PROGLOCK2'
+# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "verify-programmable"
+version = "0.1.0"
+PROGLOCK2
+    printf 'pub mod one;\npub mod two;\npub mod three;\npub mod four;\npub mod five;\n' > "$PROG_TREE/src/lib.rs"
+    for n in one two three four five; do
+        printf 'pub fn %s() -> u32 {\n    1\n}\n' "$n" > "$PROG_TREE/src/$n.rs"
+    done
+    NONE_P=$(programmable_program "nothing to do")
+    programmable_run "'$NONE_P'" > "$WORK/programmable-none.log"
+    N_STATUS=$(programmable_field "$WORK/programmable-none.log" status)
+    N_CHANGED=$(programmable_field "$WORK/programmable-none.log" returned.changed)
+    N_COUNT=$(programmable_field "$WORK/programmable-none.log" change_count)
+
+    # ── column three: a validation that cannot pass ─────────────────────────
+    rm -rf "$PROG_TREE" 2>/dev/null || btrfs subvolume delete "$PROG_TREE" > /dev/null 2>&1 || true
+    btrfs subvolume create "$PROG_TREE" > /dev/null 2>&1
+    programmable_tree
+    BEFORE_ONE=$(cat "$PROG_TREE/src/one.rs")
+    BEFORE_THREE=$(cat "$PROG_TREE/src/three.rs")
+    BAD_P=$(python3 -c '
+import json
+print(json.dumps({"label": "it does not hold", "run": """
+const listing = thalyx.list("src");
+for (const entry of listing.entries || []) {
+    const path = "src/" + entry.name;
+    const source = thalyx.read(path);
+    if (source.ok && source.text.includes("old_api")) {
+        thalyx.substitute(path, "old_api", "new_api");
+    }
+}
+const check = thalyx.validate({ check: "text", text: "old_api", expect: "some" });
+thalyx.mustPass(check, "old_api should still be there and is not");
+return "should not get here";
+"""}))')
+    programmable_run "'$BAD_P'" > "$WORK/programmable-bad.log"
+    B_STATUS=$(programmable_field "$WORK/programmable-bad.log" status)
+    B_FINISH=$(programmable_field "$WORK/programmable-bad.log" finish)
+    B_EVIDENCE=$(programmable_field "$WORK/programmable-bad.log" evidence)
+    AFTER_ONE=$(cat "$PROG_TREE/src/one.rs" 2>/dev/null || echo unreadable)
+    AFTER_THREE=$(cat "$PROG_TREE/src/three.rs" 2>/dev/null || echo unreadable)
+
+    # ── column four: a program that never stops ─────────────────────────────
+    LOOP_P='{"label":"forever","run":"thalyx.substitute(\"src/two.rs\", \"1\", \"2\"); while (true) {}"}'
+    LOOP_STARTED=$(date +%s)
+    printf '%s\n' "structured on" "cd $PROG_TREE" "hacer '$LOOP_P'" salir | \
+        THALYX_ROOT="$PROG_STORE" THALYX_PROGRAM_SECONDS=5 "$THALYX" session 2>&1 | tr -d '\r' \
+        > "$WORK/programmable-loop.log"
+    LOOP_TOOK=$(( $(date +%s) - LOOP_STARTED ))
+    L_STATUS=$(programmable_field "$WORK/programmable-loop.log" status)
+    L_FINISH=$(programmable_field "$WORK/programmable-loop.log" finish)
+    L_TWO=$(cat "$PROG_TREE/src/two.rs" 2>/dev/null || echo unreadable)
+
+    if [ "$P_STATUS" = "committed" ] \
+       && [ "$P_FINISH" = "returned" ] \
+       && [ "$P_CHANGED" = '["five.rs", "one.rs", "three.rs"]' ] \
+       && [ "$P_EXTERNAL" = "1" ] && [ "$P_OPS" -ge 10 ] && [ "$P_ASSERTS" -ge 3 ] \
+       && [ "$P_COUNT" = "3" ] \
+       && [ "$P_TWO" = "pub fn two() -> u32 {
+    2
+}" ] \
+       && [ "$P_INTERNAL" -gt "$P_RETURNED" ] \
+       && [ "$N_STATUS" = "committed" ] && [ "$N_CHANGED" = "[]" ] && [ "$N_COUNT" = "0" ] \
+       && [ "$B_STATUS" = "rolled_back" ] && [ "$B_FINISH" = "assertion" ] \
+       && [ "$AFTER_ONE" = "$BEFORE_ONE" ] && [ "$AFTER_THREE" = "$BEFORE_THREE" ] \
+       && [ -n "$B_EVIDENCE" ] && [ "$B_EVIDENCE" != "none" ] \
+       && [ "$L_FINISH" = "exhausted" ] && [ "$L_STATUS" = "rolled_back" ] \
+       && [ "$LOOP_TOOK" -lt 120 ]; then
+        proven "one request ran a program that listed a directory nobody had described, looped over it, read five files, changed the three that said to and left the two that did not, watched the real subvolume agree, compiled what the change reaches under a denying kernel and committed — $P_OPS machine operations and $P_ASSERTS checked premises for 1 external request, $P_INTERNAL bytes handled inside against $P_RETURNED returned. The same program over a tree with nothing to change changed nothing; the one whose check cannot pass put the subvolume back byte for byte with the diagnosis kept as $B_EVIDENCE; and an endless loop stopped in ${LOOP_TOOK}s and rolled back."
+    elif [ "$P_STATUS" != "committed" ]; then
+        failed "the program that should have committed answered '$P_STATUS' ($P_FINISH); see $WORK/programmable-good.log"
+        excerpt "$WORK/programmable-good.log"
+    elif [ "$P_CHANGED" != '["five.rs", "one.rs", "three.rs"]' ]; then
+        failed "the program changed $P_CHANGED, and the three files that use old_api are five.rs, one.rs and three.rs. Either the loop did not look, or it did not decide; see $WORK/programmable-good.log"
+        excerpt "$WORK/programmable-good.log"
+    elif [ "$N_CHANGED" != "[]" ] || [ "$N_COUNT" != "0" ]; then
+        failed "the same program over a tree with nothing to change changed $N_COUNT file(s) and reported $N_CHANGED — so the branch is not a branch. See $WORK/programmable-none.log"
+        excerpt "$WORK/programmable-none.log"
+    elif [ "$B_STATUS" != "rolled_back" ] || [ "$AFTER_ONE" != "$BEFORE_ONE" ]; then
+        failed "the program whose check cannot pass answered '$B_STATUS' ($B_FINISH) and left one.rs as '$AFTER_ONE'; see $WORK/programmable-bad.log"
+        excerpt "$WORK/programmable-bad.log"
+    elif [ "$L_FINISH" != "exhausted" ] || [ "$L_STATUS" != "rolled_back" ]; then
+        failed "an endless loop answered '$L_STATUS' ($L_FINISH) after ${LOOP_TOOK}s and left two.rs as '$L_TWO'; a program that cannot be stopped holds the session open forever. See $WORK/programmable-loop.log"
+        excerpt "$WORK/programmable-loop.log"
+    else
+        failed "the program reported $P_OPS operation(s), $P_ASSERTS assertion(s), $P_EXTERNAL external request(s), $P_INTERNAL internal bytes against $P_RETURNED returned; see $WORK/programmable-good.log"
+        excerpt "$WORK/programmable-good.log"
+    fi
+
+    # The gap that only this machine can close, reported beside the result
+    # rather than folded into it: whether the semantic provider that answered
+    # was under Thalyx's confinement or was a host process. It is a separate
+    # claim from "the program worked", and merging them would let a green stage
+    # hide a compiler tree running with Thalyx's own reach.
+    if [ "$HAVE_ANALYZER" != 1 ]; then
+        unproven "the semantic provider was not exercised here, so nothing was said about confining it. Add it with: rustup component add rust-analyzer"
+    elif [ "$P_CONFINED" = "true" ]; then
+        proven "the semantic provider ran under Thalyx's confinement — its own cgroup, its own root filesystem, no network, and every cargo and rustc under it inside its pid namespace"
+    elif [ "$P_CONFINED" = "false" ]; then
+        unproven "the semantic provider ran as a host process on this machine, so rust-analyzer's Cargo — which compiles and runs build scripts — was not confined. It says so in analyzer_how. Demand it with THALYX_REQUIRE_CONFINED_ANALYZER=1 once the LSM is loaded and enforcing"
+    else
+        failed "the answer says '$P_CONFINED' about whether the semantic provider was confined; a run that cannot say is a run that must not be believed either way. See $WORK/programmable-good.log"
+        excerpt "$WORK/programmable-good.log"
+    fi
+
+    rm -rf "$PROG_TREE" 2>/dev/null || btrfs subvolume delete "$PROG_TREE" > /dev/null 2>&1 || true
+fi
+}
+
+parallel_stages stage_49 stage_50 stage_51 stage_52 stage_53 stage_54 stage_55 stage_56 stage_57 stage_58 stage_59
 
 # ------------------------------------------------- the machine, as it is left
 #

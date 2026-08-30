@@ -432,6 +432,15 @@ pub struct Launch<'a> {
     /// The module's end of its socket to Thalyx. See the note on `spawn`.
     pub channel: Option<std::os::fd::BorrowedFd<'a>>,
     pub stdin: Stdin,
+    /// Environment variables the program is started with, on top of Thalyx's
+    /// own.
+    ///
+    /// Not authority: a variable naming a directory reaches nothing that was
+    /// not granted, and the root filesystem contains nothing else to open. It
+    /// exists because a toolchain has to be *told* where its registry is when
+    /// the process running it is not the user who installed it — see
+    /// `launch::spawn`.
+    pub environment: &'a [(String, String)],
 }
 
 /// What a module gets on descriptor 0.
@@ -588,6 +597,63 @@ impl<'a> Confinement<'a> {
                 args,
                 channel,
                 stdin: Stdin::Closed,
+                environment: &[],
+            },
+        )
+    }
+
+    /// The same, for a program that is talked to rather than only watched.
+    ///
+    /// One method and not four arguments added to the one above, because the
+    /// callers are different in kind: `spawn` starts something and reads what
+    /// it printed, and this starts something Thalyx then holds a conversation
+    /// with — a language server, today, and nothing else. Everything about the
+    /// confinement is identical; what differs is that descriptor 0 is a pipe
+    /// whose only writer is Thalyx, which is what the channel on descriptor 3
+    /// already is for a module.
+    pub fn spawn_talking(
+        &self,
+        helper: &Path,
+        module_dir: &Path,
+        program: &Path,
+        uid: Option<u32>,
+        args: &[std::ffi::OsString],
+        environment: &[(String, String)],
+    ) -> Result<std::process::Child> {
+        self.held.spawn(
+            helper,
+            Launch {
+                module_dir,
+                program,
+                uid,
+                args,
+                channel: None,
+                stdin: Stdin::Piped,
+                environment,
+            },
+        )
+    }
+
+    /// The same as [`Confinement::spawn`], with an environment.
+    pub fn spawn_with(
+        &self,
+        helper: &Path,
+        module_dir: &Path,
+        program: &Path,
+        uid: Option<u32>,
+        args: &[std::ffi::OsString],
+        environment: &[(String, String)],
+    ) -> Result<std::process::Child> {
+        self.held.spawn(
+            helper,
+            Launch {
+                module_dir,
+                program,
+                uid,
+                args,
+                channel: None,
+                stdin: Stdin::Closed,
+                environment,
             },
         )
     }
@@ -638,6 +704,7 @@ impl Held {
             args,
             channel,
             stdin,
+            environment,
         } = start;
         let uid = if self.profile.own_user { uid } else { None };
         let rootfs = if self.profile.pivot_root {
@@ -679,7 +746,7 @@ impl Held {
             channel_fd,
         };
 
-        launch::spawn(helper, &spec, args, stdin)
+        launch::spawn(helper, &spec, args, stdin, environment)
     }
 
     /// Withdraw the policy and remove the cgroup, in that order.

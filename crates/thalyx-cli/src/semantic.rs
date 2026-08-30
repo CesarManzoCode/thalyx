@@ -37,6 +37,7 @@
 use crate::files::{Face, Where};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use thalyx_core::Store;
 use thalyx_know::{Knowledge, Standing};
 use thalyx_rust::{At, Provider};
 
@@ -127,6 +128,194 @@ pub fn build_directory(store_root: &Path, tree: &Path) -> PathBuf {
     store_root.join("state").join("rust-target").join(key)
 }
 
+// ── the provider's own process, under Thalyx's authority ─────────────────────
+
+/// Starts the semantic provider the way Thalyx starts a program nobody signed.
+///
+/// `vault/03-Primitivas/Semantica-Compilada.md`, revised 2026-08-30. The
+/// provider used to be an ordinary host process, justified by "it is a
+/// reader" — which is true of the LSP protocol and false of the process tree.
+/// rust-analyzer runs `cargo metadata`, and answering anything about a
+/// workspace with a proc-macro or a build script in it means **compiling and
+/// running them**: arbitrary code from a registry, executing at analysis time,
+/// with whatever reach the process that started it had.
+///
+/// So it goes through `thalyx_core::start_foreign` — the same establishment
+/// `ejecutar` uses: an enforcement gate that refuses when nothing can deny, its
+/// own user, its own cgroup with a policy in the kernel, its own root
+/// filesystem holding the workspace and the toolchain and nothing else, its own
+/// pid namespace so killing the one process Thalyx holds kills every compiler
+/// under it, its own network namespace, and the seccomp filter.
+///
+/// What it is granted, and nothing else:
+///
+/// - the **workspace**, read and write. Write because rust-analyzer's first act
+///   on a workspace with no `Cargo.lock` is to write one, and a provider that
+///   could not would answer every question about a tree it had failed to
+///   describe;
+/// - the **toolchain and the registry**, read-only;
+/// - a **build directory outside the workspace**, both ways — outside because
+///   a `target/` inside the tree is inside the snapshot, and a rollback would
+///   destroy the build cache that makes the next question cheap.
+struct UnderThalyx {
+    store: Store,
+    request_id: String,
+}
+
+impl thalyx_rust::analyzer::Spawn for UnderThalyx {
+    fn start(
+        &self,
+        asked: thalyx_rust::analyzer::Launching<'_>,
+    ) -> thalyx_rust::Result<thalyx_rust::analyzer::Started> {
+        use thalyx_manifest::{Permission, PermissionKind};
+
+        let mut grants = Vec::new();
+        let mut grant = |path: &Path, write: bool| {
+            grants.push(Permission {
+                resource: path.display().to_string(),
+                action: "read".to_string(),
+                kind: PermissionKind::Session,
+            });
+            if write {
+                grants.push(Permission {
+                    resource: path.display().to_string(),
+                    action: "write".to_string(),
+                    kind: PermissionKind::Session,
+                });
+            }
+        };
+        grant(asked.root, true);
+        if let Some(target) = asked.build_into {
+            // Made here rather than left to Cargo: a grant on a directory that
+            // does not exist yet is a grant on nothing, and `RootFs` refuses a
+            // granted path that is not there.
+            let _ = std::fs::create_dir_all(target);
+            grant(target, true);
+        }
+        for path in asked.readable {
+            if path.is_dir() {
+                grant(path, false);
+            }
+        }
+
+        let mut environment: Vec<(String, String)> = asked
+            .environment
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        if let Some(target) = asked.build_into {
+            environment.push(("CARGO_TARGET_DIR".to_string(), target.display().to_string()));
+        }
+
+        let started = match thalyx_core::start_foreign(
+            &self.store,
+            &thalyx_permd::KernelStore::default_map(),
+            &thalyx_core::ForeignRequest {
+                program: asked.program,
+                args: Vec::new(),
+                grants,
+                helper: std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("thalyx")),
+                request_id: self.request_id.clone(),
+                profile: thalyx_sandbox::profile::SEMANTIC_PROVIDER,
+                environment,
+            },
+        ) {
+            Ok(started) => started,
+            // **The fallback, and it is not a soft spot left open for
+            // convenience.**
+            //
+            // `start_foreign` refuses on a machine whose kernel is not denying.
+            // That is `Programas-Ajenos.md`'s decree and it is right — but a
+            // Thalyx that could therefore not resolve a symbol *at all* would
+            // be a machine where the programming face does not exist, and this
+            // container is such a machine, as is any Fedora that has not run
+            // `make -C lsm load`.
+            //
+            // So it falls back to what this crate could always do, and every
+            // answer that came through it says `analyzer_confined: false` with
+            // the reason attached. `THALYX_REQUIRE_CONFINED_ANALYZER=1` turns
+            // it into a refusal, which is rule 3's shape: one variable per
+            // requirement, so a machine that can enforce can demand that it did.
+            Err(why) => {
+                if std::env::var("THALYX_REQUIRE_CONFINED_ANALYZER").as_deref() == Ok("1") {
+                    return Err(thalyx_rust::RustError::NoAnalyzer(format!(
+                        "THALYX_REQUIRE_CONFINED_ANALYZER=1 and the semantic provider could \
+                         not be confined: {why}. Nothing was started"
+                    )));
+                }
+                let mut fell_back =
+                    thalyx_rust::analyzer::Spawn::start(&thalyx_rust::analyzer::OnTheHost, asked)?;
+                fell_back.how = format!("host (not confined: {why})");
+                fell_back.confined = false;
+                return Ok(fell_back);
+            }
+        };
+
+        let how = format!("confined: {}", started.isolation);
+        let confined = started.isolated;
+        let mut started = started;
+        // The child moves out — `Analyzer` owns the conversation over its
+        // pipes — and the confinement stays behind to be torn down. That split
+        // is why `ForeignProcess` holds an `Option<Child>` and not a `Child`:
+        // the first shape left a placeholder process behind, which made this
+        // depend on a `/bin/true` existing. The image holds the Linux kernel
+        // and one program.
+        let child = started.take_child().ok_or_else(|| {
+            thalyx_rust::RustError::NoAnalyzer(
+                "the confinement started nothing to talk to".to_string(),
+            )
+        })?;
+
+        Ok(thalyx_rust::analyzer::Started {
+            child,
+            release: Some(Box::new(move || {
+                started.shutdown(&thalyx_permd::KernelStore::default_map());
+            })),
+            how,
+            confined,
+        })
+    }
+}
+
+/// The provider for a tree, confined where this machine can confine anything.
+///
+/// **Falls back to a host process, says so, and can be made to refuse.**
+///
+/// The fallback is not a soft spot left open for convenience: `start_foreign`
+/// refuses on a machine whose kernel is not denying, which is
+/// `Programas-Ajenos.md`'s decree and is right — and a Thalyx that therefore
+/// could not resolve a symbol at all would be a machine where the programming
+/// face does not exist. This container is such a machine, and so is any Fedora
+/// that has not run `make -C lsm load`.
+///
+/// So it is reported rather than hidden: every answer carries
+/// `analyzer_confined`, and `THALYX_REQUIRE_CONFINED_ANALYZER=1` turns the
+/// fallback into a refusal. Rule 3's shape — one variable per requirement — so
+/// a machine that can enforce can demand that it did.
+fn provider_for(store_root: &Path, tree: &Path) -> Provider {
+    let provider = Provider::open(tree, knowledge(store_root, tree))
+        .building_into(&build_directory(store_root, tree))
+        .reaching(
+            thalyx_rust::toolchain::readable(),
+            thalyx_rust::toolchain::environment()
+                .into_iter()
+                .map(|(name, path)| (name.to_string(), path.display().to_string()))
+                .collect(),
+        );
+    match Store::open(store_root) {
+        Ok(store) => provider.spawning(std::sync::Arc::new(UnderThalyx {
+            store,
+            request_id: crate::new_request_id(),
+        })),
+        // No store is no journal and no uid registry, which are two of the
+        // things confining a program needs. Said as what it is rather than
+        // becoming a silent host process: the answer's `analyzer_confined`
+        // will be `false` and `analyzer_how` will be `host`.
+        Err(_) => provider,
+    }
+}
+
 /// Do something with the provider for a tree, starting or reusing one.
 ///
 /// Reused rather than rebuilt because the expensive half is the rust-analyzer
@@ -147,11 +336,7 @@ pub fn with_provider<T>(
             if live.len() >= MOST_LIVE {
                 live.remove(0);
             }
-            live.push((
-                tree.to_path_buf(),
-                Provider::open(tree, knowledge(store_root, tree))
-                    .building_into(&build_directory(store_root, tree)),
-            ));
+            live.push((tree.to_path_buf(), provider_for(store_root, tree)));
         }
     }
     let (_, provider) = live.last_mut().expect("just pushed");
@@ -194,6 +379,13 @@ struct Entry {
     package: Option<String>,
     file: String,
     line: u32,
+    /// One-based, as every other coordinate on this surface is.
+    ///
+    /// Carried so the entry can name *itself* precisely: `file:line:column` is
+    /// what `renombrar` takes and what resolves an ambiguity, and an answer
+    /// that described three candidates without saying how to ask about one of
+    /// them would be an answer a caller cannot act on.
+    column: u32,
     through: u32,
     signature: Option<String>,
     uses: usize,
@@ -215,6 +407,10 @@ impl Entry {
         }
         fields.insert("file".into(), json!(self.file));
         fields.insert("line".into(), json!(self.line));
+        fields.insert(
+            "at".into(),
+            json!(format!("{}:{}:{}", self.file, self.line, self.column)),
+        );
         fields.insert(
             "lines".into(),
             json!(self.through.saturating_sub(self.line) + 1),
@@ -316,7 +512,20 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         query: query.clone(),
         uses,
     };
-    let (entries, source, fresh, why) = gather(&asked);
+    let Answered {
+        entries,
+        source,
+        fresh,
+        resolution,
+        why,
+    } = gather(&asked);
+
+    let confinement = with_provider(store_root, &tree, |provider| {
+        (
+            provider.analyzer_confined(),
+            provider.analyzer_how().map(str::to_string),
+        )
+    });
 
     let (returned, used, omitted) = fit(&entries, budget);
 
@@ -351,11 +560,27 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 ("held_bytes", json!(held)),
                 ("source", json!(source)),
                 ("fresh", json!(fresh)),
+                // The field a program branches on. Always present, on every
+                // answer, whichever provider gave it — a field that only turns
+                // up on the ambiguous day is a field nobody handles on the
+                // ambiguous day.
+                ("resolution", json!(resolution)),
+                // What stood behind the process that answered. rust-analyzer
+                // runs Cargo, which compiles and runs build scripts, so this
+                // is a fact about arbitrary code having executed — reported
+                // rather than assumed, on every answer, including the ones the
+                // index gave where it is `null`.
+                ("analyzer_confined", json!(confinement.0)),
+                ("analyzer_how", json!(confinement.1)),
                 ("detail", json!(why)),
             ],
         ));
     } else {
         println!();
+        if resolution == "ambiguous" {
+            println!("  {why}");
+            println!();
+        }
         if returned.is_empty() {
             println!("  nothing named `{query}` — {why}");
         }
@@ -415,24 +640,51 @@ struct Asked {
     uses: usize,
 }
 
+/// What a query came back as.
+///
+/// `resolution` is the field this whole file turns on: `one` means a compiler
+/// frontend resolved the name to exactly one declaration, and **`ambiguous`
+/// means it resolved to several and this machine refused to pick**. A surface
+/// that answered a three-`Config` workspace with one `Config` and no word
+/// about the other two would be handing a model a confident wrong answer, and
+/// the thing that acts on it is a rename.
+struct Answered {
+    entries: Vec<Entry>,
+    source: &'static str,
+    fresh: &'static str,
+    resolution: &'static str,
+    why: String,
+}
+
 /// The entries for a query, from the compiler when there is one and from the
 /// index when there is not.
-fn gather(asked: &Asked) -> (Vec<Entry>, &'static str, &'static str, String) {
+fn gather(asked: &Asked) -> Answered {
     match from_analyzer(asked) {
-        Ok(Some((entries, fresh))) => (entries, "rust-analyzer", fresh, String::new()),
+        Ok(Some(answered)) => answered,
         // Named rather than swallowed. A model told `source: index` knows the
         // answer was matched and not resolved; one told nothing would act on a
         // scan believing it had a compiler.
         Ok(None) | Err(_) => {
             let (entries, fresh, why) = from_index(asked);
-            (entries, "index", fresh, why)
+            Answered {
+                entries,
+                source: "index",
+                fresh,
+                // Never `one` and never `ambiguous`. The index matches text; it
+                // cannot say a name resolves to one thing, so it must not be
+                // able to say a name resolves to several either — an ambiguity
+                // is a claim, and only the thing that can resolve names is
+                // entitled to make it.
+                resolution: "matched",
+                why,
+            }
         }
     }
 }
 
-/// Entries and the standing of the answer they came from, or `None` when this
-/// provider has nothing to say about the query at all.
-type Resolved = Option<(Vec<Entry>, &'static str)>;
+/// An answer, or `None` when this provider has nothing to say about the query
+/// at all.
+type Resolved = Option<Answered>;
 
 fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> {
     with_provider(&asked.store_root, &asked.tree, |provider| {
@@ -458,6 +710,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                     package: package.clone(),
                     file: item.at.path.clone(),
                     line: item.at.line,
+                    column: item.at.column,
                     through: item.through,
                     signature: None,
                     uses: 0,
@@ -466,7 +719,16 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                 })
                 .collect();
             remember_spans(provider, &entries);
-            return Ok(Some((entries, "current")));
+            return Ok(Some(Answered {
+                entries,
+                source: "rust-analyzer",
+                fresh: "current",
+                // A file's map is a list of everything in it and never a claim
+                // about which one a name means. There is no question here to
+                // be ambiguous about.
+                resolution: "file",
+                why: String::new(),
+            }));
         }
 
         // `Store::lock` — the last segment is the name and the first is the
@@ -477,9 +739,54 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             .next()
             .unwrap_or(&asked.query)
             .to_string();
-        let (known, standing, _) = provider.known(&name)?;
-        let Some(known) = known else {
-            return Ok(Some((Vec::new(), standing_word(&standing))));
+        let (resolution, standing, _) = provider.known(&name)?;
+        let fresh = standing_word(&standing);
+
+        if resolution.is_ambiguous() {
+            // **The refusal, as an answer rather than an error.** Every
+            // candidate comes back described and handled, so the caller —
+            // model or program — can choose one and ask again with
+            // `file:line:column`, which names exactly one declaration.
+            //
+            // Nothing here is ranked. A "most likely" candidate at the top of
+            // this list would be the heuristic guess this whole shape exists
+            // to remove, wearing a disclaimer.
+            let entries: Vec<Entry> = resolution
+                .candidates()
+                .iter()
+                .map(|candidate| Entry {
+                    handle: handle_for(&candidate.at.path, candidate.at.line, candidate.at.line),
+                    name: candidate.name.clone(),
+                    kind: candidate.kind.clone(),
+                    package: candidate.package.clone(),
+                    file: candidate.at.path.clone(),
+                    line: candidate.at.line,
+                    column: candidate.at.column,
+                    through: candidate.at.line,
+                    signature: candidate.signature.clone(),
+                    uses: 0,
+                    used_at: Vec::new(),
+                    source: "rust-analyzer",
+                })
+                .collect();
+            remember_spans(provider, &entries);
+            return Ok(Some(Answered {
+                why: resolution.ambiguity(&name),
+                entries,
+                source: "rust-analyzer",
+                fresh,
+                resolution: "ambiguous",
+            }));
+        }
+
+        let Some(known) = resolution.only() else {
+            return Ok(Some(Answered {
+                entries: Vec::new(),
+                source: "rust-analyzer",
+                fresh,
+                resolution: "nothing",
+                why: format!("nothing in this workspace declares `{name}`"),
+            }));
         };
         let at = known.defined.first().cloned().unwrap_or(At {
             path: String::new(),
@@ -503,6 +810,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             package: known.package.clone(),
             file: at.path.clone(),
             line: at.line,
+            column: at.column,
             through,
             signature: known.signature.clone(),
             uses: known.used.len(),
@@ -515,7 +823,13 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             source: "rust-analyzer",
         }];
         remember_spans(provider, &entries);
-        Ok(Some((entries, standing_word(&standing))))
+        Ok(Some(Answered {
+            entries,
+            source: "rust-analyzer",
+            fresh,
+            resolution: "one",
+            why: String::new(),
+        }))
     })
 }
 
@@ -579,6 +893,11 @@ fn from_index(asked: &Asked) -> (Vec<Entry>, &'static str, String) {
             package: None,
             file: definition.path.clone(),
             line: definition.line as u32,
+            // The index knows which line and not which column: it matched a
+            // name in a file. Said as 1 rather than left out, because an
+            // absent column would make `at` two different shapes depending on
+            // which provider answered.
+            column: 1,
             through: definition.line as u32,
             signature: None,
             uses,
@@ -749,20 +1068,41 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
 
     let tree = tree_of(here);
     let resolved = with_provider(store_root, &tree, |provider| {
-        let (file, line, column) = match place(provider, &tree, &anchor) {
-            Ok(place) => place,
-            Err(why) => return Err(why),
-        };
+        let (file, line, column) = place(provider, &tree, &anchor)?;
         provider
             .rename_texts(&file, line, column, &to)
             .map(|texts| (texts, file, line, column))
-            .map_err(|error| error.to_string())
+            .map_err(|error| Unplaced::of("unresolved", error.to_string()))
     });
 
     let (texts, file, line, column) = match resolved {
         Ok(all) => all,
         Err(why) => {
-            declined(face, RENAME_OP, "unresolved", &why);
+            // **Nothing has been written at this point, and that is the whole
+            // claim.** `place` runs before `rename_texts`, `rename_texts`
+            // writes nothing anywhere, and the loop that opens files is below
+            // both. A rename that met three candidates leaves the workspace
+            // byte for byte what it was, and says which three.
+            if face.is_machine() {
+                face.say(thalyx_files::machine::refused_with(
+                    RENAME_OP,
+                    why.word,
+                    if why.word == "ambiguous" {
+                        "name_one_candidate"
+                    } else {
+                        "ask_context"
+                    },
+                    &why.message,
+                    vec![
+                        ("from", json!(anchor)),
+                        ("to", json!(to)),
+                        ("candidates", json!(why.candidates)),
+                        ("files_changed", json!(0)),
+                    ],
+                ));
+            } else {
+                println!("\n  {}\n", why.message);
+            }
             return Ok(());
         }
     };
@@ -849,13 +1189,37 @@ pub fn rename(store_root: &Path, here: &Where, rest: &str, face: Face) -> Fallib
     Ok(())
 }
 
+/// Why a name could not be turned into a place.
+///
+/// A word and not only a sentence, because the caller that matters most here
+/// is a **program**: `renombrar` inside `hacer` is a step whose answer another
+/// step branches on, and "ambiguous, here are three handles" and "there is no
+/// such name" call for opposite next moves. A program handed one string for
+/// both would have to match on prose.
+pub struct Unplaced {
+    pub word: &'static str,
+    pub message: String,
+    /// The candidates, when the reason was that there were several.
+    pub candidates: Vec<Value>,
+}
+
+impl Unplaced {
+    fn of(word: &'static str, message: String) -> Self {
+        Self {
+            word,
+            message,
+            candidates: Vec::new(),
+        }
+    }
+}
+
 /// Where the thing to rename is: a position if the caller gave one, and
 /// otherwise the declaration of the name.
 fn place(
     provider: &mut Provider,
     tree: &Path,
     anchor: &str,
-) -> Result<(PathBuf, u32, u32), String> {
+) -> Result<(PathBuf, u32, u32), Unplaced> {
     let parts: Vec<&str> = anchor.rsplitn(3, ':').collect();
     if parts.len() == 3
         && let (Ok(column), Ok(line)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
@@ -864,21 +1228,73 @@ fn place(
         if file.is_file() {
             return Ok((file, line, column));
         }
-        return Err(format!("{} is not a file of this workspace", parts[2]));
+        return Err(Unplaced::of(
+            "absent",
+            format!("{} is not a file of this workspace", parts[2]),
+        ));
     }
 
-    let (known, standing, _) = provider.known(anchor).map_err(|error| error.to_string())?;
-    let known = known.ok_or_else(|| format!("nothing in this workspace declares `{anchor}`"))?;
+    let (resolution, standing, _) = provider
+        .known(anchor)
+        .map_err(|error| Unplaced::of("unresolved", error.to_string()))?;
+
+    // **Refused before anything is written, and refused by name.**
+    //
+    // The alternative was already in this file: `ask_about` took the first
+    // exact match rust-analyzer listed. A workspace with `crate_a::Config`,
+    // `crate_b::Config` and `crate_c::Config` in it would have had one of the
+    // three renamed across every file that uses it, chosen by index order, and
+    // the answer would have said `source: rust-analyzer` — which is true and
+    // is the reason it would have been believed.
+    //
+    // There is no heuristic here on purpose. A mutation is exactly the place
+    // where "probably this one" is worth less than nothing: a wrong guess
+    // costs a rollback and a lost round trip, and a *right* guess teaches the
+    // caller that the guessing is reliable.
+    if resolution.is_ambiguous() {
+        return Err(Unplaced {
+            word: "ambiguous",
+            message: resolution.ambiguity(anchor),
+            candidates: resolution
+                .candidates()
+                .iter()
+                .map(|candidate| {
+                    json!({
+                        "name": candidate.name,
+                        "kind": candidate.kind,
+                        "crate": candidate.package,
+                        "container": candidate.container,
+                        "at": candidate.handle,
+                        "file": candidate.at.path,
+                        "line": candidate.at.line,
+                        "signature": candidate.signature,
+                    })
+                })
+                .collect(),
+        });
+    }
+
+    let known = resolution.only().ok_or_else(|| {
+        Unplaced::of(
+            "unresolved",
+            format!("nothing in this workspace declares `{anchor}`"),
+        )
+    })?;
     if matches!(standing, Standing::Stale { .. }) {
         // Cannot happen through `known`, which never returns a stale answer;
         // written so that a future path that could is refused rather than
         // renaming against a tree that has moved.
-        return Err(format!("what is known about `{anchor}` is out of date"));
+        return Err(Unplaced::of(
+            "stale",
+            format!("what is known about `{anchor}` is out of date"),
+        ));
     }
-    let at = known
-        .defined
-        .first()
-        .ok_or_else(|| format!("`{anchor}` is known but has no declaration"))?;
+    let at = known.defined.first().ok_or_else(|| {
+        Unplaced::of(
+            "unresolved",
+            format!("`{anchor}` is known but has no declaration"),
+        )
+    })?;
     Ok((tree.join(&at.path), at.line, at.column))
 }
 
@@ -995,6 +1411,7 @@ mod tests {
             package: Some("a-crate".to_string()),
             file: "src/lib.rs".to_string(),
             line: 1,
+            column: 8,
             through: lines,
             signature: Some(format!("pub fn {name}() -> Result<()>")),
             uses: 17,

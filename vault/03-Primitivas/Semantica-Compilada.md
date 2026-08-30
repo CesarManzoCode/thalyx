@@ -107,3 +107,126 @@ cambió dos archivos reportara dos.
 direcciones y la identidad), `edits` (rangos a texto). Los verbos que lo exponen
 son `contexto` y `renombrar-simbolo`, y el paso `rename` dentro de `hacer` —
 [[Contexto-Progresivo]].
+
+---
+
+## Revisión 2026-08-30: qué es un nombre cuando es tres nombres
+
+`Provider::ask_about` resolvía un nombre con «el primer símbolo exacto que
+rust-analyzer haya listado». En un espacio de trabajo con `crate_a::Config`,
+`crate_b::Config` y `crate_c::Config` eso es: tomar uno de los tres por orden de
+índice, describirlo como *el* `Config`, y contestar `source: "rust-analyzer"` —
+que es cierto, y es exactamente por lo que se le habría creído.
+
+Lo que actúa sobre esa respuesta es `renombrar-simbolo`. Así que la falla era:
+uno de tres crates reescrito en todos sus usos, elegido por orden de índice, sin
+que nada en ningún lado dijera que se había elegido. **Una respuesta equivocada
+con confianza es la peor forma que una respuesta equivocada tiene.**
+
+El decreto ahora es de tres brazos y no de dos:
+
+- **uno** → se contesta normal;
+- **varios** → se contesta una ambigüedad estructurada: cada candidato con su
+  especie, su crate, su contenedor, su firma y un asa `ruta:línea:columna` —
+  deliberadamente la forma que `renombrar` y `contexto` **ya** toman, para que
+  resolver una ambigüedad no obligue a aprender nada nuevo;
+- **nada** → se contesta que nada lo declara, que no es lo mismo que «varios»
+  y tiene otro remedio.
+
+No hay ranking. Un candidato «más probable» arriba de la lista sería la
+adivinanza que esta forma existe para quitar, con un descargo puesto encima.
+
+**Una mutación contra una ambigüedad se niega antes de escribir.** `place` corre
+antes de `rename_texts`, `rename_texts` no escribe en ningún lado, y el ciclo que
+abre archivos va después de los dos. La prueba afirma los bytes de los tres
+archivos, no el conteo.
+
+Un programa ([[Transaccion-Programable]]) puede ramificar sobre esto:
+`resolution === "ambiguous"` y `thalyx.needModel(candidatos)` devuelve el árbol
+intacto y le pregunta al modelo, en lugar de confirmar una adivinanza.
+
+`contexto` carga `resolution` en **toda** respuesta: `one`, `ambiguous`,
+`nothing`, `file`, o `matched` cuando vino del índice — que empareja texto y por
+lo tanto nunca tiene derecho a afirmar una ambigüedad. Un campo que sólo aparece
+el día interesante es un campo que nadie maneja el día interesante.
+
+Dos entradas en una misma posición son una declaración: rust-analyzer contesta
+una consulta de símbolos desde varios índices y el mismo ítem puede volver dos
+veces. Sin deduplicar por posición, un espacio de trabajo con exactamente un
+`Config` recibiría una negativa sobre la que nadie puede actuar.
+
+## Revisión 2026-08-30: el proveedor corre donde corre un huésped
+
+Este documento y el encabezado del módulo decían que el proveedor es **un
+lector**: nunca aplica una edición, un rename vuelve como descripción, y Thalyx
+es quien escribe. Todo eso es cierto del protocolo LSP y nada de eso es cierto
+del árbol de procesos.
+
+**rust-analyzer corre Cargo.** Para contestar cualquier cosa sobre un espacio de
+trabajo con un proc-macro o un build script adentro, los **compila y los
+ejecuta**: código arbitrario de un registro, ejecutándose en tiempo de análisis,
+con el alcance que tuviera el proceso que lo arrancó. Que era el de Thalyx: el
+sistema de archivos entero, y la red.
+
+*«No aplica ediciones, por lo tanto es de sólo lectura»* fue la conclusión
+equivocada de una premisa cierta, y estuvo escrita una semana.
+
+Ahora arranca por `thalyx_core::start_foreign` — el mismo establecimiento que
+usa `ejecutar`, con una sola puerta de aplicación de política y una sola
+asignación de uid. El proveedor recibe:
+
+- su propio usuario;
+- su propio cgroup con una política en el kernel;
+- su propio sistema de archivos raíz, con el espacio de trabajo, el toolchain y
+  el registro, y nada más;
+- su propio namespace de pid, así que matar el único proceso que Thalyx sostiene
+  mata cada `cargo`, `rustc` y build script debajo;
+- su propio namespace de red — que es lo que «red denegada por defecto» quiere
+  decir aquí;
+- el mismo filtro seccomp.
+
+Lo que se le concede: el espacio de trabajo de lectura **y escritura** —lo
+primero que rust-analyzer hace sobre un árbol sin `Cargo.lock` es escribir
+uno—, el toolchain y el registro de sólo lectura, y un directorio de compilación
+**fuera del árbol**.
+
+El perfil es `semantic_provider`: `module_standard` con dos números cambiados —
+6 GiB en lugar de 1, porque un proveedor muerto a media indexación se reporta
+como «el analizador expiró», que es una oración cierta sobre la cosa
+equivocada; y 2048 procesos en lugar de 512, porque esto es un *árbol* de
+compiladores. No es un framework de servicios y hay exactamente uno.
+
+**Cae de vuelta al anfitrión, lo dice, y se le puede exigir que no.**
+`start_foreign` se niega en una máquina cuyo kernel no deniega — decreto de
+[[Programas-Ajenos]], y correcto — y un Thalyx que por eso no pudiera resolver
+un símbolo sería una máquina donde la cara de programación no existe. Así que en
+esa máquina corre en el anfitrión y **toda** respuesta carga
+`analyzer_confined: false` con la razón en `analyzer_how`.
+`THALYX_REQUIRE_CONFINED_ANALYZER=1` convierte la caída en una negativa: regla 3,
+una variable por requisito, para que una máquina que sí puede confinar exija que
+lo hizo en lugar de recibir en silencio un proceso de anfitrión el día que el LSM
+no cargó.
+
+Lo que las pruebas exigen es la honestidad, que vale en toda máquina: cada
+respuesta semántica dice cuál de las dos ocurrió, los dos campos concuerdan, y
+ninguno falta nunca. **Si esta máquina de veras lo confina es pregunta de
+`dev/verify.sh`, etapa 59.**
+
+### Y una lectura que muta el árbol
+
+Lo encontró la aserción del propio programa de la etapa 59, el 2026-08-30: *«el
+árbol muestra 4 cambios y el programa hizo 3»*. El cuarto era `Cargo.lock`.
+
+rust-analyzer resuelve el grafo de dependencias completo, y resolver escribe un
+candado. Así que un espacio de trabajo **sin** `Cargo.lock` gana un archivo
+*por haber sido interrogado*: una lectura que muta el árbol, adentro de la
+transacción, atribuida a nadie.
+
+No se esconde ni se filtra. `changed()` lo reporta —es un cambio real— y un
+rollback lo quita, que es correcto. Lo que se arregló son las fixtures: un
+espacio de trabajo de Rust de verdad tiene su candado versionado, y una fixture
+sin él no es un caso pequeño del mundo real, es otro sistema (regla 8).
+
+Queda escrito porque es la misma familia que el `target/` adentro del snapshot
+que se arregló con `CARGO_TARGET_DIR`: **el proveedor semántico tiene efectos en
+el sistema de archivos, y "es un lector" no los describe.**

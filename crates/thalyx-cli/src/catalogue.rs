@@ -522,8 +522,10 @@ pub const VERBS: &[Verb] = &[
             "the_whole_system",
             "already_open",
         ],
-        summary: "Run several requests inside one reversible boundary, check the result, \
-                  and keep it or undo all of it — in one call.",
+        summary: "Run a short program — JavaScript, with loops, conditions and \
+                  assertions — inside one reversible boundary, and keep what it did or \
+                  undo all of it. What it looks at decides what it does next, so a \
+                  whole stretch of work is one call.",
     },
     Verb {
         id: "evidence",

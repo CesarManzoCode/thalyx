@@ -5725,3 +5725,106 @@ es un recurso por el que las pruebas compiten, y una métrica sobre él es una
 medida del planificador. Se arregla dándole una llave: aquí, uno por árbol, con
 un tope y desalojo del más viejo, que es lo que una sesión real necesita de todos
 modos.
+
+---
+
+## Reglas nuevas — 2026-08-30
+
+### Un campo que desaparece el día interesante
+
+`exec::tests::a_check_of_bytes_nobody_has_seen_is_run` y su gemela fallaron en
+Fedora afirmando `output["cached"] == false` y recibiendo `Null`. La causa no
+era el cache: era que el brazo *«no hay cargo en esta máquina»* nunca escribía
+el campo, y ése era el brazo que tomaba una máquina donde `sudo` había puesto
+`HOME=/root` delante de un toolchain instalado bajo el home de `$SUDO_USER`.
+
+Dos personas leyeron dos aserciones sobre un cache. Lo que había pasado era un
+`HOME`.
+
+> **Un esquema de respuesta es estable o no es un esquema.** Si un campo aplica
+> conceptualmente, se escribe en **todos** los brazos, incluido el que dice que
+> nada se pudo hacer. Un campo que sólo aparece el día interesante es un campo
+> que nadie maneja el día interesante — y la prueba que lo garantiza recorre los
+> brazos, no la corrida que casualmente toma uno.
+
+Y su mitad gemela: **una negativa nombra dónde buscó.** «No hay cargo» es una
+oración sobre la que nadie puede actuar cuando el cargo está a un directorio de
+distancia bajo otro home.
+
+### Tres búsquedas de la misma cosa son tres máquinas
+
+Había tres lugares que buscaban un binario de Rust —`metadata::cargo`,
+`analyzer::find`, `exec::find_cargo`— y discrepaban en todo: qué variables leer,
+si confiar en `PATH`, si *correr* un candidato antes de creerle. La cuarta era
+`HAVE_ANALYZER` en `verify.sh`, mirando `$HOME`, que bajo `sudo` es `/root`.
+
+> **Una búsqueda repetida en dos lugares son dos búsquedas, y la segunda es la
+> que discrepa en la máquina de alguien más.** Y: un veredicto producido por
+> «el compilador que viniera primero en el `PATH` de quien llamó» es un veredicto
+> que nadie puede reproducir. Se nombran lugares.
+
+### Un lenguaje puede dar vueltas, así que cada recurso lleva su techo
+
+`MOST_STEPS` acotaba una lista por construcción. Un programa con ciclos no se
+acota por construcción, y un solo techo no alcanza: tiempo de reloj, presupuesto
+de instrucciones, memoria, pila, llamadas a la máquina, procesos lanzados, bytes
+que entran y bytes que salen son ocho preguntas distintas. Uno solo para las
+ocho es la forma de la regla 3 al revés.
+
+> **Y una respuesta demasiado grande se niega, no se corta.** Una respuesta
+> cortada a la mitad es una respuesta sobre la que un modelo actúa creyendo que
+> está completa.
+
+### Una detención tiene que estar fuera del lenguaje que detiene
+
+Una aserción que sólo lanza una excepción de JavaScript la atrapa el propio
+programa que la falló, y un programa escrito por un modelo de lenguaje envuelve
+todo en `try`/`catch`. La corrida seguiría más allá de la premisa que acababa de
+refutar, y confirmaría.
+
+> **Lo que detiene una corrida no puede estar en el lenguaje de la corrida.** La
+> aserción queda trabada del lado de Rust y el motor se detiene; el `throw` es
+> sólo la mitad que el programa puede ver.
+
+### El motor reporta su propia interrupción como una excepción del programa
+
+QuickJS levanta una interrupción como una excepción ordinaria de JavaScript. La
+primera versión reportó `while (true) {}` como *«el programa lanzó»* — una
+oración sobre el programa en lugar de sobre el techo que alcanzó, que es el
+diagnóstico equivocado que la regla 5 persigue.
+
+> **Cuando la herramienta convierte tu razón en la razón del sujeto, guarda la
+> tuya aparte.** El manejador marca que decidió detener, y esa marca le gana a
+> lo que el motor haya alcanzado a decir.
+
+Su gemela, del mismo día: el `error.stack` de QuickJS son sólo los marcos —a
+diferencia del de V8, no empieza con el mensaje— así que un envoltorio que
+prefería `.stack` reportaba cada falla como una lista de números de línea con la
+razón faltando. Regla 5 donde el arnés es el recuerdo que alguien tiene de otro
+motor.
+
+### Lo que se revisa por nombre en una lista, se revisa por llamada en un programa
+
+`Program::read` rechaza un *paso* llamado `exec` o `attempt` antes de tomar el
+snapshot. Correcto para una lista: una lista es un valor que algo puede mirar.
+**Un programa no.** Alcanza verbos por nombre en tiempo de ejecución.
+
+Una prueba pidió `intento abandonar` desde adentro de un programa y recibió
+`ok: true` con una línea `confirm_with` cargando el nombre del snapshot y el
+testigo de estado exacto — todo lo que una segunda llamada necesita para
+abandonar la transacción desde adentro de sí misma, a media corrida.
+
+> **Un chequeo que sólo se hace sobre la forma estática no se hace.** Se hace
+> donde se puede hacer: en el momento de la llamada. Y una negativa no entrega
+> lo que hace falta para reintentar.
+
+### «No escribe, por lo tanto es de sólo lectura» es una oración sobre el protocolo
+
+rust-analyzer se describió aquí como *un lector* durante una semana: nunca
+aplica una edición, un rename vuelve como descripción, Thalyx escribe. Cierto
+del protocolo LSP. Falso del árbol de procesos: corre `cargo metadata`, y para
+contestar sobre un espacio de trabajo con un proc-macro compila y **ejecuta**
+código arbitrario de un registro.
+
+> **La autoridad de un proceso no se deduce de la forma de su API.** Se deduce
+> de qué arranca.

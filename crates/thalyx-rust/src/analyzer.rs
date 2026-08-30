@@ -46,6 +46,125 @@ use std::time::{Duration, Instant};
 
 use crate::{Result, RustError};
 
+// ── whose process it is ──────────────────────────────────────────────────────
+
+/// What starting a semantic provider needs.
+#[derive(Debug, Clone, Copy)]
+pub struct Launching<'a> {
+    /// The server binary.
+    pub program: &'a Path,
+    /// The workspace it is rooted at, and its working directory.
+    pub root: &'a Path,
+    /// Where its Cargo is told to build. Outside the workspace, always: see
+    /// [`Analyzer::start`].
+    pub build_into: Option<&'a Path>,
+    /// Everything it must be able to read that is not the workspace — the
+    /// toolchain and the registry, read-only.
+    pub readable: &'a [PathBuf],
+    /// Where the toolchain is, for a process that is not the user who
+    /// installed it.
+    pub environment: &'a [(String, String)],
+}
+
+/// A started server, and how to end it.
+pub struct Started {
+    /// Its stdin and stdout must be pipes: LSP is a conversation.
+    pub child: Child,
+    /// Called when the analyzer is let go: kill the process tree and take the
+    /// confinement down.
+    ///
+    /// A boxed closure rather than a type, because what has to be torn down is
+    /// a cgroup and a kernel policy and **this crate must not know that**. It
+    /// resolves names and describes edits; the authority that confines things
+    /// is two layers up, and a `thalyx-rust` that depended on the sandbox
+    /// would be the semantic provider deciding what a process may reach.
+    pub release: Option<Box<dyn FnOnce() + Send>>,
+    /// One phrase for the answer: `confined: <profile>`, or `host`.
+    pub how: String,
+    /// **Whether Thalyx's confinement is what stands behind this process.**
+    ///
+    /// Reported on every answer that came from it, and never assumed. See
+    /// [`Spawn`].
+    pub confined: bool,
+}
+
+/// How the semantic provider's process gets started.
+///
+/// ## Why this is a trait and not a `Command`
+///
+/// Until 2026-08-30 this file started rust-analyzer with `Command::new`, as an
+/// ordinary host process, with everything Thalyx itself can reach — the whole
+/// filesystem and the network. The justification written in this very module
+/// was that it is *a reader*: it never applies an edit, a rename comes back as
+/// a description, and Thalyx does the writing.
+///
+/// **That reasoning is about the LSP protocol and not about the process tree.**
+/// rust-analyzer runs `cargo metadata`, and to answer anything about a
+/// workspace with a proc-macro or a build script in it, it *compiles and runs
+/// them* — which is arbitrary code from a registry, executing at analysis time,
+/// with Thalyx's own reach. "It does not apply edits, therefore it is
+/// read-only" was the wrong conclusion from a true premise.
+///
+/// So the process belongs under the same authority every other program nobody
+/// signed runs under. The trait is what lets that authority live where it
+/// already is: `thalyx-core` confines things, this crate asks names of a
+/// compiler, and neither has to know how the other works.
+pub trait Spawn: Send + Sync {
+    fn start(&self, asked: Launching<'_>) -> Result<Started>;
+}
+
+/// The provider as a plain host process.
+///
+/// **Not the default anywhere Thalyx can enforce**, and it says `confined:
+/// false` on every answer that comes through it. It exists for exactly one
+/// case, which is real and is this container: a machine with no BPF LSM cannot
+/// confine anything, `start_foreign` refuses rather than degrading — that is
+/// `Programas-Ajenos.md`'s decree, and it is right — and a Thalyx that
+/// therefore could not resolve a symbol at all would be a machine where the
+/// programming face does not exist.
+///
+/// `THALYX_REQUIRE_CONFINED_ANALYZER=1` turns this into a refusal, which is
+/// rule 3's shape: one variable per requirement, so a machine that can enforce
+/// can demand that it did.
+pub struct OnTheHost;
+
+impl Spawn for OnTheHost {
+    fn start(&self, asked: Launching<'_>) -> Result<Started> {
+        if std::env::var("THALYX_REQUIRE_CONFINED_ANALYZER").as_deref() == Ok("1") {
+            return Err(RustError::NoAnalyzer(
+                "THALYX_REQUIRE_CONFINED_ANALYZER=1 and this provider would have run as \
+                 an ordinary host process. Nothing started."
+                    .to_string(),
+            ));
+        }
+        let mut command = Command::new(asked.program);
+        if let Some(target) = asked.build_into {
+            command.env("CARGO_TARGET_DIR", target);
+        }
+        for (name, value) in asked.environment {
+            command.env(name, value);
+        }
+        let child = command
+            .current_dir(asked.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Its log is noise on the way to an answer, and a pipe nobody
+            // drains is a server that blocks on a full buffer halfway through
+            // indexing — which would look exactly like a server that hung.
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                RustError::NoAnalyzer(format!("{}: {error}", asked.program.display()))
+            })?;
+        Ok(Started {
+            child,
+            release: None,
+            how: "host".to_string(),
+            confined: false,
+        })
+    }
+}
+
 /// How long to wait for the server to finish its first indexing pass.
 ///
 /// Measured rather than guessed: this workspace's twenty-eight crates take
@@ -114,6 +233,12 @@ pub enum Ready {
 /// A running rust-analyzer, and the conversation with it.
 pub struct Analyzer {
     child: Child,
+    /// How the confinement around it is taken down. See [`Started::release`].
+    release: Option<Box<dyn FnOnce() + Send>>,
+    /// One phrase saying what started it.
+    how: String,
+    /// Whether Thalyx's confinement stands behind it.
+    confined: bool,
     stdin: ChildStdin,
     incoming: Receiver<Value>,
     next_id: i64,
@@ -137,21 +262,26 @@ impl Analyzer {
     /// contains a build tree, a rollback destroys the build cache, and a run
     /// that changed two files reports twenty-nine. It was found by a test
     /// asserting the count.
-    pub fn start(root: &Path, binary: &Path, build_into: Option<&Path>) -> Result<Self> {
-        let mut command = Command::new(binary);
-        if let Some(target) = build_into {
-            command.env("CARGO_TARGET_DIR", target);
-        }
-        let mut child = command
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // Its log is noise on the way to an answer, and a pipe nobody
-            // drains is a server that blocks on a full buffer halfway through
-            // indexing — which would look exactly like a server that hung.
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| RustError::NoAnalyzer(format!("{}: {error}", binary.display())))?;
+    pub fn start(
+        root: &Path,
+        binary: &Path,
+        build_into: Option<&Path>,
+        readable: &[PathBuf],
+        environment: &[(String, String)],
+        spawner: &dyn Spawn,
+    ) -> Result<Self> {
+        let Started {
+            mut child,
+            release,
+            how,
+            confined,
+        } = spawner.start(Launching {
+            program: binary,
+            root,
+            build_into,
+            readable,
+            environment,
+        })?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             RustError::NoAnalyzer("rust-analyzer was started without a stdin".to_string())
@@ -175,6 +305,9 @@ impl Analyzer {
 
         let mut analyzer = Self {
             child,
+            release,
+            how,
+            confined,
             stdin,
             incoming,
             next_id: 1,
@@ -494,9 +627,37 @@ impl Drop for Analyzer {
     /// this matters most is the case where the server is not replying. It holds
     /// no state anybody needs: everything it learned is either in the answer
     /// already given or being recomputed next time.
+    /// Kill the server, then take down whatever was confining it.
+    ///
+    /// In that order and both, and the second half is the one that was not
+    /// here before there was anything to take down. A `release` skipped leaves
+    /// a cgroup and a kernel policy behind — and an entry left in the map after
+    /// its directory is gone becomes the policy of whatever cgroup the kernel
+    /// gives that inode to next.
+    ///
+    /// Killing the one process Thalyx holds is enough for the *tree* under a
+    /// profile with a pid namespace: the kernel reaps a namespace when its init
+    /// dies, and every `cargo`, `rustc` and build script the server started is
+    /// inside it. `release` kills the cgroup as well, which covers the window
+    /// before the re-exec that becomes that init.
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
+impl Analyzer {
+    /// One phrase saying what started this server.
+    pub fn how(&self) -> &str {
+        &self.how
+    }
+
+    /// Whether Thalyx's confinement stands behind it.
+    pub fn confined(&self) -> bool {
+        self.confined
     }
 }
 
@@ -664,36 +825,18 @@ pub fn path_of(uri: &str) -> Option<PathBuf> {
 
 /// The rust-analyzer this machine has, or nothing.
 ///
-/// Every candidate is **run** rather than tested for existence, and the reason
-/// is this container: `~/.cargo/bin/rust-analyzer` is there, is executable, and
-/// is a rustup shim that answers `error: Unknown binary`. A search that stopped
-/// at the first file it found would pick it every time — rule 5, where the
-/// harness is the `PATH`.
+/// One line, because the search itself belongs to [`crate::toolchain`] and
+/// there used to be three of them that disagreed. Kept as a function here
+/// because this is where a reader of the LSP client looks for it.
 pub fn find() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(named) = std::env::var_os("THALYX_RUST_ANALYZER") {
-        candidates.push(PathBuf::from(named));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let toolchains = PathBuf::from(&home).join(".rustup").join("toolchains");
-        if let Ok(entries) = std::fs::read_dir(&toolchains) {
-            for entry in entries.flatten() {
-                candidates.push(entry.path().join("bin").join("rust-analyzer"));
-            }
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&path) {
-            candidates.push(directory.join("rust-analyzer"));
-        }
-    }
-    candidates.into_iter().find(|candidate| {
-        candidate.is_file()
-            && Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-    })
+    crate::toolchain::rust_analyzer().path.clone()
+}
+
+/// Why there is no rust-analyzer, naming every place that was looked at.
+pub fn why_no_analyzer() -> String {
+    crate::toolchain::rust_analyzer().why_not(
+        "rust-analyzer",
+        "Add it with: rustup component add rust-analyzer, or name one with \
+         THALYX_RUST_ANALYZER",
+    )
 }

@@ -30,7 +30,7 @@ pub mod test_support;
 pub mod trusted_path;
 pub mod uids;
 
-pub use foreign::{ForeignOutcome, ForeignRequest, run_foreign};
+pub use foreign::{ForeignOutcome, ForeignProcess, ForeignRequest, run_foreign, start_foreign};
 pub use install::{InstallOutcome, InstallRequest, install, installed_manifest, remove};
 pub use run::{RunForeseen, RunOutcome, RunRequest, foresee_run, run};
 pub use store::Store;

@@ -77,6 +77,23 @@ struct Cli {
     /// only verbs it asks, and neither can change the workspace it is checking.
     #[arg(long)]
     preflight: bool,
+
+    /// Which set of tools to offer the model
+    ///
+    /// `compact` — the default — offers three: what a name is, do a stretch of
+    /// work, and fetch what the work did not send back. Everything else is
+    /// reachable from inside a `thalyx_exec` program, where it costs no schema
+    /// and no attention until it is used.
+    ///
+    /// `legacy` offers the whole catalogue. It exists for compatibility, for
+    /// debugging, for the benchmarks already run against it, and — the reason
+    /// it will not be removed — as the control column. "The small surface is
+    /// better" is a comparison, and a comparison needs the other arm.
+    ///
+    /// `THALYX_MCP_SURFACE` sets the same thing, for a client that can pass an
+    /// environment and not an argument. The flag wins.
+    #[arg(long, default_value = "compact")]
+    surface: String,
 }
 
 fn main() {
@@ -102,11 +119,24 @@ fn main() {
         greeting.workspace
     );
 
-    let offered = usable(&greeting.verbs);
+    // The flag first, then the environment. A client that can pass one but not
+    // the other gets the same choice either way, and a person who passed both
+    // gets the one they typed.
+    let asked_for = if std::env::args().any(|argument| argument.starts_with("--surface")) {
+        cli.surface.clone()
+    } else {
+        std::env::var("THALYX_MCP_SURFACE").unwrap_or_else(|_| cli.surface.clone())
+    };
+    let whole_catalogue = asked_for.eq_ignore_ascii_case(tools::LEGACY_SURFACE)
+        || asked_for.eq_ignore_ascii_case("full")
+        || asked_for.eq_ignore_ascii_case("all");
+
+    let offered = usable(&greeting.verbs, whole_catalogue);
     eprintln!(
-        "thalyx-mcp: {} of {} tools offered",
+        "thalyx-mcp: {} of {} tools offered ({} surface)",
         offered.len(),
-        tools::TOOLS.len()
+        tools::TOOLS.len(),
+        if whole_catalogue { "legacy" } else { "compact" }
     );
 
     if cli.preflight {
@@ -149,9 +179,10 @@ fn main() {
 /// The anti-drift check, and it is a real one rather than a copy: the verbs come
 /// from the machine's own hello, so a tool built against a verb this Thalyx does
 /// not have is dropped here instead of failing on the model's first use of it.
-fn usable(verbs: &[String]) -> Vec<&'static tools::Tool> {
+fn usable(verbs: &[String], whole_catalogue: bool) -> Vec<&'static tools::Tool> {
     tools::TOOLS
         .iter()
+        .filter(|tool| whole_catalogue || tool.surface == tools::Surface::Hot)
         .filter(|tool| {
             let missing: Vec<&str> = tool
                 .verbs
@@ -458,6 +489,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_surface_is_three_tools_and_the_legacy_one_is_all_of_them() {
+        // **The list is the prompt.** Fourteen schemas arrive with every
+        // inference of every session, and the model has to consider each of
+        // them before any work happens — which is the tool proliferation the
+        // research named as a hazard in its own right.
+        //
+        // What replaced them is not a deletion: every operation is one line
+        // inside a `thalyx_exec` program, where it costs nothing until it is
+        // used. So this asserts the shape rather than the number: three by
+        // default, all of them when asked, and nothing gone.
+        let every: Vec<String> = tools::TOOLS
+            .iter()
+            .flat_map(|tool| tool.verbs.iter().map(|verb| verb.to_string()))
+            .collect();
+
+        let compact = usable(&every, false);
+        let names: Vec<&str> = compact.iter().map(|tool| tool.name).collect();
+        assert_eq!(
+            names,
+            ["thalyx_context", "thalyx_exec", "thalyx_evidence"],
+            "the default surface changed"
+        );
+
+        let whole = usable(&every, true);
+        assert_eq!(whole.len(), tools::TOOLS.len());
+        assert!(
+            whole.len() > compact.len(),
+            "the legacy surface is not larger than the compact one, which means the \
+             control column for every measurement of the compact surface is gone"
+        );
+    }
+
+    #[test]
     fn a_tool_whose_verb_the_machine_does_not_have_is_not_offered() {
         // The version skew this exists to make visible. A machine that lost
         // `symbol` must not be handed a model that has been told to prefer it —
@@ -467,7 +531,7 @@ mod tests {
             .iter()
             .map(|verb| verb.to_string())
             .collect();
-        let offered = usable(&without);
+        let offered = usable(&without, true);
         assert!(offered.iter().any(|tool| tool.name == "thalyx_read"));
         assert!(!offered.iter().any(|tool| tool.name == "thalyx_symbol"));
     }
@@ -480,6 +544,6 @@ mod tests {
             .iter()
             .flat_map(|tool| tool.verbs.iter().map(|verb| verb.to_string()))
             .collect();
-        assert_eq!(usable(&every).len(), tools::TOOLS.len());
+        assert_eq!(usable(&every, true).len(), tools::TOOLS.len());
     }
 }

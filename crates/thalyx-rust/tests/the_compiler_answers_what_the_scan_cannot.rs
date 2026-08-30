@@ -78,8 +78,10 @@ fn a_reference_list_includes_the_import_that_renames_it() {
     let (_held, root) = support::tree("alias");
     let mut provider = provider(&root);
 
-    let (known, standing, source) = provider.known("Keystore").expect("an answer");
-    let known = known.expect("Keystore is declared in this tree");
+    let (resolution, standing, source) = provider.known("Keystore").expect("an answer");
+    let known = resolution
+        .only()
+        .expect("Keystore is declared exactly once in this tree");
 
     assert_eq!(source, "rust-analyzer");
     assert_eq!(standing, Standing::Current);
@@ -153,9 +155,9 @@ fn a_second_session_answers_from_what_the_first_learned() {
 
     let first = {
         let mut provider = Provider::open(&root, Knowledge::open(&store).expect("a store"));
-        let (known, _, _) = provider.known("Keystore").expect("an answer");
+        let (resolution, _, _) = provider.known("Keystore").expect("an answer");
         assert_eq!(provider.tally.analyzer_starts, 1, "the first pays for it");
-        known.expect("Keystore")
+        resolution
     };
 
     // A whole new Provider over a whole new connection: the only thing shared
@@ -168,7 +170,7 @@ fn a_second_session_answers_from_what_the_first_learned() {
         source, "rust-analyzer",
         "the answer keeps saying who made it"
     );
-    assert_eq!(again.expect("Keystore"), first);
+    assert_eq!(again, first);
     assert_eq!(
         second.tally.analyzer_starts, 0,
         "the second session started a rust-analyzer, which is the 25 seconds \

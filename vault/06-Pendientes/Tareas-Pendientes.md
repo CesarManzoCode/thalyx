@@ -659,9 +659,42 @@ Lo que falta, en orden de lo que decide:
    cara de programación de Rust sólo existe cuando Thalyx corre sobre una máquina
    que ya lo tiene. Las dos son respuestas legítimas y **es de Cesar**.
 
-Mientras tanto está dicho en voz alta en [[Semantica-Compilada]] y en el módulo,
-y `dev/verify.sh` etapa 57 y 58 dicen `NOT PROVEN` en una máquina sin él en lugar
-de callarse.
+### Cerrado a medias el 2026-08-30
+
+**El punto 1 está construido.** El proveedor arranca por
+`thalyx_core::start_foreign` con el perfil `semantic_provider` — cgroup, política
+en el kernel, raíz propia con el árbol y el toolchain y nada más, usuario propio,
+namespace de pid propio (matar el proceso que Thalyx sostiene mata cada `cargo` y
+`rustc` debajo), namespace de red, y el mismo filtro seccomp. Un proceso confinado
+y **residente** ya no es una forma que esta máquina no tenga:
+`ForeignProcess` la tiene, y es el segundo usuario de `thalyx_sandbox::Held`
+después del motor.
+
+También quedó dicho lo que estaba mal escrito aquí arriba: **«es un lector» es
+una propiedad del protocolo LSP y no del árbol de procesos.** rust-analyzer corre
+Cargo, y contestar sobre un espacio de trabajo con un proc-macro adentro significa
+compilar y ejecutar código arbitrario de un registro.
+
+Cae al anfitrión donde nada puede denegar, cada respuesta lo dice
+(`analyzer_confined`, `analyzer_how`), y `THALYX_REQUIRE_CONFINED_ANALYZER=1`
+convierte la caída en negativa. La etapa 59 de `verify.sh` reporta cuál de las
+dos ocurrió, aparte del resultado del programa.
+
+**El punto 2 sigue abierto y sigue siendo de Cesar**: qué pasa adentro de la
+imagen, donde el decreto dice el kernel y un programa y rust-analyzer es un
+segundo programa. Que el *proceso* esté bajo autoridad de Thalyx no contesta de
+dónde sale el binario.
+
+## Lo que sigue después de la transacción programable — 2026-08-30
+
+- [ ] **Correr el banco.** Es la única pregunta que queda abierta sobre este
+      sprint y la única que no se puede contestar construyendo. Está todo
+      montado —el programa, la transacción, la semántica, el confinamiento, la
+      superficie chica— y **nada está medido**: no se corrió ningún banco pagado,
+      a propósito, porque primero se construye el contendiente. Lo que hay que
+      medir es si Claude o Codex hacen más trabajo correcto con menos esfuerzo de
+      modelo, con la superficie compacta contra `--surface legacy` como columna
+      de control. Ver [[Transaccion-Programable]] y [[Evidencia-de-Agentes]].
 
 ## Pendientes de decreto formal
 

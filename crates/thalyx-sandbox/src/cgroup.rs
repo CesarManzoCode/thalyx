@@ -189,6 +189,29 @@ impl Cgroup {
         Ok(self.members()?.is_empty())
     }
 
+    /// Kill every process in this cgroup, whatever it is.
+    ///
+    /// `cgroup.kill` and not a walk of `cgroup.procs` sending signals: the walk
+    /// races with the tree it is walking, and the tree here is a compiler that
+    /// forks. A build script started between the read and the signal survives
+    /// it. The kernel's own file has no such window — one write and every
+    /// member of the cgroup and its descendants gets `SIGKILL`, atomically.
+    ///
+    /// It is a plain file write, which is why this is here rather than in
+    /// `thalyx-syscall`: nothing about it is `unsafe`.
+    ///
+    /// `cgroup.kill` arrived in Linux 5.14. On an older kernel the file is not
+    /// there, and this says so rather than pretending — a caller that read
+    /// "killed" and got a live process tree would leave a compiler running
+    /// under a policy that had just been withdrawn.
+    pub fn kill(&self) -> Result<()> {
+        let path = self.path.join("cgroup.kill");
+        if !path.exists() {
+            return Err(SandboxError::NoSuchCgroup(path));
+        }
+        std::fs::write(&path, "1").map_err(|source| SandboxError::io(&path, source))
+    }
+
     /// Delete the cgroup.
     ///
     /// Only ever correct once the policy keyed on its id has been withdrawn:
