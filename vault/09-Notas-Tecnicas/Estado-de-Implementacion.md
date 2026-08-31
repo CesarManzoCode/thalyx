@@ -320,6 +320,17 @@ por una máquina sin compilador. Entero en [[Runtime-Rust-Agente]].
 
 **Lo que no hace:** compilar. No lleva enlazador, a propósito y explicado ahí.
 
+Y desde el 2026-08-31, más tarde: `toolchain::environment` le entrega a los
+hijos del toolchain un `PATH` **construido por Thalyx** con una sola entrada, la
+del `bin` del artefacto. rust-analyzer lanza `cargo metadata` y `rustc` por
+nombre pelado, y sin `PATH` el workspace no cargaba: la VM podía listar los
+símbolos de un archivo y no resolver ninguno. Un toolchain instalado pone su
+`bin` adelante del `PATH` heredado en vez de reemplazarlo, que es además lo que
+hacía falta bajo `sudo`. Y `dev/verify-agent-rust.sh` ya no puede dar el falso
+positivo que dio: para declarar PROVEN exige `resolution == "one"` y la
+declaración esperada entre las entradas, no sólo que `source` diga
+`rust-analyzer`.
+
 ## No construido todavía
 
 | Pieza | Bloqueante para |

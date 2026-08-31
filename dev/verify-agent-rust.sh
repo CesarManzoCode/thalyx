@@ -205,20 +205,85 @@ if [ -z "$CONTEXT_LINE" ]; then
     sed 's/^/    /' "$WORK/semantic.txt" | head -30
 else
     printf '%s' "$CONTEXT_LINE" > "$WORK/context.json"
-    SOURCE=$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])) or {}).get("source",""))' "$WORK/context.json")
-    STARTS=$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])) or {}).get("analyzer_starts",""))' "$WORK/context.json")
-    CONFINED=$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])) or {}).get("analyzer_confined",""))' "$WORK/context.json")
-    if [ "$SOURCE" = "rust-analyzer" ]; then
-        proven "context('$SYMBOL') came from rust-analyzer, not from the scan (source=rust-analyzer, analyzer_starts=$STARTS)"
-    else
-        failed "context('$SYMBOL') answered source=$SOURCE — the machine matched a name instead of resolving one"
+    # ── the check that used to lie ──────────────────────────────────────────
+    #
+    # This block read `source` and nothing else, so on 2026-08-31 it printed
+    #
+    #   PROVEN  context('LanternRegistry') came from rust-analyzer
+    #
+    # about the answer
+    #
+    #   { "source": "rust-analyzer", "resolution": "nothing", "entries": [] }
+    #
+    # — a machine that had started the compiler, asked it, and been told the
+    # workspace declares no such thing. `source` says **who answered**; it has
+    # never said **that the answer resolved anything**, and turning the first
+    # into the second is rule 5 with the instrument standing on the wrong side
+    # of the question it exists to settle. Worse than a missing check: a
+    # PROVEN line that a person then reads as ground truth.
+    #
+    # So the verdict now needs all three — rust-analyzer answered, it resolved
+    # exactly one declaration, and that declaration carries the name that was
+    # asked about.
+    python3 - "$WORK/context.json" "$SYMBOL" > "$WORK/context.lines" <<'CONTEXT_PY'
+import json, sys
+answer = json.load(open(sys.argv[1])) or {}
+symbol = sys.argv[2]
+def proven(text):   print(f"   \033[32mPROVEN\033[0m      {text}")
+def failed(text):   print(f"   \033[31mFAILED\033[0m      {text}")
+def unproven(text): print(f"   \033[33mNOT PROVEN\033[0m  {text}")
+
+source = answer.get("source")
+resolution = answer.get("resolution")
+entries = answer.get("entries")
+
+if source != "rust-analyzer":
+    failed(f"context({symbol!r}) answered source={source!r} — the machine "
+           f"matched a name instead of resolving one")
+elif resolution != "one":
+    # The shape of 2026-08-31: the compiler answered and found nothing,
+    # because its `cargo` was not on any PATH and the workspace never loaded.
+    failed(f"context({symbol!r}) reached rust-analyzer and resolved nothing: "
+           f"resolution={resolution!r}, entries={json.dumps(entries)[:200]}. "
+           f"A workspace that failed to load looks exactly like this — the "
+           f"outline of a file still works and every name resolves to nothing")
+else:
+    named = [entry for entry in (entries or [])
+             if isinstance(entry, dict) and entry.get("name") == symbol]
+    if len(named) != 1:
+        failed(f"resolution=one and the entries do not carry exactly one "
+               f"{symbol}: {json.dumps(entries)[:300]}")
+    else:
+        # `handle` is `file:line:column`, which is the thing `renombrar` takes.
+        # Reported rather than merely counted: an entry that resolved and
+        # cannot say where it is would still be unusable, and the position is
+        # the field the outline had wrong.
+        found = named[0]
+        handle = found.get("handle")
+        if not handle or not found.get("file"):
+            failed(f"the resolved entry does not say where it is, so nothing "
+                   f"can be asked about it: {json.dumps(found)[:300]}")
+        else:
+            proven(f"context({symbol!r}) was resolved by rust-analyzer to one "
+                   f"declaration: {found.get('kind')} at {handle}"
+                   f" ({found.get('uses')} use(s))")
+
+confined = answer.get("analyzer_confined")
+if confined is True:
+    proven("and the provider that answered was confined by Thalyx")
+elif confined is False:
+    unproven("the provider ran as an ordinary process on this machine — load "
+             "the LSM (make -C lsm load) to close that half")
+else:
+    unproven("the answer did not say whether the provider was confined")
+CONTEXT_PY
+    cat "$WORK/context.lines"
+    tally "$WORK/context.lines"
+    if grep -q 'FAILED' "$WORK/context.lines"; then
+        say
+        say "  the machine's own answer, in full:"
         sed 's/^/    /' "$WORK/context.json"
     fi
-    case "$CONFINED" in
-        True|true) proven "and the provider that answered was confined by Thalyx" ;;
-        False|false) unproven "the provider ran as an ordinary process on this machine — load the LSM (make -C lsm load) to close that half" ;;
-        *) unproven "the answer did not say whether the provider was confined" ;;
-    esac
 fi
 
 if [ -z "$EXEC_LINE" ]; then

@@ -153,7 +153,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened eighteen times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened twenty times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -176,7 +176,16 @@ These were all learned by something going wrong. They are recorded in
    that had moved to the legacy surface; an unknown tool is refused before the
    wire, so the run made zero requests, wrote a metrics file of zeroes, and the
    stage reported NOT PROVEN with no number in it — a measurement that stopped
-   measuring looks exactly like a machine that could not be measured. The stale
+   measuring looks exactly like a machine that could not be measured. The
+   nineteenth and twentieth are 2026-08-31 and are the same instrument twice:
+   `dev/verify-agent-rust.sh` printed `PROVEN context('LanternRegistry') came
+   from rust-analyzer` about `{source: "rust-analyzer", resolution: "nothing",
+   entries: []}`, because `source` says **who answered** and has never said
+   **that the answer resolved anything**; and the control written to
+   demonstrate that very defect resolved the symbol anyway, because
+   rust-analyzer looks for `cargo` in `$CARGO`, `PATH` and `$CARGO_HOME/bin`,
+   the control closed one of the three, and a rustup machine has the third one
+   full — so it modelled a developer's laptop and not the guest. The stale
    `main` is the cheapest of them, and it
    came back on 2026-08-26 because the rule was written short: `main` and
    `origin/main` are different questions, **and `origin/main` is only a

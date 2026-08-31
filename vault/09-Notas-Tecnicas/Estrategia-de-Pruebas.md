@@ -6071,3 +6071,86 @@ La regla: cuando un `RPATH` relativo falla, la pregunta antes de tocar el
 artefacto es **qué sabe el proceso de sí mismo**. Y como no se debe depender de
 que quien arranque el proceso se acordara de montar `/proc`, el directorio se
 nombra además en `LD_LIBRARY_PATH`, que no depende de nada.
+## Regla derivada: un programa que corre programas necesita que le digan dónde están, aunque a él se lo haya encontrado por ruta absoluta — 2026-08-31
+
+Thalyx encuentra `cargo` y `rust-analyzer` por ruta absoluta, a propósito, y esa
+decisión no cambia. Lo que no estaba escrito en ninguna parte es que
+**rust-analyzer no es un programa que Thalyx corre: es un programa que corre
+programas.** Lanza `cargo metadata`, `cargo locate-project`, `cargo --version` y
+`rustc --print cfg`, y escribe cada uno como nombre pelado, que el kernel
+resuelve por `PATH` y por nada más.
+
+La forma física del fallo, en la VM real:
+
+```
+context('lantern/src/lib.rs')  → LanternRegistry, struct, source: rust-analyzer
+context('LanternRegistry')     → resolution: nothing, entries: []
+rename en 8:12                 → "No references found at position"
+```
+
+El servidor estaba vivo, había parseado el archivo, y no resolvía un nombre
+declarado en el archivo que acababa de listar. La sintaxis sobrevive porque no
+necesita subproceso; todo lo demás es el grafo de crates, y no había ninguno.
+
+La regla, más allá de Rust: **una herramienta puesta a trabajar dentro de Thalyx
+hereda el ambiente vacío de Thalyx, y lo que ella misma lance no lo hereda de
+nadie.** Antes de creer que una herramienta ajena está rota, se pregunta qué
+subprocesos lanza y con qué los nombra. `--version` no lo contesta: ése es el
+binario que Thalyx ya encontró. La cadena que hay que probar es el eslabón de
+más abajo — su cargo, su rustc — y con el entorno vacío alrededor.
+
+Y el corolario de diseño, que es lo que lo distingue del préstamo prohibido: el
+`PATH` que se entrega **se construye**, no se hereda. Una entrada, la del
+artefacto de Thalyx. Thalyx sigue descubriendo por ruta absoluta; lo que hace es
+decirle a sus propios hijos dónde están sus propias herramientas.
+
+## Regla derivada: «contestó la herramienta» no es «la herramienta resolvió» — 2026-08-31
+
+`dev/verify-agent-rust.sh` imprimió
+
+```
+PROVEN  context('LanternRegistry') came from rust-analyzer
+```
+
+sobre esta respuesta:
+
+```json
+{ "source": "rust-analyzer", "resolution": "nothing", "entries": [] }
+```
+
+Leía `source` y nada más. `source` dice **quién contestó**; no ha dicho nunca
+**que la respuesta resolviera algo**. Un instrumento que convierte lo primero en
+lo segundo no falla en silencio: imprime `PROVEN`, que es peor, porque después
+alguien lo lee como verdad establecida.
+
+Es la regla 5 con el instrumento parado del lado equivocado de la pregunta que
+existe para contestar, y es la vigésima vez. El arreglo es que el veredicto pida
+las tres cosas: que contestara rust-analyzer, que `resolution` sea `one`, y que
+las entradas traigan exactamente la declaración que se preguntó, con su posición.
+
+La regla general: **cuando un campo dice la procedencia y otro dice el
+resultado, un PROVEN sobre el primero es un PROVEN sobre nada.** El instrumento
+tiene que nombrar el campo que contiene la afirmación, no el que contiene la
+firma.
+
+## Regla derivada: un control puede quedar reparado por el ambiente que se le olvidó vaciar — 2026-08-31
+
+La regresión del `PATH` traía su control, como pide la regla 4: el mismo fixture
+con la variable quitada, que tiene que **fallar**. Falló al revés: resolvió el
+símbolo igual.
+
+La causa es que rust-analyzer busca `cargo` en tres lugares —`$CARGO`, `PATH` y
+`$CARGO_HOME/bin`— y en una máquina con rustup el tercero está lleno. El control
+quitaba uno de los tres. Dentro de Thalyx el `CARGO_HOME` es
+`<store>/state/cargo` y no tiene `bin`, así que el guest sí tenía los tres
+cerrados y la máquina real fallaba mientras el control pasaba.
+
+Es la regla 8 —un doble tiene que modelar la propiedad bajo prueba— aplicada al
+*control* en vez de al sujeto: el control modelaba una máquina de desarrollo, no
+el guest. Y es la vigésimo primera vez que el instrumento era el problema.
+
+La regla: **un control que demuestra un defecto tiene que cerrar todas las vías,
+no la que uno tenía en mente.** Antes de escribirlo, se enumeran las formas que
+la herramienta tiene de conseguir lo que se le está quitando; si el ambiente de
+pruebas deja una abierta, el control afirma un defecto que su propio entorno
+acaba de reparar.
