@@ -881,3 +881,22 @@ no, están en la evidencia de la máquina y nada en el anfitrión las tiene.
 
 **Lo que sigue abierto y sigue siendo de Cesar**: correr la validación de este
 sprint en Fedora antes de gastar otra corrida A/B pagada.
+
+## El runtime Rust del agente — 2026-08-31
+
+Cerrado: la máquina agente lleva su propio Rust. Ver [[Runtime-Rust-Agente]].
+
+Lo que queda abierto, y **cada cosa es su propia causa conocida**:
+
+- **Compilar dentro de la máquina.** El artefacto resuelve y renombra; no
+  enlaza. Hace falta un enlazador y un `libgcc_s` con los builtins enteros de
+  libgcc, no sólo el unwinder.
+- **Cache de Cargo administrado por Thalyx.** El proveedor semántico no tiene
+  red por construcción. Un workspace con dependencias de registro lo va a
+  necesitar. **No se hizo porque todavía no falló por eso.**
+- **Subir musl de 1.2.4 a 1.2.5.** Una línea en el script y la misma prueba
+  física otra vez. 1.2.4 es la que se corrió de punta a punta.
+- **`toolchain` como verbo que el modelo local pueda proponer.** Hoy sólo se
+  escribe o se pide por la superficie externa; «¿puedes renombrar símbolos
+  aquí?» es una frase que César podría decir en voz alta. Registrado en
+  `NOT_A_SENTENCE`, en `catalogue.rs`, donde se decidiría.

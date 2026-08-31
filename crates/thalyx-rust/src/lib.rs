@@ -29,7 +29,9 @@
 pub mod affected;
 pub mod analyzer;
 pub mod edits;
+pub mod elf;
 pub mod metadata;
+pub mod runtime;
 pub mod toolchain;
 
 pub use affected::{Affected, affected};

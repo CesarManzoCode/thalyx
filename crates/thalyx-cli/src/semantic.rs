@@ -300,7 +300,7 @@ fn provider_for(store_root: &Path, tree: &Path) -> Provider {
             thalyx_rust::toolchain::readable(),
             thalyx_rust::toolchain::environment()
                 .into_iter()
-                .map(|(name, path)| (name.to_string(), path.display().to_string()))
+                .map(|(name, value)| (name.to_string(), value))
                 .collect(),
         );
     match Store::open(store_root) {

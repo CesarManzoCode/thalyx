@@ -1480,7 +1480,7 @@ pub fn run(store: &Store, once: bool) -> Fallible {
             println!("  `buscar <nombre>`, `encontrar <patrón>`, `contenido <texto>`,");
             println!("  `historia`, `intento`, `cambios`,");
             println!("  `contexto <nombre|archivo> [presupuesto=N|usos=N|expandir=asa]`,");
-            println!("  `renombrar-simbolo <nombre> <nuevo>`,");
+            println!("  `renombrar-simbolo <nombre> <nuevo>`, `herramientas`,");
             println!("  `hacer <programa>`, `evidencia <id>`,");
             println!("  `procesos [patrón]`, `memoria`, `matar <pid> [forzar]`,");
             println!("  `disponibles`, `instalar <id>`, `modulos`, `correr <id>`,");
@@ -2152,6 +2152,12 @@ fn dispatch_asking(
         }
         "contexto" | "context" => {
             crate::semantic::context(store.root(), here, "", face)?;
+        }
+        // What the machine can resolve *with*, which is a different question
+        // from what a name is, and the one nobody asked before paying for a
+        // run on a machine with no compiler.
+        "herramientas" | "toolchain" => {
+            crate::toolchain::act(here, face)?;
         }
         // `renombrar-simbolo` and not `renombrar`: `renombrar` has meant
         // *move this file* since the file verbs existed, and stealing the word

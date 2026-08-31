@@ -300,6 +300,62 @@ pub fn mount() -> Store {
     }
 }
 
+/// Make the name the Rust runtime's own binaries were compiled with resolve.
+///
+/// ## Why PID 1 does this and why it is a symlink
+///
+/// Every program in `toolchains/rust/<identity>/` carries
+/// `PT_INTERP: /lib/ld-musl-x86_64.so.1` in its ELF header. That is not a
+/// choice anybody here made — it is what the upstream artifact was linked
+/// with, and the *kernel* reads it, before the process exists, as an absolute
+/// path. A machine without that name answers `execve` with `ENOENT`, and what
+/// the human sees is "there is no cargo on this machine" about a cargo that is
+/// right there. That sentence, from inside a benchmark run on 2026-08-30, is
+/// what this whole change exists to stop.
+///
+/// A symlink and not a bind mount, for a reason that would only show up later:
+/// a confined program's root filesystem binds `/lib`, and while that bind is
+/// recursive today, a symlink is a directory entry in the initramfs root and
+/// travels with **any** bind, recursive or not. The cheaper thing is also the
+/// one a change somewhere else cannot quietly break.
+///
+/// Nothing happens on a machine with no runtime staged, which is every machine
+/// that is not preparing an agent. Reported either way: a store that carries a
+/// compiler and a `/lib` that does not point at it is exactly the failure
+/// above, and it must not be something a person has to go looking for.
+pub fn link_runtime_loader() {
+    let staged = thalyx_rust::runtime::staged(Path::new(thalyx_rust::runtime::STORE_ROOT));
+    let Some(runtime) = staged.into_iter().next() else {
+        return;
+    };
+    let name = Path::new(thalyx_rust::runtime::LOADER);
+    if let Some(parent) = name.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Removed first: a previous boot may have left one pointing at a runtime
+    // that is no longer the one on the disk, and a stale loader is one from
+    // another Rust release — which fails at a relocation deep inside the first
+    // analysis rather than at the link, where it would be readable.
+    let _ = std::fs::remove_file(name);
+    match std::os::unix::fs::symlink(runtime.loader(), name) {
+        Ok(()) => println!(
+            "  ok  rust         {} — {} points at it",
+            runtime.describe(),
+            name.display()
+        ),
+        Err(error) => {
+            println!(
+                "  no  rust         {} is staged and unusable",
+                runtime.identity
+            );
+            println!("      {} could not be made: {error}", name.display());
+            println!("      Every program in it asks the kernel for that name, so cargo");
+            println!("      and rust-analyzer will not start, and the machine will say");
+            println!("      there is no cargo on it.");
+        }
+    }
+}
+
 impl Store {
     /// Print what happened, in the shape the rest of the boot uses.
     ///

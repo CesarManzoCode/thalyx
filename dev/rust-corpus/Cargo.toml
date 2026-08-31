@@ -1,0 +1,14 @@
+# A synthetic Rust workspace, small on purpose.
+#
+# It exists so the machine's semantic provider can be exercised without the
+# benchmark's corpus and without its symbols: `vault/09-Notas-Tecnicas/
+# Runtime-Rust-Agente.md` is about whether Thalyx carries a compiler, and a
+# check written over the benchmark's own tree would be measuring two things at
+# once.
+#
+# No dependencies at all, and that is deliberate: the semantic provider has no
+# network by construction, so a workspace with registry dependencies would be
+# testing whether Cargo can fetch rather than whether the toolchain works.
+[workspace]
+resolver = "2"
+members = ["lantern", "harbour"]

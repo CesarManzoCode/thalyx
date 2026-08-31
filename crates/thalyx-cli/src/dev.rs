@@ -36,6 +36,19 @@ pub enum DevCommand {
     /// Show what a bundle contains, without installing it
     Inspect { bundle: PathBuf },
 
+    /// Look at a staged Rust runtime and say whether a machine could use it
+    ///
+    /// `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md`. Two questions, and
+    /// they are not the same one: whether the artifact holds what it must and
+    /// nothing it must not, and whether every library its own programs name is
+    /// *inside it*. The second is the one `ldd` cannot answer, because `ldd`
+    /// asks the host — and on the host that built it, an artifact that would
+    /// be broken inside the machine looks perfect.
+    RustRuntime {
+        /// The artifact directory
+        artifact: PathBuf,
+    },
+
     /// Build the machine's root filesystem, or count what is in one
     ///
     /// The image is the Linux kernel and one program. This is what makes the
@@ -125,6 +138,7 @@ pub fn run(command: DevCommand) -> Fallible {
             out,
         } => pack(&source, &manifest, &key, &out),
         DevCommand::Inspect { bundle } => inspect(&bundle),
+        DevCommand::RustRuntime { artifact } => rust_runtime(&artifact),
         DevCommand::Image { binary, out, list } => match (binary, out, list) {
             (_, _, Some(archive)) => crate::image::list(&archive),
             (Some(binary), Some(out), None) => crate::image::build(&binary, &out),
@@ -527,4 +541,99 @@ fn append_bytes<W: Write>(
     header.set_cksum();
     builder.append_data(&mut header, name, contents)?;
     Ok(())
+}
+
+/// Say whether a staged Rust runtime is one.
+///
+/// Printed as facts and not as a verdict word alone: a staging step that says
+/// only `FAILED` sends whoever ran it to read this source, and the thing they
+/// need is which file is missing.
+fn rust_runtime(artifact: &Path) -> Fallible {
+    use thalyx_rust::runtime;
+
+    println!("  {}", artifact.display());
+    let report = runtime::inspect(artifact);
+    let closure = runtime::closure(artifact);
+
+    if let Some(runtime) = runtime::read(artifact) {
+        println!("  is            {}", runtime.describe());
+    }
+    println!(
+        "  size          {} in {} program(s)",
+        directory_size(artifact),
+        closure.programs.len()
+    );
+    for interpreter in &closure.interpreters {
+        println!("  loader        {interpreter}");
+    }
+    for asked in &closure.programs {
+        let name = asked
+            .program
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let named: Vec<String> = asked
+            .libraries
+            .iter()
+            .map(|(library, here)| format!("{library}{}", if *here { "" } else { " ← MISSING" }))
+            .collect();
+        println!("  {name:<32}{}", named.join(", "));
+    }
+
+    let mut wrong = Vec::new();
+    for missing in &report.missing {
+        wrong.push(format!("{missing} is not in the artifact"));
+    }
+    for forbidden in &report.forbidden {
+        wrong.push(format!(
+            "{forbidden} is in the artifact — a whole toolchain was copied, not a runtime assembled"
+        ));
+    }
+    for target in &report.other_targets {
+        wrong.push(format!(
+            "lib/rustlib/{target} is a standard library for a machine this is not"
+        ));
+    }
+    for (program, library) in &closure.unresolved {
+        wrong.push(format!(
+            "{program} asks for {library} and the artifact does not carry it, so it would \
+             resolve against whatever the machine running it happens to have"
+        ));
+    }
+    if !closure.interpreter_inside {
+        wrong.push(
+            "the artifact does not carry the loader its own programs ask the kernel for"
+                .to_string(),
+        );
+    }
+
+    if wrong.is_empty() {
+        println!();
+        println!("  closed: every library these programs name is inside the artifact.");
+        return Ok(());
+    }
+    println!();
+    for line in &wrong {
+        println!("  no  {line}");
+    }
+    Err(format!("{} is not a usable Rust runtime", artifact.display()).into())
+}
+
+/// How big a directory is, for a line a human reads.
+fn directory_size(root: &Path) -> String {
+    fn walk(path: &Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => walk(&entry.path()),
+                Ok(kind) if kind.is_file() => entry.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => 0,
+            })
+            .sum()
+    }
+    let bytes = walk(root);
+    format!("{} MB", bytes / 1_000_000)
 }

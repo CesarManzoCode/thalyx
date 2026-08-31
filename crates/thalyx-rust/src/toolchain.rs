@@ -26,17 +26,29 @@
 //! 1. **What somebody said explicitly.** `THALYX_CARGO` and
 //!    `THALYX_RUST_ANALYZER` name a file. A run whose meaning has to be
 //!    reproducible is a run whose tools were named, not found.
-//! 2. **What rustup itself was told.** `CARGO_HOME` and `RUSTUP_HOME` are
+//! 2. **Thalyx's own runtime**, staged on the store — see [`crate::runtime`].
+//!    Added 2026-08-31, after a paid benchmark run inside the machine came
+//!    back with `there is no cargo on this machine` for a workspace Thalyx had
+//!    promised it could rename symbols in. It is second and not fifth on
+//!    purpose: `Filosofia-Fundacional.md` says Thalyx is the whole system, so
+//!    when Thalyx carries a compiler that is *the* compiler, and a host's
+//!    installed one is the fallback rather than the other way round. Only a
+//!    person naming a file outright outranks it.
+//! 3. **What rustup itself was told.** `CARGO_HOME` and `RUSTUP_HOME` are
 //!    rustup's own variables, they survive `sudo -E`, and `verify.sh` sets
 //!    them from `$SUDO_USER`'s home precisely so that root can use the
 //!    person's toolchain on purpose. Reading them is not a workaround: it is
 //!    reading the configuration.
-//! 3. **The invoking user's home, when `sudo` says who that was.** `SUDO_USER`
+//! 4. **The invoking user's home, when `sudo` says who that was.** `SUDO_USER`
 //!    plus the passwd entry, so a root shell finds the toolchain of the person
 //!    who asked for it.
-//! 4. **`HOME`.** The ordinary case, where nobody is pretending to be anybody.
-//! 5. **Named system locations.** `/usr/local/bin`, `/usr/bin`. Two paths, in
+//! 5. **`HOME`.** The ordinary case, where nobody is pretending to be anybody.
+//! 6. **Named system locations.** `/usr/local/bin`, `/usr/bin`. Two paths, in
 //!    a fixed order.
+//!
+//! Steps 3 to 6 are how `dev/verify.sh` and every developer machine still
+//! work: they have no store and therefore no step 2, and nothing about them
+//! changed.
 //!
 //! ## And never a walk of `PATH`
 //!
@@ -64,6 +76,32 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+/// Whose toolchain answered.
+///
+/// Reported rather than inferred from the path, because the whole point of
+/// `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md` is a machine that can say
+/// **it is using its own** — and "the path starts with /opt/thalyx" is a guess
+/// that is right until somebody mounts a store somewhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A variable named this file outright.
+    Named,
+    /// Thalyx's own runtime artifact, staged on the store.
+    Managed,
+    /// A toolchain somebody installed on the machine this is running on.
+    Installed,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Named => "named",
+            Kind::Managed => "thalyx",
+            Kind::Installed => "host",
+        }
+    }
+}
+
 /// A tool that was looked for, and what was found.
 ///
 /// Two fields and not an `Option`, because "there is no cargo here" and "here
@@ -82,6 +120,8 @@ pub struct Found {
     pub looked_at: Vec<PathBuf>,
     /// The variable that named it, when one did.
     pub named_by: Option<&'static str>,
+    /// Whose toolchain it turned out to be. `None` when nothing was found.
+    pub kind: Option<Kind>,
 }
 
 impl Found {
@@ -167,6 +207,24 @@ fn toolchain_bins(rustup_home: &Path) -> Vec<PathBuf> {
     bins
 }
 
+/// The `bin` of Thalyx's own runtime artifact, when the store carries one.
+///
+/// **Ahead of every installed toolchain**, and that ordering is the decree of
+/// 2026-08-31 rather than a preference: a Thalyx that resolved names with the
+/// host's compiler would be a Thalyx whose programming face belongs to the
+/// host. Only a variable that names a file outright comes before it, because a
+/// person saying which compiler to use is the one thing more explicit than
+/// Thalyx's own.
+///
+/// On a machine with no store — this container, a laptop running the tests —
+/// there is nothing here and the search continues exactly as it did.
+fn managed_places_under(store_root: &Path) -> Vec<PathBuf> {
+    crate::runtime::staged(store_root)
+        .into_iter()
+        .map(|runtime| runtime.root.join("bin"))
+        .collect()
+}
+
 /// Where an installed toolchain's binaries could be, most explicit first.
 fn toolchain_places() -> Vec<PathBuf> {
     let mut places = Vec::new();
@@ -213,7 +271,10 @@ fn answers(candidate: &Path) -> bool {
 }
 
 /// Look for one binary in the named places, running each candidate.
-fn look_for(binary: &str, named_by: &'static str, places: Vec<PathBuf>) -> Found {
+///
+/// Each place carries whose it is, so the answer can say which toolchain
+/// produced it rather than leaving a caller to guess from the path.
+fn look_for(binary: &str, named_by: &'static str, places: Vec<(PathBuf, Kind)>) -> Found {
     let mut looked_at = Vec::new();
     let mut named = None;
 
@@ -226,6 +287,7 @@ fn look_for(binary: &str, named_by: &'static str, places: Vec<PathBuf>) -> Found
                     path: Some(path),
                     looked_at,
                     named_by: Some(named_by),
+                    kind: Some(Kind::Named),
                 };
             }
             // Named and wrong is worth saying. A variable pointing at a file
@@ -236,7 +298,7 @@ fn look_for(binary: &str, named_by: &'static str, places: Vec<PathBuf>) -> Found
         }
     }
 
-    for place in places {
+    for (place, kind) in places {
         let candidate = place.join(binary);
         if looked_at.contains(&candidate) {
             continue;
@@ -247,6 +309,7 @@ fn look_for(binary: &str, named_by: &'static str, places: Vec<PathBuf>) -> Found
                 path: Some(candidate),
                 looked_at,
                 named_by: None,
+                kind: Some(kind),
             };
         }
     }
@@ -255,7 +318,33 @@ fn look_for(binary: &str, named_by: &'static str, places: Vec<PathBuf>) -> Found
         path: None,
         looked_at,
         named_by: named,
+        kind: None,
     }
+}
+
+/// Every place a tool could be, in the order authority says to look.
+///
+/// One list, built once, so `cargo` and `rust-analyzer` cannot disagree about
+/// which toolchain this machine is using — a machine whose cargo is Thalyx's
+/// and whose rust-analyzer is the host's is two machines wearing one name.
+fn places() -> Vec<(PathBuf, Kind)> {
+    places_under(&crate::runtime::store_root())
+}
+
+/// The same, for a named store — which is what makes the *order* testable
+/// without a test having to change the machine it is measuring. Rule 11.
+fn places_under(store_root: &Path) -> Vec<(PathBuf, Kind)> {
+    let mut places: Vec<(PathBuf, Kind)> = managed_places_under(store_root)
+        .into_iter()
+        .map(|path| (path, Kind::Managed))
+        .collect();
+    places.extend(
+        toolchain_places()
+            .into_iter()
+            .chain(shim_places())
+            .map(|path| (path, Kind::Installed)),
+    );
+    places
 }
 
 /// The environment variable that names a cargo outright.
@@ -267,21 +356,13 @@ pub const ANALYZER_VARIABLE: &str = "THALYX_RUST_ANALYZER";
 /// Where this machine's `cargo` is, and where it was looked for.
 pub fn cargo() -> &'static Found {
     static ASKED: OnceLock<Found> = OnceLock::new();
-    ASKED.get_or_init(|| {
-        let mut places = toolchain_places();
-        places.extend(shim_places());
-        look_for("cargo", CARGO_VARIABLE, places)
-    })
+    ASKED.get_or_init(|| look_for("cargo", CARGO_VARIABLE, places()))
 }
 
 /// Where this machine's `rust-analyzer` is, and where it was looked for.
 pub fn rust_analyzer() -> &'static Found {
     static ASKED: OnceLock<Found> = OnceLock::new();
-    ASKED.get_or_init(|| {
-        let mut places = toolchain_places();
-        places.extend(shim_places());
-        look_for("rust-analyzer", ANALYZER_VARIABLE, places)
-    })
+    ASKED.get_or_init(|| look_for("rust-analyzer", ANALYZER_VARIABLE, places()))
 }
 
 /// The `cargo` to run, falling back to the bare name.
@@ -305,8 +386,45 @@ pub fn cargo_command() -> PathBuf {
 /// would change what every other part of Thalyx thinks the machine is, which
 /// is rule 11 — a global switch with no owner, whose value is some other
 /// check's precondition.
-pub fn environment() -> Vec<(&'static str, PathBuf)> {
-    let mut environment = Vec::new();
+///
+/// ## Two machines, two answers, and the difference is the whole decree
+///
+/// When the toolchain is **Thalyx's own**, this must not name the host's
+/// `RUSTUP_HOME` or `CARGO_HOME`. Handing a managed cargo the registry of
+/// whoever built the disk is exactly the borrowing that
+/// `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md` exists to end — and it
+/// would be invisible, because on the machine that built the store it works.
+/// So a managed toolchain gets a `CARGO_HOME` **on the store**, beside the
+/// rest of Thalyx's state, and nothing pointing outward.
+///
+/// `CARGO_NET_OFFLINE` because the semantic provider has no network by
+/// construction, and a Cargo that does not know that spends its timeout
+/// finding out. Failing closed is the fast answer here as well as the correct
+/// one.
+///
+/// `LD_LIBRARY_PATH` because the toolchain's binaries carry
+/// `RPATH: [$ORIGIN/../lib]`, and **musl resolves `$ORIGIN` for the main
+/// program by reading `/proc/self/exe`** — measured on 2026-08-31, where the
+/// same binary ran with `/proc` mounted and failed without it with
+/// `Error loading shared library librustc_driver-<hash>.so`. Naming the
+/// directory outright makes the toolchain independent of whether whoever
+/// starts it remembered `/proc`. It reaches nothing new: the directory is
+/// inside the artifact [`readable`] already grants.
+pub fn environment() -> Vec<(&'static str, String)> {
+    let mut environment: Vec<(&'static str, String)> = Vec::new();
+
+    if let Some(runtime) = managed_runtime() {
+        environment.push((LOADER_PATH_VARIABLE, runtime.lib().display().to_string()));
+        // Under the store, so it survives a reboot and belongs to Thalyx. Made
+        // here rather than left to Cargo: a directory a grant names has to
+        // exist before the grant can be given.
+        let home = crate::runtime::store_root().join("state").join("cargo");
+        let _ = std::fs::create_dir_all(&home);
+        environment.push(("CARGO_HOME", home.display().to_string()));
+        environment.push(("CARGO_NET_OFFLINE", "true".to_string()));
+        return environment;
+    }
+
     let rustup = std::env::var_os("RUSTUP_HOME")
         .map(PathBuf::from)
         .or_else(|| {
@@ -316,7 +434,7 @@ pub fn environment() -> Vec<(&'static str, PathBuf)> {
                 .find(|path| path.is_dir())
         });
     if let Some(rustup) = rustup {
-        environment.push(("RUSTUP_HOME", rustup));
+        environment.push(("RUSTUP_HOME", rustup.display().to_string()));
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -327,9 +445,24 @@ pub fn environment() -> Vec<(&'static str, PathBuf)> {
                 .find(|path| path.is_dir())
         });
     if let Some(cargo_home) = cargo_home {
-        environment.push(("CARGO_HOME", cargo_home));
+        environment.push(("CARGO_HOME", cargo_home.display().to_string()));
     }
     environment
+}
+
+/// The runtime this machine's tools actually came out of, or `None`.
+///
+/// Asked of [`cargo`] rather than of the store, and the difference matters: a
+/// store can hold an artifact that does not run — built for another
+/// architecture, half copied, staged on a host with no musl loader — and in
+/// that case [`cargo`] has already fallen through to an installed toolchain.
+/// Reading the store would then describe a toolchain nothing is using.
+pub fn managed_runtime() -> Option<crate::runtime::Runtime> {
+    if cargo().kind != Some(Kind::Managed) {
+        return None;
+    }
+    let bin = cargo().path.as_ref()?.parent()?;
+    crate::runtime::read(bin.parent()?)
 }
 
 /// The environment variable that names where the loader looks first.
@@ -389,8 +522,19 @@ pub fn readable() -> Vec<PathBuf> {
             readable.push(path);
         }
     };
-    for (_, path) in environment() {
-        push(path);
+    // Thalyx's own runtime first, and it is the only entry that matters
+    // inside the machine: the artifact holds the compiler, the standard
+    // library, the standard library's sources and the loader, and a confined
+    // provider that cannot read it cannot start.
+    if let Some(runtime) = managed_runtime() {
+        push(runtime.root.clone());
+        push(crate::runtime::store_root().join("state").join("cargo"));
+    }
+    if let Some(named) = std::env::var_os("RUSTUP_HOME") {
+        push(PathBuf::from(named));
+    }
+    if let Some(named) = std::env::var_os("CARGO_HOME") {
+        push(PathBuf::from(named));
     }
     for home in homes() {
         push(home.join(".cargo"));
@@ -420,7 +564,7 @@ mod tests {
         let found = look_for(
             "cargo",
             "THALYX_TEST_NOTHING_NAMES_THIS",
-            vec![PathBuf::from("/nonexistent/place")],
+            vec![(PathBuf::from("/nonexistent/place"), Kind::Installed)],
         );
         assert_eq!(found.path, None);
         assert!(
@@ -449,7 +593,7 @@ mod tests {
         let found = look_for(
             "rust-analyzer",
             "THALYX_TEST_NOTHING_NAMES_THIS",
-            vec![directory.path().to_path_buf()],
+            vec![(directory.path().to_path_buf(), Kind::Installed)],
         );
         assert_eq!(found.path, None, "a shim that fails was taken for the tool");
         assert_eq!(found.looked_at, vec![impostor]);
@@ -464,8 +608,8 @@ mod tests {
             "rust-analyzer",
             "THALYX_TEST_NOTHING_NAMES_THIS",
             vec![
-                PathBuf::from("/nonexistent/one"),
-                PathBuf::from("/none/two"),
+                (PathBuf::from("/nonexistent/one"), Kind::Installed),
+                (PathBuf::from("/none/two"), Kind::Installed),
             ],
         );
         let why = found.why_not(
@@ -475,6 +619,108 @@ mod tests {
         assert!(why.contains("/nonexistent/one/rust-analyzer"), "{why}");
         assert!(why.contains("/none/two/rust-analyzer"), "{why}");
         assert!(why.contains("rustup component add"), "{why}");
+    }
+
+    /// A staged runtime whose `bin/<name>` is a script that answers.
+    ///
+    /// A fake, and it models the property under test rather than standing in
+    /// for the whole thing: the question here is *which place is looked at
+    /// first and does a candidate that answers win*, and for that a script
+    /// that prints a version is exactly as good as six hundred megabytes of
+    /// compiler. Rule 8 — a fake must model the property, and this one does.
+    fn a_runtime_that_answers(store_root: &Path, identity: &str) -> PathBuf {
+        let root = crate::runtime::directory(store_root).join(identity);
+        for needed in crate::runtime::NEEDED {
+            let path = root.join(needed);
+            if *needed == "lib/rustlib/src" {
+                std::fs::create_dir_all(&path).expect("the sources");
+                continue;
+            }
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
+            std::fs::write(&path, b"{}").expect("a file");
+        }
+        for name in ["cargo", "rust-analyzer"] {
+            let path = root.join("bin").join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho '{name} 0.0.0 (thalyx)'\n"))
+                .expect("the program");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("executable");
+            }
+        }
+        root
+    }
+
+    #[test]
+    fn the_machines_own_runtime_is_looked_at_before_anything_installed() {
+        // The decree of 2026-08-31: when Thalyx carries a compiler, that is
+        // *the* compiler. An installed one is the fallback and not the other
+        // way round — otherwise the machine's programming face belongs to
+        // whatever host it happens to be booted on.
+        let store = tempfile::tempdir().expect("a temp store");
+        a_runtime_that_answers(store.path(), "rust-1.90.0-x86_64-unknown-linux-musl");
+        let places = places_under(store.path());
+        assert_eq!(places.first().map(|(_, kind)| *kind), Some(Kind::Managed));
+        assert!(
+            places[0]
+                .0
+                .ends_with("toolchains/rust/rust-1.90.0-x86_64-unknown-linux-musl/bin"),
+            "{places:?}"
+        );
+        assert!(
+            places[1..].iter().all(|(_, kind)| *kind == Kind::Installed),
+            "{places:?}"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_store_looks_exactly_where_it_always_did() {
+        // The other half of the same claim, and the one that keeps every
+        // developer machine and `dev/verify.sh` working: with nothing staged
+        // there is no managed place at all, and the list is what it was.
+        let empty = tempfile::tempdir().expect("a temp store");
+        let places = places_under(empty.path());
+        assert!(
+            places.iter().all(|(_, kind)| *kind == Kind::Installed),
+            "{places:?}"
+        );
+    }
+
+    #[test]
+    fn the_toolchain_thalyx_carries_is_the_one_that_answers() {
+        // End of the ordering claim: not merely that the managed place is
+        // first in a list, but that the search returns it and says whose it
+        // is. `from: "thalyx"` is the field the preflight prints, and a run
+        // that cannot tell whose compiler answered cannot tell whether the
+        // machine was autonomous.
+        let store = tempfile::tempdir().expect("a temp store");
+        let root = a_runtime_that_answers(store.path(), "rust-1.90.0-x86_64-unknown-linux-musl");
+        let found = look_for(
+            "cargo",
+            "THALYX_TEST_NOTHING_NAMES_THIS",
+            places_under(store.path()),
+        );
+        assert_eq!(
+            found.path.as_deref(),
+            Some(root.join("bin/cargo").as_path())
+        );
+        assert_eq!(found.kind, Some(Kind::Managed));
+    }
+
+    #[test]
+    fn a_half_staged_runtime_is_not_offered_as_a_toolchain() {
+        // Rule 9. An interrupted copy leaves `bin/cargo` sitting there looking
+        // finished; what it produces is a rust-analyzer that starts and dies,
+        // which reads as a broken provider rather than an unfinished store.
+        let store = tempfile::tempdir().expect("a temp store");
+        let root = a_runtime_that_answers(store.path(), "rust-1.90.0-x86_64-unknown-linux-musl");
+        std::fs::remove_file(root.join("lib/libc.so")).expect("removing the loader");
+        assert!(
+            managed_places_under(store.path()).is_empty(),
+            "a runtime with no loader was offered as one"
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ mod session;
 mod snapshot;
 mod store_disk;
 mod term;
+mod toolchain;
 mod words;
 
 use clap::{Parser, Subcommand};

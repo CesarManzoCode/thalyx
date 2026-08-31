@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-30
+fecha-actualizacion: 2026-08-31
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,53 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## Thalyx como máquina para Claude Code: los costes de la traza, atacados — 2026-08-30
+## La máquina agente lleva su propio Rust — 2026-08-31
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+La corrida compacta perdió por una causa física, y ya está identificada exacta:
+dentro de la VM, Claude eligió la primitiva correcta —`context` y luego
+`rename`— y Thalyx contestó `source: index`, `analyzer_starts: 0` y
+**`there is no cargo on this machine`**. La máquina prometía semántica Rust y no
+llevaba compilador.
+
+Lo cerrado en esta sesión está entero en [[Runtime-Rust-Agente]]. En corto:
+
+- **`dev/build-rust-runtime.sh`** construye un artefacto propio de Thalyx desde
+  tarballs oficiales con digest fijado: las herramientas musl de Rust
+  (`cargo`, `rustc`, `rust-analyzer`, servidor de proc-macros, `rust-std`,
+  `rust-src`) más un `libc.so` de musl **compilado aquí** desde el release de
+  musl, y un `libgcc_s.so.1` enlazado del propio `libunwind.a` de Rust. 644 MB.
+  Ningún byte sale de la máquina que lo construye.
+- **Vive en el store**, en `/opt/thalyx/toolchains/rust/<identidad>/`, nunca en
+  el initramfs — con una prueba que arma el archivo y lo cuenta.
+- **PID 1** hace que `/lib/ld-musl-x86_64.so.1` apunte al cargador del artefacto
+  después de montar el store, que es lo que el kernel lee de `PT_INTERP`.
+- **El descubrimiento** pone el runtime de Thalyx en segundo lugar, sólo detrás
+  de una variable que nombre un archivo. Cuando Thalyx lleva compilador, ése es
+  el compilador.
+- **El preflight ya no puede decir READY sobre esto**: `--needs-rust` le
+  pregunta a la máquina el verbo `toolchain`, que corre `cargo --version` y
+  `rust-analyzer --version` **dentro** y lee los manifiestos. El banco lo pide
+  solo cuando el proyecto tiene `Cargo.toml`.
+
+### Qué está probado y qué falta
+
+Probado en el contenedor, físicamente: el artefacto es **cerrado** —cada
+biblioteca que sus programas nombran está dentro—, y dentro de un chroot que no
+tiene más que el artefacto, un `/proc` y tres nodos de dispositivo —sin shell,
+sin `/usr`, sin `/lib64`— `cargo`, `rustc` y `rust-analyzer` arrancan,
+`cargo metadata` describe un workspace sintético, y una sesión LSP completa
+resolvió una definición y devolvió **cuatro ediciones de rename reales**.
+
+**Falta la prueba en la VM real**, que es de César: los comandos están al final
+de [[Runtime-Rust-Agente]] y en el mensaje de esta sesión. Hasta que esa corra,
+lo que hay es un artefacto que funciona en un chroot, no una máquina Thalyx
+arrancada resolviendo nombres.
+
+**No se corrió el banco pagado.**
+
+## Thalyx como máquina para Claude Code: los costes de la traza, atacados — 2026-08-30
 
 La corrida A/B compacta (`/var/tmp/thalyx-bench-compact-1/`) quedó físicamente
 cerrada con los dos brazos VÁLIDOS. Demostró **la propiedad buena**: Claude sí
@@ -93,8 +137,6 @@ funcionando, y es exactamente por qué el handle va en toda respuesta.
 Ver `vault/07-Adopcion-y-Fases/Agentes-Externos.md`.
 
 ## El vertical físico, cerrado: la ventana de denegación es de quien la necesita — 2026-08-30
-
-**Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
 
 La transacción programable estaba construida. La corrida real en Fedora sobre
 `8ff60fa` la ejerció completa y encontró defectos de **integración y arnés**, no

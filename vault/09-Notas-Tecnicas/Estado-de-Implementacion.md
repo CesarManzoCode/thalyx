@@ -306,6 +306,20 @@ cosas ningún verbo puede usar.
 | `contexto` y `renombrar-simbolo` | `crates/thalyx-cli/src/semantic.rs` | La cara caliente. `contexto` contesta qué es un nombre en unos cientos de bytes con un asa, `contexto expandir=<asa>` trae exactamente las líneas de esa declaración, `presupuesto=N` acota y dice qué no cupo, y `usos=N` pide los lugares donde se usa — el número siempre viene, la lista sólo si se pide, porque sobre un nombre común la lista es todo el presupuesto. Cada respuesta dice `source` —`rust-analyzer` resolvió, `index` coincidió— y `fresh`. `renombrar-simbolo` escribe en cada lugar que de veras usa el nombre, no donde el texto coincide, y por la frontera de la sesión. **Desde el 2026-08-30 contesta también `edits_by_file`** —cuántos lugares tocó en cada archivo— contado del `WorkspaceEdit` que rust-analyzer ya entregó, mientras se aplica, nunca re-escaneando el árbol: un segundo pase sería un conteo textual de una cadena, que es justo lo que este camino existe para superar. Y `definition` aparece **sólo cuando el lugar se alcanzó a través de la declaración del símbolo**; dado `archivo:línea:columna` el llamador apuntó a algún lado y el campo se omite en vez de inventarse. Ver [[Contexto-Progresivo]] |
 | Importar un proyecto a la máquina | `image/Makefile` (`agent`, `run-agent`, `agent-export`) | Una copia descartable, como subvolumen propio para que `intento` tenga qué fotografiar. El checkout del anfitrión no se toca y no es alcanzable desde adentro |
 
+### El runtime Rust del agente, que es de Thalyx y no del anfitrión — 2026-08-31
+
+`dev/build-rust-runtime.sh` construye un artefacto de 644 MB desde tarballs
+oficiales con digest fijado —las herramientas musl de Rust, más un `libc.so` de
+musl compilado aquí y un `libgcc_s.so.1` enlazado del `libunwind.a` del propio
+Rust— y `make -C image agent PROJECT=…` lo pone en el store, jamás en la imagen.
+`thalyx-rust::runtime` lo encuentra, `thalyx dev rust-runtime` comprueba que se
+lleva consigo todo lo que sus programas nombran, y PID 1 hace que
+`/lib/ld-musl-x86_64.so.1` apunte a su cargador. El verbo `toolchain` y
+`thalyx-mcp --preflight --needs-rust` hacen que un banco no pueda volver a pagar
+por una máquina sin compilador. Entero en [[Runtime-Rust-Agente]].
+
+**Lo que no hace:** compilar. No lleva enlazador, a propósito y explicado ahí.
+
 ## No construido todavía
 
 | Pieza | Bloqueante para |

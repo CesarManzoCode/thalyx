@@ -6025,3 +6025,49 @@ controla, se dice de quién es la afirmación y quién la comprobó. Un presupue
 que sólo es correcto en el cliente que alguien revisó una vez no es un
 presupuesto.
 
+
+## Regla derivada: una comprobación que le pregunta al anfitrión contesta sobre el anfitrión — 2026-08-31
+
+`ldd` sobre el toolchain que va al store dice **lo que resolvería esta Fedora**,
+porque arranca el cargador real contra el `/lib` real. La pregunta que tenía el
+artefacto era la contraria: si se lleva consigo todo lo que sus propios programas
+nombran, en una máquina —Thalyx— cuyo `/lib` está vacío.
+
+Un artefacto al que le falte una biblioteca que casualmente vive en el `/usr/lib`
+del anfitrión pasa `ldd` **perfecto** en el anfitrión, y es un directorio de ELF
+muertos dentro de la máquina. La forma del fallo tampoco ayuda: `execve` contesta
+`ENOENT` y lo que la persona lee es *«no hay cargo en esta máquina»* sobre un
+cargo que está ahí.
+
+Así que `thalyx dev rust-runtime` lee las cabeceras: `PT_INTERP` y cada
+`DT_NEEDED`, y pregunta si están **dentro del artefacto**. No necesita máquina
+para contestar, que es también lo que lo hace comprobable en un contenedor.
+
+La regla general: cuando la propiedad es *«esto funciona en otra máquina»*, toda
+herramienta que consulte a ésta es el instrumento equivocado — regla 5 apuntada
+al ambiente en vez de al arnés. Se lee la descripción del artefacto, no la
+respuesta del sistema que lo construyó.
+
+Y su reverso, el mismo día: para *ejecutar* lo que se envía sin contaminarlo, el
+cargador de musl se invoca directo —`<artefacto>/lib/libc.so <artefacto>/bin/cargo`—
+con el entorno vaciado. Corre el binario que se envía, en cualquier anfitrión, sin
+que nadie escriba en `/lib`, que sería la regla 11: una prueba que escribe algo
+global cambió la máquina que estaba midiendo.
+
+## Regla derivada: `$ORIGIN` del programa principal, bajo musl, se lee de `/proc` — 2026-08-31
+
+Mismo binario, mismo artefacto, mismo `RPATH: [$ORIGIN/../lib]`: con `/proc`
+montado arranca, sin `/proc` muere con
+
+```
+Error loading shared library librustc_driver-<hash>.so: No such file or directory
+```
+
+que se lee como una biblioteca que falta y no lo es. `fixup_rpath` de musl
+resuelve el `$ORIGIN` del ejecutable mapeado por el kernel leyendo
+`/proc/self/exe`; sin `/proc` no hay origen y el `RPATH` no expande.
+
+La regla: cuando un `RPATH` relativo falla, la pregunta antes de tocar el
+artefacto es **qué sabe el proceso de sí mismo**. Y como no se debe depender de
+que quien arranque el proceso se acordara de montar `/proc`, el directorio se
+nombra además en `LD_LIBRARY_PATH`, que no depende de nada.

@@ -1661,7 +1661,7 @@ fn rust_check(
     // change not compiling.
     let environment: Vec<(String, String)> = thalyx_rust::toolchain::environment()
         .into_iter()
-        .map(|(name, path)| (name.to_string(), path.display().to_string()))
+        .map(|(name, value)| (name.to_string(), value))
         .collect();
     let outcome = run_confined(
         asked,

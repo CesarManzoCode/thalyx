@@ -418,6 +418,11 @@ fn every_verb_the_session_offers_answers_with_exactly_one_object() {
             // A name and a new name, which on a tree with no Cargo manifest
             // reaches `unresolved`. Still one object, which is the claim.
             "rename" => vec!["greet", "salute"],
+            // Nothing at all: it is a question about the machine's own
+            // equipment. Whether this container turns out to have a compiler
+            // is not this test's question — one line in, exactly one object
+            // out, through the real bridge, is.
+            "toolchain" => vec![],
             other => panic!("`{other}` is offered and this test does not know how to call it"),
         };
         let answer = wire.ask(verb, &arguments);
