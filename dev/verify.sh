@@ -8703,6 +8703,62 @@ fi
 # seventeenth.
 stage_60
 
+step "61. the Rust the agent programs with belongs to Thalyx, not to this machine"
+
+# `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md`, 2026-08-31. A paid run on
+# 2026-08-30 watched Claude, inside the machine, choose the right primitive and
+# be answered `there is no cargo on this machine`. The machine had promised a
+# semantic rename with no compiler on it.
+#
+# ## What this stage is for, and why it is not the VM
+#
+# The physical claim — a booted Thalyx resolving a name — is `make -C image
+# agent` and the commands in the note; no shell here can make it. What this
+# stage establishes is the property that decides whether that claim survives
+# being carried anywhere: **the artifact is closed**. Every library its own
+# programs name is inside it, the loader travels with it, nothing in it points
+# at the machine that built it, and the staged cargo can read a workspace with
+# an empty environment.
+#
+# That is exactly the thing a check on the *building* machine gets wrong by
+# default: an artifact that quietly resolves against this Fedora's `/usr/lib`
+# looks perfect here and is a directory of dead ELF files inside Thalyx, whose
+# `/lib` is empty. `ldd` cannot tell them apart, because `ldd` asks this host.
+# `thalyx dev rust-runtime` reads the headers and asks the artifact.
+RUNTIME_DIR="${THALYX_RUST_RUNTIME:-}"
+if [ -z "$RUNTIME_DIR" ]; then
+    RUNTIME_DIR=$(ls -d "$ROOT"/image/build/rust-runtime/rust-* 2>/dev/null | head -1 || true)
+fi
+if [ -z "$RUNTIME_DIR" ] || [ ! -d "$RUNTIME_DIR" ]; then
+    if [ "${THALYX_REQUIRE_RUST_RUNTIME:-0}" = 1 ]; then
+        failed "THALYX_REQUIRE_RUST_RUNTIME=1 and there is no artifact: make -C image rust-runtime"
+    else
+        unproven "there is no Rust runtime artifact here, so nothing about the agent's toolchain was checked. Build one with: make -C image rust-runtime  (about 170 MB, once)"
+    fi
+else
+    RUNTIME_LOG="$WORK/rust-runtime.log"
+    if "$THALYX" dev rust-runtime "$RUNTIME_DIR" > "$RUNTIME_LOG" 2>&1; then
+        proven "$(basename "$RUNTIME_DIR") is closed: every library cargo, rustc, rust-analyzer and the proc-macro server name is inside the artifact, and so is the loader they ask the kernel for"
+    else
+        failed "the Rust runtime artifact would not work inside a machine; see $RUNTIME_LOG"
+        excerpt "$RUNTIME_LOG"
+    fi
+
+    RUNTIME_TESTS="$WORK/rust-runtime-tests.log"
+    if ( cd "$ROOT" && env THALYX_REQUIRE_RUST_RUNTIME=1 "THALYX_RUST_RUNTIME=$RUNTIME_DIR"             cargo test -p thalyx-rust --test the_runtime_thalyx_carries_runs_on_its_own )             > "$RUNTIME_TESTS" 2>&1; then
+        # `4 passed` and not merely exit 0: these skip loudly on a machine with
+        # no artifact, and rule 3 says a skip exits successfully.
+        if grep -q "4 passed" "$RUNTIME_TESTS" && ! grep -q "NOT PROVEN" "$RUNTIME_TESTS"; then
+            proven "the staged cargo, rustc and rust-analyzer all answered through the artifact's own musl loader with an empty environment, and the staged cargo described a workspace it had never seen — no PATH, no RUSTUP_HOME, nothing from this machine"
+        else
+            unproven "the artifact's programs were not exercised; see $RUNTIME_TESTS"
+        fi
+    else
+        failed "the staged toolchain does not run out of its own artifact; see $RUNTIME_TESTS"
+        excerpt "$RUNTIME_TESTS"
+    fi
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

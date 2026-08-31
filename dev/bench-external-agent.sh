@@ -457,10 +457,26 @@ parity_gate() {
     say "the two arms were staged from the same tree"
 }
 
+# Whether this run is about Rust, decided from the tree rather than from a flag.
+#
+# The task's own workspace answers it: a `Cargo.toml` at the root means the
+# agent will be asked to resolve Rust names, which means a machine with no
+# compiler cannot do the task however alive it is. Derived rather than typed,
+# because a flag somebody has to remember is a flag that is missing on the run
+# that needed it — which is 2026-08-30 exactly.
+needs_rust() {
+    [ -f "$PROJECT/Cargo.toml" ]
+}
+
 preflight_b() {
     local report="$OUT/preflight-b.json"
+    local rust=""
+    if needs_rust; then rust="--needs-rust"; fi
     rm -f "$report" "$OUT/preflight-b.verdict.json"
     say "arm B: asking the machine whether it is there (this costs nothing)"
+    if [ -n "$rust" ]; then
+        say "arm B: and whether it can resolve a Rust name, which this task needs"
+    fi
     if [ -n "${THALYX_BENCH_PREFLIGHT_CMD:-}" ]; then
         # shellcheck disable=SC2086
         $THALYX_BENCH_PREFLIGHT_CMD > "$report" 2> "$OUT/preflight-b.err" || true
@@ -471,7 +487,8 @@ preflight_b() {
         printf '{"ready":false,"because":["there is no socket at %s — is the machine up? `make -C image run-agent`"]}\n' \
             "$SOCKET" > "$report"
     else
-        "$MCP" --connect "$SOCKET" --preflight \
+        # shellcheck disable=SC2086
+        "$MCP" --connect "$SOCKET" --preflight $rust \
             --wait "${THALYX_BENCH_PREFLIGHT_WAIT:-20}" \
             > "$report" 2> "$OUT/preflight-b.err" || true
     fi
@@ -481,8 +498,11 @@ preflight_b() {
     # before the block below could say why. The fifth entry in
     # `Estrategia-de-Pruebas.md`: the instrument includes the harness, and the
     # self-test that caught this was written before the code it caught.
+    local require=""
+    if needs_rust; then require="--require-rust"; fi
+    # shellcheck disable=SC2086
     python3 "$ROOT/dev/bench-summary.py" --preflight-verdict "$report" \
-        --project "$PROJECT" > "$OUT/preflight-b.verdict.json" 2>&1 || true
+        --project "$PROJECT" $require > "$OUT/preflight-b.verdict.json" 2>&1 || true
 }
 
 # ── the three prompts, which are one prompt ──────────────────────────────────

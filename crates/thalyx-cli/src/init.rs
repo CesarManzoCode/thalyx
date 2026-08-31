@@ -392,6 +392,10 @@ pub fn run() -> Fallible {
     // unmounted /opt/thalyx would report an empty machine rather than an
     // unmounted one.
     crate::store_disk::mount().report();
+    // After the store, because the runtime it points at is on the store, and
+    // before the session, because the session is what answers `context` and
+    // `rename`.
+    crate::store_disk::link_runtime_loader();
 
     match attach_lsm() {
         Ok(detail) => println!("  ok  thalyx-lsm  {detail}"),

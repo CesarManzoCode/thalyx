@@ -366,6 +366,48 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn the_rust_runtime_is_not_in_the_image() {
+        // `Construccion-del-ISO.md`: the image is the Linux kernel and one
+        // program, and the decree is written to be *countable* rather than
+        // argued. On 2026-08-31 six hundred megabytes of Rust toolchain
+        // arrived for the agent to program with, and the one way that could
+        // have gone wrong quietly was for it to be put in here — where it
+        // would double the boot's memory before the machine said a word, and
+        // where `make count` would stop saying what it says.
+        //
+        // It goes on the store, like the engine and the model, because that is
+        // the difference between what Thalyx *is* and what has been installed
+        // on it. This asserts the archive's own list, which is the same list
+        // the builder writes.
+        for directory in DIRECTORIES {
+            assert!(
+                !directory.contains("toolchain") && !directory.contains("rust"),
+                "the image's directory list has grown a {directory}"
+            );
+        }
+        let held = tempfile::tempdir().expect("a temp dir");
+        let binary = fake_binary(held.path());
+        let archive = held.path().join("initramfs.cpio");
+        build(&binary, &archive).expect("building the archive");
+        let bytes = std::fs::read(&archive).expect("reading the archive");
+        let entries = parse(&bytes).expect("parsing the archive");
+        assert_eq!(
+            entries.iter().filter(|entry| entry.is_program()).count(),
+            1,
+            "the image is the kernel and one program"
+        );
+        for entry in &entries {
+            assert!(
+                !entry.name.contains("cargo")
+                    && !entry.name.contains("rust")
+                    && !entry.name.contains("toolchain"),
+                "{} is in the image and belongs on the store",
+                entry.name
+            );
+        }
+    }
+
     fn fake_binary(dir: &Path) -> std::path::PathBuf {
         let path = dir.join("thalyx");
         let mut file = std::fs::File::create(&path).unwrap();

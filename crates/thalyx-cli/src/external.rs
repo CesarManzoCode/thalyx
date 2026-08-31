@@ -201,6 +201,14 @@ pub const EXPOSED: &[Exposed] = &[
         repeating: MORE_OPTIONS,
         verbatim_from: QUOTED,
     },
+    // Read-only, takes nothing, and it is what a harness asks before it spends
+    // money on a machine that may not have a compiler on it.
+    Exposed {
+        verb: "toolchain",
+        slots: &[],
+        repeating: NOTHING_MORE,
+        verbatim_from: QUOTED,
+    },
     Exposed {
         verb: "rename",
         // What to rename and what to call it. Both text: the first may be a

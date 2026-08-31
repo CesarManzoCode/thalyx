@@ -1319,7 +1319,7 @@ def project_top_level(root):
     )
 
 
-def preflight_verdict(report, project=None):
+def preflight_verdict(report, project=None, require_rust=False):
     """Whether arm B is ready to be paid for, decided outside the probe.
 
     The probe (`thalyx-mcp --preflight`) talks to the machine; this decides what
@@ -1359,6 +1359,42 @@ def preflight_verdict(report, project=None):
             )
         else:
             verdict["top_level_matches"] = True
+
+    # ── the capability the task needs, not just a machine that answers ──
+    #
+    # The 2026-08-30 run: READY, paid for, and then `there is no cargo on this
+    # machine` from inside. Aliveness and the right tree were both true and
+    # neither was the thing a Rust task needs. Decided here rather than in the
+    # probe for the same reason the rest of this function is here: it can then
+    # be tested against a machine with a compiler, one without, and one too old
+    # to be asked, all three for free and none of them needing a VM.
+    if require_rust:
+        toolchain = report.get("toolchain")
+        verdict["toolchain"] = toolchain
+        if not isinstance(toolchain, dict):
+            verdict["because"].append(
+                "this run needs Rust semantics and the machine said nothing about a "
+                "toolchain. Either it is a Thalyx from before the managed runtime, or "
+                "--needs-rust was not passed to the probe"
+            )
+        elif toolchain.get("semantic_ready") is not True:
+            said = toolchain.get("because") or ["the machine did not say why"]
+            verdict["because"].append(
+                "this run needs Rust semantics and the machine cannot resolve names: "
+                + "; ".join(said if isinstance(said, list) else [str(said)])
+            )
+        else:
+            # Written down because it is the fact a later reader will want:
+            # which compiler produced the run's answers, and whose it was.
+            cargo = toolchain.get("cargo") or {}
+            analyzer = toolchain.get("rust_analyzer") or {}
+            verdict["rust"] = {
+                "cargo": cargo.get("version"),
+                "cargo_from": cargo.get("from"),
+                "rust_analyzer": analyzer.get("version"),
+                "rust_analyzer_from": analyzer.get("from"),
+                "runtime": (toolchain.get("runtime") or {}).get("identity"),
+            }
 
     verdict["ready"] = not verdict["because"]
     return verdict
@@ -2839,6 +2875,49 @@ def anchoring_self_test(sample):
         ok("a machine that answered and is holding this project is READY",
            alive["ready"], True)
 
+        # ── the capability, which is what the 2026-08-30 run was missing ──
+        healthy = {
+            "ready": True, "thalyx": "0.1.0", "workspace": "/workspace",
+            "tools_offered": 11, "top_level": ["Cargo.toml", "crates", "target"],
+        }
+        no_compiler = dict(healthy, toolchain={
+            "semantic_ready": False,
+            "because": ["there is no cargo that runs at any of the 4 places"],
+            "cargo": {"path": None, "from": None},
+            "rust_analyzer": {"path": None, "from": None},
+        })
+        ok("a machine with no cargo is not READY for a Rust run",
+           preflight_verdict(no_compiler, workspace, require_rust=True)["ready"], False)
+        ok("...and the same machine is still READY for a run that is not about Rust",
+           preflight_verdict(no_compiler, workspace)["ready"], True)
+
+        no_analyzer = dict(healthy, toolchain={
+            "semantic_ready": False,
+            "because": ["there is no rust-analyzer that runs at any of the 4 places"],
+            "cargo": {"path": "/opt/thalyx/toolchains/rust/x/bin/cargo",
+                      "from": "thalyx", "version": "cargo 1.90.0"},
+            "rust_analyzer": {"path": None, "from": None},
+        })
+        ok("a machine with cargo and no rust-analyzer is not READY for a Rust run",
+           preflight_verdict(no_analyzer, workspace, require_rust=True)["ready"], False)
+
+        ok("a machine too old to be asked is not READY for a Rust run either",
+           preflight_verdict(healthy, workspace, require_rust=True)["ready"], False)
+
+        both = dict(healthy, toolchain={
+            "semantic_ready": True, "because": [],
+            "cargo": {"path": "/opt/thalyx/toolchains/rust/x/bin/cargo",
+                      "from": "thalyx", "version": "cargo 1.90.0"},
+            "rust_analyzer": {"path": "/opt/thalyx/toolchains/rust/x/bin/rust-analyzer",
+                              "from": "thalyx", "version": "rust-analyzer 1.90.0"},
+            "runtime": {"identity": "rust-1.90.0-x86_64-unknown-linux-musl"},
+        })
+        settled = preflight_verdict(both, workspace, require_rust=True)
+        ok("a machine whose own runtime answered is READY for a Rust run",
+           settled["ready"], True)
+        ok("...and the verdict records whose compiler it was",
+           settled.get("rust", {}).get("cargo_from"), "thalyx")
+
         # ── 5. the two arms were given the same thing ──
         same = {
             "source_commit": "abc123", "exclusions": list(OUTSIDE_THE_WORKSPACE),
@@ -3862,6 +3941,11 @@ def main():
     parser.add_argument("--project", type=pathlib.Path,
                         help="the tree --preflight-verdict compares the machine against")
     parser.add_argument(
+        "--require-rust", action="store_true",
+        help="with --preflight-verdict: a machine that cannot resolve Rust names is "
+             "not READY, however alive it is",
+    )
+    parser.add_argument(
         "--import-stamp", type=pathlib.Path, metavar="DIR",
         help="print, as JSON, what a tree is at the moment it is imported: where it "
              "came from, its commit, the exclusions, and the digest of its manifest",
@@ -4099,7 +4183,7 @@ def main():
         except (OSError, json.JSONDecodeError) as why:
             report = None
             print(f"  the preflight probe left nothing readable: {why}", file=sys.stderr)
-        verdict = preflight_verdict(report, given.project)
+        verdict = preflight_verdict(report, given.project, given.require_rust)
         print(json.dumps(verdict, indent=2))
         sys.exit(0 if verdict["ready"] else 1)
 

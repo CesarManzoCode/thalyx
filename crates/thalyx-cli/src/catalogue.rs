@@ -485,6 +485,21 @@ pub const VERBS: &[Verb] = &[
         summary: "What a name is — kind, crate, signature, where, how many uses — small \
                   enough to read, with a handle that fetches the exact lines on demand.",
     },
+    // Beside `context` because it answers the question `context` cannot: not
+    // *what is this name* but *can this machine resolve a name at all*. A run
+    // that asks the first without ever asking the second is the 2026-08-30
+    // benchmark, which paid for a machine that had no compiler on it.
+    Verb {
+        id: "toolchain",
+        names: &["herramientas", "toolchain"],
+        takes: &[],
+        flags: &[],
+        answers: Some("toolchain"),
+        changes: false,
+        errors: &[],
+        summary: "Whether this machine can resolve Rust names: which cargo and \
+                  rust-analyzer it has, whether they ran, and whose they are.",
+    },
     Verb {
         id: "rename",
         names: &["renombrar-simbolo", "renombrar-símbolo", "rename"],
@@ -946,7 +961,19 @@ mod tests {
         // it had. They are the frontier agent's verbs — typed, or sent over the
         // external surface, where the caller has already read the exact name
         // out of an answer this machine gave it.
-        const NOT_A_SENTENCE: [&str; 4] = ["exec", "evidence", "context", "rename"];
+        // `toolchain` joins them for a different reason from the other four:
+        // not that a sentence cannot spell its argument — it takes none — but
+        // that it is a question about the machine's own equipment rather than
+        // about the human's request. Its callers are a preflight deciding
+        // whether to spend money and a person typing `herramientas`; teaching
+        // the local grammar a verb neither of those goes through would spend a
+        // tiny model's tokens on a word nobody says to it.
+        //
+        // Written down as a pendiente rather than as a closed question:
+        // «¿puedes renombrar símbolos aquí?» is a thing Cesar might well say
+        // out loud, and the day it is worth answering, this list is where the
+        // decision is recorded.
+        const NOT_A_SENTENCE: [&str; 5] = ["exec", "evidence", "context", "rename", "toolchain"];
 
         let unaskable: Vec<&&str> = ops
             .difference(&proposable)

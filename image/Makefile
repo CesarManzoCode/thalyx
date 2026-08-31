@@ -8,6 +8,7 @@
 #   make store-stage      build what goes on the store disk
 #   sudo make store       format the disk and copy that onto it
 #   make run              boot it in QEMU
+#   make rust-runtime     build the Rust toolchain the agent programs with
 #   make count            list what is really inside the image
 #   sudo make installed   partition a disk image and install Thalyx onto it
 #   make run-installed    boot that disk, with no medium attached
@@ -172,6 +173,32 @@ AGENTMARK   := $(BUILD)/agent-workspace
 # so writing it cannot move a restore verdict.
 AGENTIMPORT := $(BUILD)/agent-import.json
 
+# ─────────────────────────────────────── the Rust runtime the agent programs with
+#
+# `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md`. On 2026-08-30 a paid
+# benchmark watched Claude, inside the machine, pick exactly the right primitive
+# and be told `there is no cargo on this machine`. The machine had promised a
+# semantic rename and had no compiler to keep the promise with.
+#
+# The fix is not to lend it the host's: `Filosofia-Fundacional.md` says Thalyx is
+# the whole system, and a programming face that only works because Fedora has
+# rustup installed is a face that belongs to Fedora. So `dev/build-rust-runtime.sh`
+# builds an artifact out of digest-checked upstream tarballs — Rust's own musl
+# host tools, and a musl loader compiled from musl's own release — and it goes on
+# the **store**, never in the image. `make count` still says the kernel and one
+# program.
+#
+#   RUST=auto   the default: on when PROJECT is a Cargo workspace, off otherwise
+#   RUST=1      always stage it, whatever the project is
+#   RUST=0      never, even for a Rust workspace
+#
+# `RUSTRUNTIME` names an artifact that was already built, so a person preparing
+# several machines pays the download once. Left empty, the build directory is the
+# cache and a second `make` finds it there.
+RUST         ?= auto
+RUSTRUNTIME  ?=
+RUSTBUILD    := $(BUILD)/rust-runtime
+
 # The first module. It is not in the image and must not be: the image carries
 # the kernel and one program. A module lives on the store, which is the whole
 # distinction between what Thalyx *is* and what has been installed on it.
@@ -218,7 +245,7 @@ ENGINE_RUN    := $(ENGINE_DATA)/run
         store store-stage greeter engine engine-stage lsm doctor hook-check boot pin-kernel \
         boot-graphical run-serial \
         esp run-uefi initramfs-check installed run-installed run-hardware \
-        run-agent boot-agent agent agent-export
+        run-agent boot-agent agent agent-export rust-runtime rust-stage
 
 all: doctor kernel binary image hook-check
 	@echo
@@ -888,6 +915,7 @@ store-stage: binary greeter
 	fi
 	@$(MAKE) --no-print-directory engine-stage
 	@$(MAKE) --no-print-directory project-stage
+	@$(MAKE) --no-print-directory rust-stage
 	@# Written last, and only on success. `store` looks for this and not for
 	@# the directory: an interrupted stage leaves the directory sitting there
 	@# looking finished, and a disk built from it would be missing whatever
@@ -950,6 +978,33 @@ project-stage:
 	    --workspace "$(WORKSPACE)" > $(AGENTIMPORT); \
 	 echo "  workspace: $(WORKSPACE) — a copy of $(PROJECT), $$(du -sh "$(STAGE)/user/$(PROJECTNAME)" | cut -f1)"; \
 	 echo "  imported:  $(AGENTIMPORT)"
+
+# The Rust runtime as an artifact on this host, built once and cached.
+#
+# Separate from everything else and never an implicit prerequisite of anything
+# but `rust-stage`: it downloads about 170 MB and compiles a C library, and a
+# `make` that did that every time would make every other target unusable. The
+# same arrangement `engine` has, for the same reason.
+rust-runtime:
+	@$(ROOT)/dev/build-rust-runtime.sh $(RUSTBUILD)
+
+# That artifact onto the stage, so the machine boots able to resolve a name.
+#
+# It lands under `system/`, which is `/opt/thalyx` inside the machine, and
+# therefore on the store — never in the initramfs. `make count` says the image
+# is the Linux kernel and one program and it has to keep saying that; six
+# hundred megabytes of compiler is *software installed on Thalyx*, which is the
+# whole distinction between what Thalyx is and what has been put on it. The
+# engine and its weights are on the store for the same reason.
+#
+# Checked after it is copied, by Thalyx itself, and the check is not "the files
+# arrived": `thalyx dev rust-runtime` reads the ELF headers of the staged
+# programs and asks whether every library they name is inside the artifact. An
+# artifact that would resolve against the *building* host looks perfect on the
+# building host, and that is exactly the failure this whole change exists to
+# end.
+rust-stage:
+	@set -e; 	 wanted="$(RUST)"; 	 case "$$wanted" in 	   0|no|off) exit 0 ;; 	   auto) if [ -n "$(PROJECT)" ] && [ -f "$(PROJECT)/Cargo.toml" ]; then 	             wanted=1; 	         else 	             exit 0; 	         fi ;; 	 esac; 	 artifact="$(RUSTRUNTIME)"; 	 if [ -z "$$artifact" ]; then 	     echo "  rust: building or reusing the runtime artifact"; 	     artifact="$$($(ROOT)/dev/build-rust-runtime.sh $(RUSTBUILD) | tail -1)"; 	 fi; 	 test -d "$$artifact" || { 	     echo "  a Rust runtime was asked for and there is none at $$artifact."; 	     echo "  Build one first:  make -C image rust-runtime"; 	     exit 1; 	 }; 	 identity="$$(basename "$$artifact")"; 	 rm -rf "$(STAGE)/system/toolchains/rust/$$identity"; 	 mkdir -p "$(STAGE)/system/toolchains/rust"; 	 cp -a "$$artifact" "$(STAGE)/system/toolchains/rust/$$identity"; 	 $(THALYX) dev rust-runtime "$(STAGE)/system/toolchains/rust/$$identity" 	     || { echo "  the staged runtime is not usable, so nothing was staged"; 	          rm -rf "$(STAGE)/system/toolchains/rust/$$identity"; exit 1; }; 	 echo "  rust:      from $$artifact"; 	 echo "             $$(du -sh "$(STAGE)/system/toolchains/rust/$$identity" | cut -f1) staged"; 	 echo "             inside Thalyx: /opt/thalyx/toolchains/rust/$$identity"
 
 engine-stage:
 	@$(ROOT)/dev/stage-engine.sh "$(STAGE)" "$(BUILD)" "$(THALYX)" "$(ENGINE)" "$(MODEL)" "$(ENGINE_ID)" "$(ENGINE_TIER)" "$(ENGINE_MODELS)" "$(ENGINE_RUN)"
@@ -1242,6 +1297,14 @@ boot-agent:
 #
 #   make -C image agent PROJECT=~/code/mi-proyecto
 #
+# **A Cargo workspace gets a Rust toolchain without anybody asking for one.**
+# `RUST=auto` — the default — sees `PROJECT/Cargo.toml` and stages the runtime
+# artifact, so `context` and `rename` inside the machine resolve names instead
+# of matching them. That is `vault/09-Notas-Tecnicas/Runtime-Rust-Agente.md`,
+# written the day after a paid run was answered `there is no cargo on this
+# machine`. The first one builds the artifact and costs about 170 MB of
+# download; every one after it reuses `build/rust-runtime/`.
+#
 # The one that needs root is `store`, and it is the only one — same rule as
 # everywhere else here: the privilege boundary is the target boundary, and a
 # `make` that quietly asked for a password is a `make` nobody can put in a
@@ -1256,7 +1319,7 @@ agent:
 	    echo "  touched, and never reachable from inside the machine."; \
 	    exit 1; \
 	}
-	$(MAKE) --no-print-directory store-stage PROJECT=$(PROJECT)
+	$(MAKE) --no-print-directory store-stage PROJECT=$(PROJECT) RUST=$(RUST)
 	@echo
 	@echo "  the disk needs root: it formats a loop device and mounts it."
 	sudo $(MAKE) --no-print-directory store

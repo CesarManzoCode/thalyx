@@ -78,6 +78,21 @@ struct Cli {
     #[arg(long)]
     preflight: bool,
 
+    /// Refuse to be READY unless the machine can resolve Rust names
+    ///
+    /// The 2026-08-30 run: the preflight said READY, the run was paid for, and
+    /// the first thing the agent did inside the machine came back
+    /// `there is no cargo on this machine`. Aliveness and the right tree were
+    /// both true and neither was the capability the task needed.
+    ///
+    /// A flag rather than always-on, because most tasks are not Rust and a
+    /// preflight that demanded a compiler of every machine would be a
+    /// preflight that fails on the ones it was written for. Rule 3's shape:
+    /// one switch per requirement, so a run that needs a compiler can demand
+    /// one and a run that does not is unaffected.
+    #[arg(long)]
+    needs_rust: bool,
+
     /// Which set of tools to offer the model
     ///
     /// `compact` — the default — offers three: what a name is, do a stretch of
@@ -140,7 +155,7 @@ fn main() {
     );
 
     if cli.preflight {
-        let (report, ready) = preflight(&mut machine, &greeting, offered.len());
+        let (report, ready) = preflight(&mut machine, &greeting, offered.len(), cli.needs_rust);
         println!("{report}");
         std::process::exit(i32::from(!ready));
     }
@@ -233,7 +248,12 @@ fn usable(verbs: &[String], whole_catalogue: bool) -> Vec<&'static tools::Tool> 
 /// would have changed the starting state of the very run it was clearing —
 /// and the `reversible` task's whole verdict is a comparison against that
 /// starting state.
-fn preflight(machine: &mut Machine, greeting: &machine::Greeting, offered: usize) -> (Value, bool) {
+fn preflight(
+    machine: &mut Machine,
+    greeting: &machine::Greeting,
+    offered: usize,
+    needs_rust: bool,
+) -> (Value, bool) {
     let mut report = json!({
         "protocol": thalyx_bridge::PROTOCOL,
         "thalyx": greeting.thalyx,
@@ -281,6 +301,60 @@ fn preflight(machine: &mut Machine, greeting: &machine::Greeting, offered: usize
             report["list"] = answer;
         }
         Err(why) => trouble.push(format!("`list .` did not answer: {why}")),
+    }
+
+    // ── and, when the task is a Rust one, whether it can resolve a name ──
+    //
+    // Asked of the machine, over the same channel, with the same adapter, and
+    // it costs nothing: `toolchain` runs `cargo --version` and
+    // `rust-analyzer --version` inside the machine and reads the workspace's
+    // manifests. It writes nothing — the 2026-08-29 lesson was a probe that
+    // changed the starting state of the run it was clearing.
+    let has_verb = greeting.verbs.iter().any(|verb| verb == "toolchain");
+    if needs_rust {
+        if !has_verb {
+            // Rule 10: a machine too old to answer is not a machine without a
+            // compiler, and the remedy is different. Still not READY — a run
+            // that needs the capability cannot be told "probably".
+            trouble.push(
+                "this machine has no `toolchain` verb, so whether it can resolve Rust \
+                 names cannot be established. It is running a Thalyx from before the \
+                 managed Rust runtime existed"
+                    .into(),
+            );
+        } else {
+            match machine.ask("toolchain", vec![]) {
+                Ok(answer) => {
+                    let ready = answer
+                        .get("semantic_ready")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if !ready {
+                        let said = answer
+                            .get("because")
+                            .and_then(Value::as_array)
+                            .map(|lines| {
+                                lines
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .collect::<Vec<&str>>()
+                                    .join("; ")
+                            })
+                            .unwrap_or_else(|| "the machine did not say why".to_string());
+                        trouble.push(format!(
+                            "this machine cannot resolve Rust names, and the task needs it: {said}"
+                        ));
+                    }
+                    report["toolchain"] = answer;
+                }
+                Err(why) => trouble.push(format!("`toolchain` did not answer: {why}")),
+            }
+        }
+    } else if has_verb && let Ok(answer) = machine.ask("toolchain", vec![]) {
+        // Reported even when it is not required, because a run that turns out
+        // to have been about Rust after all should not have to guess
+        // afterwards what the machine had on it.
+        report["toolchain"] = answer;
     }
 
     let ready = trouble.is_empty();
