@@ -21,6 +21,33 @@
 //! Rule 1 of `Estrategia-de-Pruebas.md`: every one of them came from running
 //! the thing. Not one was visible in the source of anything Thalyx wrote.
 //!
+//! The fifth arrived on 2026-09-05 and had to be read somewhere else, because
+//! the guest kernel keeps no audit log worth the name. It came out of `strace`
+//! held around a process carrying this very filter, driving a real
+//! rust-analyzer over LSP:
+//!
+//! ```text
+//! 5217  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [13, 14]) = 0
+//! 5217  fork()                            = 57
+//! 5217  +++ killed by SIGSYS +++
+//! ```
+//!
+//! — `57` is `SYS_fork`, and `5217` was a thread of the server, so the whole
+//! server went with it. What Thalyx reported was `rust-analyzer did not answer:
+//! the server stopped listening: Broken pipe … status 159`, one request after
+//! a request it had answered correctly.
+//!
+//! ## Why nothing here had ever asked
+//!
+//! Rule 12. **glibc's `fork()` is written on top of `clone(2)`**, so a test
+//! binary compiled by `dev/verify.sh` — which is glibc, end to end — spawns a
+//! child and never issues `SYS_fork` at all. **musl's `fork()` issues it
+//! directly**, and the toolchain Thalyx ships is
+//! `x86_64-unknown-linux-musl`. That is why the arm below goes through
+//! [`thalyx_syscall::fork_directly`] rather than through `std::process`: a
+//! `Command::spawn` here would prove that `clone` is permitted, which was never
+//! in question, and would report `PROVEN` about the call that kills.
+//!
 //! ## Why every claim here is two columns
 //!
 //! Rule 4. `semantic_provider` permitting `flock` proves nothing on its own —
@@ -99,6 +126,12 @@ fn the_arm_that_runs_under_a_filter() {
         // `std::process` hands the child's `execve` errno back over one of
         // these, on the fork path Cargo's spawns take.
         "socketpair" => std::os::unix::net::UnixStream::pair().is_ok(),
+        // What makes the child at the end of that same fork path. Written as
+        // the raw call on purpose — see the note at the top of this file about
+        // why `std::process::Command` would answer a different question here.
+        "fork" => thalyx_syscall::fork_directly()
+            .and_then(thalyx_syscall::wait_for)
+            .is_ok_and(|status| status == 0),
         // The control. Not a capability being claimed — a door that has to
         // stay shut on both sides of every other column here.
         "network-socket" => std::net::UdpSocket::bind("127.0.0.1:0").is_ok(),
@@ -181,6 +214,15 @@ fn only_a_compiler_tree_may_hard_link_inside_what_it_was_given() {
 #[test]
 fn only_a_compiler_tree_may_make_a_pair_of_connected_descriptors() {
     only_the_compiler_tree_may("socketpair", "make a socket pair");
+}
+
+#[test]
+fn only_a_compiler_tree_may_fork_a_child_of_its_own() {
+    // The call the shipping rust-analyzer makes, a few seconds after it loads
+    // a workspace, to spawn the `cargo` that runs build scripts and the
+    // proc-macro server. It is the one that killed the server on the machine
+    // that actually denies, and it is the one no glibc test had ever made.
+    only_the_compiler_tree_may("fork", "fork a child of its own");
 }
 
 #[test]

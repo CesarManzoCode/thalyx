@@ -713,6 +713,26 @@ pub fn module_standard() -> Allowlist {
 ///   cannot serve the request. Cargo spawns `rustc` that way, and
 ///   rust-analyzer spawns Cargo. See [`Guard::local_socket_pairs`] for why it
 ///   is a guard and not a line.
+/// - **`fork`.** The other half of that same fork path, and it was missed for
+///   exactly the reason rule 12 exists. `socketpair` was added by watching the
+///   pair get made; what makes the child is the next call, and **glibc's
+///   `fork()` is written on top of `clone(2)`** — so every measurement taken in
+///   a container, and every test compiled by `dev/verify.sh`, reached `clone`
+///   and passed. **musl's `fork()` issues `SYS_fork` itself**, and the
+///   toolchain inside Thalyx is `x86_64-unknown-linux-musl`. So the call the
+///   filter had never been asked about was the one the shipping binary makes:
+///   rust-analyzer, a few seconds after it loads a workspace, spawns the
+///   `cargo` that runs build scripts and the proc-macro server, and Rust takes
+///   the fork path for it (a `pre_exec` closure, a process group, a pidfd — any
+///   one of them refuses `posix_spawn`). `KILL_PROCESS` is the action, the
+///   spawning thread is a thread of the server, and so the whole language
+///   server died with `SIGSYS` — as a caller that had already been answered
+///   once saw it, `the server stopped listening: Broken pipe`.
+///
+///   It permits nothing a `clone` already on this list does not. `fork` takes
+///   no arguments: it cannot share an address space, cannot ask for a pidfd,
+///   cannot detach a namespace. It is the least capable way there is to make a
+///   process, and the process it makes inherits this same filter.
 ///
 /// Nothing else. In particular `socket`, `connect`, `bind`, `ptrace`, `mount`
 /// and `bpf` are as absent here as they are from `module_standard`: a compiler
@@ -723,6 +743,7 @@ pub fn module_standard() -> Allowlist {
 pub fn semantic_provider() -> Allowlist {
     module_standard()
         .allow(libc::SYS_flock)
+        .allow(libc::SYS_fork)
         .allow(libc::SYS_linkat)
         .allow(libc::SYS_inotify_init1)
         .allow(libc::SYS_inotify_add_watch)
@@ -933,6 +954,41 @@ mod tests {
     }
 
     #[test]
+    fn a_compiler_tree_may_fork_and_a_module_may_not() {
+        // `fork` and `clone` are two syscalls and the filter treats them as
+        // two, which is the entire defect: a compiler tree spawning a child
+        // through glibc reaches `clone` and lives, and the same source
+        // compiled against musl reaches `fork` and dies. Both are asserted
+        // here so that a future edit cannot "simplify" one into the other.
+        let provider = semantic_provider().compile().unwrap();
+        let module = module_standard().compile().unwrap();
+
+        assert_eq!(
+            evaluate(&provider, AUDIT_ARCH_X86_64, libc::SYS_fork),
+            SECCOMP_RET_ALLOW,
+            "a semantic provider cannot fork, so its rust-analyzer dies the \
+             moment it spawns the cargo that runs build scripts"
+        );
+        assert_eq!(
+            evaluate(&module, AUDIT_ARCH_X86_64, libc::SYS_fork),
+            SECCOMP_RET_KILL_PROCESS,
+            "an ordinary module was given `fork`, which nothing asked for: it \
+             has no compiler under it, and `clone` is what its own std uses"
+        );
+        // The control on the other side. If `fork` had been added by widening
+        // the family, `vfork` and `clone` would have arrived with it and the
+        // module column above would be the only thing left saying so.
+        for syscall in [libc::SYS_clone, libc::SYS_vfork] {
+            assert_eq!(
+                evaluate(&module, AUDIT_ARCH_X86_64, syscall),
+                SECCOMP_RET_ALLOW,
+                "syscall {syscall} was already on the module list and is not \
+                 what this change is about"
+            );
+        }
+    }
+
+    #[test]
     fn a_socket_pair_is_permitted_for_one_domain_and_no_other() {
         // The guard, read the way the kernel reads it — including the top half
         // of the register, which is the half a caller chooses and a guard that
@@ -989,11 +1045,11 @@ mod tests {
                 "syscall {syscall} is in module_standard and not in semantic_provider"
             );
         }
-        // Five plain allowances, and the socket pair is not among them: a
+        // Six plain allowances, and the socket pair is not among them: a
         // guarded syscall is not in `len()` and reads as absent from
         // `contains`, which is the cautious way round and the reason it gets
         // its own assertion rather than a number.
-        assert_eq!(provider.len(), module.len() + 5);
+        assert_eq!(provider.len(), module.len() + 6);
         assert_eq!(provider.guards().count(), module.guards().count() + 1);
     }
 

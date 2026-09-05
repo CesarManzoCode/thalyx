@@ -6154,3 +6154,74 @@ no la que uno tenía en mente.** Antes de escribirlo, se enumeran las formas que
 la herramienta tiene de conseguir lo que se le está quitando; si el ambiente de
 pruebas deja una abierta, el control afirma un defecto que su propio entorno
 acaba de reparar.
+
+## Regla derivada: dos bibliotecas de C hacen la misma llamada de C con dos syscalls distintos — 2026-09-05
+
+En una VM Thalyx real, con `negar` activo, `context('LanternRegistry')` contestó
+bien y `rename` sobre ese mismo símbolo mató a rust-analyzer:
+
+```
+rust-analyzer did not answer: the server stopped listening:
+Broken pipe (os error 32) — the process exited with status 159;
+it wrote nothing to stderr
+```
+
+159 es 128 + 31, y 31 es `SIGSYS`. El kernel del guest no lleva un registro de
+auditoría del que se pueda sacar `syscall=…`, así que el número se leyó de otra
+parte: `strace` sostenido alrededor de un proceso que llevaba **el filtro real**
+—`thalyx_sandbox::seccomp::semantic_provider()` instalado y luego `execve` al
+rust-analyzer musl 1.90.0 que la imagen sí lleva— manejando una sesión LSP de
+verdad sobre `dev/rust-corpus`:
+
+```
+5217  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [13, 14]) = 0
+5217  fork()                            = 57
+5217  +++ killed by SIGSYS +++
+```
+
+`57` es `SYS_fork`, y `5217` era un **hilo** del servidor, así que el proceso
+entero se fue con él.
+
+### Por qué ninguna prueba lo había tocado
+
+`socketpair` se agregó el 2026-08-30 viendo cómo `std::process` de Rust arma el
+par por donde el hijo devuelve su errno. Lo que hace al hijo es la llamada
+siguiente, y ahí las dos bibliotecas de C no coinciden:
+
+- **glibc** escribe `fork()` encima de `clone(2)`. Nunca emite `SYS_fork`.
+- **musl** emite `SYS_fork` directo.
+
+`dev/verify.sh` compila contra glibc de punta a punta, y este contenedor
+también. Así que cada medición hecha hasta hoy llegó a `clone` —que sí estaba
+permitido— y pasó, mientras el binario que la imagen embarca es
+`x86_64-unknown-linux-musl`. Es la **regla 12** otra vez, y ésta es la forma más
+barata que tiene de esconderse: no una llamada distinta que se ve en el código,
+sino la *misma línea de C* traducida a dos números de syscall.
+
+La regla: **una función de libc no es un syscall.** Cuando lo que se prueba es
+un filtro seccomp, la prueba tiene que emitir el número que emite el binario que
+se embarca, no llamar a la función de C que el compilador de pruebas tenga a
+mano. Por eso el brazo de `the_compiler_tree_under_the_filter.rs` pasa por
+`thalyx_syscall::fork_directly()` y no por `Command::spawn`: un `spawn` aquí
+probaría que `clone` está permitido —cosa que nadie preguntó— e imprimiría
+`PROVEN` sobre la llamada que mata.
+
+### Y por qué parecía que era `rename`
+
+No lo era, y esto también es la regla 5. La llamada que mata no la hace el
+cálculo del rename: la hace rust-analyzer unos segundos después de cargar el
+espacio de trabajo, cuando lanza el `cargo` de los build scripts y el servidor
+de proc-macros. `thalyx-rust` arranca **un** analizador por proceso y lo
+conserva, así que `context` alcanzó a contestar antes de ese lanzamiento y
+`rename` —la petición larga, la que espera una búsqueda de referencias
+completa— fue la que quedó del otro lado.
+
+Se estableció apagando el lanzamiento en vez de suponiéndolo: con
+`initializationOptions` que apagan `cargo.buildScripts`, `procMacro` y
+`checkOnSave`, el **mismo filtro sin `fork`** contesta hover, referencias,
+`prepareRename` y `rename` sin morirse. Con las opciones por defecto y `fork`
+permitido, la sesión completa sobrevive.
+
+La regla: **la petición durante la cual algo muere no es necesariamente la
+petición que lo mató.** En un servidor que hace trabajo de fondo, el sujeto que
+hay que aislar es el trabajo de fondo, y la forma de aislarlo es apagarlo.
