@@ -8099,6 +8099,14 @@ if [ -n "$VERT_GAP" ]; then
     fi
 else
     mkdir -p "$VERT_TREE/src"
+    # **This tree has no `Cargo.lock`, and that is now on purpose.** Stage 59's
+    # tree carries one, because a real Rust workspace has its lock committed;
+    # this one never did, and on 2026-09-05 that is what caught the validation
+    # cache filing a verdict under the tree *before* Cargo wrote the lockfile —
+    # so the second column below compiled bytes this machine had just compiled.
+    # It is the only stage that exercises a workspace Cargo has to materialise
+    # an input for. Giving it a lockfile would make the stage pass and put the
+    # defect back.
     vertical_tree() {
         cat > "$VERT_TREE/Cargo.toml" <<'VERTEOF'
 [workspace]
@@ -8241,7 +8249,7 @@ else:
         failed "the request started $V_STARTS rust-analyzers; one per request is the whole reason the provider is kept, and each is about 25 seconds"
         excerpt "$WORK/vertical-good.log"
     elif [ "$A_HITS" != "1" ] || [ "$A_LAUNCHES" != "0" ]; then
-        failed "the second request over the same bytes reported $A_HITS cache hit(s) and started $A_LAUNCHES process(es); a compiler ran for bytes this machine had already compiled. See $WORK/vertical-again.log"
+        failed "the second request over the same bytes reported $A_HITS cache hit(s) and started $A_LAUNCHES process(es); a compiler ran for bytes this machine had already compiled. See $WORK/vertical-again.log, and the \`rust\` check of the *first* request for \`state\`, \`remembered\` and \`identity_moved\` — which name the input that moved under the compiler instead of leaving it to be deduced from outside"
         excerpt "$WORK/vertical-again.log"
     elif [ "$B_STATUS" != "rolled_back" ] || [ "$B_KEYSTORE" != "pub struct Keystore;" ]; then
         failed "the failing request answered '$B_STATUS' and left keystore.rs as '$B_KEYSTORE'; see $WORK/vertical-bad.log"

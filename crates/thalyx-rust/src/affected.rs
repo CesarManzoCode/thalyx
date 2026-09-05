@@ -169,3 +169,101 @@ pub fn source_identity(workspace: &Workspace) -> Witness {
         skip: NOT_SOURCE,
     })
 }
+
+/// A validation, and the state it is an answer about.
+///
+/// `over` is `None` when nothing can be said about which tree the run actually
+/// read — and then the result is used, reported, and **never remembered**.
+#[derive(Debug, Clone)]
+pub struct Steadied<T> {
+    /// What the run answered. Always present: a state that would not hold
+    /// still is a reason not to cache, never a reason not to report.
+    pub outcome: T,
+    /// The state the outcome is an answer about, when the run began and ended
+    /// over the same one. What a cached answer may be filed under.
+    pub over: Option<Witness>,
+    /// The state as it was before the first attempt.
+    pub from: Option<Witness>,
+    /// The state as it was after the last one, whether or not the two agreed.
+    ///
+    /// Kept because `over` says only *that* nothing could be filed, and these
+    /// two together say **which input moved**: a file count one higher and a
+    /// few hundred bytes with it is a lockfile the compiler wrote. Working that
+    /// out from the outside is what the whole of 2026-09-05 was spent on.
+    pub at: Option<Witness>,
+    /// How many times the tree was seen to differ from the state the run
+    /// started over. `0` on a tree nobody is writing to.
+    pub moved: usize,
+}
+
+/// Run something that reads the tree, and say which tree it really read.
+///
+/// The identity is taken **before and after** the run, and comes back only when
+/// they agree. Without that, a result is filed under a state that stopped
+/// describing its inputs while it was being produced — and the next question,
+/// which asks about the state that is actually there, misses every time.
+///
+/// That is not hypothetical and it is not new: [`crate::Provider::steady`] is
+/// this same policy for the semantic cache, put there because **the first thing
+/// rust-analyzer does on a workspace with no `Cargo.lock` is write one**. Cargo
+/// does exactly the same, and the validation cache was left computing its
+/// identity once, before the compiler ran. Measured on 2026-09-05: a first
+/// `cargo check` over a tree with no lockfile leaves one behind, `Cargo.lock`
+/// is one of [`SOURCE`], so the verdict was filed under a tree that had ceased
+/// to exist by the time the compiler exited, and the second request over the
+/// same bytes compiled them again.
+///
+/// One retry, because the settling is a one-off: the lockfile Cargo materialises
+/// is written on the first run and is there for the second. A tree still moving
+/// after that has *something else* writing to it, and then the answer comes back
+/// with **no identity at all** rather than with a plausible one. Associating the
+/// result with the later state on the strength of "it was probably Cargo" is the
+/// one thing this must not do: `false miss = slower, false hit = wrong`.
+pub fn steady<T>(
+    mut identity: impl FnMut() -> Option<Witness>,
+    mut run: impl FnMut() -> T,
+) -> Steadied<T> {
+    let from = identity();
+    let mut before = from.clone();
+    let mut moved = 0usize;
+    let mut answer = None;
+
+    for last in [false, true] {
+        let outcome = run();
+        let Some(now) = identity() else {
+            // Rule 10: nothing could *say* what that ran over, which is not the
+            // same as the tree having moved — and a second run would not learn
+            // it either, so it is not paid for.
+            return Steadied {
+                outcome,
+                over: None,
+                at: None,
+                from,
+                moved,
+            };
+        };
+        if before.as_ref().is_some_and(|seen| seen.id == now.id) && now.is_complete() {
+            return Steadied {
+                outcome,
+                over: Some(now.clone()),
+                at: Some(now),
+                from,
+                moved,
+            };
+        }
+        moved += 1;
+        before = Some(now);
+        answer = Some(outcome);
+        if last {
+            break;
+        }
+    }
+
+    Steadied {
+        outcome: answer.expect("the loop ran"),
+        over: None,
+        at: before,
+        from,
+        moved,
+    }
+}

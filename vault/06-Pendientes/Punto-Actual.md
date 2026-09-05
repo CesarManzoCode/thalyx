@@ -14,9 +14,56 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## La consulta fría ya no pierde la resolución: el `hover` que se tardó dejó de deshacerla — 2026-09-05
+## El único FALLÓ físico: el cache de validación archivaba bajo un árbol que Cargo ya había movido — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+**El síntoma, de la etapa 58 de `verify.sh` en la máquina física.** La segunda
+petición, sobre exactamente los mismos bytes que la primera —`KeyVault` →
+`Interim` → `KeyVault`, que por diseño termina donde empezó—, reportó
+`validation_cache_hits=0` y `process_launches=1`. La etapa afirma `1` y `0`: un
+compilador corrió sobre bytes que esa máquina acababa de compilar.
+
+**La causa, medida antes de tocar nada.** `rust_check()` calculaba
+`selection.identity` **antes** de arrancar `cargo` y archivaba el veredicto bajo
+esa identidad previa. Y un `cargo check` sobre un espacio de trabajo sin
+`Cargo.lock` **escribe uno** —comprobado corriendo `cargo` de verdad sobre la
+fixture `chain` a la que se le quitó el candado— y `Cargo.lock` es una de las
+entradas de esa identidad. Así que el veredicto quedaba archivado bajo un árbol
+que ya no existía cuando el compilador salió, y la consulta siguiente, que
+pregunta por el que sí está, fallaba correctamente. El árbol de la vertical se
+crea sin candado; el de las pruebas lo tenía versionado, que es por lo que
+ninguna lo había visto.
+
+**El arreglo, que es una política que ya existía.** `affected::steady`: la
+identidad se toma antes de la corrida y otra vez después, y el resultado se
+archiva sólo bajo la que salió igual las dos veces. Un reintento, porque el
+asentamiento es de una sola vez —el candado ya está en la segunda corrida—, y un
+árbol que sigue moviéndose después de eso se entrega **sin identidad ninguna**:
+no se recuerda. Es la misma política que `Provider::steady` tenía desde el
+2026-08-30 para el cache semántico, por esta misma causa, y que no se había
+aplicado a este cache. Nada asocia el resultado al estado posterior por suponer
+que el que escribió fue Cargo.
+
+**Lo que cuesta.** Una comprobación de un árbol sin candado corre `cargo` dos
+veces la primera vez, la segunda incremental. En un árbol con candado —todo
+espacio de trabajo de verdad, incluido éste— no cambia nada: la identidad no se
+mueve, hay una sola corrida. Y los dos recorridos extra del testigo —uno antes de
+la corrida y otro después— cuestan del orden de 18 ms cada uno sobre las 294
+fuentes de este repositorio (sha256 de 5.7 MB, medido), contra un `cargo check`
+que se mide en segundos.
+
+**Y ahora el fallo se puede leer desde afuera.** La comprobación reporta en su
+evidencia bajo qué estado quedó archivada (`state`), si se recordó
+(`remembered`), y cuando el árbol se movió, `identity_moved` con los dos testigos
+—un archivo más y unos cientos de bytes es un candado que escribió Cargo—. Todo
+2026-09-05 se fue en deducir desde afuera cuál entrada se había movido.
+
+**Qué falta correr.** `git pull && cargo install --path crates/thalyx-cli && sudo
+./dev/verify.sh` en la máquina de Cesar: la etapa 58 es la única que puede probar
+esto, porque necesita Btrfs, un kernel que deniegue y un compilador confinado.
+
+## La consulta fría ya no pierde la resolución: el `hover` que se tardó dejó de deshacerla — 2026-09-05
 
 **La causa, leída del instrumento que se puso ayer.** En la VM fresca, con
 `negar`, la primera consulta contestó:

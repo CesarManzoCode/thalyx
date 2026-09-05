@@ -2,7 +2,7 @@
 tipo: primitiva
 estado: decretado
 fecha-decreto: 2026-08-29
-fecha-revision: 2026-08-29
+fecha-revision: 2026-09-05
 tags: [primitiva, estado, cache, frescura, agentes]
 ---
 
@@ -62,6 +62,37 @@ de validación no acertó ni una sola vez, en silencio, y el compilador corrió
 siempre. Lo cachó una prueba que exigía un acierto y recibió un compilador.
 
 Es la regla 10 de [[Estrategia-de-Pruebas]] leída al revés.
+
+### Y la que costó el segundo: bajo qué estado se archiva
+
+**La identidad se toma antes de la corrida y otra vez después, y el resultado se
+archiva sólo bajo la que las dos veces salió igual.** Revisión del 2026-09-05.
+
+La razón es que hay corridas que **cambian sus propias entradas mientras
+contestan**. Un `cargo check` sobre un espacio de trabajo sin `Cargo.lock`
+escribe uno, igual que rust-analyzer (ver [[Semantica-Compilada]]), y
+`Cargo.lock` es una de las entradas de la identidad de una comprobación. La
+identidad se calculaba una sola vez, antes de arrancar el compilador: el
+veredicto quedaba archivado bajo una descripción del árbol que ya había dejado
+de ser cierta cuando el compilador salió, la petición siguiente preguntaba por
+el árbol que sí estaba, y una máquina que acababa de compilar exactamente esos
+bytes los compilaba otra vez. Medido: `validation_cache_hits=0` y
+`process_launches=1` en la segunda corrida de la etapa 58 de `verify.sh`, que es
+la tarea reversible con la que se mide todo esto.
+
+Un reintento, porque el asentamiento es de una sola vez: el candado que Cargo
+materializa se escribe en la primera corrida y ya está ahí en la segunda. Un
+árbol que sigue moviéndose después de eso tiene **algo más** escribiéndole, y
+entonces la respuesta se entrega y se reporta **sin identidad ninguna** en lugar
+de con una plausible. Asociar el resultado al estado posterior porque
+«seguramente fue Cargo» es exactamente lo que esta nota no hace: fallo falso =
+más lento, acierto falso = mal.
+
+Es la misma política que [[Semantica-Compilada]] ya tenía para el cache
+semántico, por la misma causa, escrita el 2026-08-30. Lo que enseña el defecto
+es que **una regla arreglada en un cache no está arreglada en el otro**: los dos
+caches leen el mismo árbol y sólo uno se había enterado de que interrogarlo lo
+mueve.
 
 ## Dónde vive
 

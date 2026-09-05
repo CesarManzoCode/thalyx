@@ -6314,3 +6314,46 @@ Dos corolarios que costaron aparte:
   por argumento qué callar. Con el control de la regla 4 al lado: el modo que
   contesta todo, sin el cual una firma ausente sería evidencia de un doble que no
   sabe producirla.
+
+## Regla derivada: un cache que se llena antes de la corrida archiva bajo un árbol que ya no está — 2026-09-05
+
+**Dónde salió.** La etapa 58 de `verify.sh` —la vertical— pregunta dos veces. La
+segunda vez el árbol tiene exactamente los mismos bytes que la primera, y la
+etapa afirma dos números que no son el veredicto: `validation_cache_hits=1` y
+`process_launches=0`. En la máquina física dieron `0` y `1`: había corrido un
+compilador sobre bytes que esa misma máquina acababa de compilar.
+
+Nada del veredicto estaba mal. Lo único que estaba mal era el costo, que es lo
+único que ese cache existe para bajar — la misma forma que la regla 13.
+
+**La causa, medida y no supuesta.** La identidad de una comprobación se calculaba
+**una vez, antes de arrancar `cargo`**, y el resultado se archivaba bajo ella. Y
+`cargo check` sobre un espacio de trabajo sin `Cargo.lock` **escribe uno**, que es
+una de las entradas de esa identidad. El veredicto quedaba archivado bajo una
+descripción del árbol que había dejado de ser cierta mientras se producía, y la
+consulta siguiente —que pregunta por el árbol que sí está— fallaba, correctamente,
+para siempre.
+
+**La regla.** Una respuesta se archiva bajo la identidad de las entradas
+observada **antes y después** de producirla, y sólo cuando las dos coinciden. Si
+se movió, hay dos respuestas honestas: volver a validar, o no recordar. Nunca
+asociar el resultado al estado posterior porque la causa del movimiento parezca
+inocente — «seguramente fue Cargo» es una hipótesis, y un acierto falso vale
+mucho más caro que un fallo falso.
+
+**Y la mitad que enseña algo nuevo:** esa regla ya estaba implementada, para el
+cache semántico, desde el 2026-08-30 y por esta misma causa (`Provider::steady`,
+escrita porque rust-analyzer también escribe el candado). No se había aplicado al
+cache de validación. **Una regla arreglada en un cache no está arreglada en el
+otro**: cuando una corrección nace de una propiedad de la *entrada* —el árbol se
+mueve cuando se lo interroga— hay que buscar a todos los que leen esa entrada, no
+sólo al que falló.
+
+**Cómo se probó.** Tres pruebas en
+`crates/thalyx-rust/tests/the_change_says_what_has_to_be_checked.rs`, y la
+primera nombra la entrada en vez de decir «algo se movió»: parte la identidad en
+el código y el candado, corre un `cargo check` de verdad sobre una fixture a la
+que se le quitó el `Cargo.lock`, y afirma que ni un byte de código se movió y que
+el candado apareció. La fixture tenía candado versionado —que es lo correcto,
+regla 8— y por eso ninguna prueba lo había visto nunca: el árbol que la vertical
+construye no lo tiene, como no lo tiene ningún espacio de trabajo recién escrito.
