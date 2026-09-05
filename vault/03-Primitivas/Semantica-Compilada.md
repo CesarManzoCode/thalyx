@@ -196,6 +196,40 @@ como «el analizador expiró», que es una oración cierta sobre la cosa
 equivocada; y 2048 procesos en lugar de 512, porque esto es un *árbol* de
 compiladores. No es un framework de servicios y hay exactamente uno.
 
+### Y seis llamadas más, cada una medida en una máquina que deniega
+
+«El mismo filtro seccomp» dejó de ser cierto el 2026-08-30, la primera vez que
+un kernel que de veras deniega apuntó a este perfil. Un árbol de compiladores
+hace llamadas que un módulo no hace, y la lista creció una vez por cada corrida
+en esa máquina — nunca por familia, nunca por suposición:
+
+| Llamada | Quién la hace y para qué |
+|---|---|
+| `flock` | Cargo toma un candado sobre `Cargo.lock`, `.package-cache` y el directorio de compilación. |
+| `linkat` | `rustc` pone su salida en su lugar con un enlace duro. |
+| `inotify_init1`, `inotify_add_watch`, `inotify_rm_watch` | El hilo `VfsLoader` del servidor vigila el árbol que se le concedió. |
+| `socketpair`, con guarda a `AF_UNIX` | Por donde `std::process` de Rust devuelve el errno del hijo. |
+| `fork` | Lo que hace al hijo al final de ese mismo camino. |
+
+`fork` llegó el 2026-09-05 y se escondió once meses detrás de la **regla 12**:
+glibc escribe `fork()` encima de `clone(2)` y nunca emite `SYS_fork`, mientras
+musl lo emite directo — y el toolchain que la imagen lleva es
+`x86_64-unknown-linux-musl`. Toda medición hecha en un contenedor glibc llegaba
+a `clone`, que ya estaba permitido, y pasaba. Lo que la máquina real veía era
+que rust-analyzer moría con `SIGSYS` al lanzar el `cargo` de los build scripts,
+y lo que el llamador leía era `the server stopped listening`.
+
+`fork` no concede nada que `clone` no concediera ya: no lleva argumentos, así
+que no puede compartir espacio de direcciones, ni pedir un pidfd, ni separar un
+namespace, y el proceso que hace hereda este mismo filtro.
+
+**Ninguna de las seis está en `module_standard`.** Un módulo ordinario no tiene
+un compilador debajo, y un permiso que nadie necesita es un permiso que nadie
+está mirando. `crates/thalyx-sandbox/tests/the_compiler_tree_under_the_filter.rs`
+prueba cada una en dos columnas: permitida bajo el filtro del proveedor, muerta
+bajo el del módulo — sin la segunda columna, un filtro que permitiera todo
+pasaría la primera.
+
 **Cae de vuelta al anfitrión, lo dice, y se le puede exigir que no.**
 `start_foreign` se niega en una máquina cuyo kernel no deniega — decreto de
 [[Programas-Ajenos]], y correcto — y un Thalyx que por eso no pudiera resolver

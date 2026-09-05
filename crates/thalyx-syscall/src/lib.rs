@@ -1334,6 +1334,40 @@ pub fn reap_one() -> Option<i32> {
     (pid > 0).then_some(pid)
 }
 
+/// `fork(2)` as its own syscall, the way musl issues it.
+///
+/// **Not `libc::fork()`.** glibc implements `fork()` on top of `clone(2)` and
+/// never issues `SYS_fork` at all, so a seccomp filter asked about forking
+/// through the C library on a glibc host is a filter that was asked about
+/// `clone`. The toolchain Thalyx ships is `x86_64-unknown-linux-musl`, and
+/// musl's `fork()` makes this call directly — which is why the provider's
+/// allowlist needed it and why no test compiled here had ever reached it. Rule
+/// 12 of `vault/09-Notas-Tecnicas/Estrategia-de-Pruebas.md`: the binary that
+/// gets verified has to be the binary that ships.
+///
+/// The child does nothing at all: it leaves immediately through `_exit`, which
+/// runs no `atfork` handler, no destructor and no allocator, so it is safe in
+/// the child of a process that had several threads a moment ago. Only the
+/// parent ever returns, with the child's pid to wait on.
+pub fn fork_directly() -> io::Result<i32> {
+    // SAFETY: `SYS_fork` takes no arguments and reads no memory. The child
+    // makes exactly one further call, `_exit`, which is async-signal-safe —
+    // the only kind of call a forked child of a threaded process may make.
+    #[allow(unsafe_code)]
+    let pid = unsafe { libc::syscall(libc::SYS_fork) };
+    if pid < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        // SAFETY: as above. `_exit` does not return.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::_exit(0)
+        }
+    }
+    Ok(pid as i32)
+}
+
 /// Block until the given child exits, reaping anything else that dies meanwhile.
 ///
 /// Distinct from [`reap_one`] because PID 1 has two jobs at once: it waits for

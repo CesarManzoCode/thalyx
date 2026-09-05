@@ -14,9 +14,84 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## La ventana de QEMU ya tiene framebuffer — 2026-09-05
+## `rename` mataba a rust-analyzer, y el syscall era `fork` — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+En una VM Thalyx real, con `negar` activo: cargo propio PROVEN, rust-analyzer
+propio PROVEN, `context('LanternRegistry')` PROVEN, `analyzer_confined=true`
+PROVEN — y `rename` sobre ese mismo símbolo:
+
+```
+rust-analyzer did not answer: the server stopped listening:
+Broken pipe (os error 32) — the process exited with status 159
+```
+
+159 = 128 + 31 = `SIGSYS`. El fallo de `edits_by_file` era consecuencia.
+
+**El syscall es `fork` (número 57 en x86_64), y no se adivinó.** El kernel del
+guest no tiene auditoría útil, así que se armó el repro aquí: el artefacto
+`rust-1.90.0-x86_64-unknown-linux-musl` que la imagen sí embarca, un envoltorio
+que instala `semantic_provider()` de verdad y luego hace `execve` al servidor, y
+`strace` alrededor. Lo que se leyó:
+
+```
+5217  socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0, [13, 14]) = 0
+5217  fork()                            = 57
+5217  +++ killed by SIGSYS +++
+```
+
+`5217` era un hilo del servidor y la acción del filtro es `KILL_PROCESS`, así
+que el proceso entero murió.
+
+**Por qué once meses de pruebas no lo tocaron.** glibc escribe `fork()` encima
+de `clone(2)` y nunca emite `SYS_fork`; musl lo emite directo. `dev/verify.sh`
+compila contra glibc de punta a punta y este contenedor también, así que toda
+medición llegaba a `clone`, que ya estaba permitido. Es la regla 12 en su forma
+más barata: la misma línea de C, dos números de syscall.
+
+**Y no era `rename`.** La llamada la hace rust-analyzer unos segundos después de
+cargar el espacio de trabajo, al lanzar el `cargo` de los build scripts y el
+servidor de proc-macros. `thalyx-rust` arranca un analizador por proceso y lo
+conserva, así que `context` alcanzó a contestar antes y `rename` —la petición
+larga— quedó del otro lado. Se estableció apagando `cargo.buildScripts`,
+`procMacro` y `checkOnSave` por `initializationOptions`: con eso, el **mismo
+filtro sin `fork`** contesta hover, referencias, `prepareRename` y `rename` sin
+morirse.
+
+**El cambio son tres líneas de código y su prueba:**
+
+- `crates/thalyx-sandbox/src/seccomp.rs` — `.allow(libc::SYS_fork)` en
+  `semantic_provider()` y en ningún otro lado. `module_standard` lo sigue
+  matando.
+- `crates/thalyx-syscall/src/lib.rs` — `fork_directly()`, que emite el syscall
+  crudo. Un `Command::spawn` en una prueba glibc probaría que `clone` está
+  permitido, que es la pregunta que nadie hizo.
+- `crates/thalyx-sandbox/tests/the_compiler_tree_under_the_filter.rs` — la
+  quinta columna doble: permitido para el proveedor, muerto para el módulo. Se
+  comprobó que no es vacía quitando el `.allow` y viendo fallar la prueba.
+
+Verificado aquí de las dos formas: con el filtro sin `fork` el servidor muere
+como en la VM, y con `fork` permitido la sesión completa —hover, referencias,
+`prepareRename`, `rename`— contesta bajo el filtro real.
+
+**Lo que le toca a Cesar:**
+
+```
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+y después, sobre una VM con el corpus, `dev/verify-agent-rust.sh`.
+
+**Lo que se vio y no se tocó, a propósito:** con `fork` permitido, el `cargo
+check` que rust-analyzer lanza para los build scripts sigue muriendo por su
+cuenta —`ExitStatus(unix_wait_status(31))`, otro `SIGSYS`, en un `tkill` que
+hace musl— y rust-analyzer sólo lo registra como advertencia. Es un **proceso
+hijo**, no el servidor: no impide resolver ni renombrar, y compilar es
+justamente lo que `dev/build-rust-runtime.sh` dice que este artefacto no hace
+(no lleva enlazador). Queda escrito aquí y no se arregló en este cambio.
+
+## La ventana de QEMU ya tiene framebuffer — 2026-09-05
 
 `make -C image agent` y `boot-graphical` abrían la ventana, el kernel arrancaba,
 la máquina funcionaba, y adentro `/dev/fb0 could not be opened: No such file or
