@@ -156,6 +156,113 @@ pivot, y `toolchain::environment` nombra el directorio en `LD_LIBRARY_PATH`. La
 segunda es la que no depende de que quien arranque el proceso se acordara de la
 primera.
 
+## El `PATH` que Thalyx le arma a sus hijos
+
+> Segunda evidencia física, 2026-08-31, en la VM real y sobre `dev/rust-corpus`.
+> El problema «no hay Cargo dentro de Thalyx» ya estaba cerrado: `cargo 1.90.0
+> from: thalyx`, `rust-analyzer 1.90.0 from: thalyx`. Y aun así la máquina no
+> resolvía un nombre.
+
+Lo que la máquina contestó:
+
+```
+context('lantern/src/lib.rs')  → { name: "LanternRegistry", kind: "struct",
+                                   crate: "lantern", source: "rust-analyzer" }
+context('LanternRegistry')     → { source: "rust-analyzer",
+                                   resolution: "nothing", entries: [] }
+rename en lantern/src/lib.rs:8:12
+                               → "No references found at position"
+```
+
+rust-analyzer estaba vivo, había abierto el archivo y lo había parseado, y no
+podía resolver un nombre declarado en el archivo que acababa de listar. La
+posición no era el problema: se probó la del identificador físico, 8:12, y
+falló igual.
+
+**La causa, reproducida y capturada del log del propio servidor** con un entorno
+que tenía exactamente lo que Thalyx entregaba y nada más:
+
+```
+ERROR FetchWorkspaceError: rust-analyzer failed to load workspace:
+  Failed to run `cargo metadata …`: No such file or directory (os error 2)
+WARN  failed to get rustc cfgs e=unable to fetch cfgs via `… "rustc" …`
+  Caused by: No such file or directory (os error 2)
+```
+
+### Por qué esto no lo tapaba nada
+
+Thalyx encuentra sus herramientas por ruta absoluta, y eso está bien y no
+cambia. Pero **rust-analyzer no es un programa que Thalyx corre: es un programa
+que corre programas.** Lanza `cargo metadata`, `cargo locate-project`,
+`cargo --version` y `rustc --print cfg`, y escribe cada uno como nombre pelado.
+Un nombre pelado lo resuelve el kernel por `PATH` y por nada más. La máquina
+Thalyx, a propósito, no tiene el `PATH` de una distribución.
+
+Sin grafo de crates no hay semántica; la sintaxis sobrevive porque no necesita
+subproceso. De ahí la forma exacta de la falla: el *outline* de un archivo
+funciona y todos los nombres resuelven a nada.
+
+### El arreglo, y por qué no es el préstamo que el decreto prohíbe
+
+`toolchain::environment` le entrega a los hijos del toolchain administrado
+cuatro variables, y esto es lo que hace cada una:
+
+| variable | por qué existe |
+|---|---|
+| `PATH=<runtime>/bin` | es lo único a través de lo cual rust-analyzer puede encontrar **su** `cargo` y **su** `rustc`. Medido: agregarla —y nada más— vuelve correctas `workspace/symbol`, `definition` y `rename` en el mismo fixture donde las tres estaban vacías |
+| `LD_LIBRARY_PATH=<runtime>/lib` | el detalle de musl de la sección anterior |
+| `CARGO_HOME=<store>/state/cargo` | el registro es de Thalyx y está en el store, nunca el de quien armó el disco |
+| `CARGO_NET_OFFLINE=true` | el proveedor semántico no tiene red por construcción, y un Cargo que no lo sabe se gasta su timeout en enterarse |
+
+**No** se pusieron `CARGO`, `RUSTC` ni `RUST_SRC_PATH`. `PATH` sola alcanzó en la
+medición, y una variable agregada porque «Rust normalmente la usa» es una
+variable que después nadie se atreve a quitar.
+
+La distinción que importa:
+
+- **mal**: Thalyx busca sus herramientas en el `PATH` que heredó de Fedora;
+- **bien**: Thalyx descubre su runtime por ruta absoluta y le arma a sus hijos
+  un `PATH` construido por Thalyx que contiene únicamente su propio `bin`.
+
+Ese `PATH` tiene **una** entrada. No hereda nada: ni el `PATH` de quien arrancó,
+ni `/usr/bin`, ni `~/.cargo`, ni `~/.rustup`. Nombra un directorio que el
+confinamiento ya concede de todos modos, porque está dentro del artefacto. Se
+mueve el disco y el valor se mueve con él, que es la propiedad entera.
+
+Un toolchain **instalado** es la otra máquina y recibe la otra respuesta: su
+`bin` va **adelante** del `PATH` heredado en vez de reemplazarlo, porque en esa
+rama el toolchain es del anfitrión por definición y su Cargo necesita el
+enlazador del anfitrión. Tampoco es adorno: `dev/verify.sh` corre bajo `sudo`, y
+el `secure_path` de sudo no nombra ningún `~/.rustup/toolchains/*/bin` — así que
+en la máquina que verifica todo esto el `cargo` de rust-analyzer estaba tan
+inalcanzable como dentro de Thalyx.
+
+### Lo que esto no arregla
+
+El confinamiento. La VM reportó `analyzer_confined=false` porque el kernel está
+attached pero observando, y el proveedor cayó al proceso ordinario **dentro de
+Thalyx** — y la semántica falló igual. Primero la semántica; la misma propiedad
+bajo enforcement es la siguiente causa, con su propia evidencia. Una causa a la
+vez.
+
+## El outline apuntaba al comentario
+
+Defecto aparte, encontrado en la misma corrida y arreglado con ella:
+`context('lantern/src/lib.rs')` ponía `LanternRegistry` en 3:1 cuando el
+identificador está en 8:12.
+
+Thalyx pedía `hierarchicalDocumentSymbolSupport: false`, y en esa forma
+rust-analyzer contesta `SymbolInformation`, que trae **un solo rango por
+entrada** y lo llena con el ítem entero — para una `struct` documentada eso
+arranca en el primer `///`. La forma jerárquica trae además `selectionRange`,
+que es el identificador. Se pide la jerárquica y se lee `selectionRange`.
+
+No era la causa del bloqueo —8:12 fallaba igual— pero sí era una posición que
+un renombrado por handle habría usado. La respuesta real del servidor quedó
+guardada en `crates/thalyx-rust/tests/samples/document-symbol-hierarchical.json`,
+que es la regla 6 de [[Estrategia-de-Pruebas]]: un fixture inventado prueba que
+el lector coincide con la idea que uno tiene del formato.
+
 ## Cómo se descubre, y en qué orden
 
 `thalyx-rust::toolchain`:

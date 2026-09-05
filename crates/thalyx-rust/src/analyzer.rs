@@ -517,7 +517,20 @@ impl Analyzer {
                     "window": {"workDoneProgress": true},
                     "workspace": {"workspaceEdit": {"documentChanges": true}},
                     "textDocument": {
-                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": false},
+                        // `true`, and the difference is a position rather
+                        // than a shape. Flat `SymbolInformation` carries one
+                        // range per entry and rust-analyzer fills it with the
+                        // **whole item**, doc comment included — so the
+                        // outline of `dev/rust-corpus` placed
+                        // `LanternRegistry` at 3:1, where the `///` starts,
+                        // and a caller that renamed at the place the outline
+                        // gave it was pointing at a comment. The hierarchical
+                        // answer carries `selectionRange`, which is the
+                        // identifier: 8:12, the place it really is. Captured
+                        // in `tests/samples/document-symbol-hierarchical.json`
+                        // — rule 6, because the first version of this was
+                        // written against a fixture somebody invented.
+                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
                         "rename": {"prepareSupport": true}
                     }
                 }
@@ -989,28 +1002,57 @@ fn spot_of(path: &Path, range: Option<&Value>) -> Option<Spot> {
     })
 }
 
+/// Both shapes the protocol allows for a list of symbols, flattened.
+///
+/// `workspace/symbol` answers with flat `SymbolInformation`, which carries a
+/// `location` and a `containerName`. `textDocument/documentSymbol` answers with
+/// a **tree** of `DocumentSymbol`, which carries neither and instead nests its
+/// members under `children`. One reader for both, because a caller asking what
+/// is declared in a file and a caller asking who is called `Config` are asking
+/// the same question of the same server and must not get two different notions
+/// of where a symbol is.
+///
+/// ## Which range, and the defect that decided it
+///
+/// `selectionRange` before `range`, and that order is the whole fix. A
+/// `DocumentSymbol`'s `range` is the item — for a documented struct it starts
+/// at the first `///`, which is how a booted Thalyx reported `LanternRegistry`
+/// at 3:1 for a struct whose name is at 8:12. `selectionRange` is the
+/// identifier. Flat entries have no `selectionRange` at all and their
+/// `location.range` already is the identifier, so they are read first and are
+/// unaffected.
 fn symbols(answer: &Value, file: Option<&Path>) -> Vec<Symbol> {
     let Value::Array(listed) = answer else {
         return Vec::new();
     };
     let mut found = Vec::new();
     for entry in listed {
-        let Some(name) = entry.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let path = entry
-            .pointer("/location/uri")
-            .and_then(Value::as_str)
-            .and_then(path_of)
-            .or_else(|| file.map(Path::to_path_buf));
-        let Some(path) = path else { continue };
-        let range = entry
-            .pointer("/location/range")
-            .or_else(|| entry.get("selectionRange"))
-            .or_else(|| entry.get("range"));
-        let Some(at) = spot_of(&path, range) else {
-            continue;
-        };
+        gather(entry, file, None, &mut found);
+    }
+    found
+}
+
+/// One entry and everything nested under it.
+///
+/// `inside` is the name of the item this was found in, used only for the
+/// hierarchical shape: a flat entry brings its own `containerName` and a tree
+/// entry has none, so without this a method would come back with no idea which
+/// `impl` it belongs to and an outline of a file would list six `new`s.
+fn gather(entry: &Value, file: Option<&Path>, inside: Option<&str>, found: &mut Vec<Symbol>) {
+    let Some(name) = entry.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let path = entry
+        .pointer("/location/uri")
+        .and_then(Value::as_str)
+        .and_then(path_of)
+        .or_else(|| file.map(Path::to_path_buf));
+    let Some(path) = path else { return };
+    let range = entry
+        .pointer("/location/range")
+        .or_else(|| entry.get("selectionRange"))
+        .or_else(|| entry.get("range"));
+    if let Some(at) = spot_of(&path, range) {
         found.push(Symbol {
             name: name.to_string(),
             kind: kind_of(entry.get("kind").and_then(Value::as_u64).unwrap_or(0)),
@@ -1019,10 +1061,20 @@ fn symbols(answer: &Value, file: Option<&Path>) -> Vec<Symbol> {
                 .get("containerName")
                 .and_then(Value::as_str)
                 .filter(|container| !container.is_empty())
-                .map(str::to_string),
+                .map(str::to_string)
+                .or_else(|| inside.map(str::to_string)),
         });
     }
-    found
+    // Descended even when this entry had no usable range: a member whose
+    // parent the reader could not place is still a member somebody asked for.
+    for child in entry
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        gather(child, file, Some(name), found);
+    }
 }
 
 /// The LSP `SymbolKind` numbers, spelled.
@@ -1102,4 +1154,89 @@ pub fn why_no_analyzer() -> String {
         "Add it with: rustup component add rust-analyzer, or name one with \
          THALYX_RUST_ANALYZER",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// rust-analyzer's own answer for `dev/rust-corpus/lantern/src/lib.rs`,
+    /// captured verbatim on 2026-08-31.
+    ///
+    /// Rule 6, and it is the rule this defect was found under: the reader was
+    /// written against nothing, the outline reported `LanternRegistry` at 3:1,
+    /// and the sentence «the outline is probably taking the wrong range» could
+    /// not be settled by anything in the repository. A file the server wrote
+    /// settles it.
+    const DOCUMENT_SYMBOL: &str =
+        include_str!("../tests/samples/document-symbol-hierarchical.json");
+
+    #[test]
+    fn an_outline_places_a_documented_struct_at_its_name_and_not_at_its_comment() {
+        let answer: Value = serde_json::from_str(DOCUMENT_SYMBOL).expect("the captured answer");
+        let file = Path::new("/w/lantern/src/lib.rs");
+        let found = symbols(&answer, Some(file));
+
+        let registry = found
+            .iter()
+            .find(|symbol| symbol.name == "LanternRegistry")
+            .expect("the struct the corpus is about");
+        // Zero-based, as the wire is. The item's own range starts at line 2,
+        // which is the first `///` — that is the position a booted Thalyx
+        // reported as 3:1 and then could not rename at.
+        assert_eq!(
+            (registry.at.line, registry.at.character),
+            (7, 11),
+            "the outline is pointing at the doc comment again: {registry:?}"
+        );
+        assert_eq!(registry.kind, "struct");
+        assert_eq!(registry.at.path, file);
+    }
+
+    #[test]
+    fn the_members_nested_under_an_item_are_in_the_outline_too() {
+        // The hierarchical answer is a tree. A reader that took only its top
+        // level would have traded a wrong position for a missing half of the
+        // file — every method, every field, gone, and nothing would have said
+        // so because an outline with fewer entries still looks like an
+        // outline.
+        let answer: Value = serde_json::from_str(DOCUMENT_SYMBOL).expect("the captured answer");
+        let found = symbols(&answer, Some(Path::new("/w/lantern/src/lib.rs")));
+        let named: Vec<&str> = found.iter().map(|symbol| symbol.name.as_str()).collect();
+        for member in ["lit", "new", "light", "default"] {
+            assert!(named.contains(&member), "{member} is not in {named:?}");
+        }
+        let light = found
+            .iter()
+            .find(|symbol| symbol.name == "light")
+            .expect("a method");
+        assert_eq!(
+            light.container.as_deref(),
+            Some("impl LanternRegistry"),
+            "a method came back without the item it belongs to: {light:?}"
+        );
+    }
+
+    #[test]
+    fn a_flat_answer_still_reads_out_of_its_location() {
+        // `workspace/symbol` answers in the other shape, and it is the shape
+        // every resolution goes through. A reader that started preferring
+        // `selectionRange` and stopped reading `location` would have moved the
+        // defect rather than fixed it.
+        let answer = json!([{
+            "name": "LanternRegistry",
+            "kind": 23,
+            "containerName": "lantern",
+            "location": {
+                "uri": "file:///w/lantern/src/lib.rs",
+                "range": {"start": {"line": 7, "character": 11},
+                          "end": {"line": 7, "character": 26}}
+            }
+        }]);
+        let found = symbols(&answer, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].at.line, found[0].at.character), (7, 11));
+        assert_eq!(found[0].container.as_deref(), Some("lantern"));
+        assert_eq!(found[0].at.path, Path::new("/w/lantern/src/lib.rs"));
+    }
 }

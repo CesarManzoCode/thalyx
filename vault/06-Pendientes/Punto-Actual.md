@@ -14,9 +14,111 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## La máquina agente lleva su propio Rust — 2026-08-31
+## Los hijos del toolchain ya encuentran el toolchain — 2026-08-31
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+La VM real cerró el problema anterior: dentro de Thalyx,
+`cargo 1.90.0 from: thalyx` y `rust-analyzer 1.90.0 from: thalyx`. Y aun así
+`context('LanternRegistry')` contestaba `resolution: nothing` y el rename
+`No references found at position`, incluso apuntando al identificador físico en
+`lantern/src/lib.rs:8:12`.
+
+**Causa demostrada, con el log del propio servidor**, reproducida con un entorno
+que tenía exactamente lo que Thalyx entrega y nada más:
+
+```
+ERROR FetchWorkspaceError: rust-analyzer failed to load workspace:
+  Failed to run `cargo metadata …`: No such file or directory (os error 2)
+WARN  failed to get rustc cfgs e=unable to fetch cfgs via `… "rustc" …`
+  Caused by: No such file or directory (os error 2)
+```
+
+rust-analyzer lanza sus subprocesos por **nombre pelado**, y un nombre pelado se
+resuelve por `PATH`. Thalyx encuentra sus herramientas por ruta absoluta —y eso
+no cambia— pero nunca le había dado un `PATH` a lo que ella misma arranca. Sin
+grafo de crates no hay semántica; la sintaxis sobrevive porque no necesita
+subproceso, que es por qué el outline funcionaba mientras todo lo demás
+resolvía a nada.
+
+**El cambio, mínimo:** `toolchain::environment` agrega una variable.
+
+| variable | por qué |
+|---|---|
+| `PATH=<runtime>/bin` | única vía por la que rust-analyzer encuentra **su** cargo y **su** rustc. Medido: agregarla y nada más vuelve correctas `workspace/symbol`, `definition` y `rename` en el mismo fixture donde las tres estaban vacías |
+
+No se agregaron `CARGO`, `RUSTC` ni `RUST_SRC_PATH`: `PATH` sola alcanzó, y una
+variable puesta porque «Rust normalmente la usa» no se quita nunca. El `PATH`
+del runtime administrado tiene **una** entrada, construida por Thalyx: no hereda
+el del anfitrión, ni `/usr/bin`, ni `~/.cargo`, ni `~/.rustup`. Un toolchain
+instalado —la otra rama— pone su `bin` **adelante** del heredado en vez de
+reemplazarlo, que además arregla `verify.sh` bajo `sudo`, cuyo `secure_path` no
+nombra ningún `~/.rustup/toolchains/*/bin`.
+
+Todo el razonamiento está en [[Runtime-Rust-Agente]], sección «El `PATH` que
+Thalyx le arma a sus hijos».
+
+### Y dos defectos del instrumento, que eran peores que el bug
+
+- **`dev/verify-agent-rust.sh` daba un falso positivo.** Imprimía
+  `PROVEN context('LanternRegistry') came from rust-analyzer` sobre
+  `{source: "rust-analyzer", resolution: "nothing", entries: []}`, porque leía
+  `source` y nada más. `source` dice **quién contestó**; nunca dijo **que la
+  respuesta resolviera algo**. Ahora el veredicto exige las tres cosas:
+  `source == "rust-analyzer"`, `resolution == "one"`, y que las entradas traigan
+  exactamente la declaración preguntada con su `handle`. La comprobación
+  independiente del rename se mantiene.
+- **El control de la regresión quedó reparado por su propio ambiente.** El
+  primer intento quitaba `PATH` y el símbolo se resolvía igual: rust-analyzer
+  busca `cargo` en `$CARGO`, `PATH` y `$CARGO_HOME/bin`, y en una máquina con
+  rustup el tercero está lleno. Dentro de Thalyx el `CARGO_HOME` es
+  `<store>/state/cargo` y no tiene `bin`. El control ahora modela el guest.
+
+Las dos quedaron escritas como reglas en [[Estrategia-de-Pruebas]]; son la
+vigésima y la vigésimo primera vez que el instrumento era el problema.
+
+### El outline apuntaba al comentario, y también se arregló
+
+`context('lantern/src/lib.rs')` ponía `LanternRegistry` en 3:1 cuando el
+identificador está en 8:12. Thalyx pedía `hierarchicalDocumentSymbolSupport:
+false`, y en esa forma el rango de cada entrada es el **ítem entero**, que para
+una struct documentada arranca en el primer `///`. Se pide la forma jerárquica y
+se lee `selectionRange`. **No era la causa del bloqueo** —8:12 fallaba igual—
+pero sí una posición que un renombrado por handle habría usado. La respuesta real
+del servidor quedó guardada en
+`crates/thalyx-rust/tests/samples/document-symbol-hierarchical.json`, regla 6.
+
+### Qué está probado y qué falta
+
+Probado en el contenedor, con el entorno vaciado (`env_clear`) y sólo las
+variables que Thalyx entrega, sobre `dev/rust-corpus`:
+
+- sin `PATH`: el outline encuentra `LanternRegistry` y `known(...)` contesta
+  `Resolution::Nothing` y el rename falla — el defecto, reproducido;
+- con el `PATH` que Thalyx construye: `Resolution::One`, la declaración en
+  `lantern/src/lib.rs:8:12`, usos en el otro crate, y un rename real que reescribe
+  **dos archivos** con más de cuatro ediciones en el segundo;
+- la cadena de abajo: `cargo` invocado como **nombre pelado** con el entorno
+  vaciado compila el workspace, o sea que encontró su `rustc` por el mismo
+  `PATH`.
+
+**Falta la prueba en la VM real**, que es de César. Es el mismo
+`dev/verify-agent-rust.sh` de antes, ahora sin el falso positivo:
+
+```sh
+git pull
+cargo build --release -p thalyx-mcp
+make -C image agent PROJECT="$PWD/dev/rust-corpus"   # en otra terminal
+dev/verify-agent-rust.sh
+```
+
+Y una cosa **no** se tocó a propósito: la VM reportó `analyzer_confined=false`
+porque el kernel está attached pero observando. El proveedor cayó al proceso
+ordinario **dentro de Thalyx** y la semántica falló igual, así que primero la
+semántica. La misma propiedad bajo enforcement es la siguiente causa, con su
+propia evidencia. Una causa a la vez.
+
+## La máquina agente lleva su propio Rust — 2026-08-31
 
 La corrida compacta perdió por una causa física, y ya está identificada exacta:
 dentro de la VM, Claude eligió la primitiva correcta —`context` y luego

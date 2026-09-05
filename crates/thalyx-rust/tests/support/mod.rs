@@ -80,3 +80,42 @@ pub fn cargo_or_skip(what: &str) -> bool {
     eprintln!("{message}");
     false
 }
+
+/// A copy of `dev/rust-corpus`, which is the workspace the machine's own Rust
+/// is verified against.
+///
+/// The same tree as `dev/verify-agent-rust.sh` and not a second one: the
+/// booted machine and the unit tests have to be able to disagree about the
+/// answer, which they cannot do if they are asked about different corpora.
+/// Copied because a rename really rewrites files.
+pub fn corpus() -> (tempfile::TempDir, PathBuf) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../dev/rust-corpus")
+        .canonicalize()
+        .expect("dev/rust-corpus");
+    let held = tempfile::tempdir().expect("a temporary directory");
+    let root = held.path().join("rust-corpus");
+    copy(&source, &root);
+    (held, root)
+}
+
+/// Whether a test that deliberately runs an unconfined analyzer may run.
+///
+/// `THALYX_REQUIRE_CONFINED_ANALYZER=1` is a demand about the machine, and on
+/// 2026-08-30 it was typed on `verify.sh`'s command line and stayed in the
+/// environment of `cargo test --workspace` — rule 5, where the harness *is*
+/// the environment. A test whose whole subject is the environment a provider
+/// is handed cannot also be the test that proves confinement, so it says so
+/// and stops rather than quietly starting an unconfined server under a
+/// variable that forbids one.
+pub fn unconfined_or_skip(what: &str) -> bool {
+    if std::env::var("THALYX_REQUIRE_CONFINED_ANALYZER").as_deref() != Ok("1") {
+        return true;
+    }
+    eprintln!(
+        "NOT PROVEN: {what} — THALYX_REQUIRE_CONFINED_ANALYZER=1 and this check \
+         starts an ordinary process on purpose. It measures the environment a \
+         toolchain's children are handed, not the confinement around them."
+    );
+    false
+}

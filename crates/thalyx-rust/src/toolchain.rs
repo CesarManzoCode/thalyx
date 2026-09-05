@@ -410,19 +410,74 @@ pub fn cargo_command() -> PathBuf {
 /// directory outright makes the toolchain independent of whether whoever
 /// starts it remembered `/proc`. It reaches nothing new: the directory is
 /// inside the artifact [`readable`] already grants.
+///
+/// ## `PATH`, which is the one that had never been here
+///
+/// Thalyx finds its tools by absolute path, so nothing *Thalyx* runs needs a
+/// `PATH`. **rust-analyzer is not the thing Thalyx runs — it is a thing that
+/// runs things.** It shells out to `cargo metadata`, `cargo locate-project`,
+/// `cargo --version` and `rustc --print cfg`, and it spells every one of them
+/// as a bare program name, which the kernel resolves through `PATH` and
+/// nothing else.
+///
+/// Measured on 2026-08-31 against `dev/rust-corpus`, with an environment
+/// holding exactly the three variables above and no more. rust-analyzer
+/// started, parsed the file, and answered `textDocument/documentSymbol` with
+/// every declaration in it — and then:
+///
+/// ```text
+/// ERROR FetchWorkspaceError: rust-analyzer failed to load workspace:
+///   Failed to run `cargo metadata …`: No such file or directory (os error 2)
+/// WARN  failed to get rustc cfgs e=unable to fetch cfgs via `… "rustc" …`
+///   Caused by: No such file or directory (os error 2)
+/// ```
+///
+/// With no crate graph, `workspace/symbol` answered `[]`,
+/// `textDocument/definition` answered `[]`, and `textDocument/rename` at the
+/// identifier's own physical position answered
+/// `No references found at position` — which is exactly what a booted Thalyx
+/// had just reported about a struct its own outline could see. Syntax worked
+/// and semantics did not, because syntax needs no subprocess.
+///
+/// Adding `PATH=<runtime>/bin` and nothing else turned all four answers
+/// correct in the same fixture. `CARGO`, `RUSTC` and `RUST_SRC_PATH` are
+/// **not** set: `PATH` alone was measured to be sufficient, and a variable
+/// added because Rust usually has it is a variable nobody can remove later.
+///
+/// One thing to know before rewriting the control that guards this: the server
+/// looks for `cargo` in **three** places — `$CARGO`, `PATH`, and
+/// `$CARGO_HOME/bin`. Inside Thalyx the third is `<store>/state/cargo`, which
+/// has no `bin`, so taking `PATH` away leaves it with nothing. On a rustup
+/// machine the third one is full, and a control that only removed `PATH`
+/// resolved the symbol anyway — see
+/// `tests/a_toolchains_children_find_the_toolchain.rs`.
+///
+/// ## And this is not the borrowing the decree forbids
+///
+/// The `PATH` a managed toolchain gets is **built here, out of one directory
+/// Thalyx staged itself**. Nothing is inherited: not the caller's `PATH`, not
+/// `/usr/bin`, not `~/.cargo/bin`, not `~/.rustup`. What
+/// `Runtime-Rust-Agente.md` forbids is Thalyx *finding* its tools among the
+/// host's; what this does is tell Thalyx's own children where Thalyx's own
+/// tools are. Move the disk and the value moves with it.
+///
+/// An installed toolchain is the other machine and gets the other answer: its
+/// `bin` goes in **front of** the inherited `PATH` rather than replacing it,
+/// because that branch is a host toolchain by definition and its Cargo needs
+/// the host's linker to build a proc macro. It is not decoration either —
+/// `verify.sh` runs under `sudo`, whose `secure_path` contains no
+/// `~/.rustup/toolchains/*/bin`, so on the machine that verifies all of this
+/// rust-analyzer's `cargo` was as unreachable as it was inside Thalyx.
 pub fn environment() -> Vec<(&'static str, String)> {
     let mut environment: Vec<(&'static str, String)> = Vec::new();
 
     if let Some(runtime) = managed_runtime() {
-        environment.push((LOADER_PATH_VARIABLE, runtime.lib().display().to_string()));
         // Under the store, so it survives a reboot and belongs to Thalyx. Made
         // here rather than left to Cargo: a directory a grant names has to
         // exist before the grant can be given.
         let home = crate::runtime::store_root().join("state").join("cargo");
         let _ = std::fs::create_dir_all(&home);
-        environment.push(("CARGO_HOME", home.display().to_string()));
-        environment.push(("CARGO_NET_OFFLINE", "true".to_string()));
-        return environment;
+        return carried_by(&runtime, &home);
     }
 
     let rustup = std::env::var_os("RUSTUP_HOME")
@@ -447,7 +502,68 @@ pub fn environment() -> Vec<(&'static str, String)> {
     if let Some(cargo_home) = cargo_home {
         environment.push(("CARGO_HOME", cargo_home.display().to_string()));
     }
+    if let Some(bin) = cargo().path.as_ref().and_then(|path| path.parent()) {
+        environment.push((SEARCH_PATH_VARIABLE, ahead_of_the_inherited_path(bin)));
+    }
     environment
+}
+
+/// Everything a managed toolchain's children are told, and nothing else.
+///
+/// Split out of [`environment`] so that the claim *«this environment names one
+/// directory and it is Thalyx's»* can be asserted about a runtime a test
+/// staged, rather than about whatever the machine running the test happens to
+/// carry. Rule 11: the alternative is a test that sets `THALYX_ROOT` for the
+/// whole process and changes what every other check thinks the machine is.
+pub fn carried_by(
+    runtime: &crate::runtime::Runtime,
+    cargo_home: &Path,
+) -> Vec<(&'static str, String)> {
+    vec![
+        (LOADER_PATH_VARIABLE, runtime.lib().display().to_string()),
+        // Exactly one directory, and it is Thalyx's. See the note above: this
+        // is what rust-analyzer's own `cargo` and `rustc` are found through,
+        // and it is the whole reason a machine that could parse a file could
+        // not resolve a name in it.
+        (
+            SEARCH_PATH_VARIABLE,
+            runtime.root.join("bin").display().to_string(),
+        ),
+        ("CARGO_HOME", cargo_home.display().to_string()),
+        ("CARGO_NET_OFFLINE", "true".to_string()),
+    ]
+}
+
+/// A directory put in front of whatever `PATH` this process was given.
+///
+/// Prepended and not appended: a `sudo` whose `secure_path` happens to hold a
+/// `/usr/bin/cargo` from a distribution package would otherwise answer
+/// rust-analyzer's subprocess with a different toolchain from the one
+/// [`cargo`] resolved, and a machine whose `cargo metadata` and whose
+/// `cargo --version` are two different compilers is two machines.
+///
+/// Absent when the directory is already there, so a normal shell run keeps the
+/// `PATH` it had rather than growing a duplicate on every start.
+fn ahead_of_the_inherited_path(bin: &Path) -> String {
+    ahead_of(
+        bin,
+        &std::env::var_os(SEARCH_PATH_VARIABLE).unwrap_or_default(),
+    )
+}
+
+/// The same, told what the inherited value is rather than reading it.
+///
+/// `PATH` is the process's, and a test that set it to assert this would be
+/// rule 11 — a global switch with no owner, whose value is the precondition of
+/// every other check in the same binary.
+fn ahead_of(bin: &Path, inherited: &std::ffi::OsStr) -> String {
+    if std::env::split_paths(inherited).any(|entry| entry == bin) {
+        return inherited.to_string_lossy().into_owned();
+    }
+    let joined = std::iter::once(bin.to_path_buf()).chain(std::env::split_paths(inherited));
+    std::env::join_paths(joined)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| bin.display().to_string())
 }
 
 /// The runtime this machine's tools actually came out of, or `None`.
@@ -467,6 +583,13 @@ pub fn managed_runtime() -> Option<crate::runtime::Runtime> {
 
 /// The environment variable that names where the loader looks first.
 pub const LOADER_PATH_VARIABLE: &str = "LD_LIBRARY_PATH";
+
+/// The environment variable a bare program name is resolved through.
+///
+/// Spelled once, because the thing it is for is a subprocess Thalyx does not
+/// start and cannot see: rust-analyzer's `cargo`. A second spelling of it is a
+/// second answer to where the toolchain is.
+pub const SEARCH_PATH_VARIABLE: &str = "PATH";
 
 /// The directory a toolchain binary's own `RUNPATH` means, resolved from where
 /// the binary really is rather than from where it is executed.
@@ -745,5 +868,76 @@ mod tests {
         assert_eq!(once, twice);
         assert_eq!(once.len(), 3);
         assert!(once[0].ends_with("beta-x86_64/bin"), "{once:?}");
+    }
+
+    #[test]
+    fn a_managed_toolchain_hands_its_children_one_directory_and_it_is_thalyxs() {
+        // The bug of 2026-08-31: rust-analyzer started from an absolute path,
+        // parsed the file, and then ran `cargo metadata` — spelled as a bare
+        // program name — into a `PATH` that did not exist. `os error 2`, no
+        // crate graph, and a machine whose outline could see a struct its
+        // rename could not resolve.
+        let store = tempfile::tempdir().expect("a temp store");
+        let root = a_runtime_that_answers(store.path(), "rust-1.90.0-x86_64-unknown-linux-musl");
+        let runtime = crate::runtime::read(&root).expect("a staged runtime");
+        let home = store.path().join("state/cargo");
+
+        let carried = carried_by(&runtime, &home);
+        let named: Vec<&str> = carried.iter().map(|(name, _)| *name).collect();
+        assert!(
+            named.contains(&SEARCH_PATH_VARIABLE),
+            "the children of the managed toolchain are told nothing about where \
+             its cargo is: {named:?}"
+        );
+
+        let path = carried
+            .iter()
+            .find(|(name, _)| *name == SEARCH_PATH_VARIABLE)
+            .map(|(_, value)| value.clone())
+            .expect("a PATH");
+        assert_eq!(
+            path,
+            root.join("bin").display().to_string(),
+            "the managed PATH is built by Thalyx out of its own bin and holds \
+             nothing else"
+        );
+        // The half that is the decree rather than the fix. A `PATH` with a
+        // second entry in it is a Thalyx whose compiler is whichever one the
+        // host put first, and it would work on every machine that has rustup.
+        assert_eq!(std::env::split_paths(&path).count(), 1, "{path:?}");
+        for borrowed in ["/usr/bin", "/usr/local/bin", ".cargo", ".rustup"] {
+            assert!(
+                !path.contains(borrowed),
+                "the managed PATH reaches the host through {borrowed}: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_installed_toolchains_bin_goes_in_front_of_the_path_it_was_given() {
+        // The other machine, and the other answer. `verify.sh` runs under
+        // `sudo`, whose `secure_path` names no `~/.rustup/toolchains/*/bin`,
+        // so rust-analyzer's `cargo` was as unreachable there as it was inside
+        // Thalyx — and a host toolchain still needs the host's linker, so the
+        // rest of the value stays.
+        let bin = PathBuf::from("/home/somebody/.rustup/toolchains/stable/bin");
+        let ahead = ahead_of(&bin, std::ffi::OsStr::new("/usr/sbin:/usr/bin"));
+        let entries: Vec<PathBuf> = std::env::split_paths(&ahead).collect();
+        assert_eq!(entries.first(), Some(&bin), "{ahead}");
+        assert_eq!(
+            entries.len(),
+            3,
+            "the inherited entries were dropped: {ahead}"
+        );
+    }
+
+    #[test]
+    fn a_path_that_already_names_the_toolchain_does_not_grow_a_second_copy() {
+        // Every start would otherwise append one more entry to a value that is
+        // inherited by everything the run spawns, and the way that shows up is
+        // an `E2BIG` weeks later on a machine nobody changed.
+        let bin = PathBuf::from("/opt/toolchain/bin");
+        let already = "/opt/toolchain/bin:/usr/bin";
+        assert_eq!(ahead_of(&bin, std::ffi::OsStr::new(already)), already);
     }
 }
