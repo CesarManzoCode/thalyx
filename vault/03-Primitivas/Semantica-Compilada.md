@@ -285,3 +285,34 @@ sin él no es un caso pequeño del mundo real, es otro sistema (regla 8).
 Queda escrito porque es la misma familia que el `target/` adentro del snapshot
 que se arregló con `CARGO_TARGET_DIR`: **el proveedor semántico tiene efectos en
 el sistema de archivos, y "es un lector" no los describe.**
+
+## Revisión 2026-09-05: lo que resuelve y lo que decora
+
+Este documento describía la respuesta de `contexto` como una cosa entera: el
+nombre resuelto, su firma, sus usos. En el código eran tres peticiones al
+servidor y una sola suerte — `workspace/symbol`, `textDocument/hover`,
+`textDocument/references`, cada una con `?`—, así que **cualquiera de las tres
+que fallara borraba a las tres**.
+
+La primera consulta de un arranque frío es exactamente ese caso. En una VM
+fresca, con `negar` armado, `context('LanternRegistry')` contestó `source: index`
+con `analyzer_error: "rust-analyzer did not answer:` `textDocument/hover` `after
+30s"`, y en esa misma corrida la máquina renombró ese símbolo en dos archivos de
+forma semántica. El servidor estaba vivo; el nombre ya estaba resuelto; se tardó
+la firma.
+
+La revisión: **`workspace/symbol` es la resolución y lo demás la decora.**
+
+- Una decoración que no contesta deja su dato **ausente**, y ausente se dice
+  `null`: `signature` sin firma, `uses` sin conteo. Nunca `0`, que no es la
+  ausencia de un hallazgo sino el hallazgo contrario —«esto no se usa en ninguna
+  parte»— y es lo que un modelo lee para borrar código.
+- La razón no se esconde: sale en `analyzer_error` con `source: rust-analyzer` al
+  lado. Esa combinación significa *resolvió, y no vino entero*, y es distinta de
+  `source: index`, que sigue significando *contestó el índice, y aquí está por
+  qué no fue el compilador*.
+- Una respuesta incompleta **no se guarda** en el conocimiento. Lo que hace
+  fallar una decoración se va con la siguiente pregunta; lo que la memoria guarda
+  dura hasta que se muevan las fuentes.
+- Si lo que falla es la resolución misma, el fallback al índice es el de siempre
+  — una máquina sin analizador sigue contestando, marcada como `matched`.

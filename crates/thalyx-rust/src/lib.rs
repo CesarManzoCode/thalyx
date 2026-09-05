@@ -153,9 +153,16 @@ pub struct Known {
     pub package: Option<String>,
     pub defined: Vec<At>,
     pub signature: Option<String>,
-    /// Every use, the declaration included. Kept whole in the machine; the
-    /// surface returns a count and a window of it.
-    pub used: Vec<At>,
+    /// Every use, the declaration included — or `None` when the use sites were
+    /// never obtained. Kept whole in the machine; the surface returns a count
+    /// and a window of it.
+    ///
+    /// `None` and `Some(vec![])` are different answers, and the difference is
+    /// rule 10: an empty list says *nothing in this workspace uses this*, which
+    /// is a claim, and a `textDocument/references` that never came back has
+    /// made no claim at all. A count of zero invented out of the second would
+    /// be the confident wrong answer this file exists to refuse.
+    pub used: Option<Vec<At>>,
 }
 
 /// One of the declarations a name could mean, when there is more than one.
@@ -292,6 +299,9 @@ pub struct Provider {
     knowledge: Knowledge,
     workspace: Option<Workspace>,
     analyzer: Option<Analyzer>,
+    /// Which server to start, when the caller named one. See
+    /// [`Provider::analyzing_with`].
+    binary: Option<PathBuf>,
     /// Why there is no analyzer, once we have tried and failed. Kept so the
     /// second question does not pay the 25 seconds again to be told the same
     /// thing — and so the answer can say *which* failure it was.
@@ -308,6 +318,11 @@ pub struct Provider {
     /// Where its toolchain is, for a process that is not the user who
     /// installed it.
     environment: Vec<(String, String)>,
+    /// What the last query asked the analyzer for and did not get, verbatim.
+    ///
+    /// Kept beside the answer rather than returned instead of it. See
+    /// [`Provider::shortfall`].
+    shortfall: Option<String>,
     pub tally: Tally,
 }
 
@@ -319,10 +334,12 @@ impl Provider {
             knowledge,
             workspace: None,
             analyzer: None,
+            binary: None,
             analyzer_refused: None,
             spawner: std::sync::Arc::new(analyzer::OnTheHost),
             readable: Vec::new(),
             environment: Vec::new(),
+            shortfall: None,
             tally: Tally::default(),
         }
     }
@@ -336,6 +353,21 @@ impl Provider {
     /// [`analyzer::Spawn`].
     pub fn spawning(mut self, spawner: std::sync::Arc<dyn analyzer::Spawn>) -> Self {
         self.spawner = spawner;
+        self
+    }
+
+    /// The server to start, for a caller that knows which one it wants.
+    ///
+    /// Nothing in the product calls this: the product asks the host what
+    /// rust-analyzer it has, which is [`analyzer::find`] and is the default.
+    /// It exists so that a stand-in server can be put under a *real*
+    /// `Provider` — the only way to ask what this crate does when one request
+    /// of a query answers and another does not, on a machine that has no
+    /// rust-analyzer to be slow. Rule 1: the defect below was found by running
+    /// the system, and a check for it that could not run here would be a check
+    /// nobody could fail.
+    pub fn analyzing_with(mut self, binary: PathBuf) -> Self {
+        self.binary = Some(binary);
         self
     }
 
@@ -360,6 +392,16 @@ impl Provider {
     /// confined when it had not.
     pub fn analyzer_confined(&self) -> Option<bool> {
         self.analyzer.as_ref().map(Analyzer::confined)
+    }
+
+    /// What the last query asked the analyzer for and did not get.
+    ///
+    /// `None` when everything asked for was answered — and also on a query
+    /// that never reached the analyzer at all, so it is read *beside* the
+    /// answer and never instead of it: an error from [`Provider::known`] is
+    /// the query failing, and this is the query succeeding with less in it.
+    pub fn shortfall(&self) -> Option<&str> {
+        self.shortfall.as_deref()
     }
 
     /// One phrase saying what started the running analyzer.
@@ -503,6 +545,17 @@ impl Provider {
         let value = serde_json::to_string(&resolution)
             .unwrap_or_else(|_| r#"{"resolution":"nothing"}"#.into());
         match identity {
+            // **A partial answer is not remembered, ever.** The thing that
+            // makes an enrichment fail is a server still warming up, and it is
+            // gone by the next question — while what this cache holds lives
+            // until the sources move. Writing "the use sites of `Store` are
+            // unknown" here would outlive its cause by the whole life of the
+            // tree, and every later question would be answered from the one
+            // moment the machine was cold. `false miss = slower, false hit =
+            // wrong`, and this is the false hit.
+            Some(_) if self.shortfall.is_some() => {
+                Ok((resolution, Standing::Current, "rust-analyzer".to_string()))
+            }
             Some(identity) => {
                 self.knowledge
                     .remember(KIND_SYMBOL, &name, &identity, "rust-analyzer", &value)?;
@@ -519,7 +572,34 @@ impl Provider {
     /// One place, so that the definition, the signature and the uses are always
     /// about the same declaration. Three call sites picking their own would be
     /// three chances to describe one symbol and cite another.
+    ///
+    /// ## What resolves the name, and what only decorates it
+    ///
+    /// `workspace/symbol` is the resolution: after it, the machine either knows
+    /// that exactly one declaration of this name exists and where it is, or it
+    /// does not. The hover and the references that follow **add to an answer
+    /// that already exists**, and until 2026-09-05 a `?` on either threw the
+    /// resolution away — the whole query became an error, `gather` fell back to
+    /// the index, and a name a compiler had resolved came back as a textual
+    /// match.
+    ///
+    /// That is not hypothetical and it is not rare: it is the first question of
+    /// every cold boot. On a fresh VM, `context('LanternRegistry')` answered
+    /// `source=index` with `rust-analyzer did not answer: \`textDocument/hover\`
+    /// after 30s`, and the *same run*, seconds later, renamed that same symbol
+    /// across two files semantically — because by then the server had warmed
+    /// up. The resolution had been there all along; an enrichment ran out of
+    /// ceiling and took it with it.
+    ///
+    /// So each enrichment is now obtained or absent, and its absence is
+    /// recorded in [`Provider::shortfall`] rather than invented as an empty
+    /// answer. Nothing here claims a datum it did not get, and nothing here
+    /// discards one it did.
     fn ask_about(&mut self, name: &str) -> Result<Resolution> {
+        // Cleared here rather than in `known`, because `steady` may run this
+        // twice and what the caller is owed is the shortfall of the answer it
+        // actually gets — the second one.
+        self.shortfall = None;
         let root = self.root.clone();
         let analyzer = self.analyzer()?;
         let mut exact: Vec<Symbol> = analyzer
@@ -552,12 +632,33 @@ impl Provider {
             1 => {
                 let declaration = exact.remove(0);
                 let at = declaration.at.clone();
-                let signature = analyzer.signature(&at.path, at.line, at.character)?;
-                let used = analyzer.references(&at.path, at.line, at.character)?;
+                // Both asked for, and neither allowed to unresolve the name.
+                // They are asked in this order because that is the order they
+                // are wanted in; a failure of the first is not a reason to skip
+                // the second, which on the cold boot above was the one that
+                // held the twelve use sites.
+                let mut short: Vec<String> = Vec::new();
+                let signature = match analyzer.signature(&at.path, at.line, at.character) {
+                    Ok(signature) => signature,
+                    Err(error) => {
+                        short.push(error.to_string());
+                        None
+                    }
+                };
+                let used = match analyzer.references(&at.path, at.line, at.character) {
+                    Ok(spots) => Some(spots.iter().map(|spot| At::of(spot, &root)).collect()),
+                    Err(error) => {
+                        short.push(error.to_string());
+                        None
+                    }
+                };
                 let package = self
                     .workspace()?
                     .package_of(&at.path)
                     .map(|package| package.name.clone());
+                if !short.is_empty() {
+                    self.shortfall = Some(short.join("; "));
+                }
                 Ok(Resolution::One {
                     known: Box::new(Known {
                         name: name.to_string(),
@@ -565,7 +666,7 @@ impl Provider {
                         package,
                         defined: vec![At::of(&at, &root)],
                         signature,
-                        used: used.iter().map(|spot| At::of(spot, &root)).collect(),
+                        used,
                     }),
                 })
             }
@@ -580,11 +681,26 @@ impl Provider {
                 // because it borrows `self` too and a loop that alternated
                 // between them would not compile without releasing one of them
                 // every time round.
+                let mut short: Vec<String> = Vec::new();
                 let mut described = Vec::with_capacity(exact.len());
                 for declaration in exact {
                     let at = declaration.at.clone();
-                    let signature = analyzer.signature(&at.path, at.line, at.character)?;
+                    // The same rule as the branch above, for the same reason:
+                    // the candidates are what `workspace/symbol` resolved, the
+                    // signatures are what makes them readable, and a hover that
+                    // did not come back must not turn a refusal to choose
+                    // between three declarations into a textual match.
+                    let signature = match analyzer.signature(&at.path, at.line, at.character) {
+                        Ok(signature) => signature,
+                        Err(error) => {
+                            short.push(error.to_string());
+                            None
+                        }
+                    };
                     described.push((declaration, signature));
+                }
+                if !short.is_empty() {
+                    self.shortfall = Some(short.join("; "));
                 }
 
                 let mut candidates = Vec::with_capacity(described.len());
@@ -787,7 +903,7 @@ impl Provider {
             return Err(RustError::NoAnalyzer(why.clone()));
         }
         if self.analyzer.is_none() {
-            let Some(binary) = analyzer::find() else {
+            let Some(binary) = self.binary.clone().or_else(analyzer::find) else {
                 // Naming every place that was looked at, and not just the
                 // absence. On 2026-08-29 this said "no rust-analyzer" on a
                 // machine where `rustup component add rust-analyzer` had just

@@ -261,14 +261,14 @@ fn the_path_thalyx_builds_is_what_makes_a_name_resolve() {
     // Uses in the other crate. A resolution that found the declaration and no
     // references would be a file that parsed rather than a workspace that
     // loaded.
+    let used = known
+        .used
+        .as_deref()
+        .expect("the use sites of a query rust-analyzer answered in full");
     assert!(
-        known
-            .used
-            .iter()
-            .any(|used| used.path.starts_with("harbour/")),
+        used.iter().any(|used| used.path.starts_with("harbour/")),
         "nothing in the second crate refers to it, so the crate graph has one \
-         crate in it: {:?}",
-        known.used
+         crate in it: {used:?}"
     );
 }
 

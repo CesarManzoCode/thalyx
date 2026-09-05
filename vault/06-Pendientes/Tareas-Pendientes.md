@@ -15,13 +15,13 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
-- [ ] **Por qué la primera consulta fría de `context` cae al índice.**
-      Añadido el 2026-09-05. En una VM Thalyx con `negar`, la primera consulta
-      del arranque contesta `source: index` y la segunda —sin reiniciar—
-      contesta `rust-analyzer` con la resolución completa. La causa todavía no
-      se conoce: **falta el dato, no el arreglo.** El instrumento ya está puesto
-      (`analyzer_error` en toda respuesta de `context`, y `detail` con la misma
-      frase), así que lo que falta es **una corrida física sobre una VM fresca,
+- [ ] **Comprobar en frío que la primera consulta ya no cae al índice.**
+      Añadido el 2026-09-05, y ese mismo día contestado: la causa era que
+      `textDocument/hover` se pasaba del techo de 30 s sobre un servidor que
+      seguía calentando, y el `?` sobre ese enriquecimiento tiraba la
+      resolución que `workspace/symbol` ya había entregado. Arreglado — un
+      enriquecimiento que falla queda ausente y dice por qué, y la resolución
+      se conserva. Lo que falta es **una corrida física sobre una VM fresca,
       una sola vez**, porque la segunda consulta ya no mide lo mismo. Ver
       [[Punto-Actual]].
 

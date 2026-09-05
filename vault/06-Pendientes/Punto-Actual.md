@@ -14,9 +14,90 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## La primera consulta fría cae al índice, y ahora la respuesta dice por qué — 2026-09-05
+## La consulta fría ya no pierde la resolución: el `hover` que se tardó dejó de deshacerla — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+**La causa, leída del instrumento que se puso ayer.** En la VM fresca, con
+`negar`, la primera consulta contestó:
+
+```text
+context('LanternRegistry'):
+  source=index
+  analyzer_confined=true
+  analyzer_error="rust-analyzer did not answer: `textDocument/hover` after 30s"
+```
+
+y **en esa misma corrida**, segundos después, la misma máquina renombró ese mismo
+símbolo en dos archivos con nueve ediciones, resolvió su `definition` exacta e
+hizo el rollback. O sea que el analizador estaba vivo y contestaba: lo que la
+frase nombra es **cuál petición** se quedó sin techo.
+
+**Y eso alcanza para saber qué se rompió.** `ask_about()` pregunta en este orden:
+
+1. `workspace/symbol` — **ésta es la resolución.** Después de esta petición la
+   máquina sabe que exactamente una declaración de ese nombre existe y dónde.
+2. `textDocument/hover` — la firma.
+3. `textDocument/references` — los usos.
+
+Para que el error nombre a la segunda, la primera ya había contestado. El `?`
+sobre la segunda convertía toda la consulta en un error, el fallback tiraba la
+resolución de la primera, y **un nombre que un compilador había resuelto se
+reportaba como una coincidencia de texto** — en la primera consulta de cada
+arranque frío, que es justamente la que un agente hace al abrir el proyecto.
+
+**El arreglo, y es lo mínimo que es honesto.** Lo que resuelve y lo que decora
+son dos cosas, y sólo la primera puede deshacer una respuesta:
+
+- Un enriquecimiento que no contesta **queda ausente**, no inventado. La firma
+  es `null` y los usos son `null` — **jamás `0`**, porque `0` es el hallazgo
+  «esto no se usa en ninguna parte» y es lo que un modelo lee para borrar código.
+  `Known::used` pasó de `Vec<At>` a `Option<Vec<At>>` justo para poder decirlo, y
+  el campo `uses` de la respuesta va siempre presente y en `null` cuando nadie
+  contó — también en el mapa de un archivo y en la lista de candidatos, que
+  llevaban meses diciendo `0` sin haber contado nada.
+- **El timeout no se esconde.** Viaja en `Provider::shortfall()` y sale en
+  `analyzer_error` con `source: rust-analyzer` al lado. Esa combinación es nueva
+  y significa «resolvió, y no vino entero»; `dev/verify-agent-rust.sh` la imprime
+  en su propio renglón y no la cuenta como FALLÓ, porque la afirmación de la
+  etapa es la resolución y la resolución se sostuvo.
+- **Una respuesta parcial no se recuerda.** Lo que hace fallar un enriquecimiento
+  es un servidor calentando y se va con la siguiente pregunta; lo que la memoria
+  guarda vive hasta que se muevan las fuentes. Guardarla haría que el resto de la
+  vida del árbol se contestara desde el único momento en que la máquina estuvo
+  fría.
+- Si lo que falla es **la resolución misma**, el fallback al índice sigue igual
+  que siempre. Eso no se tocó.
+
+**No se tocó nada más**: ni seccomp, ni `fork`, ni el runtime, ni el
+confinamiento, ni `rename`, ni el índice, ni la arquitectura, ni los bancos.
+
+**Cómo se comprobó aquí, que no tiene rust-analyzer.**
+`crates/thalyx-rust/tests/an_enrichment_that_fails_keeps_the_resolution.rs`, con
+un doble en `tests/stand-in/server.py` que habla el LSP suficiente y recibe por
+argumento qué callar — regla 8: a un rust-analyzer real no se le puede pedir que
+esté frío, y la propiedad bajo prueba *es* la mitad que falla. Cuatro pruebas:
+el control que contesta todo (regla 4, sin él una firma ausente sería evidencia
+de un doble que no sabe producirla), el `hover` mudo —que cuesta los 30 s del
+techo de verdad, porque silencio es lo que pasó—, las referencias rechazadas, y
+que la parcial no se guarda. **Las tres afirmaciones nuevas fallan contra el
+código de ayer y pasan contra el de hoy**; se comprobó restaurando los dos `?` y
+corriéndolas. `cargo test --workspace`, `clippy` y `fmt` limpios.
+
+**Lo que falta correr, y es lo único:**
+
+```
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+y luego, en una **VM fresca**, `dev/verify-agent-rust.sh` **una sola vez**. La
+primera consulta fría es el sujeto: si la etapa de `context` contesta
+`source=rust-analyzer` con `resolution=one`, el arreglo es cierto en la máquina
+—y si además imprime «the answer resolved and was not whole», el `hover` se
+volvió a tardar y la resolución se sostuvo de todas formas, que es exactamente lo
+que se construyó.
+
+## La primera consulta fría cae al índice, y ahora la respuesta dice por qué — 2026-09-05
 
 **La evidencia física de hoy.** `sudo ./dev/verify.sh` en Fedora: **218 PROBADO,
 13 NO PROBADO, 0 FALLÓ** — los tres FALLÓ del bloque de abajo eran lectores y

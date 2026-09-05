@@ -87,13 +87,14 @@ fn a_reference_list_includes_the_import_that_renames_it() {
     assert_eq!(standing, Standing::Current);
     assert_eq!(known.kind, "struct");
     assert_eq!(known.package.as_deref(), Some("alias-fixture"));
+    let used = known
+        .used
+        .as_deref()
+        .expect("the use sites of a query rust-analyzer answered in full");
     assert!(
-        known
-            .used
-            .iter()
+        used.iter()
             .any(|at| at.path.ends_with("boot.rs") && at.line == 1),
-        "the `use … as Keys` line is a use of Keystore, and the answer was {:?}",
-        known.used
+        "the `use … as Keys` line is a use of Keystore, and the answer was {used:?}"
     );
 }
 

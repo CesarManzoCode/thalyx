@@ -89,8 +89,14 @@ fn a_name_that_really_is_unique_is_not_called_ambiguous() {
     };
     assert_eq!(known.kind, "struct");
     assert_eq!(known.package.as_deref(), Some("gamma"));
+    // `Some` and not merely non-empty: `None` is the answer for use sites
+    // nobody obtained, and a server that answered this query obtained them.
+    let used = known
+        .used
+        .as_deref()
+        .expect("the use sites of a query rust-analyzer answered in full");
     assert!(
-        !known.used.is_empty(),
+        !used.is_empty(),
         "a single resolution still carries its use sites: {known:?}"
     );
 }

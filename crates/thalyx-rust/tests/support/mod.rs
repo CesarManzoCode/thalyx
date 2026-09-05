@@ -119,3 +119,28 @@ pub fn unconfined_or_skip(what: &str) -> bool {
     );
     false
 }
+
+/// Whether the stand-in server can be run, saying so when it cannot.
+///
+/// The stand-in is a script, and the interpreter is the requirement — a
+/// separate one from rust-analyzer and from cargo, so rule 3 gives it its own
+/// word and its own variable. `THALYX_REQUIRE_STAND_IN=1` turns the skip into
+/// a failure, which is how a machine that can run it demands that it be run.
+pub fn stand_in_or_skip(what: &str) -> bool {
+    let works = std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if works {
+        return true;
+    }
+    let message = format!(
+        "NOT PROVEN: {what} — there is no python3 to run the stand-in server \
+         with. Set THALYX_REQUIRE_STAND_IN=1 to make this a failure."
+    );
+    if std::env::var("THALYX_REQUIRE_STAND_IN").as_deref() == Ok("1") {
+        panic!("{message}");
+    }
+    eprintln!("{message}");
+    false
+}

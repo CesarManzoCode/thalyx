@@ -388,7 +388,17 @@ struct Entry {
     column: u32,
     through: u32,
     signature: Option<String>,
-    uses: usize,
+    /// How many places use it — `None` when nobody counted.
+    ///
+    /// Not a `usize` defaulting to zero. `0` says *nothing uses this*, which is
+    /// a finding, and most of the ways an entry is built here never counted
+    /// anything: a file's outline does not ask, a list of candidates
+    /// deliberately does not ask — both of them said `0` for months — and a
+    /// resolved declaration knows only when `textDocument/references` came
+    /// back. The index is the one that really counts, and it says so. The
+    /// invented zero is the confident wrong answer, in the field a model reads
+    /// to decide whether a symbol is dead.
+    uses: Option<usize>,
     /// Where it is used, when the caller asked for them. Held back by default
     /// because a symbol with two hundred uses would be the whole budget, and
     /// the count alone answers most of the questions the list is asked for.
@@ -418,6 +428,9 @@ impl Entry {
         if let Some(signature) = &self.signature {
             fields.insert("signature".into(), json!(signature));
         }
+        // Always present and `null` when unknown, rather than left out: an
+        // absent field and a zero are the two readings this must never be
+        // confused between, and `null` is neither.
         fields.insert("uses".into(), json!(self.uses));
         if !self.used_at.is_empty() {
             fields.insert("used_at".into(), json!(self.used_at));
@@ -575,11 +588,14 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 ("analyzer_how", json!(confinement.1)),
                 ("detail", json!(why)),
                 // The field a diagnosis is read from, present on every answer
-                // and `null` on every one the provider gave. `detail` carries
-                // the same sentence for a person to read; this one is for the
-                // program that has to tell "there is no analyzer on this
-                // machine" from "the analyzer died answering this question",
-                // which are the same `source: index` and different faults.
+                // and `null` on every one that came back whole. `detail`
+                // carries the same sentence for a person to read; this one is
+                // for the program that has to tell "there is no analyzer on
+                // this machine" from "the analyzer died answering this
+                // question", which are the same `source: index` and different
+                // faults — and, since 2026-09-05, from "the analyzer resolved
+                // the name and the hover ran out of ceiling", which is
+                // `source: rust-analyzer` and a `uses` of `null`.
                 ("analyzer_error", json!(refused)),
             ],
         ));
@@ -608,6 +624,15 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         }
         if omitted > 0 {
             println!("  … {omitted} more did not fit in {budget} bytes");
+        }
+        // What the machine face carries in `detail`, for the face that has no
+        // fields. A person reading an answer that fell back to the index, or
+        // one that resolved and came back without its use sites, is owed the
+        // reason on the screen and not only in the JSON they are not looking
+        // at. Skipped when it was already printed above, which is the
+        // ambiguous answer.
+        if refused.is_some() && resolution != "ambiguous" && !why.is_empty() {
+            println!("  {why}");
         }
         println!("  ({source}, {fresh})");
         println!();
@@ -662,9 +687,17 @@ struct Answered {
     fresh: &'static str,
     resolution: &'static str,
     why: String,
-    /// Why the semantic provider did not answer, verbatim, when it did not.
+    /// What the semantic provider did not answer, verbatim, when something
+    /// went unanswered.
     ///
-    /// `None` on every answer the provider gave. The fallback to the index is
+    /// Two cases, and `source` is what tells them apart. When the provider did
+    /// not answer at all, this is why and `source` is `index`. When it answered
+    /// and one of the enrichments under the answer did not — a hover that ran
+    /// out of ceiling on a cold server — this is that, `source` is
+    /// `rust-analyzer`, and the datum it was carrying is `null` rather than
+    /// zero. A real timeout is never hidden by being survived.
+    ///
+    /// `None` on an answer that came back whole. The fallback to the index is
     /// unchanged and stays a fallback — what changes is that the reason
     /// survives it. On 2026-09-05 a VM answered the very first `context` from
     /// the index and the second one, in the same boot, from rust-analyzer: two
@@ -761,7 +794,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                     column: item.at.column,
                     through: item.through,
                     signature: None,
-                    uses: 0,
+                    uses: None,
                     used_at: Vec::new(),
                     source: "rust-analyzer",
                 })
@@ -790,6 +823,17 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             .to_string();
         let (resolution, standing, _) = provider.known(&name)?;
         let fresh = standing_word(&standing);
+        // Read here, next to the answer it is about, and before anything else
+        // is asked of the provider.
+        let short = provider.shortfall().map(str::to_string);
+        let shortfall = |resolved: &str| match &short {
+            Some(why) => format!(
+                "rust-analyzer {resolved} and did not answer everything asked \
+                 about it: {why}. What it did not answer is absent from this \
+                 answer, not zero"
+            ),
+            None => String::new(),
+        };
 
         if resolution.is_ambiguous() {
             // **The refusal, as an answer rather than an error.** Every
@@ -813,19 +857,24 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                     column: candidate.at.column,
                     through: candidate.at.line,
                     signature: candidate.signature.clone(),
-                    uses: 0,
+                    uses: None,
                     used_at: Vec::new(),
                     source: "rust-analyzer",
                 })
                 .collect();
             remember_spans(provider, &entries);
+            let mut why = resolution.ambiguity(&name);
+            if short.is_some() {
+                why.push_str(" — ");
+                why.push_str(&shortfall("resolved this name to several"));
+            }
             return Ok(Some(Answered {
-                why: resolution.ambiguity(&name),
+                why,
                 entries,
                 source: "rust-analyzer",
                 fresh,
                 resolution: "ambiguous",
-                refused: None,
+                refused: short,
             }));
         }
 
@@ -864,10 +913,11 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             column: at.column,
             through,
             signature: known.signature.clone(),
-            uses: known.used.len(),
+            uses: known.used.as_ref().map(Vec::len),
             used_at: known
                 .used
                 .iter()
+                .flatten()
                 .take(asked.uses)
                 .map(|at| format!("{}:{}", at.path, at.line))
                 .collect(),
@@ -878,9 +928,15 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             entries,
             source: "rust-analyzer",
             fresh,
+            // **The resolution stands.** It was `workspace/symbol` that
+            // resolved the name, and it answered; what came after it either
+            // enriched this entry or is absent from it by name. Falling back to
+            // the index here would replace a declaration a compiler resolved
+            // with whatever text matched, which is a worse answer wearing the
+            // same shape.
             resolution: "one",
-            why: String::new(),
-            refused: None,
+            why: shortfall("resolved this name to one declaration"),
+            refused: short,
         }))
     })
 }
@@ -952,7 +1008,9 @@ fn from_index(asked: &Asked) -> (Vec<Entry>, &'static str, String) {
             column: 1,
             through: definition.line as u32,
             signature: None,
-            uses,
+            // Counted, not assumed: the index holds every place it matched
+            // the name, and this is how many there were.
+            uses: Some(uses),
             used_at: found
                 .uses
                 .iter()
@@ -1522,7 +1580,7 @@ mod tests {
             column: 8,
             through: lines,
             signature: Some(format!("pub fn {name}() -> Result<()>")),
-            uses: 17,
+            uses: Some(17),
             used_at: Vec::new(),
             source: "rust-analyzer",
         }

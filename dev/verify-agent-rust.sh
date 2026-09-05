@@ -280,9 +280,25 @@ else:
             failed(f"the resolved entry does not say where it is, so nothing "
                    f"can be asked about it: {json.dumps(found)[:300]}")
         else:
+            uses = found.get("uses")
+            # `null` is not zero and must not be printed as a number. A count
+            # nobody obtained is what a survived `textDocument/references`
+            # timeout leaves behind, and "0 use(s)" would be this script
+            # inventing the finding the answer refused to invent.
+            counted = "uses unknown" if uses is None else f"{uses} use(s)"
             proven(f"context({symbol!r}) was resolved by rust-analyzer to one "
-                   f"declaration: {found.get('kind')} at {handle}"
-                   f" ({found.get('uses')} use(s))")
+                   f"declaration: {found.get('kind')} at {handle} ({counted})")
+
+# **A timeout that was survived is still a timeout.** Since 2026-09-05 an
+# answer can come from rust-analyzer *and* carry `analyzer_error`: the name
+# resolved and an enrichment under it — the hover, the references — ran out of
+# ceiling, which is exactly what a cold first query does. That is not a FAILED,
+# because the resolution is the claim and the resolution held; it is printed
+# because a run that stopped saying it would be a run that stopped measuring
+# the thing this whole file was written to find.
+why = answer.get("analyzer_error")
+if why and source == "rust-analyzer":
+    print(f"               the answer resolved and was not whole: {why}")
 
 confined = answer.get("analyzer_confined")
 if confined is True:

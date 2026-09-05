@@ -6260,3 +6260,57 @@ prueba de que el fallback se explique.** Hacen falta las dos mitades —la líne
 base, que el índice siga contestando, y el control, que en una respuesta que sí
 dio el analizador el campo sea `null`— y la segunda sólo corre en una máquina con
 analizador, así que se salta diciendo que se saltó.
+
+## Regla derivada: un enriquecimiento que falla no puede deshacer la resolución que ya se obtuvo — 2026-09-05
+
+**Es la causa física de la regla de arriba.** El campo `analyzer_error` que se
+agregó ese mismo día contestó la pregunta en una sola corrida: la VM fresca dijo
+
+```text
+source=index
+analyzer_error="rust-analyzer did not answer: `textDocument/hover` after 30s"
+```
+
+y en **esa misma corrida**, segundos después, renombró ese mismo símbolo en dos
+archivos, con nueve ediciones, semánticamente. O sea que el analizador estaba
+vivo, había arrancado, y contestaba.
+
+Lo que dice la frase es cuál petición se quedó sin techo. `ask_about()` pregunta
+en este orden:
+
+1. `workspace/symbol` — **esto es la resolución**: después de esta petición la
+   máquina sabe que exactamente una declaración de ese nombre existe y dónde.
+2. `textDocument/hover` — la firma.
+3. `textDocument/references` — los usos.
+
+Para que el error nombre a la segunda, la primera ya había contestado. Y el `?`
+sobre la segunda convertía toda la consulta en un error, así que el fallback
+tiraba la resolución de la primera y contestaba desde el índice: **un nombre que
+un compilador resolvió, reportado como una coincidencia de texto**, en la primera
+consulta de cada arranque frío.
+
+La regla: **lo que resuelve y lo que decora son dos cosas, y sólo la primera
+puede deshacer una respuesta.** Un enriquecimiento se obtiene o queda ausente;
+nunca se inventa —un `signature: None` es «nadie la pidió o nadie contestó», y un
+conteo de usos que nadie obtuvo es `null`, jamás `0`, porque `0` es el hallazgo
+«esto no se usa en ninguna parte» y es lo que un modelo lee para borrar código— y
+nunca se esconde: la razón viaja en `Provider::shortfall()` y sale en
+`analyzer_error` con `source: rust-analyzer` al lado, que es una combinación
+nueva y significa «resolvió, y no vino entero».
+
+Dos corolarios que costaron aparte:
+
+- **Una respuesta parcial no se recuerda.** Lo que hace fallar un enriquecimiento
+  es un servidor calentando, y eso se va con la siguiente pregunta; lo que la
+  memoria guarda vive hasta que se muevan las fuentes. Guardar «los usos de
+  `Flywheel` son desconocidos» haría que el resto de la vida del árbol se
+  contestara desde el único momento en que la máquina estuvo fría. `falso fallo =
+  más lento, falso acierto = equivocado`.
+- **Para probarlo hace falta un doble que pueda fallar una petición y contestar
+  otra.** Ninguna prueba lo había tocado porque a un rust-analyzer real no se le
+  puede pedir que esté frío —regla 8: el doble tiene que modelar la propiedad
+  bajo prueba, y la propiedad *es* la mitad que falla.
+  `crates/thalyx-rust/tests/stand-in/server.py` habla el LSP suficiente y recibe
+  por argumento qué callar. Con el control de la regla 4 al lado: el modo que
+  contesta todo, sin el cual una firma ausente sería evidencia de un doble que no
+  sabe producirla.

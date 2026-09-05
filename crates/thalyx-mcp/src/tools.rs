@@ -373,8 +373,11 @@ Give it a symbol (`Store::lock`, `Keystore`), or a path ending in `.rs` for a \
 map of everything one file declares. \
 `budget` bounds the answer in bytes and the answer says how many entries did \
 not fit; nothing is lost, it is held. `uses` asks for that many use sites as \
-`file:line` — the answer always carries the count, and the list only when you \
-ask, because on a common name the list is the whole budget. \
+`file:line` — the answer carries the count whenever anything counted it, and \
+the list only when you ask, because on a common name the list is the whole \
+budget. A count of `null` means nobody counted: a file map does not, a list of \
+candidates does not, and neither does an answer whose `analyzer_error` says \
+the request that counts them did not come back. It never means zero. \
 When you actually need the source, call this again with `expand` set to an \
 entry's handle and you get exactly the lines that declaration occupies — not \
 the file. \
@@ -397,7 +400,9 @@ the machine last looked. Believe them.",
                     "uses": {
                         "type": "integer",
                         "description": "Return this many use sites (`file:line`). \
-                                        Defaults to none; the count is always there."
+                                        Defaults to none. The count comes with \
+                                        every answer and is `null` when nobody \
+                                        counted, never 0."
                     },
                     "expand": {
                         "type": "string",

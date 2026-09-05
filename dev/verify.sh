@@ -910,6 +910,17 @@ else
     unproven "there is no rust-analyzer under $ANALYZER_HOME/toolchains; the semantic stages will say so. Add it with: rustup component add rust-analyzer"
 fi
 
+# The stand-in server of `crates/thalyx-rust/tests/stand-in/server.py`, which is
+# a separate requirement from rust-analyzer and gets its own word: it exists to
+# fail one request of a query and answer another, which a real analyzer cannot
+# be asked to do. A machine with a python3 demands that those checks run.
+if python3 --version > /dev/null 2>&1; then
+    SUITE_ENV+=(THALYX_REQUIRE_STAND_IN=1)
+    proven "python3 present, so the stand-in server's checks are demanded"
+else
+    unproven "there is no python3, so what an unanswered enrichment does cannot be checked here"
+fi
+
 # And the cargo the confined checks will run, named the same way and for the
 # same reason. `thalyx_rust::toolchain` would find it — it reads `RUSTUP_HOME`
 # too — but a report that says which binary produced a verdict is worth the one
