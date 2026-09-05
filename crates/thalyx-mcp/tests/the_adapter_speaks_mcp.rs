@@ -441,15 +441,41 @@ fn the_default_surface_hands_a_model_three_tools_and_the_legacy_one_hands_it_all
         object["returned"]["bytes"].as_u64().unwrap_or(0) > 0,
         "{object:#}"
     );
-    // And the numbers: one external request, several operations inside it.
-    assert_eq!(
-        object["external_requests"],
-        serde_json::json!(1),
+    // And the numbers: several operations inside one external request.
+    //
+    // Read where the answer actually carries them. `hacer` trims what rides
+    // along on every inference to eight counters under one `metrics` key, and
+    // this test asserted on a flat top level that the verb stopped producing —
+    // so it read `null` off a run that had worked, which is rule 5 again: the
+    // thing that asked got it wrong.
+    assert!(
+        object["metrics"]["program_operations"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 3,
         "{object:#}"
     );
-    assert!(
-        object["program_operations"].as_u64().unwrap_or(0) >= 3,
-        "{object:#}"
+
+    // `external_requests` is not among the eight, deliberately: it is one by
+    // construction and a number that is always one is a token the model reads
+    // and cannot act on. The claim is still worth pinning, so it is asked of
+    // the place the product does return it — the evidence, through the third
+    // default tool, on the handle this same answer carried.
+    let handle = object["evidence"].as_str().expect("a handle");
+    let recalled = stack.call(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "thalyx_evidence", "arguments": {"evidence": handle}}
+    }));
+    let record: serde_json::Value = serde_json::from_str(
+        recalled["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the record"),
+    )
+    .expect("an object");
+    assert_eq!(
+        record["metrics"]["external_requests"],
+        serde_json::json!(1),
+        "{record:#}"
     );
 
     let whole = started_with("legacy");
@@ -511,11 +537,13 @@ fn a_program_arrives_at_the_machine_as_a_program() {
         .as_str()
         .expect("an answer");
     let object: serde_json::Value = serde_json::from_str(text).expect("an object");
-    assert_eq!(
-        object["finish"],
-        serde_json::json!("returned"),
-        "{object:#}"
-    );
+    // A program that ran to its `return` says so by carrying `returned`, and
+    // `finish` is reserved for the endings that call for a different next move
+    // — `needs_model`, `assertion`, `threw`, `exhausted`, `refused`. Asserting
+    // `finish == "returned"` was asserting on a word the verb stopped saying
+    // once the answer was trimmed, so the absence is what gets pinned here:
+    // it is the claim, not a hole left by a deleted line.
+    assert_eq!(object["finish"], serde_json::Value::Null, "{object:#}");
     assert_eq!(
         object["returned"]["said"],
         serde_json::json!("a \"quoted\" thing"),

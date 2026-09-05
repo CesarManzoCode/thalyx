@@ -1312,17 +1312,6 @@ fi
 [ -n "$PROJECT" ] || { say "which project: --project <dir>"; exit 1; }
 [ -d "$PROJECT" ] || { say "$PROJECT is not a directory"; exit 1; }
 [ -n "$SYMBOL" ] || { say "which symbol the task is about: --symbol <Name>"; exit 1; }
-[ -z "$ARMS" ] || command -v claude >/dev/null 2>&1 || { say "no claude on this host"; exit 1; }
-
-[ -n "$MARKER" ] || MARKER="${SYMBOL}Renamed"
-
-PROMPT="$(prompt_for "$TASK" "$SYMBOL" "$MARKER")" \
-    || { say "--task is read, change or reversible"; exit 1; }
-
-if [[ "$ARMS" == *B* ]]; then
-    MCP="$ROOT/target/release/thalyx-mcp"
-    [ -x "$MCP" ] || ( cd "$ROOT" && cargo build --release -p thalyx-mcp >/dev/null )
-fi
 
 mkdir -p "$OUT"
 
@@ -1357,6 +1346,36 @@ if [ -n "$EXPECT" ] && [ -n "$ARMS" ]; then
     fi
     say "arm gate: the answer key is not inside $PROJECT"
 fi
+
+# ── and only then, the agent this host would have to have ────────────────────
+#
+# Below the leak guard on purpose. It stood above it until 2026-09-05, and the
+# self-test's own wiring check — which re-enters this script with `--arms A` and
+# an answer key planted inside the corpus — was failing under `sudo` with `no
+# claude on this host`: `verify.sh` runs as root, root's PATH has no `claude`,
+# and the run was refused for the wrong reason before it ever reached the guard.
+# The check then reported that the harness had stopped for some other reason
+# than the leak guard, which was true and was about the ordering rather than
+# about the guard.
+#
+# The ordering is also what this harness says it does. A leaked answer key makes
+# the whole run void, so it stops the run "before the preflight, before arm A,
+# before anything is paid for" — and a missing `claude` is a thing to be told
+# about *after* being told the run was void, not instead of it. Still above the
+# release build of `thalyx-mcp`, the arm B preflight and either arm, which is
+# what the requirement is for: nothing that costs anything runs without it.
+[ -z "$ARMS" ] || command -v claude >/dev/null 2>&1 || { say "no claude on this host"; exit 1; }
+
+[ -n "$MARKER" ] || MARKER="${SYMBOL}Renamed"
+
+PROMPT="$(prompt_for "$TASK" "$SYMBOL" "$MARKER")" \
+    || { say "--task is read, change or reversible"; exit 1; }
+
+if [[ "$ARMS" == *B* ]]; then
+    MCP="$ROOT/target/release/thalyx-mcp"
+    [ -x "$MCP" ] || ( cd "$ROOT" && cargo build --release -p thalyx-mcp >/dev/null )
+fi
+
 
 # ── arm B is checked before arm A is paid for ────────────────────────────────
 #
