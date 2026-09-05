@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-08-31
+fecha-actualizacion: 2026-09-05
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,50 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## Los hijos del toolchain ya encuentran el toolchain — 2026-08-31
+## La ventana de QEMU ya tiene framebuffer — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+`make -C image agent` y `boot-graphical` abrían la ventana, el kernel arrancaba,
+la máquina funcionaba, y adentro `/dev/fb0 could not be opened: No such file or
+directory`.
+
+**Causa:** esos dos objetivos arrancan con `-kernel` y `-initrd`, así que el
+firmware es SeaBIOS. Sin UEFI no hay GOP, sin GOP no hay framebuffer ya
+configurado, `SYSFB` no publica nada y `FB_EFI` no tiene qué adoptar. Nunca hubo
+un framebuffer — el texto que sí se veía era `vgacon`, que no pasa por
+`/dev/fb0`. Por eso `run-uefi`, que arranca con OVMF, siempre se vio bien.
+
+**La tarjeta**, leída del código de QEMU y no supuesta: `hw/i386/pc_piix.c` y
+`pc_q35.c` ponen los dos `default_display = "std"`, así que una línea sin `-vga`
+recibe la **QEMU Standard VGA**, PCI `1234:1111`. **El driver mínimo de esa
+tarjeta y de ninguna otra** es `DRM_BOCHS`, que programa el modo él mismo por los
+registros dispi; `DRM_FBDEV_EMULATION` es lo que lo convierte en `/dev/fb0` a 32
+bpp, que es el XRGB8888 que `thalyx-screen` ya escribe.
+
+**El cambio son tres líneas en `image/thalyx.config`** y nada más — ni Rust, ni
+agente, ni store, ni la línea de comandos de QEMU:
+
+```
+CONFIG_DRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_BOCHS=y
+```
+
+`config-check` las verifica solo, porque lee `thalyx.config`. Las cadenas de
+dependencias se comprobaron contra los Kconfig de 6.12 (`DRM` sólo pide
+`HAS_IOMEM` y `AGP=n`; `DRM_BOCHS` pide `DRM && PCI && MMU`, y `PCI` ya estaba),
+pero **este contenedor no compila kernels ni tiene QEMU**, así que nada de esto
+está corrido: falta que Cesar arranque la ventana.
+
+**Y pide ratificación:** [[La-Pantalla]] dejaba DRM/KMS para «otro decreto». Esto
+entra sin decidir nada de lo que esa frase apartaba —Thalyx sigue sin elegir el
+modo, sin segunda pantalla, sin aceleración y sin gráficos en el espacio de
+usuario— pero es DRM en el kernel, y la nota quedó revisada diciéndolo.
+
+## Los hijos del toolchain ya encuentran el toolchain — 2026-08-31
+
+Los bloques de abajo son cómo se llegó.
 
 La VM real cerró el problema anterior: dentro de Thalyx,
 `cargo 1.90.0 from: thalyx` y `rust-analyzer 1.90.0 from: thalyx`. Y aun así

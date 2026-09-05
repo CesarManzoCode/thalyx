@@ -2,7 +2,7 @@
 tipo: arquitectura
 estado: decretado
 fecha-decreto: 2026-08-27
-fecha-revision: 2026-08-28
+fecha-revision: 2026-09-05
 tags: [pantalla, interfaz, framebuffer, doble-ruta, camino-confiable]
 ---
 
@@ -117,7 +117,12 @@ Lo que eso cuesta, dicho igual de claro:
 | Una sola pantalla física | Multi-monitor no existe aquí, y no está decretado que deba |
 
 Si algún día hace falta cambiar el modo o encender una segunda pantalla, eso es
-DRM/KMS y es **otro decreto**. No se toma por adelantado.
+DRM/KMS y es **otro decreto**. No se toma por adelantado — y lo que entró el
+2026-09-05 no lo toma: hay un driver DRM en el kernel, para **una** tarjeta que
+sólo existe dentro de QEMU, y sigue sin haber modo elegido por Thalyx, sin
+segunda pantalla, sin aceleración y sin nada de gráficos en el espacio de
+usuario. El motivo está abajo, en la revisión «El arranque directo de QEMU no
+tiene firmware que deje nada puesto».
 
 ## La forma: una pantalla, sin ventanas
 
@@ -251,6 +256,57 @@ primera de ésas **sin tocar la consola**, que es la única manera honesta de
 preguntarla en una máquina que podría quedarse en negro con la respuesta.
 
 ## Revisiones
+
+### 2026-09-05 — El arranque directo de QEMU no tiene firmware que deje nada puesto
+
+**Defecto acotado, reportado por Cesar.** `make -C image agent` y
+`boot-graphical` abren la ventana de QEMU, el kernel arranca, la máquina
+funciona, y adentro:
+
+```
+/dev/fb0 could not be opened: No such file or directory
+```
+
+**Causa.** Los dos objetivos arrancan con `-kernel` y `-initrd`, así que el
+firmware es SeaBIOS y no hay UEFI. Sin UEFI no hay Graphics Output Protocol, sin
+GOP no hay framebuffer ya configurado, y `screen_info` describe una consola de
+**texto** de 80×25. Entonces `SYSFB` no publica ningún dispositivo y `FB_EFI` no
+tiene qué adoptar. No es que el framebuffer esté roto: **nunca hubo uno**. Por eso
+`run-uefi` —que sí arranca con OVMF— siempre se vio bien, y por eso la ventana de
+`boot-graphical` mostraba texto: eso era `vgacon`, la consola de texto de la VGA,
+que no pasa por `/dev/fb0`.
+
+**Qué tarjeta es.** Comprobado en el código de QEMU, no supuesto: `hw/i386/pc_piix.c`
+y `hw/i386/pc_q35.c` ponen los dos `default_display = "std"`. Una línea de comandos
+sin `-vga` y sin `-device` de video recibe la **QEMU Standard VGA**, PCI `1234:1111`,
+con la interfaz Bochs VBE dispi.
+
+**El driver mínimo.** `CONFIG_DRM_BOCHS` es de esa tarjeta y de ninguna otra: su
+`id_table` en `drivers/gpu/drm/tiny/bochs.c` son esos dos números, su ayuda de
+Kconfig dice literalmente «a KMS driver for qemu's stdvga output», y programa el
+modo él mismo por los registros dispi en vez de esperar a que un firmware lo haya
+dejado hecho. `CONFIG_DRM_FBDEV_EMULATION` es la mitad que importa aquí: es lo que
+convierte el dispositivo DRM en `/dev/fb0`, a 32 bpp, que es el XRGB8888 que
+`thalyx-screen` ya escribe.
+
+**Por qué no hubo una opción más barata**, que es lo que se buscó primero:
+
+| Alternativa | Por qué no |
+|---|---|
+| `FB_VESA` | Necesita que el gestor de arranque haya hecho el cambio de modo VBE. `vga=` vive en la cabecera de `setup`, no en la línea de comandos, y a un arranque con `-kernel` no hay cómo dársela |
+| `FB_VGA16` | No necesita firmware, pero da 640×480 planar de 4 bpp, y eso no es un formato en el que `thalyx-screen` pueda escribir |
+| OVMF también para `boot-graphical` | Es cambiar de arquitectura de arranque, y `boot` es la red de regresión de todo lo demás |
+
+**Lo que cuesta.** Tamaño: el núcleo de DRM, los ayudantes de KMS y TTM entran al
+kernel que se embarca. Nada más. En hierro real no cambia nada — ninguna PC tiene
+un `1234:1111`, así que `bochs-drm` no llega ni a probar ahí y `FB_EFI` sigue
+adoptando el framebuffer del firmware como siempre.
+
+**Lo que esta revisión pide ratificar.** La sección «Sobre qué se dibuja» dejaba
+DRM/KMS para «otro decreto». Esto entra sin decidir nada de lo que esa frase
+apartaba: Thalyx sigue sin elegir el modo, sin segunda pantalla, sin aceleración y
+sin un gramo de gráficos en el espacio de usuario. Entra porque en un arranque sin
+firmware **no hay otra forma de que el rectángulo de memoria exista**.
 
 ### 2026-08-28 — La pantalla es lo que se ve al arrancar, no un verbo que la enciende
 
