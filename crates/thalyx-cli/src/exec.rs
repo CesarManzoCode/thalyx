@@ -1663,35 +1663,52 @@ fn rust_check(
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))
         .collect();
-    let outcome = run_confined(
-        asked,
-        &cargo.display().to_string(),
-        &arguments,
-        &readable,
-        std::slice::from_ref(&build_into),
-        &environment,
-        // **The compiler tree's profile, not the module one.** Cargo runs a
-        // `rustc` per unit and a build script per dependency that has one, so
-        // it makes calls an ordinary module does not — see
-        // `thalyx_sandbox::seccomp::semantic_provider`, which names all four.
-        // Until 2026-08-30 this ran under the module filter and Cargo was
-        // killed on `flock`, with `159` as the only thing anybody could read.
-        // It is also the tree rust-analyzer starts from the other direction,
-        // under this same profile.
-        thalyx_sandbox::profile::SEMANTIC_PROVIDER,
-        metrics,
+    // **Over a state that holds still, and not over the one it started from.**
+    //
+    // The identity used to be taken once, before Cargo ran, and the verdict was
+    // filed under it. But a `cargo check` over a workspace with no `Cargo.lock`
+    // *writes one* — measured 2026-09-05 — and `Cargo.lock` is one of the
+    // inputs this identity is made of. So the answer went into the store under
+    // a description of the tree that had stopped being true by the time the
+    // compiler exited, the next request asked about the tree that was really
+    // there, and a machine that had just compiled those exact bytes compiled
+    // them again. `thalyx_rust::affected::steady` is the same policy the
+    // semantic cache already had for the same reason, applied here at last: run,
+    // ask again, and remember only what the tree agreed to both times.
+    let ran = thalyx_rust::affected::steady(
+        || crate::semantic::identity_now(asked.store.root(), &asked.subvolume, &packages),
+        || {
+            run_confined(
+                asked,
+                &cargo.display().to_string(),
+                &arguments,
+                &readable,
+                std::slice::from_ref(&build_into),
+                &environment,
+                // **The compiler tree's profile, not the module one.** Cargo
+                // runs a `rustc` per unit and a build script per dependency
+                // that has one, so it makes calls an ordinary module does not —
+                // see `thalyx_sandbox::seccomp::semantic_provider`, which names
+                // all four. Until 2026-08-30 this ran under the module filter
+                // and Cargo was killed on `flock`, with `159` as the only thing
+                // anybody could read. It is also the tree rust-analyzer starts
+                // from the other direction, under this same profile.
+                thalyx_sandbox::profile::SEMANTIC_PROVIDER,
+                metrics,
+            )
+        },
     );
+    let outcome = ran.outcome;
 
     // A verdict about the tree is remembered; `not_proven` never is. A machine
     // that once had no cargo would otherwise go on reporting `not_proven`
     // about bytes it never compiled, for as long as nobody touched them.
-    if let Some(identity) = &selection.identity
+    let remembered = if let Some(identity) = &ran.over
         && outcome.verdict != Verdict::NotProven
         && let Ok(text) = serde_json::to_string(&Remembered {
             verdict: outcome.verdict,
             summary: outcome.summary.clone(),
-        })
-    {
+        }) {
         crate::semantic::remember_validation(
             asked.store.root(),
             &asked.subvolume,
@@ -1699,7 +1716,10 @@ fn rust_check(
             identity,
             &text,
         );
-    }
+        true
+    } else {
+        false
+    };
 
     CheckRecord {
         key: String::new(),
@@ -1713,6 +1733,36 @@ fn rust_check(
                 object.insert("why".to_string(), json!(selection.why));
                 object.insert("unattributed".to_string(), json!(selection.unattributed));
                 object.insert("cached".to_string(), json!(false));
+                object.insert(
+                    "state".to_string(),
+                    json!(ran.over.as_ref().map(|state| state.id.clone())),
+                );
+                object.insert("remembered".to_string(), json!(remembered));
+                // Named rather than left to be guessed at. A check that did not
+                // remember its own verdict looks, from the next request, exactly
+                // like a check that never ran — and the whole of 2026-09-05 was
+                // spent working out from the outside *which input* of the
+                // identity had moved underneath one. When something did move,
+                // the two witnesses say it: a file count that went up by one and
+                // a hundred-odd bytes with it is a lockfile Cargo wrote.
+                if ran.moved > 0 {
+                    object.insert(
+                        "identity_moved".to_string(),
+                        json!({
+                            "times": ran.moved,
+                            "before": ran.from.as_ref().map(|state| json!({
+                                "id": state.id,
+                                "files": state.files,
+                                "bytes": state.bytes,
+                            })),
+                            "after": ran.at.as_ref().map(|state| json!({
+                                "id": state.id,
+                                "files": state.files,
+                                "bytes": state.bytes,
+                            })),
+                        }),
+                    );
+                }
             }
             output
         },

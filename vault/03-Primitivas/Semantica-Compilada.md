@@ -286,6 +286,13 @@ Queda escrito porque es la misma familia que el `target/` adentro del snapshot
 que se arregló con `CARGO_TARGET_DIR`: **el proveedor semántico tiene efectos en
 el sistema de archivos, y "es un lector" no los describe.**
 
+Y el 2026-09-05 se supo que no era sólo rust-analyzer: **el compilador hace lo
+mismo**. `cargo check` sobre un árbol sin candado deja uno, y el cache de
+validación calculaba su identidad una sola vez, antes de correrlo — así que
+archivaba el veredicto bajo un árbol que ya no existía. La regla que faltaba
+está en [[Conocimiento-con-Testigo]]: la identidad se toma antes y después, y lo
+que no se quedó quieto no se recuerda.
+
 ## Revisión 2026-09-05: lo que resuelve y lo que decora
 
 Este documento describía la respuesta de `contexto` como una cosa entera: el

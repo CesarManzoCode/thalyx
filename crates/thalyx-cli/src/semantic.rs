@@ -1529,6 +1529,31 @@ pub fn selection(
     })
 }
 
+/// The identity of what a check of these packages reads, as the tree is *now*.
+///
+/// The same thing [`selection`] computes, asked again after the compiler has
+/// run. Separate from `selection` because it must not re-derive the packages:
+/// what a second answer needs is the identity of the same closure over a tree
+/// that may have moved, and a selection recomputed from a fresh difference
+/// would be a second question rather than the same one asked twice.
+pub fn identity_now(
+    store_root: &Path,
+    tree: &Path,
+    packages: &[String],
+) -> Option<thalyx_know::Witness> {
+    if packages.is_empty() {
+        return None;
+    }
+    with_provider(store_root, tree, |provider| {
+        let workspace = provider.workspace().ok()?;
+        Some(thalyx_rust::affected::identity(
+            workspace,
+            packages,
+            &thalyx_rust::toolchain(),
+        ))
+    })
+}
+
 /// What was recorded about this exact check over this exact state, if anything.
 pub fn recall_validation(
     store_root: &Path,
