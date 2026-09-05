@@ -238,8 +238,24 @@ resolution = answer.get("resolution")
 entries = answer.get("entries")
 
 if source != "rust-analyzer":
+    # **The cause, in the provider's own words.** Until 2026-09-05 this line
+    # was the end of the trail: the machine fell back to the index and the
+    # reason was destroyed inside `gather()`, so a cold first query and a
+    # machine with no analyzer at all printed the same sentence. The answer
+    # now carries `analyzer_error`, and this is the one place a physical run
+    # needs it — printed on its own line rather than left inside the JSON
+    # dump, because it is the thing the run was made to read.
+    why = answer.get("analyzer_error")
     failed(f"context({symbol!r}) answered source={source!r} — the machine "
            f"matched a name instead of resolving one")
+    # Not another verdict line: `tally` counts every line that says FAILED,
+    # and one fault has to stay one fault.
+    if why:
+        print(f"               the provider's own words: {why}")
+    else:
+        print("               and it does not say why — this machine is "
+              "running a Thalyx older than the answer's `analyzer_error` "
+              "field, so a cold fallback cannot be diagnosed from it")
 elif resolution != "one":
     # The shape of 2026-08-31: the compiler answered and found nothing,
     # because its `cargo` was not on any PATH and the workspace never loaded.

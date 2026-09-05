@@ -6225,3 +6225,38 @@ permitido, la sesión completa sobrevive.
 La regla: **la petición durante la cual algo muere no es necesariamente la
 petición que lo mató.** En un servidor que hace trabajo de fondo, el sujeto que
 hay que aislar es el trabajo de fondo, y la forma de aislarlo es apagarlo.
+
+## Regla derivada: un fallback que descarta la razón destruye el diagnóstico
+
+**Descubierta el 2026-09-05**, sobre una VM Thalyx con `negar` armado. La primera
+consulta `context('LanternRegistry')` del arranque contestó
+
+```json
+{ "source": "index", "resolution": "matched" }
+```
+
+y la segunda, minutos después y **en el mismo arranque**, contestó
+`rust-analyzer`, `resolution: one`, doce usos. Las dos respuestas eran ciertas
+sobre quién había contestado, y ninguna decía por qué la primera no había llegado
+al compilador — porque `gather()` hacía `Ok(None) | Err(_) =>` y tiraba el error.
+
+Lo que se pierde ahí no es un detalle: «no hay analizador en esta máquina», «el
+analizador seguía cargando el espacio de trabajo», «cargo no pudo describir el
+árbol» y «el analizador se murió en un syscall» son cuatro máquinas distintas, y
+desde afuera las cuatro eran la misma palabra. Es la **regla 10** —un fallo al
+leer no es un fallo al existir— en el lugar donde más caro sale: el código que
+sabía cuál de las cuatro era es exactamente el que la borró.
+
+La regla: **un camino alterno conserva la razón por la que se tomó.** El fallback
+sigue siendo un fallback —la máquina sin analizador tiene que seguir contestando—
+pero la respuesta lleva la causa, en un campo que un programa puede leer
+(`analyzer_error`) y dentro del que una persona ya lee (`detail`). Y la razón se
+arma recorriendo las causas de abajo, no con un `to_string()` de la de arriba:
+«el proveedor no arrancó» no es un diagnóstico y `Permission denied (os error
+13)` sí.
+
+El corolario para las pruebas: **una prueba de que el fallback contesta no es una
+prueba de que el fallback se explique.** Hacen falta las dos mitades —la línea
+base, que el índice siga contestando, y el control, que en una respuesta que sí
+dio el analizador el campo sea `null`— y la segunda sólo corre en una máquina con
+analizador, así que se salta diciendo que se saltó.

@@ -136,6 +136,17 @@ fn a_context_answer_is_a_fraction_of_the_file_it_describes() {
         "the answer must say it was resolved rather than matched: {answer}"
     );
     assert_eq!(answer["fresh"], serde_json::json!("current"));
+    // The control for `a_fallback_says_why.rs`, and the half that only a
+    // machine with an analyzer can run: `analyzer_error` is the reason the
+    // index answered instead, so on an answer the analyzer itself gave it has
+    // to be `null`. A field that carried a sentence here too would make the
+    // diagnostic one worthless — every answer would read like a failure.
+    assert_eq!(
+        answer["analyzer_error"],
+        serde_json::Value::Null,
+        "rust-analyzer answered and the answer still names a reason it did \
+         not: {answer}"
+    );
 
     let entry = &answer["entries"][0];
     assert_eq!(entry["name"], serde_json::json!("Keystore"));

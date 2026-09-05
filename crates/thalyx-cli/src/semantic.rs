@@ -518,6 +518,7 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
         fresh,
         resolution,
         why,
+        refused,
     } = gather(&asked);
 
     let confinement = with_provider(store_root, &tree, |provider| {
@@ -573,6 +574,13 @@ pub fn context(store_root: &Path, here: &Where, rest: &str, face: Face) -> Falli
                 ("analyzer_confined", json!(confinement.0)),
                 ("analyzer_how", json!(confinement.1)),
                 ("detail", json!(why)),
+                // The field a diagnosis is read from, present on every answer
+                // and `null` on every one the provider gave. `detail` carries
+                // the same sentence for a person to read; this one is for the
+                // program that has to tell "there is no analyzer on this
+                // machine" from "the analyzer died answering this question",
+                // which are the same `source: index` and different faults.
+                ("analyzer_error", json!(refused)),
             ],
         ));
     } else {
@@ -654,32 +662,72 @@ struct Answered {
     fresh: &'static str,
     resolution: &'static str,
     why: String,
+    /// Why the semantic provider did not answer, verbatim, when it did not.
+    ///
+    /// `None` on every answer the provider gave. The fallback to the index is
+    /// unchanged and stays a fallback — what changes is that the reason
+    /// survives it. On 2026-09-05 a VM answered the very first `context` from
+    /// the index and the second one, in the same boot, from rust-analyzer: two
+    /// different machines by the only evidence there was, because
+    /// `Ok(None) | Err(_)` had thrown away the one sentence that said which.
+    refused: Option<String>,
 }
 
 /// The entries for a query, from the compiler when there is one and from the
 /// index when there is not.
 fn gather(asked: &Asked) -> Answered {
-    match from_analyzer(asked) {
-        Ok(Some(answered)) => answered,
+    let refused = match from_analyzer(asked) {
+        Ok(Some(answered)) => return answered,
+        // The provider ran and had nothing to say about *this* query, which is
+        // only the path branch and only for a path that is not a file. Not an
+        // error, and said as what it is: a caller that read it as one would go
+        // looking for a broken analyzer that answered perfectly well.
+        Ok(None) => "the provider had nothing to say about this query".to_string(),
+        // **The sentence this whole shape exists to keep.** Every layer under
+        // here reports its cause — a timeout names its ceiling, a dead server
+        // names the signal, a workspace that would not load names what cargo
+        // said — and all of it used to end at this `match` arm.
+        Err(error) => because(error.as_ref()),
+    };
+    let (entries, fresh, why) = from_index(asked);
+    Answered {
+        entries,
+        source: "index",
+        fresh,
+        // Never `one` and never `ambiguous`. The index matches text; it
+        // cannot say a name resolves to one thing, so it must not be able to
+        // say a name resolves to several either — an ambiguity is a claim, and
+        // only the thing that can resolve names is entitled to make it.
+        resolution: "matched",
         // Named rather than swallowed. A model told `source: index` knows the
         // answer was matched and not resolved; one told nothing would act on a
-        // scan believing it had a compiler.
-        Ok(None) | Err(_) => {
-            let (entries, fresh, why) = from_index(asked);
-            Answered {
-                entries,
-                source: "index",
-                fresh,
-                // Never `one` and never `ambiguous`. The index matches text; it
-                // cannot say a name resolves to one thing, so it must not be
-                // able to say a name resolves to several either — an ambiguity
-                // is a claim, and only the thing that can resolve names is
-                // entitled to make it.
-                resolution: "matched",
-                why,
-            }
-        }
+        // scan believing it had a compiler. And now it is told *why* the
+        // compiler was not the one answering, in the same sentence.
+        why: format!("{why} — the semantic provider did not answer: {refused}"),
+        refused: Some(refused),
     }
+}
+
+/// An error and everything under it, in one line.
+///
+/// `to_string()` on the outermost error is the outermost sentence only, and
+/// the cause is usually two layers down — the io error inside the spawn inside
+/// the start. A diagnosis that stops at the top layer is the diagnosis that
+/// says "rust-analyzer did not answer" and nothing about why.
+fn because(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut said = error.to_string();
+    let mut under = error.source();
+    while let Some(cause) = under {
+        let sentence = cause.to_string();
+        // Errors that already quote their cause are common — `RustError`'s
+        // variants all do — and repeating it makes the line harder to read
+        // rather than more complete.
+        if !said.contains(&sentence) {
+            said.push_str(&format!(": {sentence}"));
+        }
+        under = cause.source();
+    }
+    said
 }
 
 /// An answer, or `None` when this provider has nothing to say about the query
@@ -728,6 +776,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                 // be ambiguous about.
                 resolution: "file",
                 why: String::new(),
+                refused: None,
             }));
         }
 
@@ -776,6 +825,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                 source: "rust-analyzer",
                 fresh,
                 resolution: "ambiguous",
+                refused: None,
             }));
         }
 
@@ -786,6 +836,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
                 fresh,
                 resolution: "nothing",
                 why: format!("nothing in this workspace declares `{name}`"),
+                refused: None,
             }));
         };
         let at = known.defined.first().cloned().unwrap_or(At {
@@ -829,6 +880,7 @@ fn from_analyzer(asked: &Asked) -> Result<Resolved, Box<dyn std::error::Error>> 
             fresh,
             resolution: "one",
             why: String::new(),
+            refused: None,
         }))
     })
 }
@@ -1544,5 +1596,52 @@ mod tests {
         // A query that happens to contain `=` is a query.
         assert_eq!(option("a=b", &["presupuesto"]), None);
         assert_eq!(option("Store::lock", &["presupuesto"]), None);
+    }
+
+    #[derive(Debug)]
+    struct Layered(&'static str, Option<Box<Layered>>);
+
+    impl std::fmt::Display for Layered {
+        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            out.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layered {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|under| under as &dyn std::error::Error)
+        }
+    }
+
+    #[test]
+    fn a_reason_keeps_the_cause_that_is_two_layers_under_it() {
+        // The outermost sentence is the one that says the least: "the provider
+        // did not start" is not a diagnosis and "Permission denied (os error
+        // 13)" is. `to_string()` alone returns the first and drops the second.
+        let error = Layered(
+            "the provider did not start",
+            Some(Box::new(Layered("Permission denied (os error 13)", None))),
+        );
+        assert_eq!(
+            because(&error),
+            "the provider did not start: Permission denied (os error 13)"
+        );
+    }
+
+    #[test]
+    fn a_cause_that_is_already_quoted_is_not_said_twice() {
+        // Every `RustError` variant already formats its cause into its own
+        // message, so walking the chain naively would double every sentence
+        // this code is most likely to be handed.
+        let error = Layered(
+            "rust-analyzer did not answer: Broken pipe (os error 32)",
+            Some(Box::new(Layered("Broken pipe (os error 32)", None))),
+        );
+        assert_eq!(
+            because(&error),
+            "rust-analyzer did not answer: Broken pipe (os error 32)"
+        );
     }
 }
