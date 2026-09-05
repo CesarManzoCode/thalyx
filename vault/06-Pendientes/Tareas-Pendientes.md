@@ -15,6 +15,16 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
+- [ ] **Por qué la primera consulta fría de `context` cae al índice.**
+      Añadido el 2026-09-05. En una VM Thalyx con `negar`, la primera consulta
+      del arranque contesta `source: index` y la segunda —sin reiniciar—
+      contesta `rust-analyzer` con la resolución completa. La causa todavía no
+      se conoce: **falta el dato, no el arreglo.** El instrumento ya está puesto
+      (`analyzer_error` en toda respuesta de `context`, y `detail` con la misma
+      frase), así que lo que falta es **una corrida física sobre una VM fresca,
+      una sola vez**, porque la segunda consulta ya no mide lo mismo. Ver
+      [[Punto-Actual]].
+
 - [ ] **Decidir si el resumen que se le muestra a una persona se vuelve exacto.**
       Añadido el 2026-08-29 con la revisión de [[Identidad-de-Estado]]. `Difference`
       —los conteos «N archivos volverían a su contenido anterior» que se enseñan

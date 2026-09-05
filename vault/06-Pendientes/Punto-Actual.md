@@ -14,9 +14,81 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## Los tres FALLÓ de la corrida física eran lectores viejos — 2026-09-05
+## La primera consulta fría cae al índice, y ahora la respuesta dice por qué — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+**La evidencia física de hoy.** `sudo ./dev/verify.sh` en Fedora: **218 PROBADO,
+13 NO PROBADO, 0 FALLÓ** — los tres FALLÓ del bloque de abajo eran lectores y
+quedaron cerrados. Y en una VM Thalyx con `negar` armado,
+`dev/verify-agent-rust.sh` corrió **dos veces sin reiniciar la VM**:
+
+- **Primera corrida.** Cargo propio PROBADO, rust-analyzer propio PROBADO,
+  proveedor confinado PROBADO, `rename` semántico PROBADO (2 archivos, 9
+  ediciones), `definition` exacta PROBADO, rollback PROBADO — y un solo FALLÓ:
+  `context('LanternRegistry')` contestó `source=index, resolution=matched`.
+- **Segunda corrida, mismo arranque.** 9 PROBADO, 0 NO PROBADO, 0 FALLÓ, y la
+  misma pregunta contestó `rust-analyzer`, `resolution=one`, 12 usos.
+
+O sea: **la primera consulta fría del arranque no llega al compilador y la
+segunda sí**, y de las dos respuestas no se puede sacar por qué.
+
+**Por qué no se puede: el fallback destruía la causa.** `gather()`, en
+`crates/thalyx-cli/src/semantic.rs`, hacía
+
+```rust
+Ok(None) | Err(_) => // contestar desde el índice
+```
+
+y el `Err(_)` era la única parte del sistema que sabía qué había pasado. «No hay
+analizador en esta máquina», «el analizador seguía cargando el espacio de
+trabajo», «cargo no pudo describir el árbol» y «el analizador se murió en un
+syscall» son cuatro máquinas distintas y un diagnóstico cada una; desde afuera
+las cuatro se veían igual: `source: index`. Es la **regla 10** —un fallo al leer
+no es un fallo al existir— con la frase que las distingue borrada por el propio
+código que se cayó.
+
+**Lo que se hizo, y es sólo instrumento.** El fallback **no cambió**: una máquina
+sin rust-analyzer sigue contestando desde el índice, que es lo que mantiene viva
+la cara de programación. Lo que cambia es que ahora la respuesta conserva la
+razón:
+
+- Campo nuevo **`analyzer_error`**, presente en toda respuesta de `context`:
+  `null` cuando contestó el proveedor, y la frase exacta del error —con las
+  causas que trae debajo, que es donde suele estar el `os error`— cuando contestó
+  el índice.
+- **`detail`** lleva la misma frase, porque es el campo que una persona lee y el
+  que todos los arneses ya imprimen.
+- `dev/verify-agent-rust.sh` la imprime en su propio renglón cuando la etapa de
+  `context` falla, en vez de dejarla dentro del volcado JSON. No cuenta como un
+  FALLÓ aparte: una falla sigue siendo una falla.
+
+**No se arregló nada todavía, a propósito.** No se tocó seccomp, ni el runtime,
+ni `fork`, ni `rename`, ni la arquitectura. Falta el dato, y el dato es una
+corrida física.
+
+**Lo que falta correr, y es lo único:**
+
+```
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+y luego, en una **VM fresca**, `dev/verify-agent-rust.sh` **una sola vez** — la
+primera consulta fría es el sujeto, así que una segunda corrida ya no mide lo
+mismo. Si la etapa de `context` vuelve a caer al índice, ahora dice por qué en la
+línea de abajo, y ésa es la causa que se estaba buscando.
+
+**Cómo se comprobó aquí, que no tiene rust-analyzer.**
+`crates/thalyx-cli/tests/a_fallback_says_why.rs` maneja una sesión real sobre un
+árbol sin `Cargo.toml` —un proveedor que no arranca en ninguna máquina— y exige
+que la respuesta traiga la causa; **falla contra el código de ayer y pasa contra
+el de hoy**, y la línea base de esa misma prueba exige que el índice siga
+contestando. El control de rule 4 —que en una respuesta que sí dio el analizador
+`analyzer_error` sea `null`— vive en `context_is_smaller_than_the_file.rs` y sólo
+corre en una máquina con analizador: aquí se salta, allá no. `cargo test
+--workspace`, `clippy` y `fmt` limpios.
+
+## Los tres FALLÓ de la corrida física eran lectores viejos — 2026-09-05
 
 La corrida física sobre Fedora, en `main` 90d55d0, dio **215 PROBADO, 13 NO
 PROBADO, 3 FALLÓ**. Ninguno de los tres era producto.
