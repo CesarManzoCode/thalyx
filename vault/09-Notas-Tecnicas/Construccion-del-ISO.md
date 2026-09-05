@@ -716,11 +716,12 @@ su párrafo cada grupo:
 | Qué | Opciones | Qué falla sin eso |
 |---|---|---|
 | La pantalla | `FB`, `FB_EFI`, `FRAMEBUFFER_CONSOLE`, `FONT_8x16`, `VT`, `VT_CONSOLE` | La ISO arranca en una PC y **no se ve nada** |
+| La pantalla dentro de QEMU sin firmware | `DRM`, `DRM_FBDEV_EMULATION`, `DRM_BOCHS` — agregadas el 2026-09-05 | `boot-graphical` y `boot-agent` abren la ventana, la máquina arranca bien, y adentro `/dev/fb0 could not be opened` |
 | El teclado | `INPUT`, `HID_SUPPORT`, `HID`, `HID_GENERIC`, `USB_HID`, `USB_XHCI_HCD`, `USB_EHCI_HCD`, `SERIO_I8042`, `KEYBOARD_ATKBD` | La máquina llega al prompt y no se le puede contestar |
 | Los discos | `BLK_DEV_NVME`, `SATA_AHCI`, `ATA`, `SCSI`, `BLK_DEV_SD`, `PCI_MSI` | El instalador no ve el disco en el que va a instalar |
 | El medio | `USB_STORAGE` — agregada el 2026-08-07 | La máquina arranca de la USB y **dos comandos después** dice que no encuentra un medio de Thalyx |
 
-Cuatro cosas de esa tabla que no son obvias:
+Cinco cosas de esa tabla que no son obvias:
 
 - **`FB_EFI` no es un controlador de video.** Es el framebuffer que el firmware
   **ya configuró** antes de que el kernel arranque, y este driver lo adopta. Por
@@ -728,6 +729,17 @@ Cuatro cosas de esa tabla que no son obvias:
   no levantar una GPU, y un driver por cada chip del mercado es un userland entero
   — que es justo lo que esta imagen existe para no tener. El costo se dice en vez
   de esconderse: la resolución es la que eligió el firmware y no se puede cambiar.
+- **Y por eso mismo `FB_EFI` no sirve donde no hay firmware.** `boot-graphical` y
+  `boot-agent` arrancan con `-kernel` y `-initrd`: el firmware es SeaBIOS, no hay
+  GOP, `SYSFB` no publica nada y `FB_EFI` no adopta nada, así que no existe
+  `/dev/fb0` — aunque la ventana se vea llena de texto, porque eso es `vgacon` y no
+  pasa por el framebuffer. Lo que QEMU enchufa ahí, comprobado en su código
+  (`default_display = "std"` en `hw/i386/pc_piix.c` y `pc_q35.c`), es la **QEMU
+  Standard VGA**, PCI `1234:1111`, y el driver de esa tarjeta y de ninguna otra es
+  `DRM_BOCHS`, que programa el modo él mismo en vez de esperar a un firmware.
+  `DRM_FBDEV_EMULATION` es lo que convierte ese dispositivo DRM en `/dev/fb0`, a 32
+  bpp. El razonamiento completo, y qué alternativas más baratas se descartaron, está
+  en [[La-Pantalla]].
 - **`PCI_MSI` no es un lujo.** El driver de NVMe arma sus colas alrededor de
   interrupciones por mensaje, y `allnoconfig` lo deja apagado. Nada más de este
   archivo lo habría pedido.
