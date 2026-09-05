@@ -14,9 +14,92 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## `rename` mataba a rust-analyzer, y el syscall era `fork` — 2026-09-05
+## Los tres FALLÓ de la corrida física eran lectores viejos — 2026-09-05
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+La corrida física sobre Fedora, en `main` 90d55d0, dio **215 PROBADO, 13 NO
+PROBADO, 3 FALLÓ**. Ninguno de los tres era producto.
+
+**Lo que sí quedó probado.** El arreglo de `fork` del bloque de abajo pasó en la
+máquina real hasta donde le tocaba: la etapa 58 —una petición que resuelve un
+símbolo, reescribe el `use` con alias tres archivos más allá, compila lo que el
+cambio alcanza y confirma— corrió entera y su respuesta trae `analyzer_starts:
+1`. Es decir: **el analizador arrancó una vez y contestó**, que es exactamente lo
+que `SYS_fork` impedía. Lo que falló fue leer ese número, no producirlo.
+
+**Los tres FALLÓ, y qué eran.** Los tres son la regla 5 —el instrumento incluye
+al arnés— y dos de ellos son la misma causa: el 2026-08-30 la respuesta de
+`hacer` se recortó a lo que un modelo puede accionar. Los contadores que siguen
+viajando pasaron a vivir bajo una sola llave `metrics`, y los que no
+—`external_requests`, `process_launches`, `affected_packages`— se movieron a la
+evidencia, enteros, detrás del asa que toda respuesta lleva. Nada se borró. Lo
+que no se actualizó fueron los lectores:
+
+- **`dev/verify.sh`, etapa 58.** Pedía los contadores en el nivel superior, así
+  que todos le contestaban `absent` — y la etapa terminó diciendo *«the request
+  started absent rust-analyzers»* sobre un registro que tenía el `1` impreso a
+  la vista, dentro de `metrics`. Ese día las etapas **56** y **59** recibieron el
+  lector con ruta punteada y el `evidence_field` que va por el asa; la 58 se
+  quedó atrás. Ahora usa el mismo idioma que ellas, con la ruta escrita en cada
+  llamada: nada de adivinar entre dos lugares, porque un lector que encuentra el
+  número igual no avisa del siguiente campo que se mueva. **Las afirmaciones de
+  la etapa son las mismas**; sólo cambió de dónde las lee.
+- **`crates/thalyx-mcp/tests/the_adapter_speaks_mcp.rs`, dos pruebas.** El mismo
+  desfase. `a_program_arrives_at_the_machine_as_a_program` exigía
+  `finish: "returned"`, y la respuesta ya no dice esa palabra a propósito:
+  `finish` quedó reservado para los finales que piden otra jugada
+  —`needs_model`, `assertion`, `threw`, `exhausted`, `refused`—. Ahora la prueba
+  afirma la **ausencia**, que es la afirmación, no un hueco.
+  `the_default_surface_hands_a_model_three_tools_and_the_legacy_one_hands_it_all`
+  lee `metrics.program_operations` en la respuesta, y `external_requests` de la
+  evidencia, con `thalyx_evidence` sobre el asa que la misma respuesta trajo.
+- **`dev/bench-external-agent.sh --self-test`.** No era un desfase de forma sino
+  de orden. La comprobación de cableado del guardián de la clave vuelve a entrar
+  al script con `--arms A`, y el script exigía `claude` **antes** de llegar al
+  guardián: `verify.sh` corre como root, el PATH de root no tiene `claude`, y la
+  corrida se rechazaba por el motivo equivocado. La prueba lo reportaba con
+  precisión — *«the harness stopped for some other reason than the leak guard»*—
+  y tenía razón. Se movió el requisito de `claude` debajo del guardián, que es
+  además lo que el propio arnés dice que hace: una clave filtrada anula la
+  corrida entera y para «antes del preflight, antes del brazo A, antes de que se
+  pague nada». Sigue por encima de la compilación de `thalyx-mcp`, del preflight
+  del brazo B y de cualquier brazo, que es para lo que existe.
+
+**Cómo se comprobó esto aquí, que no tiene Btrfs ni kernel que niegue.** Regla 6:
+los lectores nuevos se corrieron contra una **respuesta real capturada** de
+`hacer` y contra un **registro de evidencia real**, no contra un fixture
+inventado — y contra los mismos bytes, el lector viejo devuelve `absent` en cada
+contador, que es el diagnóstico entero. La mitad de la evidencia se corrió de
+punta a punta con el binario real (`evidencia <id>` en una sesión). El
+`--self-test` se reprodujo con el PATH de root: **falla antes del cambio, PROBADO
+después**, y un control aparte confirma que sin `claude` y sin filtración el
+requisito de `claude` sigue rechazando, y sigue rechazando antes de correr ningún
+brazo. `cargo test --workspace`, `clippy` y `fmt` limpios.
+
+**Lo que falta correr físicamente en Fedora**, y es lo único:
+
+```
+git pull && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+Ahí se ve lo que este contenedor no puede ver:
+
+1. **La etapa 58 entera**, ahora leyendo donde el producto contesta. Es la que
+   dijo FALLÓ; debe decir PROBADO con `analyzer_starts` = 1 y `external_requests`
+   = 1 leídos, no `absent`.
+2. **Las dos pruebas de `thalyx-mcp`** con `THALYX_REQUIRE_BTRFS_TESTS=1`. Aquí
+   dicen `NOT PROVEN` porque no hay Btrfs, así que sus afirmaciones nuevas no se
+   ejecutaron todavía: se comprobaron contra bytes reales capturados, y falta que
+   corran.
+3. **`dev/bench-external-agent.sh --self-test` bajo `sudo`**, que es donde la
+   diferencia se ve: es el caso que aquí se reprodujo, pero el que cuenta es el
+   de su máquina.
+
+No se tocó producto: el commit son tres archivos, dos de pruebas y un arnés. Los
+13 NO PROBADO quedaron como estaban, a propósito.
+
+## `rename` mataba a rust-analyzer, y el syscall era `fork` — 2026-09-05
 
 En una VM Thalyx real, con `negar` activo: cargo propio PROVEN, rust-analyzer
 propio PROVEN, `context('LanternRegistry')` PROVEN, `analyzer_confined=true`

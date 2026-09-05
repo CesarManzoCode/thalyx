@@ -8107,6 +8107,27 @@ VERTEOF
         printf '%s\n' "structured on" "cd $VERT_TREE" "hacer $1" salir | \
             THALYX_ROOT="$VERT_STORE" "$THALYX" session 2>&1 | tr -d '\r'
     }
+    # ── read from the answer, and read from the evidence ────────────────────
+    #
+    # Dotted and two-placed, which is what §56 and §59 were given on 2026-08-30
+    # and this stage was not. The answer that goes back to a model was trimmed
+    # that day to what a model can act on: the counters that still ride along
+    # moved under `metrics`, and the rest — `external_requests`,
+    # `process_launches`, `affected_packages` — moved into the evidence, whole,
+    # fetched by the handle every answer carries.
+    #
+    # This reader kept the flat shape, so every counter it asked for came back
+    # `absent`. The physical run of 90d55d0 is the whole of the argument: the
+    # log this stage saved holds a successful request with `"analyzer_starts":
+    # 1` printed inside `metrics`, and the stage failed it for having started
+    # `absent` rust-analyzers. The stage was measuring its own reader — rule 5's
+    # eighteenth entry, which is exactly what the note above `exec_field` says
+    # this shape exists to prevent.
+    #
+    # The path is spelled out at each call rather than guessed at here. A reader
+    # that quietly tried the top level and then `metrics` would find the number
+    # either way and say nothing about the next field to move, which is the same
+    # silence this is being fixed for.
     vertical_field() {
         python3 -c '
 import json, sys
@@ -8119,23 +8140,54 @@ for line in open(sys.argv[1]):
     except Exception:
         continue
     if value.get("op") == "exec":
-        print(value.get(sys.argv[2], "absent"))
+        here = value
+        for key in sys.argv[2].split("."):
+            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
+        print(here if isinstance(here, str) else json.dumps(here))
         break
 else:
     print("none")
 ' "$1" "$2"
     }
 
+    # And the ones that are in neither place in the answer. One `evidencia
+    # <id>`, which starts no compiler and opens no boundary, so the three
+    # numbers this stage asserts on cost nothing it was measuring.
+    vertical_evidence() {
+        local handle="$1" path="$2"
+        printf '%s\n' "structured on" "evidencia $handle" salir | \
+            THALYX_ROOT="$VERT_STORE" "$THALYX" session 2>&1 | tr -d '\r' | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        value = json.loads(line)
+    except Exception:
+        continue
+    if value.get("op") == "evidence":
+        here = value
+        for key in sys.argv[1].split("."):
+            here = here.get(key, "absent") if isinstance(here, dict) else "absent"
+        print(here if isinstance(here, str) else json.dumps(here))
+        break
+else:
+    print("none")
+' "$path"
+    }
+
     vertical_tree
     GOOD_V='{"label":"resolve and rename","steps":[{"verb":"rename","arguments":["Keystore","KeyVault"]}],"validate":[{"check":"text","text":"Keystore","expect":"none"},{"check":"rust","mode":"check"}]}'
     vertical_run "'$GOOD_V'" > "$WORK/vertical-good.log"
     V_STATUS=$(vertical_field "$WORK/vertical-good.log" status)
-    V_EXTERNAL=$(vertical_field "$WORK/vertical-good.log" external_requests)
-    V_QUERIES=$(vertical_field "$WORK/vertical-good.log" semantic_queries)
-    V_STARTS=$(vertical_field "$WORK/vertical-good.log" analyzer_starts)
-    V_PACKAGES=$(vertical_field "$WORK/vertical-good.log" affected_packages)
-    V_MISSES=$(vertical_field "$WORK/vertical-good.log" validation_cache_misses)
-    V_LAUNCHES=$(vertical_field "$WORK/vertical-good.log" process_launches)
+    V_QUERIES=$(vertical_field "$WORK/vertical-good.log" metrics.semantic_queries)
+    V_STARTS=$(vertical_field "$WORK/vertical-good.log" metrics.analyzer_starts)
+    V_MISSES=$(vertical_field "$WORK/vertical-good.log" metrics.validation_cache_misses)
+    V_HANDLE=$(vertical_field "$WORK/vertical-good.log" evidence)
+    V_EXTERNAL=$(vertical_evidence "$V_HANDLE" metrics.external_requests)
+    V_PACKAGES=$(vertical_evidence "$V_HANDLE" metrics.affected_packages)
+    V_LAUNCHES=$(vertical_evidence "$V_HANDLE" metrics.process_launches)
     V_BOOT=$(head -1 "$VERT_TREE/src/boot.rs" 2>/dev/null || echo unreadable)
 
     # Asked again, over bytes this machine has now compiled: a change and its
@@ -8145,8 +8197,9 @@ else:
     AGAIN='{"label":"there and back","steps":[{"verb":"edit","arguments":["src/keystore.rs","sustituir","KeyVault","Interim"]},{"verb":"edit","arguments":["src/keystore.rs","sustituir","Interim","KeyVault"]}],"validate":[{"check":"rust","mode":"check"}]}'
     vertical_run "'$AGAIN'" > "$WORK/vertical-again.log"
     A_STATUS=$(vertical_field "$WORK/vertical-again.log" status)
-    A_HITS=$(vertical_field "$WORK/vertical-again.log" validation_cache_hits)
-    A_LAUNCHES=$(vertical_field "$WORK/vertical-again.log" process_launches)
+    A_HITS=$(vertical_field "$WORK/vertical-again.log" metrics.validation_cache_hits)
+    A_LAUNCHES=$(vertical_evidence \
+        "$(vertical_field "$WORK/vertical-again.log" evidence)" metrics.process_launches)
 
     # And the column that makes the first two safe to use.
     vertical_tree
