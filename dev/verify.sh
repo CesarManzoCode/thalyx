@@ -8855,9 +8855,17 @@ step "62. the same Thalyx over two Linux backends: linux-current is still 0492f7
 # not installed is an answer about a machine. So the revision is taken from git
 # into its own tree and built, and the corpus runs it beside the refactored
 # binary — on this machine, where the launches in the corpus really launch.
+#
+# It builds into a target directory named here and not into `CARGO_TARGET_DIR`,
+# which this script exports for the whole run: inheriting it put 0492f72's
+# `thalyx` in `dev/.verify-target` — over the refactored one — while the corpus
+# was pointed at `$EXP13_TREE/target`, where nothing had been built. The path
+# the build writes and the path the corpus runs are one variable so they cannot
+# come apart again.
 
 EXP13_REVISION=0492f72e487e2463b0d7b938365a8b3383364cb9
 EXP13_TREE="$WORK/exp13-baseline"
+EXP13_TARGET="$EXP13_TREE/target"
 EXP13_BUILD="$WORK/exp13-baseline-build.log"
 EXP13_LOG="$WORK/exp13.log"
 if [ "$HAVE_BTRFS" != 1 ]; then
@@ -8866,7 +8874,7 @@ elif ! git -C "$ROOT" cat-file -e "$EXP13_REVISION^{commit}" 2> /dev/null; then
     unproven "git has no $EXP13_REVISION here, so the unmodified revision could not be built to compare linux-current with; run git fetch"
 elif ! { mkdir -p "$EXP13_TREE" \
         && git -C "$ROOT" archive "$EXP13_REVISION" | tar -x -C "$EXP13_TREE" \
-        && ( cd "$EXP13_TREE" && cargo build -p thalyx-cli ); } > "$EXP13_BUILD" 2>&1; then
+        && ( cd "$EXP13_TREE" && cargo build -p thalyx-cli --target-dir "$EXP13_TARGET" ); } > "$EXP13_BUILD" 2>&1; then
     failed "the unmodified revision $EXP13_REVISION did not build here, so nothing could be compared with it; see $EXP13_BUILD"
     excerpt "$EXP13_BUILD"
 else
@@ -8875,7 +8883,7 @@ else
     # counts below counting nothing. Every requirement is set, so a skip is a
     # failure and not a pass (rule 3).
     if ( cd "$ROOT" && env THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH" \
-            "THALYX_EXP13_BASELINE=$EXP13_TREE/target/debug/thalyx" THALYX_REQUIRE_EXP13_BASELINE=1 \
+            "THALYX_EXP13_BASELINE=$EXP13_TARGET/debug/thalyx" THALYX_REQUIRE_EXP13_BASELINE=1 \
             "THALYX_EXP13_REPORT=$WORK/exp13-report" \
             cargo test -p thalyx-cli --test exp13_equivalence -- --nocapture ) \
             > "$EXP13_LOG" 2>&1; then
