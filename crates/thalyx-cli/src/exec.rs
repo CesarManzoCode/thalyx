@@ -60,8 +60,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use thalyx_core::Store;
-use thalyx_core::attempt::{self, Authorised};
-use thalyx_snapshot::{Snapshots, Volumes};
+use thalyx_platform::Platform;
+use thalyx_platform::authority::Grant;
+use thalyx_platform::launch::LaunchRequest;
+use thalyx_platform::profile::Profile;
+use thalyx_platform::state::{AbandonFailure, BoundVerdict, Changes, Decision, Receipt};
+use thalyx_platform::trace::{Phase, Trace};
+use thalyx_platform::work::Effect;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -380,6 +385,14 @@ pub struct CheckRecord {
     /// Everything it produced. For a confined program, both streams whole.
     #[serde(default)]
     pub output: Value,
+    /// The version this verdict is about, on a backend that has versions.
+    ///
+    /// Absent — not null — on `linux-current`, whose verdicts are about a
+    /// mutable tree at some instant and name nothing; a record that carried
+    /// `null` there would be a different record from the one that backend has
+    /// always kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +469,11 @@ pub struct Evidence {
     /// What the program said with `thalyx.log`, bounded.
     #[serde(default)]
     pub printed: Vec<String>,
+
+    /// Which machine carried the run out, and what it recorded there — the
+    /// backend, its profile and the one timing record. See [`PlatformRecord`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<PlatformRecord>,
 }
 
 /// What the machine did, as numbers, so the hypothesis this verb exists to test
@@ -535,13 +553,16 @@ pub struct Metrics {
 
 // ── the evidence store ───────────────────────────────────────────────────────
 
-/// Where a run's evidence is kept.
+/// Where a run's evidence is kept on `linux-current`.
 ///
 /// In the store and **never in the workspace**, which is not tidiness: the
 /// workspace is what a rollback replaces, so evidence written there would be
 /// destroyed by the very rollback it is the explanation for. A caller would be
 /// told its program failed and handed a dangling handle.
-fn evidence_directory(store: &Store) -> PathBuf {
+///
+/// Written by `crate::platform::StoreFiles`, the evidence half of that backend.
+/// The managed model keeps the same record as an object its log names.
+pub(crate) fn evidence_directory(store: &Store) -> PathBuf {
     store.state_root().join("evidence")
 }
 
@@ -562,20 +583,6 @@ pub fn is_a_handle(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-fn keep(store: &Store, evidence: &Evidence) -> std::io::Result<()> {
-    let directory = evidence_directory(store);
-    std::fs::create_dir_all(&directory)?;
-    let text = serde_json::to_string_pretty(evidence)?;
-    let path = evidence_path(store, &evidence.transaction);
-    // Written whole and renamed over, the way every other state file in this
-    // system is published. A half-written evidence file is the one artefact
-    // nobody can reconstruct: the tree it describes has already been rolled
-    // back by the time this is written.
-    let temporary = directory.join(format!(".{}.writing", evidence.transaction));
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, &path)
-}
-
 // ── the runtime ──────────────────────────────────────────────────────────────
 
 /// Everything one run needs that is not the program.
@@ -592,32 +599,126 @@ pub struct Asked<'a> {
     pub limits: thalyx_program::Limits,
     /// The tree the boundary is about. Where the session stands, exactly, and
     /// never an ancestor — `crate::attempt::subvolume_to_attempt` is why.
+    ///
+    /// On `linux-current` the work happens in this tree. On the managed model
+    /// it is the view a publication lands in, and the work happens in a private
+    /// workspace the backend names — see `Work::tree`.
     pub subvolume: PathBuf,
     pub request_id: String,
 }
 
+/// Which machine carried a run out, and what that machine recorded about it.
+///
+/// In the evidence and never in the answer: a model deciding whether it is
+/// done has no use for a backend's profile, and `answer_object` carries none of
+/// it. It is here so the same run on two backends can be compared from the
+/// evidence alone — EXP-13 reads `trace` for time and nothing else.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformRecord {
+    pub backend: String,
+    pub profile: Profile,
+    /// Where the work's requests acted.
+    pub workspace: String,
+    /// What the backend's state did: a snapshot, or generations and a candidate.
+    pub state: Value,
+    /// What the work was admitted, refused and charged.
+    pub work: Value,
+    pub trace: Trace,
+}
+
+/// A run while it runs: what was asked, the machine it is carried out on, and
+/// the running account.
+///
+/// One value rather than five arguments threaded through every function below,
+/// because every one of them needs the same things, and a function that was
+/// handed the machine and not the trace would be a call nobody timed.
+struct Work<'a, 'p> {
+    asked: &'a Asked<'a>,
+    platform: &'p mut dyn Platform,
+    /// Where the work's requests act: the subvolume itself on `linux-current`,
+    /// the private workspace on the managed model. Everything that reads,
+    /// parses or grants "the workspace" reads this and never `asked.subvolume`.
+    tree: PathBuf,
+    metrics: Metrics,
+    trace: Trace,
+}
+
+impl Work<'_, '_> {
+    fn now(&self) -> u64 {
+        self.platform.clock().now_ns()
+    }
+
+    fn span(&mut self, phase: Phase, name: impl Into<String>, started: u64, ok: bool) {
+        let ended = self.now();
+        self.trace.record(phase, name, started, ended, ok);
+    }
+
+    /// What the tree really shows changed since the boundary opened.
+    ///
+    /// Recomputed on every call and never remembered, which is the whole point
+    /// of it being available *inside* a program: after the third edit the
+    /// answer is different from what it was after the second, and a program
+    /// that could only see the difference at the end could not decide anything
+    /// from it.
+    fn changed(&mut self) -> Changes {
+        let started = self.now();
+        let changes = self.platform.state().changed();
+        self.span(
+            Phase::Observe,
+            "changed",
+            started,
+            changes.unreadable.is_empty(),
+        );
+        changes
+    }
+
+    /// The version a verdict taken now would be about, on a backend that has
+    /// versions. `Ok(None)` on one that does not — and then nothing is timed,
+    /// because nothing happened.
+    fn candidate(&mut self) -> Result<Option<String>, String> {
+        let started = self.now();
+        let candidate = self.platform.state().candidate();
+        if !matches!(candidate, Ok(None)) {
+            self.span(Phase::Candidate, "freeze", started, candidate.is_ok());
+        }
+        candidate
+    }
+}
+
 /// Run a program inside a boundary, and answer once.
 ///
-/// Generic over [`Volumes`] for the reason the rest of this system is: the
-/// policy — what happens when a step is refused, what a failing check does,
-/// what authorises the rollback — is not Btrfs, and policy that can only be
-/// exercised on Btrfs is policy that is never exercised. The verb passes
-/// `Native`; the tests pass the directory-backed fake and run everywhere.
-pub fn carry_out<V: Volumes>(
+/// **Through [`Platform`], and nothing else.** The policy — what happens when a
+/// step is refused, what a failing check does, which verdicts gate a commit,
+/// what authorises the rollback — is decided in this file, and every question
+/// that policy asks of a machine goes through `thalyx_platform`. The verb passes
+/// the backend `THALYX_PLATFORM` names; the tests pass `linux-current` over the
+/// directory-backed fake, and the managed model beside it, and run everywhere.
+/// This was generic over `Volumes` for the same reason one level further in:
+/// policy that can only be exercised on one mechanism is policy that is never
+/// exercised.
+pub fn carry_out(
     asked: &Asked<'_>,
-    volumes: V,
+    platform: &mut dyn Platform,
     here: &mut Where,
     program: &Program,
 ) -> Evidence {
-    let started = std::time::Instant::now();
+    let origin = platform.clock().now_ns();
+    let backend = platform.profile().backend.clone();
+    let tree = platform.state().workspace().to_path_buf();
+    let mut work = Work {
+        asked,
+        platform,
+        tree,
+        metrics: Metrics {
+            external_requests: 1,
+            ..Metrics::default()
+        },
+        trace: Trace::new(&backend, origin),
+    };
     // Read before anything runs and subtracted after, because the provider
     // outlives the request on purpose: its totals are the process's and only
     // the difference belongs to this call.
-    let semantics_before = crate::semantic::tally(&asked.subvolume);
-    let mut metrics = Metrics {
-        external_requests: 1,
-        ..Metrics::default()
-    };
+    let semantics_before = crate::semantic::tally(&work.tree);
 
     let mut evidence = Evidence {
         transaction: asked.request_id.clone(),
@@ -636,12 +737,13 @@ pub fn carry_out<V: Volumes>(
         checks: Vec::new(),
         changed: Vec::new(),
         change_count: 0,
-        metrics: metrics.clone(),
+        metrics: work.metrics.clone(),
         program: program.run.clone(),
         finish: None,
         finish_why: None,
         returned: Value::Null,
         printed: Vec::new(),
+        platform: None,
     };
 
     // ── the boundary, before anything is written ────────────────────────────
@@ -649,37 +751,60 @@ pub fn carry_out<V: Volumes>(
     // The snapshot is taken first and always. A program that mutated and then
     // discovered it had no way back would be exactly the irreversible machine
     // this whole project exists to replace.
-    let snapshots = Snapshots::of(volumes, &asked.subvolume);
-    let opened = match attempt::begin(asked.store, &snapshots, &program.label, &asked.request_id) {
+    let started = work.now();
+    let opened = work
+        .platform
+        .state()
+        .open(&program.label, &asked.request_id);
+    work.span(Phase::Open, "open", started, opened.is_ok());
+    let opened = match opened {
         Ok(opened) => opened,
         Err(error) => {
             evidence.reason = format!("no boundary could be opened, so nothing ran: {error}");
-            metrics.machine_time_ms = started.elapsed().as_millis();
-            evidence.metrics = metrics;
-            return evidence;
+            return sealed(work, evidence, origin);
         }
     };
-    metrics.machine_operations += 1;
-    evidence.snapshot = Some(opened.snapshot.clone());
+    work.metrics.machine_operations += 1;
+    evidence.snapshot = Some(opened.base);
+    evidence.start_state = opened.start_state;
 
-    let start = thalyx_snapshot::witness(&asked.subvolume);
-    evidence.start_state = start.is_complete().then(|| start.id.clone());
+    // ── where the work stands ───────────────────────────────────────────────
+    //
+    // On `linux-current`, exactly where the session stands — so it is the
+    // session's own `Where`, and nothing about it changes. On a backend whose
+    // work is private, a `Where` in the private workspace, confined to it when
+    // the session is confined. The session's authority is translated to the
+    // work's object and never widened: a confined agent's program reaches its
+    // private copy and nothing it could not have reached through the tree.
+    let mut entered = None;
+    let mut could_not_enter = None;
+    if !same_place(here.at(), &work.tree) {
+        match enter(here, &work.tree) {
+            Ok(inner) => entered = Some(inner),
+            Err(why) => could_not_enter = Some(why),
+        }
+    }
+    let work_here: &mut Where = match entered.as_mut() {
+        Some(inner) => inner,
+        None => &mut *here,
+    };
+    let boundary = work_here.confined_to().map(Path::to_path_buf);
 
     // ── the work ────────────────────────────────────────────────────────────
-    let boundary = here.confined_to().map(Path::to_path_buf);
     let mut refused = None;
 
-    if let Some(source) = &program.run {
+    if could_not_enter.is_some() {
+        refused = Some(0);
+    } else if let Some(source) = &program.run {
+        let started = work.now();
         let ran = drive(
-            asked,
-            &snapshots,
-            &opened.snapshot,
-            here,
+            &mut work,
+            work_here,
             boundary.as_deref(),
             source,
-            &mut metrics,
             &mut evidence,
         );
+        work.span(Phase::Program, "program", started, ran);
         // A program that did not run to the end is a program whose work is
         // half done, whatever it managed before it stopped — and that includes
         // `needs_model`, which is not a failure and is not a success either.
@@ -690,10 +815,11 @@ pub fn carry_out<V: Volumes>(
         }
     } else {
         for (index, step) in program.steps.iter().enumerate() {
-            metrics.machine_operations += 1;
+            work.metrics.machine_operations += 1;
+            let started = work.now();
             let answered = crate::external::one(
                 asked.store,
-                here,
+                work_here,
                 boundary.as_deref(),
                 &step.verb,
                 &step.arguments,
@@ -718,8 +844,9 @@ pub fn carry_out<V: Volumes>(
                     }),
                 ),
             };
+            work.span(Phase::Request, step.verb.as_str(), started, ok);
 
-            metrics.internal_bytes += answer.to_string().len();
+            work.metrics.internal_bytes += answer.to_string().len();
             evidence.steps.push(StepRecord {
                 verb: step.verb.clone(),
                 arguments: step.arguments.clone(),
@@ -737,17 +864,12 @@ pub fn carry_out<V: Volumes>(
     // ── what changed, before anything is decided about it ───────────────────
     //
     // Observed rather than believed. What a step *said* it changed is a claim
-    // by the step; this is the tree.
-    let difference = match snapshots.find(&opened.snapshot) {
-        Ok(found) => thalyx_snapshot::difference(&asked.subvolume, &found.path),
-        // The snapshot the boundary named is gone. Reported by the settling
-        // below, which is the only place that can do anything about it; what
-        // matters here is that nothing is invented for it — an empty difference
-        // is "nothing changed", and this is "nobody could tell".
-        Err(_) => Default::default(),
-    };
-    evidence.change_count =
-        difference.added_total + difference.modified_total + difference.removed_total;
+    // by the step; this is the tree. When the base the boundary named is gone
+    // the difference comes back empty, and the settling below is what reports
+    // it — an empty difference is "nothing changed", that case is "nobody could
+    // tell", and nothing is invented for it here.
+    let difference = work.changed();
+    evidence.change_count = difference.count();
     evidence.changed = difference
         .added
         .iter()
@@ -756,7 +878,7 @@ pub fn carry_out<V: Volumes>(
         .take(NAMED)
         .cloned()
         .collect();
-    metrics.filesystem_mutations = evidence.change_count;
+    work.metrics.filesystem_mutations = evidence.change_count;
 
     // ── validation ──────────────────────────────────────────────────────────
     //
@@ -766,14 +888,13 @@ pub fn carry_out<V: Volumes>(
     // to produce. The failure is already known.
     if refused.is_none() {
         for (index, check) in program.validate.iter().enumerate() {
-            metrics.validations += 1;
-            let mut record = run_check(
-                asked,
-                here,
+            work.metrics.validations += 1;
+            let mut record = bound_check(
+                &mut work,
+                work_here,
                 boundary.as_deref(),
                 check,
                 &difference,
-                &mut metrics,
             );
             // Position and not content: two identical checks in a declarative
             // list are two things the caller asked for, and collapsing them
@@ -781,23 +902,44 @@ pub fn carry_out<V: Volumes>(
             // first. A program's repeated check is the opposite case and is
             // keyed by what it asked — see `CheckRecord::key`.
             record.key = format!("declared:{index}");
-            metrics.internal_bytes += record.output.to_string().len();
+            work.metrics.internal_bytes += record.output.to_string().len();
             evidence.checks.push(record);
         }
     }
+
+    // ── which version the verdicts have to be about ─────────────────────────
+    //
+    // On a backend with candidates, the tree as it is now, frozen: a verdict
+    // about an earlier version must not be read as a verdict about this one,
+    // which on the managed model is the one that would be published. Frozen on a
+    // failed run too, because that is what authorises putting it back. `None`
+    // on `linux-current`, and then nothing below is any different from what it
+    // always was.
+    let settled_on = work.candidate();
+    let about_another = |record: &CheckRecord| match &settled_on {
+        Ok(Some(now)) => record.candidate.as_deref() != Some(now.as_str()),
+        Ok(None) => false,
+        Err(_) => true,
+    };
 
     // The last verdict of each distinct check, and every one of them must have
     // passed. `Passed` is never assumed for a check that did not run: a
     // `not_proven` is a failure here, which is rule 9 — a commit that believed
     // it had been checked would be a commit lying about itself.
-    let mut last: std::collections::BTreeMap<&str, Verdict> = std::collections::BTreeMap::new();
+    let mut last: std::collections::BTreeMap<&str, &CheckRecord> =
+        std::collections::BTreeMap::new();
     for record in &evidence.checks {
-        last.insert(record.key.as_str(), record.verdict);
+        last.insert(record.key.as_str(), record);
     }
-    let everything_held =
-        refused.is_none() && last.values().all(|verdict| *verdict == Verdict::Passed);
+    let everything_held = refused.is_none()
+        && settled_on.is_ok()
+        && last
+            .values()
+            .all(|record| record.verdict == Verdict::Passed && !about_another(record));
 
-    evidence.reason = if program.run.is_some() && refused.is_some() {
+    let reason = if let Some(why) = &could_not_enter {
+        format!("the work's private workspace could not be entered, so nothing ran: {why}")
+    } else if program.run.is_some() && refused.is_some() {
         // The program's own word for how it stopped, which is the only thing
         // that distinguishes "it asked for the model" from "it threw" from "it
         // ran out of time" — three outcomes with the same effect on the tree
@@ -819,16 +961,29 @@ pub fn carry_out<V: Volumes>(
             n => format!("every step went through and all {n} check(s) held"),
         }
     } else {
-        let failed: Vec<&str> = last
+        let failed: Vec<String> = last
             .iter()
-            .filter(|(_, verdict)| **verdict != Verdict::Passed)
-            .map(|(key, _)| *key)
+            .filter(|(_, record)| record.verdict != Verdict::Passed || about_another(record))
+            .map(|(key, record)| {
+                if record.verdict == Verdict::Passed {
+                    format!("{key} (its verdict was about another version of the tree)")
+                } else {
+                    key.to_string()
+                }
+            })
             .collect();
-        format!(
-            "every step went through and {} did not hold",
-            failed.join(", ")
-        )
+        match &settled_on {
+            Err(why) if failed.is_empty() => format!(
+                "every step went through and the tree could not be frozen, so nothing it now \
+                 holds was checked: {why}"
+            ),
+            _ => format!(
+                "every step went through and {} did not hold",
+                failed.join(", ")
+            ),
+        }
     };
+    evidence.reason = reason;
 
     evidence.succeeded = everything_held;
     // A successful run the caller asked to have put back says so in its own
@@ -850,10 +1005,50 @@ pub fn carry_out<V: Volumes>(
     // already computed by the time this runs — a restore takes the tree back,
     // it does not take back what the run learned.
     let restoring_a_success = everything_held && program.on_success == OnSuccess::Rollback;
-    if (everything_held && !restoring_a_success) || program.on_failure == OnFailure::Keep {
-        metrics.machine_operations += 1;
-        match attempt::keep(asked.store, &snapshots, &asked.request_id) {
+    let wants_keep =
+        (everything_held && !restoring_a_success) || program.on_failure == OnFailure::Keep;
+    // Keeping is an effect, and a closed work has none. Asked of the work rather
+    // than assumed: on `linux-current` there is no work object and every effect
+    // is admitted, which is what Thalyx on Linux has always done.
+    let closed = if wants_keep {
+        work.platform.work().admit(Effect::Publish).err()
+    } else {
+        None
+    };
+    let keeping = wants_keep && closed.is_none();
+    let receipt = Receipt {
+        transaction: asked.request_id.clone(),
+        label: program.label.clone(),
+        decision: match (keeping, everything_held) {
+            (true, true) => Decision::Commit,
+            (true, false) => Decision::KeepAfterFailure,
+            (false, _) if restoring_a_success => Decision::RestoreSuccess,
+            (false, _) => Decision::Rollback,
+        },
+        succeeded: everything_held,
+        checks: last
+            .iter()
+            .map(|(key, record)| BoundVerdict {
+                key: key.to_string(),
+                check: record.check.clone(),
+                verdict: record.verdict.word().to_string(),
+                candidate: record.candidate.clone(),
+            })
+            .collect(),
+        program: program
+            .run
+            .as_ref()
+            .map(|source| thalyx_platform::content::object_digest("program", source.as_bytes())),
+    };
+
+    if keeping {
+        work.metrics.machine_operations += 1;
+        let started = work.now();
+        let kept = work.platform.state().keep(&receipt);
+        work.span(Phase::Settle, "keep", started, kept.is_ok());
+        match kept {
             Ok(_) => {
+                work.platform.work().charge(Effect::Publish, 0);
                 evidence.status = if everything_held {
                     "committed".to_string()
                 } else {
@@ -872,74 +1067,133 @@ pub fn carry_out<V: Volumes>(
             }
         }
     } else {
-        metrics.machine_operations += 1;
-        metrics.state_witness_checks += 1;
-        let plan = match attempt::what_abandoning_costs(asked.store, &snapshots) {
-            Ok((_, plan)) => Some(plan),
-            Err(error) => {
+        work.metrics.machine_operations += 1;
+        work.metrics.state_witness_checks += 1;
+        // Authorised by the state this run itself observed, not by a bare
+        // yes. So a person who wrote in the shared tree between the last check
+        // and this instant stops the rollback and keeps their work — the same
+        // rule a caller doing this by hand is held to, applied to the runtime
+        // that does it automatically. The backend is what holds it to that.
+        let started = work.now();
+        let abandoned = work.platform.state().abandon(&receipt);
+        work.span(Phase::Settle, "abandon", started, abandoned.is_ok());
+        match abandoned {
+            Ok(()) => {
+                // Two words and not one, because a caller that read
+                // `rolled_back` on a run it had asked to be rolled back
+                // would have no way to tell it from the run that failed.
+                // The pair (`succeeded`, `status`) says both things and
+                // neither is inferred from the other.
+                evidence.status = if restoring_a_success {
+                    "succeeded_and_restored".to_string()
+                } else {
+                    "rolled_back".to_string()
+                };
+                evidence.rolled_back = true;
+                evidence.restored_by_request = restoring_a_success;
+                if let Some(why) = &closed {
+                    evidence.reason =
+                        format!("{}; nothing was kept, because {why}", evidence.reason);
+                }
+            }
+            Err(AbandonFailure::Unplanned(error)) => {
                 evidence.status = "open".to_string();
                 evidence.reason = format!(
                     "{}; and it could not be put back: {error}. The attempt is still open",
                     evidence.reason
                 );
-                None
             }
-        };
-        if let Some(plan) = plan {
-            // Authorised by the state this run itself observed, not by a bare
-            // yes. So a person who wrote in the shared tree between the last
-            // check and this instant stops the rollback and keeps their work —
-            // the same rule a caller doing this by hand is held to, applied to
-            // the runtime that does it automatically.
-            let authorised = Authorised::ByState(&plan.state.id);
-            match attempt::abandon(
-                asked.store,
-                &snapshots,
-                &opened,
-                &plan,
-                authorised,
-                &asked.request_id,
-            ) {
-                Ok(_) => {
-                    // Two words and not one, because a caller that read
-                    // `rolled_back` on a run it had asked to be rolled back
-                    // would have no way to tell it from the run that failed.
-                    // The pair (`succeeded`, `status`) says both things and
-                    // neither is inferred from the other.
-                    evidence.status = if restoring_a_success {
-                        "succeeded_and_restored".to_string()
-                    } else {
-                        "rolled_back".to_string()
-                    };
-                    evidence.rolled_back = true;
-                    evidence.restored_by_request = restoring_a_success;
-                }
-                Err(error) => {
-                    evidence.status = "open".to_string();
-                    evidence.reason = format!(
-                        "{}; and it was NOT put back: {error}. The attempt is still open, \
-                         and `intento` says what abandoning it would cost now",
-                        evidence.reason
-                    );
-                }
+            Err(AbandonFailure::NotPutBack(error)) => {
+                evidence.status = "open".to_string();
+                evidence.reason = format!(
+                    "{}; and it was NOT put back: {error}. The attempt is still open, \
+                     and `intento` says what abandoning it would cost now",
+                    evidence.reason
+                );
             }
         }
     }
 
-    let end = thalyx_snapshot::witness(&asked.subvolume);
-    evidence.end_state = end.is_complete().then(|| end.id.clone());
+    // Where the session stands follows where the work stood, when those were two
+    // places: a program that went into `src/` of its private workspace went into
+    // `src/` of the tree.
+    if let Some(inner) = &entered {
+        follow(here, inner, &work.tree, &asked.subvolume);
+    }
 
-    let semantics = crate::semantic::tally(&asked.subvolume);
-    metrics.semantic_queries = semantics.queries.saturating_sub(semantics_before.queries);
-    metrics.semantic_cache_hits = semantics.hits.saturating_sub(semantics_before.hits);
-    metrics.analyzer_starts = semantics
+    let started = work.now();
+    evidence.end_state = work.platform.state().end_state();
+    work.span(
+        Phase::End,
+        "end_state",
+        started,
+        evidence.end_state.is_some(),
+    );
+
+    let semantics = crate::semantic::tally(&work.tree);
+    work.metrics.semantic_queries = semantics.queries.saturating_sub(semantics_before.queries);
+    work.metrics.semantic_cache_hits = semantics.hits.saturating_sub(semantics_before.hits);
+    work.metrics.analyzer_starts = semantics
         .analyzer_starts
         .saturating_sub(semantics_before.analyzer_starts);
-    metrics.analyzer_confined = semantics.analyzer_confined;
-    metrics.analyzer_how = semantics.analyzer_how.clone();
-    metrics.machine_time_ms = started.elapsed().as_millis();
-    evidence.metrics = metrics;
+    work.metrics.analyzer_confined = semantics.analyzer_confined;
+    work.metrics.analyzer_how = semantics.analyzer_how.clone();
+    sealed(work, evidence, origin)
+}
+
+/// Close the account, and attach what the machine recorded about the run.
+fn sealed(mut work: Work<'_, '_>, mut evidence: Evidence, origin: u64) -> Evidence {
+    let ended = work.now();
+    work.metrics.machine_time_ms = u128::from(ended.saturating_sub(origin) / 1_000_000);
+    work.trace.finish(ended);
+    let profile = work.platform.profile().clone();
+    let state = work.platform.state().describe();
+    let report = work.platform.work().report();
+    evidence.platform = Some(PlatformRecord {
+        backend: profile.backend.clone(),
+        profile,
+        workspace: work.tree.display().to_string(),
+        state,
+        work: report,
+        trace: work.trace,
+    });
+    evidence.metrics = work.metrics;
     evidence
+}
+
+/// Whether two paths name one directory.
+fn same_place(one: &Path, other: &Path) -> bool {
+    one == other
+        || matches!(
+            (std::fs::canonicalize(one), std::fs::canonicalize(other)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// A `Where` standing in the work's private tree, confined when the session is.
+///
+/// Built the way `ExternalAgentSession::open` builds one, because it is the
+/// same thing: somewhere a caller stands, with the kernel's copy of the
+/// boundary held open.
+fn enter(here: &Where, tree: &Path) -> Result<Where, String> {
+    let mut inner = Where::start();
+    if here.confined_to().is_some() {
+        let confinement = crate::confine::Confinement::of(tree)
+            .map_err(|error| format!("{} could not be held open: {error}", tree.display()))?;
+        inner.confine(confinement);
+    }
+    inner
+        .go(&tree.to_string_lossy())
+        .map_err(|error| format!("{} could not be entered: {error}", tree.display()))?;
+    Ok(inner)
+}
+
+fn follow(here: &mut Where, inner: &Where, tree: &Path, view: &Path) {
+    if let Ok(within) = inner.at().strip_prefix(tree)
+        && !within.as_os_str().is_empty()
+    {
+        let _ = here.go(&view.join(within).to_string_lossy());
+    }
 }
 
 // ── the programmable form ────────────────────────────────────────────────────
@@ -949,40 +1203,17 @@ pub fn carry_out<V: Volumes>(
 /// **Every field here is a borrow of something that already existed.** There is
 /// no second store, no second session, no second boundary and no second
 /// checker: a program's request goes through [`crate::external::one`], its
-/// validation through [`run_check`], and its view of what changed through
-/// `thalyx_snapshot::difference` — the same three things the static form uses,
+/// validation through [`bound_check`], and its view of what changed through the
+/// platform's own `changed` — the same three things the static form uses,
 /// called from a different place. If that were not true this would be the
 /// parallel API `Agentes-Externos.md` forbids, and the workspace boundary would
 /// hold for a list of steps and not for a loop.
-struct Runner<'a, V: Volumes> {
-    asked: &'a Asked<'a>,
-    snapshots: &'a Snapshots<V>,
-    snapshot: &'a str,
-    here: &'a mut Where,
-    boundary: Option<&'a Path>,
-    metrics: &'a mut Metrics,
+struct Runner<'r, 'a, 'p> {
+    work: &'r mut Work<'a, 'p>,
+    here: &'r mut Where,
+    boundary: Option<&'r Path>,
     /// Every validation the program asked for, in order, with what it found.
     checks: Vec<CheckRecord>,
-}
-
-impl<V: Volumes> Runner<'_, V> {
-    /// What the tree really shows changed since the boundary opened.
-    ///
-    /// Recomputed on every call and never remembered, which is the whole point
-    /// of it being available *inside* a program: after the third edit the
-    /// answer is different from what it was after the second, and a program
-    /// that could only see the difference at the end could not decide anything
-    /// from it.
-    fn difference(&self) -> thalyx_snapshot::Difference {
-        match self.snapshots.find(self.snapshot) {
-            Ok(found) => thalyx_snapshot::difference(&self.asked.subvolume, &found.path),
-            // Rule 10, and it matters more here than in the static form: a
-            // program that got an empty difference would read it as "nothing
-            // changed" and commit. So this is empty *and* the settling below
-            // reports the snapshot as gone, which is what stops the commit.
-            Err(_) => Default::default(),
-        }
-    }
 }
 
 /// The two verbs a program may not reach, and why they are checked here.
@@ -1008,9 +1239,9 @@ impl<V: Volumes> Runner<'_, V> {
 /// reaching them *from inside the transaction they would settle*.
 const NOT_FROM_INSIDE: &[&str] = &[OP, "attempt"];
 
-impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
+impl thalyx_program::Machine for Runner<'_, '_, '_> {
     fn request(&mut self, verb: &str, arguments: &[String]) -> Value {
-        self.metrics.machine_operations += 1;
+        self.work.metrics.machine_operations += 1;
 
         if NOT_FROM_INSIDE.contains(&verb) {
             return json!({
@@ -1023,9 +1254,15 @@ impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
                 ),
             });
         }
-        let answer =
-            crate::external::one(self.asked.store, self.here, self.boundary, verb, arguments);
-        match answer {
+        let started = self.work.now();
+        let answer = crate::external::one(
+            self.work.asked.store,
+            self.here,
+            self.boundary,
+            verb,
+            arguments,
+        );
+        let answer = match answer {
             Ok(answer) => answer,
             // A refusal is a value and not an end. The program branches on
             // `ok`, exactly as the static form's runtime does, and a mistake it
@@ -1037,12 +1274,15 @@ impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
                 "remedy": refusal.remedy,
                 "message": refusal.message,
             }),
-        }
+        };
+        let ok = answer.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        self.work.span(Phase::Request, verb, started, ok);
+        answer
     }
 
     fn validate(&mut self, asked: &Value) -> Value {
-        self.metrics.validations += 1;
-        self.metrics.machine_operations += 1;
+        self.work.metrics.validations += 1;
+        self.work.metrics.machine_operations += 1;
 
         // Read as the same object the declarative `validate` list takes, so
         // there is one shape of check on this machine and not two. A program
@@ -1061,18 +1301,11 @@ impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
             }
         };
 
-        let difference = self.difference();
-        let mut record = run_check(
-            self.asked,
-            self.here,
-            self.boundary,
-            &check,
-            &difference,
-            self.metrics,
-        );
+        let difference = self.work.changed();
+        let mut record = bound_check(self.work, self.here, self.boundary, &check, &difference);
         record.key = asked.to_string();
-        self.metrics.internal_bytes += record.output.to_string().len();
-        let answer = json!({
+        self.work.metrics.internal_bytes += record.output.to_string().len();
+        let mut answer = json!({
             "check": record.check,
             "verdict": record.verdict.word(),
             "passed": record.verdict == Verdict::Passed,
@@ -1082,15 +1315,21 @@ impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
             // decides to return, and that is a separate decision made later.
             "output": record.output.clone(),
         });
+        // The version it was about, on a backend that has versions — absent,
+        // not null, on one that does not, so a program on `linux-current` is
+        // handed exactly the object it always was.
+        if let (Some(candidate), Some(object)) = (&record.candidate, answer.as_object_mut()) {
+            object.insert("candidate".to_string(), json!(candidate));
+        }
         self.checks.push(record);
         answer
     }
 
     fn changed(&mut self) -> Value {
-        self.metrics.machine_operations += 1;
-        let difference = self.difference();
+        self.work.metrics.machine_operations += 1;
+        let difference = self.work.changed();
         json!({
-            "count": difference.added_total + difference.modified_total + difference.removed_total,
+            "count": difference.count(),
             "added": difference.added,
             "modified": difference.modified,
             "removed": difference.removed,
@@ -1098,7 +1337,7 @@ impl<V: Volumes> thalyx_program::Machine for Runner<'_, V> {
     }
 
     fn process_launches(&self) -> usize {
-        self.metrics.process_launches
+        self.work.metrics.process_launches
     }
 
     fn verbs(&self) -> Vec<String> {
@@ -1140,24 +1379,18 @@ fn limits() -> thalyx_program::Limits {
 /// `false` puts the tree back unless the caller asked to keep it. Everything
 /// the program did is in `evidence` either way — a run that stopped halfway is
 /// the run whose record is most worth having.
-#[allow(clippy::too_many_arguments)]
-fn drive<V: Volumes>(
-    asked: &Asked<'_>,
-    snapshots: &Snapshots<V>,
-    snapshot: &str,
+fn drive(
+    work: &mut Work<'_, '_>,
     here: &mut Where,
     boundary: Option<&Path>,
     source: &str,
-    metrics: &mut Metrics,
     evidence: &mut Evidence,
 ) -> bool {
+    let asked = work.asked;
     let mut runner = Runner {
-        asked,
-        snapshots,
-        snapshot,
+        work: &mut *work,
         here,
         boundary,
-        metrics,
         checks: Vec::new(),
     };
     let outcome = thalyx_program::run(source, &mut runner, &asked.limits);
@@ -1187,17 +1420,113 @@ fn drive<V: Volumes>(
     evidence.finish_why = Some(outcome.finish.why());
     evidence.returned = outcome.value();
 
-    metrics.programmable = true;
-    metrics.program_operations =
+    work.metrics.programmable = true;
+    work.metrics.program_operations =
         outcome.metrics.requests + outcome.metrics.validations + outcome.metrics.observations;
-    metrics.program_assertions = outcome.metrics.assertions;
-    metrics.program_ticks = outcome.metrics.ticks;
-    metrics.internal_bytes += outcome.metrics.answer_bytes;
+    work.metrics.program_assertions = outcome.metrics.assertions;
+    work.metrics.program_ticks = outcome.metrics.ticks;
+    work.metrics.internal_bytes += outcome.metrics.answer_bytes;
 
     outcome.finish.went_through()
 }
 
 // ── validation ───────────────────────────────────────────────────────────────
+
+/// What a check is called before it has run, for the one answer given without
+/// running it.
+fn named(check: &Check) -> String {
+    match check {
+        Check::Text { text, expect, .. } => format!("text `{text}` {expect}"),
+        Check::Parses => "parses".to_string(),
+        Check::Program { program, .. } => format!("program `{program}`"),
+        Check::Rust { mode, .. } => {
+            format!("cargo {}", if mode == "test" { "test" } else { "check" })
+        }
+    }
+}
+
+/// One check, and the version its verdict is about.
+///
+/// On `linux-current` there is no version to name, and this is exactly
+/// [`run_check`], once. On a backend that has candidates, the tree is frozen
+/// before the check and again after it, and the verdict is bound to the
+/// candidate only when the two agree — the policy `thalyx_rust::affected::steady`
+/// already holds the validation cache to, for the reason it was written: a
+/// `cargo check` over a tree with no `Cargo.lock` writes one, so a check can
+/// change the very thing it was about. When that happened because a process it
+/// launched wrote, it runs once more over the settled tree; a tree that moves
+/// again is `not_proven`, bound to neither version, and never a pass.
+fn bound_check(
+    work: &mut Work<'_, '_>,
+    here: &mut Where,
+    boundary: Option<&Path>,
+    check: &Check,
+    difference: &Changes,
+) -> CheckRecord {
+    let mut difference = difference.clone();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let before = match work.candidate() {
+            Ok(before) => before,
+            Err(why) => {
+                return CheckRecord {
+                    key: String::new(),
+                    check: named(check),
+                    verdict: Verdict::NotProven,
+                    summary: format!("there is no version for this check to be about: {why}"),
+                    output: json!({"word": "no_candidate", "message": why}),
+                    candidate: None,
+                };
+            }
+        };
+        let launches = work.metrics.process_launches;
+        let started = work.now();
+        let mut record = run_check(work, here, boundary, check, &difference);
+        work.span(
+            Phase::Validate,
+            record.check.as_str(),
+            started,
+            record.verdict == Verdict::Passed,
+        );
+        let Some(before) = before else {
+            return record;
+        };
+        match work.candidate() {
+            Ok(Some(after)) if after == before => {
+                record.candidate = Some(before);
+                return record;
+            }
+            _ if attempts < 2 && work.metrics.process_launches > launches => {
+                difference = work.changed();
+            }
+            Ok(after) => {
+                return CheckRecord {
+                    key: String::new(),
+                    check: record.check,
+                    verdict: Verdict::NotProven,
+                    summary: format!(
+                        "the tree moved while it was being checked, from `{before}` to `{}`, so \
+                         the verdict is about neither",
+                        after.unwrap_or_default()
+                    ),
+                    output: record.output,
+                    candidate: None,
+                };
+            }
+            Err(why) => {
+                return CheckRecord {
+                    key: String::new(),
+                    check: record.check,
+                    verdict: Verdict::NotProven,
+                    summary: format!("the tree could not be frozen after the check: {why}"),
+                    output: record.output,
+                    candidate: None,
+                };
+            }
+        }
+    }
+}
 
 /// Run one check and say what it found.
 ///
@@ -1205,12 +1534,11 @@ fn drive<V: Volumes>(
 /// Nothing returns `Passed` without having established something, which is the
 /// difference between a validating runtime and a runtime that commits.
 fn run_check(
-    asked: &Asked<'_>,
+    work: &mut Work<'_, '_>,
     here: &mut Where,
     boundary: Option<&Path>,
     check: &Check,
-    difference: &thalyx_snapshot::Difference,
-    metrics: &mut Metrics,
+    difference: &Changes,
 ) -> CheckRecord {
     match check {
         Check::Text { text, expect, r#in } => {
@@ -1223,20 +1551,21 @@ fn run_check(
 
             // Through the same door as any other request, so a check cannot
             // read a tree a step could not have read.
-            metrics.machine_operations += 1;
-            let answer = match crate::external::one(asked.store, here, boundary, "grep", &arguments)
-            {
-                Ok(answer) => answer,
-                Err(refusal) => {
-                    return CheckRecord {
-                        key: String::new(),
-                        check: format!("text `{text}` {expect}"),
-                        verdict: Verdict::NotProven,
-                        summary: format!("the search could not be made: {}", refusal.message),
-                        output: json!({"word": refusal.word, "message": refusal.message}),
-                    };
-                }
-            };
+            work.metrics.machine_operations += 1;
+            let answer =
+                match crate::external::one(work.asked.store, here, boundary, "grep", &arguments) {
+                    Ok(answer) => answer,
+                    Err(refusal) => {
+                        return CheckRecord {
+                            key: String::new(),
+                            check: format!("text `{text}` {expect}"),
+                            verdict: Verdict::NotProven,
+                            summary: format!("the search could not be made: {}", refusal.message),
+                            output: json!({"word": refusal.word, "message": refusal.message}),
+                            candidate: None,
+                        };
+                    }
+                };
 
             let total = answer.get("total").and_then(Value::as_u64);
             let unreadable = answer
@@ -1271,6 +1600,7 @@ fn run_check(
                     _ => format!("{hits} occurrence(s) of `{text}`"),
                 },
                 output: answer,
+                candidate: None,
             }
         }
 
@@ -1278,7 +1608,7 @@ fn run_check(
             let mut looked_at = 0usize;
             let mut broken = Vec::new();
             for name in difference.added.iter().chain(difference.modified.iter()) {
-                let path = asked.subvolume.join(name);
+                let path = work.tree.join(name);
                 let Some(language) = thalyx_parser::Language::from_path(&path) else {
                     continue;
                 };
@@ -1316,6 +1646,7 @@ fn run_check(
                     }
                 },
                 output: json!({"looked_at": looked_at, "broken": broken}),
+                candidate: None,
             }
         }
 
@@ -1324,14 +1655,13 @@ fn run_check(
             // has named a program, and telling it where a Rust toolchain is
             // would be this verb deciding what somebody else's binary is for.
             let outcome = run_confined(
-                asked,
+                work,
                 program,
                 arguments,
                 &[],
                 &[],
                 &[],
                 thalyx_sandbox::profile::MODULE_STANDARD,
-                metrics,
             );
             CheckRecord {
                 key: String::new(),
@@ -1339,10 +1669,11 @@ fn run_check(
                 verdict: outcome.verdict,
                 summary: outcome.summary,
                 output: outcome.output,
+                candidate: None,
             }
         }
 
-        Check::Rust { mode, packages } => rust_check(asked, difference, mode, packages, metrics),
+        Check::Rust { mode, packages } => rust_check(work, difference, mode, packages),
     }
 }
 
@@ -1356,34 +1687,34 @@ struct Ran {
 /// Start a program under the confinement a program nobody signed gets, and read
 /// its exit status.
 ///
-/// **This is `ejecutar`'s path and not a new one.** `thalyx_core::foreign`
-/// resolves the binary, refuses when nothing can enforce, gives it its own user,
-/// its own cgroup, its own root filesystem, the seccomp filter, and the grants
-/// named here and nothing else. A validation that shelled out would be this
-/// crate becoming a host shell, which is the one thing `Agentes-Externos.md`
-/// says the adapter side must never become — and it would be worse here, on the
-/// authority side, where it would be Thalyx handing out its own reach.
+/// **This is `ejecutar`'s path and not a new one.** The launcher the platform
+/// hands over is `thalyx_core::foreign` on Linux, which resolves the binary,
+/// refuses when nothing can enforce, gives it its own user, its own cgroup, its
+/// own root filesystem, the seccomp filter, and the grants named here and
+/// nothing else. A validation that shelled out would be this crate becoming a
+/// host shell, which is the one thing `Agentes-Externos.md` says the adapter
+/// side must never become — and it would be worse here, on the authority side,
+/// where it would be Thalyx handing out its own reach.
 ///
 /// It refuses on a machine whose kernel is not denying, and that refusal
 /// arrives as [`Verdict::NotProven`]: **a check that could not run is not a
 /// check that passed.** This container is such a machine, which is why the
 /// tests that exercise this arm say so out loud rather than pretending.
-// Eight, and the eighth is the profile. Folding the grants and the profile into
+///
+/// The grants are objects with rights, and the first is always the work's own
+/// tree: on the managed model that is the private workspace, never the view.
+// Seven, and the seventh is the profile. Folding the grants and the profile into
 // a struct would hide the one thing a reader of a launch has to be able to see
 // at the call site: which confinement this program is getting.
-#[allow(clippy::too_many_arguments)]
 fn run_confined(
-    asked: &Asked<'_>,
+    work: &mut Work<'_, '_>,
     program: &str,
     arguments: &[String],
     also_readable: &[PathBuf],
     also_writable: &[PathBuf],
     environment: &[(String, String)],
     profile: &'static str,
-    metrics: &mut Metrics,
 ) -> Ran {
-    use thalyx_manifest::{Permission, PermissionKind};
-
     let path = PathBuf::from(program);
     if !path.is_absolute() {
         return Ran {
@@ -1396,64 +1727,55 @@ fn run_confined(
         };
     }
 
-    let mut grants = vec![
-        // The workspace, both ways: a build writes into the tree it builds.
-        Permission {
-            resource: asked.subvolume.display().to_string(),
-            action: "read".to_string(),
-            kind: PermissionKind::Session,
-        },
-        Permission {
-            resource: asked.subvolume.display().to_string(),
-            action: "write".to_string(),
-            kind: PermissionKind::Session,
-        },
-    ];
+    // The workspace, both ways: a build writes into the tree it builds.
+    let mut grants = vec![Grant::read_write(&work.tree)];
     for extra in also_readable {
-        grants.push(Permission {
-            resource: extra.display().to_string(),
-            action: "read".to_string(),
-            kind: PermissionKind::Session,
-        });
+        grants.push(Grant::read(extra));
     }
     // A place to build that is not the workspace. Both ways, because a build
     // directory is written and then read back.
     for extra in also_writable {
-        for action in ["read", "write"] {
-            grants.push(Permission {
-                resource: extra.display().to_string(),
-                action: action.to_string(),
-                kind: PermissionKind::Session,
-            });
-        }
+        grants.push(Grant::read_write(extra));
     }
 
-    metrics.process_launches += 1;
-    metrics.machine_operations += 1;
-    let outcome = thalyx_core::foreign::run_foreign(
-        asked.store,
-        &thalyx_permd::KernelStore::default_map(),
-        thalyx_core::foreign::ForeignRequest {
-            program: &path,
-            args: arguments.iter().map(std::ffi::OsString::from).collect(),
-            grants,
-            helper: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thalyx")),
-            request_id: asked.request_id.clone(),
-            // Named by the caller, because the two callers are not the same
-            // thing. A `rust` check runs a compiler tree and asks for the
-            // profile that confines one; a check that names somebody's program
-            // gets the profile every unsigned program gets, and widening that
-            // to suit Cargo would hand every named program a compiler tree's
-            // filter and six gigabytes for nothing.
-            profile,
-            environment: environment.to_vec(),
-        },
-    );
+    // Starting a process is an effect of the work, and a closed work has none.
+    if let Err(why) = work.platform.work().admit(Effect::Launch) {
+        return Ran {
+            verdict: Verdict::NotProven,
+            summary: format!("`{program}` was not started: {why}"),
+            output: json!({"word": "work_closed", "message": why}),
+        };
+    }
+
+    work.metrics.process_launches += 1;
+    work.metrics.machine_operations += 1;
+    let request = LaunchRequest {
+        program: path,
+        arguments: arguments.to_vec(),
+        grants,
+        // Named by the caller, because the two callers are not the same
+        // thing. A `rust` check runs a compiler tree and asks for the
+        // profile that confines one; a check that names somebody's program
+        // gets the profile every unsigned program gets, and widening that
+        // to suit Cargo would hand every named program a compiler tree's
+        // filter and six gigabytes for nothing.
+        profile: profile.to_string(),
+        environment: environment.to_vec(),
+        request_id: work.asked.request_id.clone(),
+    };
+    let started = work.now();
+    let outcome = work.platform.launcher().launch(&request);
+    let ended = work.now();
+    work.trace
+        .record(Phase::Launch, program, started, ended, outcome.is_ok());
+    work.platform
+        .work()
+        .charge(Effect::Launch, ended.saturating_sub(started));
 
     match outcome {
-        Ok(outcome) => {
-            metrics.internal_bytes += outcome.wrote.stdout.len() + outcome.wrote.stderr.len();
-            let verdict = match outcome.exit_code {
+        Ok(launched) => {
+            work.metrics.internal_bytes += launched.stdout.len() + launched.stderr.len();
+            let verdict = match launched.exit_code {
                 Some(0) => Verdict::Passed,
                 Some(_) => Verdict::Failed,
                 // A signal, and under this profile the likeliest one is
@@ -1462,9 +1784,20 @@ fn run_confined(
                 // never reported as the code failing.
                 None => Verdict::NotProven,
             };
+            let mut output = json!({
+                "exit_code": launched.exit_code,
+                "stdout": launched.stdout,
+                "stderr": launched.stderr,
+                "truncated": launched.truncated,
+            });
+            // What the machine charged, in its own terms: on Linux the cgroup
+            // and whether the run was isolated.
+            if let Some(object) = output.as_object_mut() {
+                object.extend(launched.accounting);
+            }
             Ran {
                 verdict,
-                summary: match outcome.exit_code {
+                summary: match launched.exit_code {
                     Some(0) => format!("`{program}` exited 0"),
                     Some(code) => format!("`{program}` exited {code}"),
                     None => format!(
@@ -1472,20 +1805,13 @@ fn run_confined(
                          this profile that is most often a denied syscall"
                     ),
                 },
-                output: json!({
-                    "exit_code": outcome.exit_code,
-                    "stdout": outcome.wrote.stdout,
-                    "stderr": outcome.wrote.stderr,
-                    "truncated": outcome.wrote.truncated,
-                    "cgroup": outcome.cgroup_id,
-                    "isolated": outcome.isolated,
-                }),
+                output,
             }
         }
         Err(error) => Ran {
             verdict: Verdict::NotProven,
             summary: format!("`{program}` could not be run under confinement: {error}"),
-            output: json!({"word": "could_not_run", "message": error.to_string()}),
+            output: json!({"word": "could_not_run", "message": error}),
         },
     }
 }
@@ -1507,11 +1833,10 @@ fn run_confined(
 /// process cannot run, and this then could not say *which* package it failed
 /// to check.
 fn rust_check(
-    asked: &Asked<'_>,
-    difference: &thalyx_snapshot::Difference,
+    work: &mut Work<'_, '_>,
+    difference: &Changes,
     mode: &str,
     named: &[String],
-    metrics: &mut Metrics,
 ) -> CheckRecord {
     let subcommand = if mode == "test" { "test" } else { "check" };
     let changed: Vec<String> = difference
@@ -1521,10 +1846,10 @@ fn rust_check(
         .chain(difference.removed.iter())
         .cloned()
         .collect();
+    let root = work.asked.store.root().to_path_buf();
+    let tree = work.tree.clone();
 
-    let Some(selection) =
-        crate::semantic::selection(asked.store.root(), &asked.subvolume, &changed, named)
-    else {
+    let Some(selection) = crate::semantic::selection(&root, &tree, &changed, named) else {
         return CheckRecord {
             key: String::new(),
             check: format!("cargo {subcommand}"),
@@ -1533,10 +1858,11 @@ fn rust_check(
                       this could have compiled"
                 .to_string(),
             output: json!({"word": "not_a_cargo_workspace", "cached": false}),
+            candidate: None,
         };
     };
     let packages = selection.packages;
-    metrics.affected_packages = packages.len();
+    work.metrics.affected_packages = packages.len();
 
     if packages.is_empty() {
         return CheckRecord {
@@ -1554,17 +1880,17 @@ fn rust_check(
                 // check of nothing.
                 "unattributed": selection.unattributed,
             }),
+            candidate: None,
         };
     }
 
     // ── has this exact state already been checked? ──────────────────────────
     let key = format!("cargo {subcommand}|{}", packages.join(","));
     if let Some(identity) = &selection.identity
-        && let Some(remembered) =
-            crate::semantic::recall_validation(asked.store.root(), &asked.subvolume, &key, identity)
+        && let Some(remembered) = crate::semantic::recall_validation(&root, &tree, &key, identity)
         && let Ok(record) = serde_json::from_str::<Remembered>(&remembered)
     {
-        metrics.validation_cache_hits += 1;
+        work.metrics.validation_cache_hits += 1;
         return CheckRecord {
             key: String::new(),
             check: format!("cargo {subcommand} over {}", packages.join(", ")),
@@ -1582,9 +1908,10 @@ fn rust_check(
                 "cached": true,
                 "state": identity.id,
             }),
+            candidate: None,
         };
     }
-    metrics.validation_cache_misses += 1;
+    work.metrics.validation_cache_misses += 1;
 
     let found = thalyx_rust::toolchain::cargo();
     let Some(cargo) = &found.path else {
@@ -1617,6 +1944,7 @@ fn rust_check(
                     .map(|path| path.display().to_string())
                     .collect::<Vec<String>>(),
             }),
+            candidate: None,
         };
     };
 
@@ -1625,7 +1953,7 @@ fn rust_check(
     // the difference would report thousands of changed files, and a rollback
     // would throw away the build cache that makes the *next* check cheap. It is
     // the same reason the provider tells rust-analyzer where to build.
-    let build_into = crate::semantic::build_directory(asked.store.root(), &asked.subvolume);
+    let build_into = crate::semantic::build_directory(&root, &tree);
     let mut arguments = vec![
         subcommand.to_string(),
         // No network from inside the confinement, so a build that wanted to
@@ -1634,7 +1962,7 @@ fn rust_check(
         "--target-dir".to_string(),
         build_into.display().to_string(),
         "--manifest-path".to_string(),
-        asked.subvolume.join("Cargo.toml").display().to_string(),
+        tree.join("Cargo.toml").display().to_string(),
     ];
     for package in &packages {
         arguments.push("-p".to_string());
@@ -1676,10 +2004,10 @@ fn rust_check(
     // semantic cache already had for the same reason, applied here at last: run,
     // ask again, and remember only what the tree agreed to both times.
     let ran = thalyx_rust::affected::steady(
-        || crate::semantic::identity_now(asked.store.root(), &asked.subvolume, &packages),
+        || crate::semantic::identity_now(&root, &tree, &packages),
         || {
             run_confined(
-                asked,
+                work,
                 &cargo.display().to_string(),
                 &arguments,
                 &readable,
@@ -1694,7 +2022,6 @@ fn rust_check(
                 // anybody could read. It is also the tree rust-analyzer starts
                 // from the other direction, under this same profile.
                 thalyx_sandbox::profile::SEMANTIC_PROVIDER,
-                metrics,
             )
         },
     );
@@ -1709,13 +2036,7 @@ fn rust_check(
             verdict: outcome.verdict,
             summary: outcome.summary.clone(),
         }) {
-        crate::semantic::remember_validation(
-            asked.store.root(),
-            &asked.subvolume,
-            &key,
-            identity,
-            &text,
-        );
+        crate::semantic::remember_validation(&root, &tree, &key, identity, &text);
         true
     } else {
         false
@@ -1766,6 +2087,7 @@ fn rust_check(
             }
             output
         },
+        candidate: None,
     }
 }
 
@@ -2057,16 +2379,39 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
         }
     };
 
+    // Which machine, read once and here. A value that names no backend is
+    // refused rather than defaulted — see `crate::platform::Backend::chosen`.
+    let backend = match crate::platform::Backend::chosen() {
+        Ok(backend) => backend,
+        Err(why) => {
+            declined(face, "unknown_platform", &why);
+            return Ok(());
+        }
+    };
+
     // The same rule `intento` is held to, and reached through the same
     // function: where the session stands, exactly, or nothing. A verb that
     // could replace a whole subvolume must never choose which one by searching
     // — 2026-08-10, and the read-only snapshot of somebody's entire root
-    // filesystem that came of it.
-    let subvolume = match crate::attempt::subvolume_for(here.at()) {
-        Ok(subvolume) => subvolume,
-        Err(why) => {
-            declined(face, why.word(), &why.message(here.at()));
-            return Ok(());
+    // filesystem that came of it. The managed backend holds the same rule with
+    // its own refusal words, because what it needs is a directory and not a
+    // subvolume.
+    let subvolume = match backend {
+        crate::platform::Backend::LinuxCurrent => match crate::attempt::subvolume_for(here.at()) {
+            Ok(subvolume) => subvolume,
+            Err(why) => {
+                declined(face, why.word(), &why.message(here.at()));
+                return Ok(());
+            }
+        },
+        crate::platform::Backend::LinuxManaged => {
+            match crate::platform::managed_tree_for(here.at()) {
+                Ok(tree) => tree,
+                Err((word, why)) => {
+                    declined(face, word, &why);
+                    return Ok(());
+                }
+            }
         }
     };
 
@@ -2076,11 +2421,21 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
         subvolume,
         request_id: request_id.to_string(),
     };
-    let evidence = carry_out(&asked, thalyx_snapshot::Native, here, &program);
+    let mut platform = match crate::platform::for_tree(store, backend, &asked.subvolume, request_id)
+    {
+        Ok(platform) => platform,
+        Err(why) => {
+            declined(face, "unreadable", &why);
+            return Ok(());
+        }
+    };
+    let evidence = carry_out(&asked, platform.as_mut(), here, &program);
 
     // Kept before it is answered. A caller handed a handle that names nothing
     // has been handed a lie, and the failure it would meet is a second call.
-    let kept = keep(store, &evidence);
+    let kept = serde_json::to_vec_pretty(&evidence)
+        .map_err(std::io::Error::from)
+        .and_then(|body| platform.evidence().record(&evidence.transaction, &body));
 
     if face == Face::Machine {
         let mut carried = answer_object(&evidence);
@@ -2217,10 +2572,31 @@ pub fn evidence(store: &Store, rest: &str, face: Face) -> Fallible {
         return Ok(());
     }
 
-    let path = evidence_path(store, &id);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let backend = match crate::platform::Backend::chosen() {
+        Ok(backend) => backend,
+        Err(why) => {
+            say(face, OP, "unknown_platform", &why);
+            return Ok(());
+        }
+    };
+    // From wherever the backend that ran it keeps evidence: a file in the store
+    // on `linux-current`, an object a managed store's log names on the managed
+    // model.
+    use thalyx_platform::evidence::Fetched;
+    let raw = match crate::platform::fetch_evidence(store, backend, &id) {
+        Fetched::Found(bytes) => match String::from_utf8(bytes) {
+            Ok(raw) => raw,
+            Err(error) => {
+                say(
+                    face,
+                    OP,
+                    "unreadable",
+                    &format!("`{id}` is there and could not be read: {error}"),
+                );
+                return Ok(());
+            }
+        },
+        Fetched::Absent => {
             say(
                 face,
                 OP,
@@ -2231,7 +2607,7 @@ pub fn evidence(store: &Store, rest: &str, face: Face) -> Fallible {
         }
         // Rule 10: a failure to read is not a failure to exist, and the two
         // have different remedies.
-        Err(error) => {
+        Fetched::Unreadable(error) => {
             say(
                 face,
                 OP,
@@ -2439,6 +2815,242 @@ mod tests {
         Program::read(&json.to_string()).expect("a program this verb can read")
     }
 
+    /// What the verb does with a run's record on `linux-current`, through the
+    /// same sink it does it through.
+    fn keep(store: &Store, evidence: &Evidence) -> std::io::Result<()> {
+        use thalyx_platform::evidence::EvidenceSink;
+        let body = serde_json::to_vec_pretty(evidence)?;
+        crate::platform::StoreFiles::new(store).record(&evidence.transaction, &body)
+    }
+
+    /// The same transaction on the managed model: the same workspace, store and
+    /// session, forked privately, and its record kept the way the verb keeps it.
+    fn run_managed_with(
+        store: &Store,
+        tree: &Path,
+        here: &mut Where,
+        program: &Program,
+        before: impl FnOnce(&crate::platform::LinuxManaged<'_>),
+    ) -> Evidence {
+        use thalyx_platform::Platform;
+        let request_id = format!("m-{}", std::process::id());
+        let mut platform =
+            crate::platform::LinuxManaged::open(store, tree, &request_id).expect("a managed store");
+        before(&platform);
+        let evidence = carry_out(
+            &Asked {
+                store,
+                limits: thalyx_program::Limits::default(),
+                subvolume: tree.to_path_buf(),
+                request_id,
+            },
+            &mut platform,
+            here,
+            program,
+        );
+        let body = serde_json::to_vec_pretty(&evidence).expect("JSON");
+        platform
+            .evidence()
+            .record(&evidence.transaction, &body)
+            .expect("the evidence is kept");
+        evidence
+    }
+
+    fn run_managed(store: &Store, tree: &Path, here: &mut Where, program: &Program) -> Evidence {
+        run_managed_with(store, tree, here, program, |_| {})
+    }
+
+    fn contents(tree: &Path, path: &str) -> String {
+        std::fs::read_to_string(tree.join(path)).expect(path)
+    }
+
+    #[test]
+    fn the_managed_model_publishes_what_the_same_transaction_commits() {
+        let files = [
+            ("src/lib.rs", "pub struct UidRegistry;\n"),
+            ("src/main.rs", "use crate::UidRegistry;\n"),
+        ];
+        let rename = program(serde_json::json!({
+            "label": "rename",
+            "steps": [{"verb": "edit", "arguments": ["src/lib.rs", "sustituir", "UidRegistry", "UserRegistry"]}],
+            "validate": [{"check": "text", "text": "pub struct UidRegistry", "expect": "none"}],
+        }));
+
+        // The control column: what linux-current does with it.
+        let (_one, store, tree, mut here) = a_workspace(&files);
+        let current = run(&store, &tree, &mut here, &rename);
+        assert_eq!(current.status, "committed", "{}", current.reason);
+
+        let (_two, store, tree, mut here) = a_workspace(&files);
+        let managed = run_managed(&store, &tree, &mut here, &rename);
+        assert_eq!(managed.status, "committed", "{}", managed.reason);
+        assert_eq!(managed.succeeded, current.succeeded);
+        assert_eq!(managed.change_count, current.change_count);
+        assert_eq!(managed.changed, current.changed);
+        assert_eq!(managed.reason, current.reason);
+
+        // Read here, not asked: the tree the session stands in holds the version.
+        assert_eq!(contents(&tree, "src/lib.rs"), "pub struct UserRegistry;\n");
+        let record = managed.platform.as_ref().expect("a platform record");
+        assert_eq!(record.backend, "linux-managed");
+        assert_eq!(record.state["generation_after"], serde_json::json!(2));
+        assert_eq!(
+            managed.end_state.as_deref(),
+            managed.checks[0].candidate.as_deref(),
+            "the verdict is about exactly what was published"
+        );
+        assert!(
+            current.checks[0].candidate.is_none(),
+            "linux-current names no version, and its record says nothing about one"
+        );
+    }
+
+    #[test]
+    fn a_check_that_fails_on_the_managed_model_publishes_nothing_and_its_record_survives() {
+        let (_base, store, tree, mut here) =
+            a_workspace(&[("src/lib.rs", "pub fn go() {\n    work();\n}\n")]);
+        let evidence = run_managed(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({
+                "label": "broken brace",
+                "steps": [{"verb": "edit", "arguments": ["src/lib.rs", "sustituir", "pub fn go() {", "pub fn go()"]}],
+                "validate": [{"check": "parses"}],
+            })),
+        );
+        assert_eq!(evidence.status, "rolled_back", "{}", evidence.reason);
+        assert!(evidence.rolled_back);
+        assert_eq!(
+            evidence.change_count, 1,
+            "the private work did change a file"
+        );
+        assert_eq!(
+            contents(&tree, "src/lib.rs"),
+            "pub fn go() {\n    work();\n}\n"
+        );
+        let record = evidence.platform.as_ref().expect("a platform record");
+        assert_eq!(record.state["generation_after"], serde_json::json!(1));
+        assert_eq!(record.state["discarded"], serde_json::json!(true));
+
+        match crate::platform::fetch_evidence(
+            &store,
+            crate::platform::Backend::LinuxManaged,
+            &evidence.transaction,
+        ) {
+            thalyx_platform::evidence::Fetched::Found(bytes) => {
+                let kept: Evidence = serde_json::from_slice(&bytes).expect("the record");
+                assert_eq!(kept.status, "rolled_back");
+            }
+            other => panic!("the record of a rollback did not outlive it: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_verdict_about_an_earlier_version_does_not_publish_a_later_one() {
+        const STALE: &str = r#"
+            thalyx.mustWork(thalyx.substitute("src/lib.rs", "pub fn unlock", "pub fn open"), "first");
+            const held = thalyx.validate({ check: "text", text: "pub fn unlock", expect: "none" });
+            thalyx.mustWork(thalyx.substitute("src/lib.rs", "pub fn open", "pub fn unlock_now"), "second");
+            return { first: held.verdict };
+        "#;
+        let files = [("src/lib.rs", "pub fn unlock() {}\n")];
+
+        // The control: linux-current names no version, so the verdict that held
+        // gates a tree it was not about, and the tree is kept.
+        let (_one, store, tree, mut here) = a_workspace(&files);
+        let current = run(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({"label": "stale", "run": STALE})),
+        );
+        assert_eq!(current.returned["first"], serde_json::json!("passed"));
+        assert_eq!(current.status, "committed", "{}", current.reason);
+
+        let (_two, store, tree, mut here) = a_workspace(&files);
+        let managed = run_managed(
+            &store,
+            &tree,
+            &mut here,
+            &program(serde_json::json!({"label": "stale", "run": STALE})),
+        );
+        assert_eq!(
+            managed.returned["first"],
+            serde_json::json!("passed"),
+            "the verdict itself is the same verdict"
+        );
+        assert_eq!(managed.status, "rolled_back", "{}", managed.reason);
+        assert!(
+            managed.reason.contains("another version"),
+            "{}",
+            managed.reason
+        );
+        assert_eq!(contents(&tree, "src/lib.rs"), "pub fn unlock() {}\n");
+    }
+
+    #[test]
+    fn a_closed_work_publishes_nothing_and_says_that_is_why() {
+        let files = [("a.rs", "fn a() {}\n")];
+        let edit = program(serde_json::json!({
+            "label": "closed",
+            "steps": [{"verb": "edit", "arguments": ["a.rs", "sustituir", "fn a()", "fn b()"]}],
+            "validate": [{"check": "text", "text": "fn b()", "expect": "some"}],
+        }));
+
+        // The control: the same work, open, publishes.
+        let (_one, store, tree, mut here) = a_workspace(&files);
+        let open = run_managed(&store, &tree, &mut here, &edit);
+        assert_eq!(open.status, "committed", "{}", open.reason);
+
+        let (_two, store, tree, mut here) = a_workspace(&files);
+        let closed = run_managed_with(&store, &tree, &mut here, &edit, |platform| {
+            platform.fence().close()
+        });
+        assert!(closed.succeeded, "what it did held: {}", closed.reason);
+        assert_eq!(closed.status, "rolled_back", "{}", closed.reason);
+        assert!(closed.reason.contains("was closed"), "{}", closed.reason);
+        assert_eq!(contents(&tree, "a.rs"), "fn a() {}\n");
+        let record = closed.platform.as_ref().expect("a platform record");
+        assert_eq!(
+            record.work["refused"].as_array().map(Vec::len),
+            Some(1),
+            "{}",
+            record.work
+        );
+    }
+
+    #[test]
+    fn a_confined_program_on_the_managed_model_reaches_its_private_copy_and_not_the_tree() {
+        let files = [("a.rs", "fn a() {}\n")];
+        let reading = |path: String| {
+            program(serde_json::json!({
+                "label": "read",
+                "on_success": "rollback",
+                "steps": [{"verb": "read", "arguments": [path]}],
+            }))
+        };
+
+        // The control: on linux-current the tree *is* the work's object, so its
+        // own absolute path is inside the boundary.
+        let (_one, store, tree, mut here) = a_workspace(&files);
+        let absolute = tree.join("a.rs").display().to_string();
+        let current = run(&store, &tree, &mut here, &reading(absolute));
+        assert!(current.succeeded, "{}", current.reason);
+
+        // On the managed model the work's object is its private copy. The
+        // session's authority is translated to it, never widened past it.
+        let (_two, store, tree, mut here) = a_workspace(&files);
+        let absolute = tree.join("a.rs").display().to_string();
+        let managed = run_managed(&store, &tree, &mut here, &reading(absolute));
+        assert!(!managed.succeeded, "{}", managed.reason);
+        assert!(!managed.steps[0].ok, "{}", managed.steps[0].answer);
+
+        let relative = run_managed(&store, &tree, &mut here, &reading("a.rs".to_string()));
+        assert!(relative.succeeded, "{}", relative.reason);
+        assert_eq!(relative.status, "succeeded_and_restored");
+    }
+
     fn run(store: &Store, tree: &Path, here: &mut Where, program: &Program) -> Evidence {
         run_within(
             store,
@@ -2457,6 +3069,7 @@ mod tests {
         program: &Program,
         limits: thalyx_program::Limits,
     ) -> Evidence {
+        let mut platform = crate::platform::LinuxCurrent::new(store, Directories, tree);
         carry_out(
             &Asked {
                 store,
@@ -2464,7 +3077,7 @@ mod tests {
                 subvolume: tree.to_path_buf(),
                 request_id: format!("t-{}", std::process::id()),
             },
-            Directories,
+            &mut platform,
             here,
             program,
         )

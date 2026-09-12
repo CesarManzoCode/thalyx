@@ -31,6 +31,7 @@ mod keyboard;
 mod memory;
 mod modules;
 mod net;
+mod platform;
 mod proc;
 mod render;
 mod restore;
