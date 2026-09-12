@@ -6357,3 +6357,40 @@ que se le quitó el `Cargo.lock`, y afirma que ni un byte de código se movió y
 el candado apareció. La fixture tenía candado versionado —que es lo correcto,
 regla 8— y por eso ninguna prueba lo había visto nunca: el árbol que la vertical
 construye no lo tiene, como no lo tiene ningún espacio de trabajo recién escrito.
+
+## Regla derivada: una referencia sólo es referencia si dos corridas del mismo binario la contestan igual
+
+Añadida el 2026-09-12, con el corpus de equivalencia de EXP-13
+([[Frontera-de-Plataforma]]). Son la vigésimo primera y la vigésimo segunda vez
+que el arnés se equivocó y pareció la máquina, y las dos salieron de la misma
+tarde:
+
+1. **Un socket que no cabía.** El arnés ponía el socket del bridge dentro del
+   directorio de cada caso, y el directorio de cada caso estaba en un scratch de
+   Btrfs bajo el home. `sun_path` tiene 108 bytes; la ruta tenía más, `bind`
+   falló, y los dieciséis casos de `linux-current` reportaron «nothing listened
+   within 30 s» — la frase de una máquina que no arranca, dicha sobre un arnés
+   que no podía abrir la puerta. Los casos de `linux-managed`, en un temporal de
+   ruta corta, pasaron en la misma corrida, que fue lo que lo delató.
+2. **Una identidad que se comparó como si nombrara el árbol.** La primera
+   corrida completa dio 15 de 16 en las dos comparaciones, y la diferencia única
+   era el campo `state` de la comprobación `rust`: una identidad `k1-` del cache
+   de validación. Antes de llamarlo regresión se miró el valor en las cuatro
+   corridas: `0492f72`, el binario nuevo **dos veces** y el backend administrado.
+   Las dos corridas del **mismo** binario, desde rutas del mismo largo, ya
+   diferían. No era una diferencia entre versiones de Thalyx; era ruido medido
+   como resultado.
+
+**La regla.** Antes de comparar contra una referencia, se mide cuánto difiere la
+referencia de sí misma. Un campo que dos corridas del mismo binario contestan
+distinto no entra a la comparación, y se quita **después de medirlo**, con la
+medición escrita al lado —nunca por sospecha, porque quitar lo que no se entiende
+es cómo una comparación deja de comparar—. Por eso las respuestas grabadas de
+`dev/exp13/baseline` sólo se escriben si dos corridas del binario base coinciden
+entero, y la prueba se niega a grabar si no.
+
+Y el corolario del socket: **el arnés no debe heredar límites del lugar donde
+casualmente guarda sus cosas.** Dónde vive un socket no cambia nada de lo que
+Thalyx contesta; dónde vive el árbol sí —el largo de sus rutas entra en los
+contadores de bytes—, y por eso lo primero se movió a una ruta corta y lo segundo
+se quedó donde estaba.

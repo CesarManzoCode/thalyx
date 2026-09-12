@@ -15,6 +15,27 @@ Lista viva de decisiones y trabajo que todavía falta cerrar. Actualizar el esta
 
 ## Pendientes de implementación
 
+- [ ] **EXP-13, Sprint 2 de 2: el backend de Thalyx-Kernel.** Añadido el
+      2026-09-12, decidido en el encargo del experimento. Implementar
+      `thalyx_platform::Platform` contra las primitivas de Thalyx-Kernel —el
+      cliente administrado sobre un transporte al servicio de estado de K4, el
+      lanzador de K5, la cerca de ámbito, `CLOCK_QUERY`— y correr EXP-13 sobre
+      L0, L1 y K1. **Sin tocar `exec.rs`**: si hace falta, la frontera estaba mal
+      cortada y se escribe en [[Frontera-de-Plataforma]] antes. Ver [[Punto-Actual]].
+
+- [ ] **Correr la etapa 62 de `verify.sh` en la máquina de Cesar.** Añadido el
+      2026-09-12. Es la única que compara `linux-current` con `0492f72` y con
+      `linux-managed` donde los lanzamientos confinados sí lanzan y hay
+      rust-analyzer; la máquina donde se construyó no tiene ninguna de las dos
+      cosas.
+
+- [ ] **Lint nuevo de clippy 1.98 en código que no cambió.** Añadido el
+      2026-09-12. `clippy::chunks_exact_to_as_chunks` (nuevo en 1.98) rechaza
+      `thalyx-memory/src/embed.rs:97` y `thalyx-install/src/medium.rs:268`, que
+      son idénticos a `0492f72`. No se tocaron en la rama de la frontera porque no
+      son parte de ella; con ese toolchain `cargo clippy --workspace -- -D
+      warnings` falla igual en la línea base.
+
 - [ ] **Comprobar en frío que la primera consulta ya no cae al índice.**
       Añadido el 2026-09-05, y ese mismo día contestado: la causa era que
       `textDocument/hover` se pasaba del techo de 30 s sobre un servidor que

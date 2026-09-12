@@ -1,7 +1,7 @@
 ---
 tipo: estado-vivo
 estado: activo
-fecha-actualizacion: 2026-09-05
+fecha-actualizacion: 2026-09-12
 tags: [continuidad, punto-actual, sesiones]
 ---
 
@@ -14,9 +14,78 @@ tags: [continuidad, punto-actual, sesiones]
 >
 > Para *cómo* trabajar en el proyecto, ver `CLAUDE.md` en la raíz del repo.
 
-## El único FALLÓ físico: el cache de validación archivaba bajo un árbol que Cargo ya había movido — 2026-09-05
+## La frontera de plataforma: el mismo Thalyx sobre dos backends de Linux, y el lugar por donde entra Thalyx-Kernel — 2026-09-12
 
 **Éste es el estado actual.** Los bloques de abajo son cómo se llegó.
+
+**Qué es.** El Sprint 1 de 2 de EXP-13, en la rama `feat/exp13-platform-linux`
+sobre `0492f72`, y **no está en `main`**: el encargo del experimento pide que la
+rama no se fusione ni se abra un PR. `hacer` —contexto, programa del agente en
+QuickJS, herramientas reales, validación, conservar o deshacer, evidencia— ya no
+llama directamente a ningún mecanismo de Linux: todo lo que le pide a la máquina
+pasa por `crates/thalyx-platform`, y la semántica se quedó en `exec.rs`. Dos
+backends, que se eligen con `THALYX_PLATFORM`:
+
+- `linux-current`, el de omisión: exactamente el Btrfs de antes.
+- `linux-managed`: el modelo administrado de Thalyx-Kernel sobre
+  `crates/thalyx-managed` —versiones inmutables, obra privada, candidato del que
+  trata cada veredicto, publicación por CAS en un log con `fsync`—.
+
+El diseño, las siete propiedades y las cinco decisiones que la construcción tomó
+están en [[Frontera-de-Plataforma]].
+
+**Lo que se probó aquí, y cómo.** Un corpus de dieciséis casos de sólo entradas
+(`dev/exp13/corpus`), conducido por un agente con guion sobre el socket del
+bridge (`crates/thalyx-cli/tests/exp13_equivalence.rs`):
+
+- `linux-current` contra el binario de `0492f72` sin modificar, corriendo al
+  lado, sobre subvolúmenes Btrfs reales: **16 de 16 idénticos** —cada respuesta,
+  cada evidencia, cada métrica que no es un reloj, el journal y los bytes del
+  árbol—.
+- `linux-managed` contra `linux-current`: **16 de 16 con el mismo significado**, y
+  la única diferencia es la declarada: un veredicto sobre una versión anterior no
+  publica la posterior (`a-verdict-about-an-older-tree`).
+- Las respuestas de `0492f72` quedaron grabadas en `dev/exp13/baseline` después de
+  dos corridas del mismo binario que coincidieron, y las pruebas las usan cuando
+  no hay binario base al lado —sólo en una máquina que conteste `toolchain` igual—.
+- 42 pruebas de `exec` —las de siempre sobre el falso de directorios y cinco
+  nuevas sobre el modelo administrado, cada una con su columna de control—, 10 del
+  store administrado y 8 de la frontera. `fmt` y `clippy` limpios en lo que
+  cambió.
+
+**Dos errores del arnés y no de Thalyx** (regla 5, la vigésimo primera y la
+vigésimo segunda): el socket dentro del scratch de Btrfs pasaba de los 108 bytes
+de `sun_path` y ningún bridge pudo escuchar —«nothing listened» en los dieciséis
+casos de `linux-current`—; y la identidad `k1-` del cache de validación cambiaba
+entre dos corridas del mismo binario, así que compararla era comparar ruido.
+
+**Lo que esta máquina no pudo comprobar, dicho exacto.**
+
+- No hay mapa de políticas cargado ni `sudo`: los lanzamientos confinados
+  (`program`, `rust`) contestan `not_proven` en los dos backends, y así se
+  compararon.
+- No hay rust-analyzer: `contexto` contesta desde el índice en los dos lados.
+- `cargo test --workspace` con `THALYX_BTRFS_SCRATCH`: 1961 pasan y 10 fallan, y
+  los diez son de una máquina sin privilegios —cuatro de
+  `a_program_nobody_signed_can_run` (`/sys/fs/cgroup/thalyx`: permiso denegado),
+  que fallan igual sobre el árbol de `0492f72`; seis de `thalyx-snapshot`, un crate
+  idéntico a `0492f72`, porque borrar un subvolumen sin root se rechaza—.
+- El clippy 1.98 de esta máquina trae un lint nuevo que rechaza dos líneas de
+  crates que no cambiaron; está en [[Tareas-Pendientes]].
+
+**Qué falta correr en la máquina de Cesar**, desde la rama:
+
+```
+git fetch && git checkout feat/exp13-platform-linux && cargo install --path crates/thalyx-cli && sudo ./dev/verify.sh
+```
+
+La etapa 62 construye `0492f72` desde git y corre el corpus donde los
+lanzamientos confinados sí lanzan y hay rust-analyzer.
+
+**Lo siguiente es el Sprint 2**: implementar `Platform` contra las primitivas de
+Thalyx-Kernel y correr EXP-13 sobre L0, L1 y K1, sin tocar `exec.rs`.
+
+## El único FALLÓ físico: el cache de validación archivaba bajo un árbol que Cargo ya había movido — 2026-09-05
 
 **El síntoma, de la etapa 58 de `verify.sh` en la máquina física.** La segunda
 petición, sobre exactamente los mismos bytes que la primera —`KeyVault` →

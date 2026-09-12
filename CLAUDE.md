@@ -153,7 +153,7 @@ These were all learned by something going wrong. They are recorded in
    second, a policy that breaks everything looks like one that works.
 5. **The instrument includes the harness.** Before believing something Thalyx
    claims is false, rule out that the thing that asked got it wrong. This has
-   now happened twenty times: `curl -s`, bpffs permissions, a `pipefail`
+   now happened twenty-two times: `curl -s`, bpffs permissions, a `pipefail`
    pipeline, an unprepared cgroup arena, a test that inferred its own
    precondition, a stale local `main` read as the state of the repository, a
    test suite that raced with itself for an executable it had just written, and
@@ -185,7 +185,16 @@ These were all learned by something going wrong. They are recorded in
    demonstrate that very defect resolved the symbol anyway, because
    rust-analyzer looks for `cargo` in `$CARGO`, `PATH` and `$CARGO_HOME/bin`,
    the control closed one of the three, and a rustup machine has the third one
-   full — so it modelled a developer's laptop and not the guest. The stale
+   full — so it modelled a developer's laptop and not the guest. The
+   twenty-first and twenty-second are EXP-13's equivalence harness, on
+   2026-09-12: a bridge socket placed inside a Btrfs scratch under a home
+   directory was longer than `sun_path`, so all sixteen `linux-current` cases
+   said "nothing listened" about a harness that could not bind — the sentence of
+   a machine that would not start; and a `k1-` validation identity was compared
+   as if it named the tree, when two runs of the *same* binary already answered
+   it differently. A reference is only a reference once two runs of the same
+   binary agree on it, which is why `dev/exp13/baseline` is written only after
+   they do. The stale
    `main` is the cheapest of them, and it
    came back on 2026-08-26 because the rule was written short: `main` and
    `origin/main` are different questions, **and `origin/main` is only a

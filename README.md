@@ -104,6 +104,23 @@ says exactly what it is holding, and the retry succeeds. Raw capture:
 Honest short version. The long one, with dates and what each check covered, is
 in **[docs/STATUS.md](docs/STATUS.md)**.
 
+**One Thalyx over two Linux backends, and the seam for a third.** Since
+2026-09-12, `hacer` — context, the agent's QuickJS program, real tools,
+validation, keep or undo, durable evidence — no longer calls a Linux mechanism
+directly: everything it asks of a machine goes through `crates/thalyx-platform`.
+`linux-current` is the Btrfs mechanism that already existed, and stays the
+default; `linux-managed` carries out the same transaction over Thalyx-Kernel's
+managed model — immutable versions, a private workspace, a candidate every
+verdict names, publication by compare-and-swap in an fsynced log. A corpus of
+sixteen cases, driven over the agent bridge by a scripted agent, shows
+`linux-current` answering exactly what the unmodified revision `0492f72` answers
+— every answer, evidence record, metric and the bytes of the tree — and
+`linux-managed` meaning the same on every case except the one where the design
+says it must not. Shown on the development machine, on unprivileged Btrfs and
+with no kernel policy loaded, so its confined launches were `not_proven` on both
+sides; `verify.sh` stage 62 is the run where they really launch. See
+`vault/09-Notas-Tecnicas/Frontera-de-Plataforma.md`.
+
 **Proven, on real hardware.** On 2026-08-07 a PC booted Thalyx from USB through
 its own firmware, used HDMI and a real xHCI keyboard, listed its disks,
 installed itself onto a second disk, and booted again without the installation
