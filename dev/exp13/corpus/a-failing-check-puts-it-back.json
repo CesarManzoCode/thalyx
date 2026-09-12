@@ -1,0 +1,33 @@
+{
+  "about": "An edit that eats a brace, caught by the parser before anything is kept.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "broken brace",
+        "steps": [
+          {
+            "verb": "edit",
+            "arguments": [
+              "src/boot.rs",
+              "sustituir",
+              "pub fn boot() -> Keys {",
+              "pub fn boot() -> Keys"
+            ]
+          }
+        ],
+        "validate": [
+          {
+            "check": "parses"
+          }
+        ]
+      }
+    }
+  ]
+}

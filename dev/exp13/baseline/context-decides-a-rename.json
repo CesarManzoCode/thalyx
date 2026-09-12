@@ -1,0 +1,332 @@
+{
+  "observation": {
+    "backend": "linux-current",
+    "case": "context-decides-a-rename",
+    "journal": [
+      "snapshot:success",
+      "attempt_begin:success",
+      "forget_snapshot:rejected",
+      "attempt_keep:degraded",
+      "external_agent:success"
+    ],
+    "machine": {
+      "policy_map_loaded": false,
+      "toolchain": {
+        "because": [
+          "there is no rust-analyzer that runs at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Without it every answer comes from the scan, which matches names rather than resolving them."
+        ],
+        "cargo": {
+          "from": "host",
+          "path": "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+        },
+        "ok": true,
+        "op": "toolchain",
+        "runtime": null,
+        "rust_analyzer": {
+          "from": null,
+          "looked_at": [
+            "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.cargo/bin/rust-analyzer",
+            "/usr/local/bin/rust-analyzer",
+            "/usr/bin/rust-analyzer"
+          ],
+          "path": null
+        },
+        "semantic_ready": false,
+        "workspace": {
+          "packages": 1,
+          "root": "<tree>",
+          "rust": true
+        }
+      }
+    },
+    "requests": [
+      {
+        "answer": {
+          "analyzer_confined": null,
+          "analyzer_error": "there is no rust-analyzer on this machine: there is no rust-analyzer at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Add it with: rustup component add rust-analyzer, or name one with THALYX_RUST_ANALYZER",
+          "analyzer_how": null,
+          "budget_bytes": 2000,
+          "detail": "answered from the index: names are matched here, not resolved — the semantic provider did not answer: there is no rust-analyzer on this machine: there is no rust-analyzer at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Add it with: rustup component add rust-analyzer, or name one with THALYX_RUST_ANALYZER",
+          "entries": [
+            {
+              "at": "src/keystore.rs:1:1",
+              "file": "src/keystore.rs",
+              "handle": "ctx-<handle>",
+              "kind": "type",
+              "line": 1,
+              "lines": 1,
+              "name": "Keystore",
+              "source": "index",
+              "uses": 3
+            }
+          ],
+          "fresh": "current",
+          "held_bytes": 67,
+          "ok": true,
+          "omitted_for_budget": 0,
+          "op": "context",
+          "query": "Keystore",
+          "resolution": "matched",
+          "returned_bytes": 158,
+          "shown": 1,
+          "source": "index"
+        },
+        "arguments": [
+          "Keystore"
+        ],
+        "verb": "context"
+      },
+      {
+        "answer": {
+          "change_count": 2,
+          "evidence": "req-<request>",
+          "metrics": {
+            "analyzer_starts": 0,
+            "internal_bytes": 3649,
+            "machine_operations": 14,
+            "program_operations": 11,
+            "returned_bytes": 683,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0
+          },
+          "ok": true,
+          "op": "exec",
+          "returned": {
+            "parses": "passed",
+            "seen": 2,
+            "touched": [
+              "src/boot.rs",
+              "src/keystore.rs"
+            ]
+          },
+          "status": "committed",
+          "succeeded": true,
+          "tree": "committed",
+          "validations": [
+            {
+              "check": "parses",
+              "summary": "2 changed file(s) still parse",
+              "verdict": "passed"
+            },
+            {
+              "check": "text `Keystore` none",
+              "summary": "0 occurrence(s) of `Keystore`",
+              "verdict": "passed"
+            },
+            {
+              "check": "parses",
+              "summary": "2 changed file(s) still parse",
+              "verdict": "passed"
+            }
+          ]
+        },
+        "arguments": [
+          "{\"label\":\"rename from context\",\"run\":\"\\nconst named = thalyx.read(\\\"src/keystore.rs\\\");\\nthalyx.assert(named.ok, \\\"the file the context named could not be read\\\", named);\\nconst listing = thalyx.list(\\\"src\\\");\\nthalyx.assert(listing.ok, \\\"src could not be listed\\\", listing);\\nconst touched = [];\\nfor (const name of listing.entries.map((entry) => entry.name).sort()) {\\n  const path = \\\"src/\\\" + name;\\n  let rounds = 0;\\n  while (rounds < 8) {\\n    const source = thalyx.read(path);\\n    if (!source.ok || !source.text.includes(\\\"Keystore\\\")) { break; }\\n    thalyx.mustWork(thalyx.substitute(path, \\\"Keystore\\\", \\\"KeyVault\\\"), \\\"the substitution in \\\" + path + \\\" did not happen\\\");\\n    rounds += 1;\\n  }\\n  if (rounds > 0) { touched.push(path); }\\n}\\nthalyx.assert(touched.includes(\\\"src/keystore.rs\\\"), \\\"the file the context named was not changed\\\", touched);\\nconst seen = thalyx.changed();\\nconst parses = thalyx.validate({ check: \\\"parses\\\" });\\nreturn { touched: touched, seen: seen.count, parses: parses.verdict };\\n\",\"validate\":[{\"check\":\"text\",\"expect\":\"none\",\"text\":\"Keystore\"},{\"check\":\"parses\"}]}"
+        ],
+        "evidence": {
+          "at": "<time>",
+          "attempt": "rename from context",
+          "change_count": 2,
+          "changed_files": [
+            "src/boot.rs",
+            "src/keystore.rs"
+          ],
+          "checks": [
+            {
+              "check": "parses",
+              "output": {
+                "broken": [],
+                "looked_at": 2
+              },
+              "summary": "2 changed file(s) still parse",
+              "verdict": "passed"
+            },
+            {
+              "check": "text `Keystore` none",
+              "output": {
+                "before": 0,
+                "continuity": "first_page",
+                "cursor": null,
+                "hits": [],
+                "looked_at": 4,
+                "more": false,
+                "not_text": 0,
+                "ok": true,
+                "op": "grep",
+                "root": "<tree>",
+                "sent": 0,
+                "text": "Keystore",
+                "total": 0,
+                "unreadable": []
+              },
+              "summary": "0 occurrence(s) of `Keystore`",
+              "verdict": "passed"
+            },
+            {
+              "check": "parses",
+              "output": {
+                "broken": [],
+                "looked_at": 2
+              },
+              "summary": "2 changed file(s) still parse",
+              "verdict": "passed"
+            }
+          ],
+          "end_state": "w2-<witness>",
+          "metrics": {
+            "affected_packages": 0,
+            "analyzer_confined": null,
+            "analyzer_how": null,
+            "analyzer_starts": 0,
+            "external_requests": 1,
+            "filesystem_mutations": 2,
+            "internal_bytes": 3649,
+            "machine_operations": 14,
+            "machine_time_ms": 23,
+            "process_launches": 0,
+            "program_assertions": 5,
+            "program_operations": 11,
+            "program_ticks": 0,
+            "programmable": true,
+            "returned_bytes": 0,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "state_witness_checks": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0,
+            "validations": 3
+          },
+          "ok": true,
+          "op": "evidence",
+          "reason": "every step went through and all 3 check(s) held",
+          "restored_by_request": false,
+          "rolled_back": false,
+          "start_state": "w2-<witness>",
+          "status": "committed",
+          "steps": [
+            {
+              "answer_bytes": 338,
+              "arguments": [
+                "src/keystore.rs"
+              ],
+              "ok": true,
+              "step": 1,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 385,
+              "arguments": [
+                "src"
+              ],
+              "ok": true,
+              "step": 2,
+              "verb": "list"
+            },
+            {
+              "answer_bytes": 363,
+              "arguments": [
+                "src/boot.rs"
+              ],
+              "ok": true,
+              "step": 3,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 336,
+              "arguments": [
+                "src/boot.rs",
+                "sustituir",
+                "Keystore",
+                "KeyVault"
+              ],
+              "ok": true,
+              "step": 4,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 363,
+              "arguments": [
+                "src/boot.rs"
+              ],
+              "ok": true,
+              "step": 5,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 338,
+              "arguments": [
+                "src/keystore.rs"
+              ],
+              "ok": true,
+              "step": 6,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 340,
+              "arguments": [
+                "src/keystore.rs",
+                "sustituir",
+                "Keystore",
+                "KeyVault"
+              ],
+              "ok": true,
+              "step": 7,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 338,
+              "arguments": [
+                "src/keystore.rs"
+              ],
+              "ok": true,
+              "step": 8,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 295,
+              "arguments": [
+                "src/lib.rs"
+              ],
+              "ok": true,
+              "step": 9,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 80,
+              "arguments": [],
+              "ok": true,
+              "step": 10,
+              "verb": "changed"
+            }
+          ],
+          "succeeded": true,
+          "transaction": "req-<request>",
+          "workspace": "<tree>"
+        },
+        "verb": "exec"
+      }
+    ],
+    "root_length": 97,
+    "tree": {
+      "digest": "279f7ab5fa02eae4f145cbd88256c0f5a9fa62ed870475d23994742644c54e2f",
+      "entries": [
+        "d src",
+        "f Cargo.toml 44bd7ecaa67d24c45539bf20d8a7a83d73fc819152177eb90f8d9359f304f7c7 -",
+        "f src/boot.rs 19daa60915bd700ac036905304f48a2b0fe4a380abc714959fa1eab05dfc468c -",
+        "f src/keystore.rs a50719b7d8d39abb0682cf3626737a3a655e3f71c13fe60cab53eddd5f699288 -",
+        "f src/lib.rs 576407b0ab321c1a5653fb9a7e8e0014068ea0b56174ec613fed774110382416 -"
+      ]
+    }
+  },
+  "recorded": {
+    "backend": "linux-current",
+    "binary_sha256": "60cd6e7911ddf58e36549826251aaa8a4f045ddcf413d4abbab305815b92a075",
+    "revision": "0492f72e487e2463b0d7b938365a8b3383364cb9",
+    "runs_compared": 2
+  }
+}

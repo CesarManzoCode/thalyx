@@ -1,0 +1,37 @@
+{
+  "about": "The whole vertical: the agent asks what a name is, and the file the answer names decides what its program changes, validates and publishes.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "context",
+      "arguments": [
+        "Keystore"
+      ],
+      "bind": {
+        "defined_in": "/entries/0/file"
+      }
+    },
+    {
+      "verb": "exec",
+      "program": {
+        "label": "rename from context",
+        "run": "\nconst named = thalyx.read(\"${defined_in}\");\nthalyx.assert(named.ok, \"the file the context named could not be read\", named);\nconst listing = thalyx.list(\"src\");\nthalyx.assert(listing.ok, \"src could not be listed\", listing);\nconst touched = [];\nfor (const name of listing.entries.map((entry) => entry.name).sort()) {\n  const path = \"src/\" + name;\n  let rounds = 0;\n  while (rounds < 8) {\n    const source = thalyx.read(path);\n    if (!source.ok || !source.text.includes(\"Keystore\")) { break; }\n    thalyx.mustWork(thalyx.substitute(path, \"Keystore\", \"KeyVault\"), \"the substitution in \" + path + \" did not happen\");\n    rounds += 1;\n  }\n  if (rounds > 0) { touched.push(path); }\n}\nthalyx.assert(touched.includes(\"${defined_in}\"), \"the file the context named was not changed\", touched);\nconst seen = thalyx.changed();\nconst parses = thalyx.validate({ check: \"parses\" });\nreturn { touched: touched, seen: seen.count, parses: parses.verdict };\n",
+        "validate": [
+          {
+            "check": "text",
+            "text": "Keystore",
+            "expect": "none"
+          },
+          {
+            "check": "parses"
+          }
+        ]
+      }
+    }
+  ]
+}

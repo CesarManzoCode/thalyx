@@ -1,0 +1,52 @@
+{
+  "about": "The second program is written against what the first one published: a view that has to be the published version, not a stale copy.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "first",
+        "steps": [
+          {
+            "verb": "edit",
+            "arguments": [
+              "src/keystore.rs",
+              "sustituir",
+              "pub fn unlock",
+              "pub fn open"
+            ]
+          }
+        ],
+        "validate": [
+          {
+            "check": "text",
+            "text": "pub fn unlock",
+            "expect": "none"
+          }
+        ]
+      }
+    },
+    {
+      "verb": "exec",
+      "program": {
+        "label": "second",
+        "run": "const source = thalyx.read(\"src/keystore.rs\");\nthalyx.assert(source.ok && source.text.includes(\"pub fn open\"), \"the first transaction is not what this one sees\", source);\nthalyx.mustWork(thalyx.substitute(\"src/boot.rs\", \"crate::keystore::unlock()\", \"crate::keystore::open()\"), \"edit\");\nreturn { saw_the_first: true };\n",
+        "validate": [
+          {
+            "check": "text",
+            "text": "unlock",
+            "expect": "none"
+          },
+          {
+            "check": "parses"
+          }
+        ]
+      }
+    }
+  ]
+}

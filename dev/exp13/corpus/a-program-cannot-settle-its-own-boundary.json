@@ -1,0 +1,25 @@
+{
+  "about": "An authority decision inside a program: asking for the boundary it runs in is a refusal the program branches on, and its own work still commits.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "not from inside",
+        "run": "const inside = thalyx.call(\"attempt\", []);\nthalyx.mustWork(thalyx.substitute(\"src/lib.rs\", \"pub mod boot;\", \"pub mod start;\"), \"edit\");\nreturn { refused: inside.ok === false, word: inside.word };\n",
+        "validate": [
+          {
+            "check": "text",
+            "text": "pub mod start;",
+            "expect": "some"
+          }
+        ]
+      }
+    }
+  ]
+}

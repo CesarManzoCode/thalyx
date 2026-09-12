@@ -1,0 +1,25 @@
+{
+  "about": "An authority decision: putting a verb in a program does not reach a verb the session may not reach.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "not exposed",
+        "steps": [
+          {
+            "verb": "enforce",
+            "arguments": [
+              "attach"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

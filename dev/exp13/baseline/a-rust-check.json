@@ -1,0 +1,181 @@
+{
+  "observation": {
+    "backend": "linux-current",
+    "case": "a-rust-check",
+    "journal": [
+      "snapshot:success",
+      "attempt_begin:success",
+      "run_foreign:rejected",
+      "restore:intended",
+      "restore:success",
+      "attempt_abandon:success",
+      "external_agent:success"
+    ],
+    "machine": {
+      "policy_map_loaded": false,
+      "toolchain": {
+        "because": [
+          "there is no rust-analyzer that runs at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Without it every answer comes from the scan, which matches names rather than resolving them."
+        ],
+        "cargo": {
+          "from": "host",
+          "path": "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+        },
+        "ok": true,
+        "op": "toolchain",
+        "runtime": null,
+        "rust_analyzer": {
+          "from": null,
+          "looked_at": [
+            "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.cargo/bin/rust-analyzer",
+            "/usr/local/bin/rust-analyzer",
+            "/usr/bin/rust-analyzer"
+          ],
+          "path": null
+        },
+        "semantic_ready": false,
+        "workspace": {
+          "packages": 1,
+          "root": "<tree>",
+          "rust": true
+        }
+      }
+    },
+    "requests": [
+      {
+        "answer": {
+          "change_count": 1,
+          "changed_files": [
+            "src/keystore.rs"
+          ],
+          "evidence": "req-<request>",
+          "metrics": {
+            "analyzer_starts": 0,
+            "internal_bytes": 983,
+            "machine_operations": 4,
+            "program_operations": 0,
+            "returned_bytes": 1070,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 1
+          },
+          "ok": true,
+          "op": "exec",
+          "reason": "every step went through and declared:0 did not hold",
+          "restored_by_request": false,
+          "status": "rolled_back",
+          "steps_run": 1,
+          "succeeded": false,
+          "tree": "restored",
+          "validations": [
+            {
+              "check": "cargo check over exp13",
+              "summary": "`<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo` could not be run under confinement: refusing to run `<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo`: the kernel policy map is not loaded, so nothing in the kernel would decide what it may touch — the 7 path you granteds included.\n  Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine). Nobody signed this program, so there is no unconfined mode to fall back to.",
+              "verdict": "not_proven"
+            }
+          ]
+        },
+        "arguments": [
+          "{\"label\":\"cargo\",\"steps\":[{\"arguments\":[\"src/keystore.rs\",\"sustituir\",\"pub fn unlock\",\"pub fn open\"],\"verb\":\"edit\"}],\"validate\":[{\"check\":\"rust\"}]}"
+        ],
+        "evidence": {
+          "at": "<time>",
+          "attempt": "cargo",
+          "change_count": 1,
+          "changed_files": [
+            "src/keystore.rs"
+          ],
+          "checks": [
+            {
+              "check": "cargo check over exp13",
+              "output": {
+                "cached": false,
+                "message": "refusing to run `<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo`: the kernel policy map is not loaded, so nothing in the kernel would decide what it may touch — the 7 path you granteds included.\n  Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine). Nobody signed this program, so there is no unconfined mode to fall back to.",
+                "packages": [
+                  "exp13"
+                ],
+                "remembered": false,
+                "state": "k1-<identity>",
+                "unattributed": [],
+                "why": "1 package changed (exp13), and 0 package(s) depend on it",
+                "word": "could_not_run"
+              },
+              "summary": "`<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo` could not be run under confinement: refusing to run `<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo`: the kernel policy map is not loaded, so nothing in the kernel would decide what it may touch — the 7 path you granteds included.\n  Load it with `thalyx enforce attach` (`make -C lsm load` on a development machine). Nobody signed this program, so there is no unconfined mode to fall back to.",
+              "verdict": "not_proven"
+            }
+          ],
+          "end_state": "w2-<witness>",
+          "metrics": {
+            "affected_packages": 1,
+            "analyzer_confined": null,
+            "analyzer_how": null,
+            "analyzer_starts": 0,
+            "external_requests": 1,
+            "filesystem_mutations": 1,
+            "internal_bytes": 983,
+            "machine_operations": 4,
+            "machine_time_ms": 54,
+            "process_launches": 1,
+            "program_assertions": 0,
+            "program_operations": 0,
+            "program_ticks": 0,
+            "programmable": false,
+            "returned_bytes": 0,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "state_witness_checks": 1,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 1,
+            "validations": 1
+          },
+          "ok": true,
+          "op": "evidence",
+          "reason": "every step went through and declared:0 did not hold",
+          "restored_by_request": false,
+          "rolled_back": true,
+          "start_state": "w2-<witness>",
+          "status": "rolled_back",
+          "steps": [
+            {
+              "answer_bytes": 336,
+              "arguments": [
+                "src/keystore.rs",
+                "sustituir",
+                "pub fn unlock",
+                "pub fn open"
+              ],
+              "ok": true,
+              "step": 1,
+              "verb": "edit"
+            }
+          ],
+          "succeeded": false,
+          "transaction": "req-<request>",
+          "workspace": "<tree>"
+        },
+        "verb": "exec"
+      }
+    ],
+    "root_length": 85,
+    "tree": {
+      "digest": "309eea1781c6cf7987dd880da149656a3dbaafb9885e94a628b78b067eb7e43f",
+      "entries": [
+        "d src",
+        "f Cargo.toml 44bd7ecaa67d24c45539bf20d8a7a83d73fc819152177eb90f8d9359f304f7c7 -",
+        "f src/boot.rs 3f21be1f1596cf17b0dd4164786119538445ea968f55f468fd128fc7cfe4456f -",
+        "f src/keystore.rs 0165503c95c899d725b33a2a60eed76a34ac8488f62bb6e38866196bf6ec6779 -",
+        "f src/lib.rs 576407b0ab321c1a5653fb9a7e8e0014068ea0b56174ec613fed774110382416 -"
+      ]
+    }
+  },
+  "recorded": {
+    "backend": "linux-current",
+    "binary_sha256": "60cd6e7911ddf58e36549826251aaa8a4f045ddcf413d4abbab305815b92a075",
+    "revision": "0492f72e487e2463b0d7b938365a8b3383364cb9",
+    "runs_compared": 2
+  }
+}

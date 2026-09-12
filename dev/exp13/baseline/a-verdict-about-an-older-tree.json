@@ -1,0 +1,192 @@
+{
+  "observation": {
+    "backend": "linux-current",
+    "case": "a-verdict-about-an-older-tree",
+    "journal": [
+      "snapshot:success",
+      "attempt_begin:success",
+      "forget_snapshot:rejected",
+      "attempt_keep:degraded",
+      "external_agent:success"
+    ],
+    "machine": {
+      "policy_map_loaded": false,
+      "toolchain": {
+        "because": [
+          "there is no rust-analyzer that runs at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Without it every answer comes from the scan, which matches names rather than resolving them."
+        ],
+        "cargo": {
+          "from": "host",
+          "path": "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+        },
+        "ok": true,
+        "op": "toolchain",
+        "runtime": null,
+        "rust_analyzer": {
+          "from": null,
+          "looked_at": [
+            "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.cargo/bin/rust-analyzer",
+            "/usr/local/bin/rust-analyzer",
+            "/usr/bin/rust-analyzer"
+          ],
+          "path": null
+        },
+        "semantic_ready": false,
+        "workspace": {
+          "packages": 1,
+          "root": "<tree>",
+          "rust": true
+        }
+      }
+    },
+    "requests": [
+      {
+        "answer": {
+          "change_count": 1,
+          "evidence": "req-<request>",
+          "metrics": {
+            "analyzer_starts": 0,
+            "internal_bytes": 1435,
+            "machine_operations": 6,
+            "program_operations": 3,
+            "returned_bytes": 477,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0
+          },
+          "ok": true,
+          "op": "exec",
+          "returned": {
+            "first": "passed"
+          },
+          "status": "committed",
+          "succeeded": true,
+          "tree": "committed",
+          "validations": [
+            {
+              "check": "text `pub fn unlock` none",
+              "summary": "0 occurrence(s) of `pub fn unlock`",
+              "verdict": "passed"
+            }
+          ]
+        },
+        "arguments": [
+          "{\"label\":\"stale verdict\",\"run\":\"thalyx.mustWork(thalyx.substitute(\\\"src/keystore.rs\\\", \\\"pub fn unlock\\\", \\\"pub fn open\\\"), \\\"first edit\\\");\\nconst held = thalyx.validate({ check: \\\"text\\\", text: \\\"pub fn unlock\\\", expect: \\\"none\\\" });\\nthalyx.mustWork(thalyx.substitute(\\\"src/keystore.rs\\\", \\\"pub fn open\\\", \\\"pub fn unlock_now\\\"), \\\"second edit\\\");\\nreturn { first: held.verdict };\\n\"}"
+        ],
+        "evidence": {
+          "at": "<time>",
+          "attempt": "stale verdict",
+          "change_count": 1,
+          "changed_files": [
+            "src/keystore.rs"
+          ],
+          "checks": [
+            {
+              "check": "text `pub fn unlock` none",
+              "output": {
+                "before": 0,
+                "continuity": "first_page",
+                "cursor": null,
+                "hits": [],
+                "looked_at": 4,
+                "more": false,
+                "not_text": 0,
+                "ok": true,
+                "op": "grep",
+                "root": "<tree>",
+                "sent": 0,
+                "text": "pub fn unlock",
+                "total": 0,
+                "unreadable": []
+              },
+              "summary": "0 occurrence(s) of `pub fn unlock`",
+              "verdict": "passed"
+            }
+          ],
+          "end_state": "w2-<witness>",
+          "metrics": {
+            "affected_packages": 0,
+            "analyzer_confined": null,
+            "analyzer_how": null,
+            "analyzer_starts": 0,
+            "external_requests": 1,
+            "filesystem_mutations": 1,
+            "internal_bytes": 1435,
+            "machine_operations": 6,
+            "machine_time_ms": 18,
+            "process_launches": 0,
+            "program_assertions": 2,
+            "program_operations": 3,
+            "program_ticks": 0,
+            "programmable": true,
+            "returned_bytes": 0,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "state_witness_checks": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0,
+            "validations": 1
+          },
+          "ok": true,
+          "op": "evidence",
+          "reason": "every step went through and all 1 check(s) held",
+          "restored_by_request": false,
+          "rolled_back": false,
+          "start_state": "w2-<witness>",
+          "status": "committed",
+          "steps": [
+            {
+              "answer_bytes": 353,
+              "arguments": [
+                "src/keystore.rs",
+                "sustituir",
+                "pub fn unlock",
+                "pub fn open"
+              ],
+              "ok": true,
+              "step": 1,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 357,
+              "arguments": [
+                "src/keystore.rs",
+                "sustituir",
+                "pub fn open",
+                "pub fn unlock_now"
+              ],
+              "ok": true,
+              "step": 2,
+              "verb": "edit"
+            }
+          ],
+          "succeeded": true,
+          "transaction": "req-<request>",
+          "workspace": "<tree>"
+        },
+        "verb": "exec"
+      }
+    ],
+    "root_length": 102,
+    "tree": {
+      "digest": "51c7996e666762770d4dc737b5ea9d2af6783505771498cba82b997b9154dd1d",
+      "entries": [
+        "d src",
+        "f Cargo.toml 44bd7ecaa67d24c45539bf20d8a7a83d73fc819152177eb90f8d9359f304f7c7 -",
+        "f src/boot.rs 3f21be1f1596cf17b0dd4164786119538445ea968f55f468fd128fc7cfe4456f -",
+        "f src/keystore.rs 7dc0706bc1893d48fa50cff132bc03f87e57cc6d9cbab9e367239dc820a8d8e4 -",
+        "f src/lib.rs 576407b0ab321c1a5653fb9a7e8e0014068ea0b56174ec613fed774110382416 -"
+      ]
+    }
+  },
+  "recorded": {
+    "backend": "linux-current",
+    "binary_sha256": "60cd6e7911ddf58e36549826251aaa8a4f045ddcf413d4abbab305815b92a075",
+    "revision": "0492f72e487e2463b0d7b938365a8b3383364cb9",
+    "runs_compared": 2
+  }
+}

@@ -8831,6 +8831,71 @@ else
     fi
 fi
 
+step "62. the same Thalyx over two Linux backends: linux-current is still 0492f72, and linux-managed means what it means"
+
+# `vault/09-Notas-Tecnicas/Frontera-de-Plataforma.md`, 2026-09-12. `hacer` goes
+# through a platform boundary now, with two backends on Linux: `linux-current`,
+# which is the Btrfs mechanism that existed, and `linux-managed`, the managed
+# model Thalyx-Kernel's backend will share. Two claims, and this machine is the
+# only one that can make both about itself:
+#
+#   - linux-current answers the EXP-13 corpus exactly as the unmodified
+#     revision does — every answer, evidence record, metric, journal entry and
+#     the bytes of the tree — on a real subvolume;
+#   - linux-managed means what linux-current means on that corpus, differing
+#     only where a case declares why.
+#
+# Wiring, for the reason stage 60 is: the corpus and its comparisons live in
+# `crates/thalyx-cli/tests/exp13_equivalence.rs`, and this names them.
+#
+# ## Why the unmodified revision is built here
+#
+# The recorded answers in `dev/exp13/baseline/` were made on a machine with no
+# rust-analyzer and no policy map loaded, and an answer about a toolchain that is
+# not installed is an answer about a machine. So the revision is taken from git
+# into its own tree and built, and the corpus runs it beside the refactored
+# binary — on this machine, where the launches in the corpus really launch.
+
+EXP13_REVISION=0492f72e487e2463b0d7b938365a8b3383364cb9
+EXP13_TREE="$WORK/exp13-baseline"
+EXP13_BUILD="$WORK/exp13-baseline-build.log"
+EXP13_LOG="$WORK/exp13.log"
+if [ "$HAVE_BTRFS" != 1 ]; then
+    unproven "there is no Btrfs here, so linux-current's boundary could not be a real subvolume and EXP-13's corpus was not compared"
+elif ! git -C "$ROOT" cat-file -e "$EXP13_REVISION^{commit}" 2> /dev/null; then
+    unproven "git has no $EXP13_REVISION here, so the unmodified revision could not be built to compare linux-current with; run git fetch"
+elif ! { mkdir -p "$EXP13_TREE" \
+        && git -C "$ROOT" archive "$EXP13_REVISION" | tar -x -C "$EXP13_TREE" \
+        && ( cd "$EXP13_TREE" && cargo build -p thalyx-cli ); } > "$EXP13_BUILD" 2>&1; then
+    failed "the unmodified revision $EXP13_REVISION did not build here, so nothing could be compared with it; see $EXP13_BUILD"
+    excerpt "$EXP13_BUILD"
+else
+    # `--nocapture` because the verdict per case is a line the test prints, and
+    # a passing test's output is otherwise swallowed — which would leave the
+    # counts below counting nothing. Every requirement is set, so a skip is a
+    # failure and not a pass (rule 3).
+    if ( cd "$ROOT" && env THALYX_REQUIRE_BTRFS_TESTS=1 "THALYX_BTRFS_SCRATCH=$BTRFS_SCRATCH" \
+            "THALYX_EXP13_BASELINE=$EXP13_TREE/target/debug/thalyx" THALYX_REQUIRE_EXP13_BASELINE=1 \
+            "THALYX_EXP13_REPORT=$WORK/exp13-report" \
+            cargo test -p thalyx-cli --test exp13_equivalence -- --nocapture ) \
+            > "$EXP13_LOG" 2>&1; then
+        EXP13_CASES=$(find "$ROOT/dev/exp13/corpus" -name '*.json' | wc -l)
+        EXP13_CURRENT=$(grep -c "^PROVEN .*: linux-current answered what" "$EXP13_LOG")
+        EXP13_MANAGED=$(grep -c "^PROVEN .*: linux-managed meant what" "$EXP13_LOG")
+        if grep -q "NOT PROVEN" "$EXP13_LOG"; then
+            unproven "EXP-13's corpus stood down somewhere; see $EXP13_LOG"
+            excerpt "$EXP13_LOG"
+        elif [ "$EXP13_CURRENT" = "$EXP13_CASES" ] && [ "$EXP13_MANAGED" = "$EXP13_CASES" ]; then
+            proven "all $EXP13_CASES EXP-13 cases: linux-current answered exactly what $EXP13_REVISION built here answered, on a real subvolume, and linux-managed meant the same on every one of them except where a case says why — traces for both in $WORK/exp13-report"
+        else
+            unproven "EXP-13 compared $EXP13_CURRENT and $EXP13_MANAGED of $EXP13_CASES cases; see $EXP13_LOG"
+        fi
+    else
+        failed "EXP-13's corpus does not hold on this machine; see $EXP13_LOG"
+        excerpt "$EXP13_LOG" 40
+    fi
+fi
+
 # ------------------------------------------------- the machine, as it is left
 #
 # The last stage that arms the machine has no stage after it, so `step()` never

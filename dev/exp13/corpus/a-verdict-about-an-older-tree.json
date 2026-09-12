@@ -1,0 +1,34 @@
+{
+  "about": "A check that held, followed by an edit that undoes what it checked. The last verdict passed; what it was about is not the tree that would be kept.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "stale verdict",
+        "run": "thalyx.mustWork(thalyx.substitute(\"src/keystore.rs\", \"pub fn unlock\", \"pub fn open\"), \"first edit\");\nconst held = thalyx.validate({ check: \"text\", text: \"pub fn unlock\", expect: \"none\" });\nthalyx.mustWork(thalyx.substitute(\"src/keystore.rs\", \"pub fn open\", \"pub fn unlock_now\"), \"second edit\");\nreturn { first: held.verdict };\n"
+      }
+    }
+  ],
+  "differences": {
+    "linux-managed": [
+      {
+        "at": "requests.0.answer",
+        "why": "the managed model binds a verdict to the candidate it was about; the one verdict was about the tree before the second edit, so nothing is published. linux-current names no candidate and keeps the tree."
+      },
+      {
+        "at": "requests.0.evidence",
+        "why": "the same decision, as the evidence records it: rolled back, with the reason naming the verdict about another version."
+      },
+      {
+        "at": "tree",
+        "why": "linux-current kept the second edit; linux-managed published nothing."
+      }
+    ]
+  }
+}

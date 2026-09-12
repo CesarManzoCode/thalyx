@@ -1,0 +1,21 @@
+{
+  "about": "The defining program of the programmable form: which files change is decided by reading them, inside the machine.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod one;\npub mod two;\npub mod three;\npub mod four;\npub mod five;\n",
+    "src/one.rs": "pub fn one() -> u32 {\n    old_api(1)\n}\n",
+    "src/two.rs": "pub fn two() -> u32 {\n    2\n}\n",
+    "src/three.rs": "pub fn three() -> u32 {\n    old_api(3)\n}\n",
+    "src/four.rs": "pub fn four() -> u32 {\n    4\n}\n",
+    "src/five.rs": "pub fn five() -> u32 {\n    old_api(5)\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "only what needs it",
+        "run": "const listing = thalyx.list(\"src\");\nthalyx.assert(listing.ok, \"src could not be listed\", listing);\nconst sources = (listing.entries || []).map((entry) => entry.name).filter((name) => name.endsWith(\".rs\") && name !== \"lib.rs\").sort();\nconst touched = [];\nfor (const name of sources) {\n  const path = \"src/\" + name;\n  const source = thalyx.read(path);\n  if (source.ok && source.text.includes(\"old_api\")) {\n    thalyx.mustWork(thalyx.substitute(path, \"old_api\", \"new_api\"), \"the substitution in \" + path + \" did not happen\");\n    touched.push(name);\n  }\n}\nconst seen = thalyx.changed();\nthalyx.assert(seen.count === touched.length, \"the tree shows \" + seen.count + \" change(s) and the program made \" + touched.length, seen);\nconst parses = thalyx.validate({ check: \"parses\" });\nif (parses.verdict !== \"passed\") { return { gave_up: true, why: parses.summary }; }\nconst left = thalyx.grep(\"old_api\");\nthalyx.assert(left.total === 0, \"old_api is still somewhere\", left);\nreturn { changed: touched, still_there: left.total };\n"
+      }
+    }
+  ]
+}

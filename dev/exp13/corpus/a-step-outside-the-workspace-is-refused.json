@@ -1,0 +1,34 @@
+{
+  "about": "An authority decision: a step that names a path outside the workspace is refused exactly as a lone request is, and what came before it is put back.",
+  "tree": {
+    "Cargo.toml": "[workspace]\n\n[package]\nname = \"exp13\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    "src/lib.rs": "pub mod boot;\npub mod keystore;\n",
+    "src/keystore.rs": "pub struct Keystore;\n\npub fn unlock() -> Keystore {\n    Keystore\n}\n",
+    "src/boot.rs": "use crate::keystore::Keystore as Keys;\n\npub fn boot() -> Keys {\n    crate::keystore::unlock()\n}\n"
+  },
+  "agent": [
+    {
+      "verb": "exec",
+      "program": {
+        "label": "outside",
+        "steps": [
+          {
+            "verb": "edit",
+            "arguments": [
+              "src/lib.rs",
+              "sustituir",
+              "pub mod boot;",
+              "pub mod start;"
+            ]
+          },
+          {
+            "verb": "read",
+            "arguments": [
+              "../outside.txt"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

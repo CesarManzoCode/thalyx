@@ -1,0 +1,272 @@
+{
+  "observation": {
+    "backend": "linux-current",
+    "case": "a-program-that-looks-before-it-changes",
+    "journal": [
+      "snapshot:success",
+      "attempt_begin:success",
+      "forget_snapshot:rejected",
+      "attempt_keep:degraded",
+      "external_agent:success"
+    ],
+    "machine": {
+      "policy_map_loaded": false,
+      "toolchain": {
+        "because": [
+          "there is no rust-analyzer that runs at any of the 5 place(s) this machine looks: <home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer, <home>/.cargo/bin/rust-analyzer, /usr/local/bin/rust-analyzer, /usr/bin/rust-analyzer. Without it every answer comes from the scan, which matches names rather than resolving them."
+        ],
+        "cargo": {
+          "from": "host",
+          "path": "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/cargo",
+          "version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+        },
+        "ok": true,
+        "op": "toolchain",
+        "runtime": null,
+        "rust_analyzer": {
+          "from": null,
+          "looked_at": [
+            "<home>/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+            "<home>/.cargo/bin/rust-analyzer",
+            "/usr/local/bin/rust-analyzer",
+            "/usr/bin/rust-analyzer"
+          ],
+          "path": null
+        },
+        "semantic_ready": false,
+        "workspace": {
+          "packages": 1,
+          "root": "<tree>",
+          "rust": true
+        }
+      }
+    },
+    "requests": [
+      {
+        "answer": {
+          "change_count": 3,
+          "evidence": "req-<request>",
+          "metrics": {
+            "analyzer_starts": 0,
+            "internal_bytes": 3694,
+            "machine_operations": 14,
+            "program_operations": 12,
+            "returned_bytes": 496,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0
+          },
+          "ok": true,
+          "op": "exec",
+          "returned": {
+            "changed": [
+              "five.rs",
+              "one.rs",
+              "three.rs"
+            ],
+            "still_there": 0
+          },
+          "status": "committed",
+          "succeeded": true,
+          "tree": "committed",
+          "validations": [
+            {
+              "check": "parses",
+              "summary": "3 changed file(s) still parse",
+              "verdict": "passed"
+            }
+          ]
+        },
+        "arguments": [
+          "{\"label\":\"only what needs it\",\"run\":\"const listing = thalyx.list(\\\"src\\\");\\nthalyx.assert(listing.ok, \\\"src could not be listed\\\", listing);\\nconst sources = (listing.entries || []).map((entry) => entry.name).filter((name) => name.endsWith(\\\".rs\\\") && name !== \\\"lib.rs\\\").sort();\\nconst touched = [];\\nfor (const name of sources) {\\n  const path = \\\"src/\\\" + name;\\n  const source = thalyx.read(path);\\n  if (source.ok && source.text.includes(\\\"old_api\\\")) {\\n    thalyx.mustWork(thalyx.substitute(path, \\\"old_api\\\", \\\"new_api\\\"), \\\"the substitution in \\\" + path + \\\" did not happen\\\");\\n    touched.push(name);\\n  }\\n}\\nconst seen = thalyx.changed();\\nthalyx.assert(seen.count === touched.length, \\\"the tree shows \\\" + seen.count + \\\" change(s) and the program made \\\" + touched.length, seen);\\nconst parses = thalyx.validate({ check: \\\"parses\\\" });\\nif (parses.verdict !== \\\"passed\\\") { return { gave_up: true, why: parses.summary }; }\\nconst left = thalyx.grep(\\\"old_api\\\");\\nthalyx.assert(left.total === 0, \\\"old_api is still somewhere\\\", left);\\nreturn { changed: touched, still_there: left.total };\\n\"}"
+        ],
+        "evidence": {
+          "at": "<time>",
+          "attempt": "only what needs it",
+          "change_count": 3,
+          "changed_files": [
+            "src/five.rs",
+            "src/one.rs",
+            "src/three.rs"
+          ],
+          "checks": [
+            {
+              "check": "parses",
+              "output": {
+                "broken": [],
+                "looked_at": 3
+              },
+              "summary": "3 changed file(s) still parse",
+              "verdict": "passed"
+            }
+          ],
+          "end_state": "w2-<witness>",
+          "metrics": {
+            "affected_packages": 0,
+            "analyzer_confined": null,
+            "analyzer_how": null,
+            "analyzer_starts": 0,
+            "external_requests": 1,
+            "filesystem_mutations": 3,
+            "internal_bytes": 3694,
+            "machine_operations": 14,
+            "machine_time_ms": 24,
+            "process_launches": 0,
+            "program_assertions": 6,
+            "program_operations": 12,
+            "program_ticks": 0,
+            "programmable": true,
+            "returned_bytes": 0,
+            "semantic_cache_hits": 0,
+            "semantic_queries": 0,
+            "state_witness_checks": 0,
+            "validation_cache_hits": 0,
+            "validation_cache_misses": 0,
+            "validations": 1
+          },
+          "ok": true,
+          "op": "evidence",
+          "reason": "every step went through and all 1 check(s) held",
+          "restored_by_request": false,
+          "rolled_back": false,
+          "start_state": "w2-<witness>",
+          "status": "committed",
+          "steps": [
+            {
+              "answer_bytes": 526,
+              "arguments": [
+                "src"
+              ],
+              "ok": true,
+              "step": 1,
+              "verb": "list"
+            },
+            {
+              "answer_bytes": 319,
+              "arguments": [
+                "src/five.rs"
+              ],
+              "ok": true,
+              "step": 2,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 348,
+              "arguments": [
+                "src/five.rs",
+                "sustituir",
+                "old_api",
+                "new_api"
+              ],
+              "ok": true,
+              "step": 3,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 310,
+              "arguments": [
+                "src/four.rs"
+              ],
+              "ok": true,
+              "step": 4,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 317,
+              "arguments": [
+                "src/one.rs"
+              ],
+              "ok": true,
+              "step": 5,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 347,
+              "arguments": [
+                "src/one.rs",
+                "sustituir",
+                "old_api",
+                "new_api"
+              ],
+              "ok": true,
+              "step": 6,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 321,
+              "arguments": [
+                "src/three.rs"
+              ],
+              "ok": true,
+              "step": 7,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 349,
+              "arguments": [
+                "src/three.rs",
+                "sustituir",
+                "old_api",
+                "new_api"
+              ],
+              "ok": true,
+              "step": 8,
+              "verb": "edit"
+            },
+            {
+              "answer_bytes": 308,
+              "arguments": [
+                "src/two.rs"
+              ],
+              "ok": true,
+              "step": 9,
+              "verb": "read"
+            },
+            {
+              "answer_bytes": 90,
+              "arguments": [],
+              "ok": true,
+              "step": 10,
+              "verb": "changed"
+            },
+            {
+              "answer_bytes": 302,
+              "arguments": [
+                "old_api"
+              ],
+              "ok": true,
+              "step": 11,
+              "verb": "grep"
+            }
+          ],
+          "succeeded": true,
+          "transaction": "req-<request>",
+          "workspace": "<tree>"
+        },
+        "verb": "exec"
+      }
+    ],
+    "root_length": 111,
+    "tree": {
+      "digest": "4806c7510822521d5d48370e447a23c5eac50dfac9f89891ed149313c2377a35",
+      "entries": [
+        "d src",
+        "f Cargo.toml 44bd7ecaa67d24c45539bf20d8a7a83d73fc819152177eb90f8d9359f304f7c7 -",
+        "f src/five.rs ff8de686aeb274ef257567ae10d0de842748f2201685368e1761afe5b51a8184 -",
+        "f src/four.rs e7d3ee51e7ae431c85b95305ea09516659636d37731c5230e1939db483b10081 -",
+        "f src/lib.rs d525b1a1c054da9eeb5943da5264907a7617434c45de44bec91282e1b9c43137 -",
+        "f src/one.rs d0d7177f1af80ee55078279e16cd6bd0d0bb132ea0964fe05f7db2d9d22768ed -",
+        "f src/three.rs 31bb4b8c902f43ebc3265bfa5e78c7da3bf5f5c9acf66d8b6d57d57913e25759 -",
+        "f src/two.rs 40dd75369a6a8e12d55e779cb7e588d6669b60336748dcaa69feabd3e62548f9 -"
+      ]
+    }
+  },
+  "recorded": {
+    "backend": "linux-current",
+    "binary_sha256": "60cd6e7911ddf58e36549826251aaa8a4f045ddcf413d4abbab305815b92a075",
+    "revision": "0492f72e487e2463b0d7b938365a8b3383364cb9",
+    "runs_compared": 2
+  }
+}
