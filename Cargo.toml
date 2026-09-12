@@ -29,6 +29,8 @@ members = [
     "crates/thalyx-screen",
     "crates/thalyx-capture",
     "crates/thalyx-core",
+    "crates/thalyx-platform",
+    "crates/thalyx-managed",
     "crates/thalyx-cli",
     "crates/thalyx-mcp",
     "modules/dev.thalyx.greeter",
@@ -75,6 +77,8 @@ thalyx-capture = { path = "crates/thalyx-capture" }
 thalyx-term = { path = "crates/thalyx-term" }
 thalyx-edit = { path = "crates/thalyx-edit" }
 thalyx-core = { path = "crates/thalyx-core" }
+thalyx-platform = { path = "crates/thalyx-platform" }
+thalyx-managed = { path = "crates/thalyx-managed" }
 
 serde = { version = "1", features = ["derive"] }
 ciborium = "0.2"
