@@ -251,6 +251,7 @@ fn serve(
     backend: &str,
     root: &Path,
     env: &BTreeMap<String, String>,
+    extra_env: &[(&str, String)],
 ) -> Result<(Server, UnixStream, tempfile::TempDir), String> {
     // Not in the arena. A socket's path has to fit in `sun_path`, 108 bytes, and
     // a Btrfs scratch under a home directory does not leave room for one — which
@@ -287,6 +288,9 @@ fn serve(
         command.env_remove(inherited);
     }
     command.envs(env);
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
     let child = command
         .spawn()
         .map_err(|error| format!("{} could not be started: {error}", binary.display()))?;
@@ -307,6 +311,191 @@ fn serve(
                 ));
             }
         }
+    }
+}
+
+// ── the kernel guest ──────────────────────────────────────────────────────────
+//
+// EXP-13's third arm boots the real Thalyx-Kernel and drives it as the machine
+// side of the managed boundary. This is the harness half: it boots one guest
+// per case with a fresh medium, waits until the link is serving, hands the case
+// the console port the session speaks on, and shuts the guest down after.
+//
+// The guest is booted only when the environment names the image and the kernel
+// repository's launcher; otherwise the arm is `NOT PROVEN`, the same way the
+// Btrfs arm is when no scratch subvolume is named.
+
+const KERNEL: &str = "thalyx-kernel-managed";
+const NO_KERNEL: &str = "no kernel guest:";
+/// The worker port a session speaks on, and the control port the harness
+/// drives, as `tools/run_k1_link.py` and `thalyx_user_k5pkg::link` fix them.
+const KERNEL_LINE_PORT: u32 = 1;
+const KERNEL_CONTROL_PORT: u32 = 5;
+
+/// Writes one length-prefixed frame — the grammar `thalyx_bridge` fixes.
+fn write_console_frame(stream: &mut UnixStream, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    stream.write_all(&(body.len() as u32).to_le_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+/// Reads one length-prefixed frame.
+fn read_console_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header)?;
+    let length = u32::from_le_bytes(header) as usize;
+    let mut body = vec![0u8; length];
+    stream.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// A booted kernel, and the console sockets it exposes.
+struct Guest {
+    child: Child,
+    sockets: PathBuf,
+    _medium: Option<tempfile::TempDir>,
+}
+
+impl Guest {
+    fn line_socket(&self) -> PathBuf {
+        self.sockets.join(format!("port{KERNEL_LINE_PORT}"))
+    }
+
+    fn control_socket(&self) -> PathBuf {
+        self.sockets.join(format!("port{KERNEL_CONTROL_PORT}"))
+    }
+
+    /// Boots a guest with a fresh medium and waits until the link answers the
+    /// control port, which is proof the link is up and moving bytes on a port.
+    fn boot(label: &str) -> Result<Guest, String> {
+        let medium = tempfile::Builder::new()
+            .prefix("k1med")
+            .tempdir_in("/tmp")
+            .map_err(|error| format!("{NO_KERNEL} no directory for the medium: {error}"))?;
+        let medium_file = medium.path().join("medium.img");
+        Guest::boot_on(label, &medium_file, true, Some(medium))
+    }
+
+    /// Boots a guest on a named medium, fresh or reused. A reused medium is how
+    /// durable recovery is shown: publish, power the machine off, boot again on
+    /// the same bytes, and read the version back.
+    fn boot_on(
+        label: &str,
+        medium_file: &Path,
+        fresh: bool,
+        owner: Option<tempfile::TempDir>,
+    ) -> Result<Guest, String> {
+        let launcher = std::env::var("THALYX_K1_LAUNCHER").map_err(|_| {
+            format!(
+                "{NO_KERNEL} THALYX_K1_LAUNCHER names no `tools/run_k1_link.py` of the kernel \
+                 repository"
+            )
+        })?;
+        let image = std::env::var("THALYX_K1_IMAGE").map_err(|_| {
+            format!("{NO_KERNEL} THALYX_K1_IMAGE names no built `thalyx-k5.img` (stage thalyx)")
+        })?;
+        if !Path::new(&image).exists() {
+            return Err(format!("{NO_KERNEL} {image} is not there"));
+        }
+        let sockets = tempfile::Builder::new()
+            .prefix("k1sock")
+            .tempdir_in("/tmp")
+            .map_err(|error| format!("{NO_KERNEL} no directory for the sockets: {error}"))?;
+        let sockets_path = sockets.path().to_path_buf();
+        let out = medium_file
+            .parent()
+            .unwrap_or(Path::new("/tmp"))
+            .join(format!("run-{label}"));
+        let mut command = Command::new("python3");
+        command
+            .arg(&launcher)
+            .arg("--image")
+            .arg(&image)
+            .arg("--medium")
+            .arg(medium_file)
+            .arg("--sockets")
+            .arg(&sockets_path)
+            .arg("--out")
+            .arg(out)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if fresh {
+            command.arg("--fresh-medium");
+        }
+        let child = command
+            .spawn()
+            .map_err(|error| format!("{NO_KERNEL} the launcher could not be started: {error}"))?;
+        // Keep the sockets directory alive for as long as the guest: leaking it
+        // into the guest is what lets the control port be reached at drop.
+        let sockets_dir = sockets.keep();
+        let guest = Guest {
+            child,
+            sockets: sockets_dir,
+            _medium: owner,
+        };
+
+        // Ready when the control port answers `stats`. A guest under TCG takes
+        // a few seconds to boot and stand its services up; the deadline is
+        // generous because a slow host, not a broken guest, is what makes it
+        // long.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        loop {
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "{NO_KERNEL} the guest did not answer its control port within 180 s"
+                ));
+            }
+            if let Ok(mut control) = UnixStream::connect(guest.control_socket()) {
+                let _ = control.set_read_timeout(Some(Duration::from_secs(5)));
+                if write_console_frame(&mut control, br#"{"op":"stats"}"#).is_ok()
+                    && read_console_frame(&mut control).is_ok()
+                {
+                    return Ok(guest);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Sends a control-port request and reads its reply.
+    fn control(&self, request: &[u8]) -> Result<Value, String> {
+        let mut stream = UnixStream::connect(self.control_socket())
+            .map_err(|error| format!("the control port could not be reached: {error}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|error| error.to_string())?;
+        write_console_frame(&mut stream, request).map_err(|error| error.to_string())?;
+        let reply = read_console_frame(&mut stream).map_err(|error| error.to_string())?;
+        serde_json::from_slice(&reply).map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for Guest {
+    fn drop(&mut self) {
+        // Ask the guest to end, which powers the machine off, then wait for the
+        // launcher to exit; kill it if it will not.
+        if let Ok(mut control) = UnixStream::connect(self.control_socket()) {
+            let _ = write_console_frame(&mut control, br#"{"op":"shutdown"}"#);
+            let _ = read_console_frame(&mut control);
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
+                _ => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    break;
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
@@ -612,6 +801,16 @@ fn bound(text: &str, bindings: &BTreeMap<String, String>) -> Result<String, Stri
 }
 
 fn run_case(binary: &Path, backend: &str, root: &Path, case: &Case) -> Result<Ran, String> {
+    run_case_with(binary, backend, root, case, None)
+}
+
+fn run_case_with(
+    binary: &Path,
+    backend: &str,
+    root: &Path,
+    case: &Case,
+    kernel: Option<&Guest>,
+) -> Result<Ran, String> {
     let tree = root.join("tree");
     make_tree(backend, &tree)?;
     for (path, text) in &case.tree {
@@ -620,9 +819,19 @@ fn run_case(binary: &Path, backend: &str, root: &Path, case: &Case) -> Result<Ra
         std::fs::write(&full, text).map_err(|e| e.to_string())?;
     }
 
+    // The kernel-managed backend speaks its managed protocol on one console
+    // port of the running guest; the host side connects to that socket.
+    let extra_env: Vec<(&str, String)> = match kernel {
+        Some(guest) => vec![(
+            "THALYX_KERNEL_SOCKET",
+            guest.line_socket().display().to_string(),
+        )],
+        None => Vec::new(),
+    };
+
     // The socket's directory is held for as long as the server is, and dropped
     // after it.
-    let (server, mut stream, _sockets) = serve(binary, backend, root, &case.env)?;
+    let (server, mut stream, _sockets) = serve(binary, backend, root, &case.env, &extra_env)?;
     let hello = read_frame(&mut stream).map_err(|error| format!("no hello: {error}"))?;
     if !matches!(FromThalyx::decode(&hello), Ok(FromThalyx::Hello { .. })) {
         return Err(format!(
@@ -728,6 +937,49 @@ fn observe(binary: &Path, backend: &str, label: &str) -> Result<BTreeMap<String,
     Ok(observed)
 }
 
+/// Run the whole corpus on the kernel-managed backend, a fresh guest per case.
+///
+/// A guest per case is what keeps a case's line empty, exactly as a fresh
+/// tempdir store does for `linux-managed`: the medium starts zeroed and the
+/// session speaks on the one worker port, so what the case sees is a store with
+/// nothing but what the case published.
+fn observe_kernel(binary: &Path, label: &str) -> Result<BTreeMap<String, Ran>, String> {
+    let arena = arena(KERNEL, label)?;
+    let mut observed = BTreeMap::new();
+    for case in corpus() {
+        let root = arena.path().join(&case.name);
+        std::fs::create_dir(&root).map_err(|error| format!("{}: {error}", root.display()))?;
+        let guest = Guest::boot(&case.name)?;
+        let ran = run_case_with(binary, KERNEL, &root, &case, Some(&guest));
+        // What the kernel accounted for the run, for the report: the guest's
+        // own numbers, read over the control port before it is shut down.
+        let stats = guest.control(br#"{"op":"stats"}"#).ok();
+        drop(guest);
+        let mut ran = ran.map_err(|why| format!("{} on {KERNEL}: {why}", case.name))?;
+        if let (Some(object), Some(stats)) = (ran.observation.as_object_mut(), stats) {
+            object.insert("kernel".to_string(), stats);
+        }
+        observed.insert(case.name.clone(), ran);
+    }
+
+    if let Ok(directory) = std::env::var("THALYX_EXP13_REPORT") {
+        let directory = Path::new(&directory).join(format!("{KERNEL}-{label}"));
+        let _ = std::fs::create_dir_all(&directory);
+        for (name, ran) in &observed {
+            let _ = std::fs::write(
+                directory.join(format!("{name}.json")),
+                serde_json::to_string_pretty(&json!({
+                    "binary": binary.display().to_string(),
+                    "observation": ran.observation,
+                    "traces": ran.traces,
+                }))
+                .expect("JSON"),
+            );
+        }
+    }
+    Ok(observed)
+}
+
 // ── comparing ────────────────────────────────────────────────────────────────
 
 /// Every path at which two answers differ. A field present on one side and
@@ -814,7 +1066,7 @@ fn exact(observation: &Value, with_bytes: bool) -> Value {
 /// operations) and the machine fingerprint (both ran on the same machine).
 fn semantic(observation: &Value) -> Value {
     let mut value = exact(observation, false);
-    for field in ["machine", "journal"] {
+    for field in ["machine", "journal", "kernel"] {
         remove(&mut value, "", field);
     }
     let count = value["requests"].as_array().map(Vec::len).unwrap_or(0);
@@ -1073,6 +1325,97 @@ fn linux_managed_carries_out_the_corpus_and_differs_only_where_the_design_says()
 }
 
 #[test]
+fn thalyx_kernel_managed_means_what_linux_managed_means() {
+    // The third arm: the same managed transaction, over a console port of the
+    // running Thalyx-Kernel, against its K4 state service on a real medium. It
+    // is held to `linux-managed` rather than to `linux-current`, because K1 is
+    // the managed model and the question is whether putting it on the kernel
+    // changed what a transaction means. Anything that differs must be declared
+    // under `thalyx-kernel-managed` in the case, and a declaration that did not
+    // happen is as much a failure as an undeclared difference.
+    let kernel = match observe_kernel(&thalyx(), "kernel") {
+        Ok(kernel) => kernel,
+        Err(why) if why.contains(NO_KERNEL) => {
+            return not_proven(
+                "the kernel-managed backend ran the corpus and was compared with nothing",
+                &why,
+                "THALYX_REQUIRE_K1",
+            );
+        }
+        Err(why) => panic!("{why}"),
+    };
+    let managed = observe(&thalyx(), MANAGED, "referen").unwrap_or_else(|why| panic!("{why}"));
+
+    let mut failures = Vec::new();
+    for case in corpus() {
+        let ours = semantic(&kernel[&case.name].observation);
+        let theirs = semantic(&managed[&case.name].observation);
+        let mut paths = Vec::new();
+        differences(&theirs, &ours, "", &mut paths);
+
+        let declared = case
+            .differences
+            .get(KERNEL)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let covered = |path: &str, declaration: &Declared| {
+            path == declaration.at || path.starts_with(&format!("{}.", declaration.at))
+        };
+        let undeclared: Vec<&String> = paths
+            .iter()
+            .filter(|path| {
+                !declared
+                    .iter()
+                    .any(|declaration| covered(path, declaration))
+            })
+            .collect();
+        let stale: Vec<&Declared> = declared
+            .iter()
+            .filter(|declaration| !paths.iter().any(|path| covered(path, declaration)))
+            .collect();
+
+        if undeclared.is_empty() && stale.is_empty() {
+            eprintln!(
+                "PROVEN {}: thalyx-kernel-managed meant what linux-managed meant{}",
+                case.name,
+                if declared.is_empty() {
+                    String::new()
+                } else {
+                    let excused: Vec<String> = declared
+                        .iter()
+                        .map(|d| format!("{} ({})", d.at, d.why))
+                        .collect();
+                    format!(", except as declared: {}", excused.join("; "))
+                }
+            );
+        } else {
+            if !undeclared.is_empty() {
+                failures.push(format!(
+                    "{}: differs where nothing says it may, at {}",
+                    case.name,
+                    undeclared
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            for declaration in stale {
+                failures.push(format!(
+                    "{}: declares a difference at `{}` that did not happen ({})",
+                    case.name, declaration.at, declaration.why
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "thalyx-kernel-managed against linux-managed, run beside it:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
 #[ignore = "records dev/exp13/baseline from the unmodified binary; run by hand as the module documentation says"]
 fn record_the_baseline() {
     use sha2::{Digest, Sha256};
@@ -1148,5 +1491,351 @@ fn what_varies_between_honest_runs_is_scrubbed_and_nothing_else_is() {
             "at <store>/state/managed/0123456789abcdef01234567/workspaces/session/src"
         ),
         "at <tree>/src"
+    );
+}
+
+// ── the kernel-specific adversarial gates ─────────────────────────────────────
+//
+// The equivalence corpus already exercises publication success, a validation
+// failure that puts the tree back, and a failure kept on request — on K1 as on
+// every backend, because it runs the same corpus. Three properties are the
+// kernel's own and are checked here, over the same console transport the real
+// Thalyx uses, by driving the shared managed client directly: a stale
+// publication conflict, a fenced work that cannot publish, and a version that
+// survives the machine being powered off and booted again.
+//
+// These are `NOT PROVEN` unless a kernel image and launcher are named, the same
+// way the Btrfs arm is when no scratch subvolume is named.
+
+use thalyx_platform::managed::client::Managed as KernelClient;
+use thalyx_platform::state::{Decision, Receipt, VersionedState};
+use thalyx_platform::transport::{Carried, Transport, TransportError};
+
+/// The managed protocol over one console port, for driving the client from a
+/// test. The same length-prefixed frames the backend uses.
+struct TestConsole {
+    stream: UnixStream,
+    carried: Carried,
+}
+
+impl TestConsole {
+    fn connect(socket: &Path) -> Result<Self, String> {
+        let stream = UnixStream::connect(socket)
+            .map_err(|error| format!("the console port could not be reached: {error}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            stream,
+            carried: Carried::default(),
+        })
+    }
+}
+
+impl Transport for TestConsole {
+    fn call(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        self.carried.calls += 1;
+        write_console_frame(&mut self.stream, request)
+            .map_err(|error| TransportError::Gone(error.to_string()))?;
+        read_console_frame(&mut self.stream)
+            .map_err(|error| TransportError::Gone(error.to_string()))
+    }
+
+    fn carried(&self) -> Carried {
+        self.carried
+    }
+}
+
+/// A view and a private workspace on the host, seeded with one file. The view
+/// is what a publication lands in; the workspace is where a transaction acts.
+struct Session {
+    _dir: tempfile::TempDir,
+    client: KernelClient<TestConsole>,
+    workspace: PathBuf,
+}
+
+fn session(socket: &Path, principal: &str, seed_file: &str, seed: &str) -> Result<Session, String> {
+    let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let view = dir.path().join("view");
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&view).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
+    std::fs::write(view.join(seed_file), seed).map_err(|error| error.to_string())?;
+    let transport = TestConsole::connect(socket)?;
+    let client = KernelClient::new(transport, view.clone(), workspace.clone(), principal);
+    Ok(Session {
+        _dir: dir,
+        client,
+        workspace,
+    })
+}
+
+fn commit_receipt(request_id: &str) -> Receipt {
+    Receipt {
+        transaction: request_id.to_string(),
+        label: "adversarial".to_string(),
+        decision: Decision::Commit,
+        succeeded: true,
+        checks: Vec::new(),
+        program: None,
+    }
+}
+
+#[test]
+fn thalyx_kernel_refuses_a_stale_publication() {
+    let guest = match Guest::boot("stale") {
+        Ok(guest) => guest,
+        Err(why) if why.contains(NO_KERNEL) => {
+            return not_proven(
+                "a stale publication was not refused",
+                &why,
+                "THALYX_REQUIRE_K1",
+            );
+        }
+        Err(why) => panic!("{why}"),
+    };
+    // Two ports on one line: two principals contend on one generation.
+    let port1 = guest.line_socket();
+    let port2 = guest.sockets.join("port2");
+    guest
+        .control(br#"{"op":"bind","port":2,"line":1}"#)
+        .expect("bind port 2 to line 1");
+
+    let mut a = session(&port1, "a", "src/lib.rs", "pub fn one() {}\n").expect("session a");
+    let mut b = session(&port2, "b", "src/lib.rs", "pub fn one() {}\n").expect("session b");
+
+    // A seeds generation 1 and forks it; B forks the same generation 1 before A
+    // publishes, so both hold work over the same version.
+    a.client.open("a", "req-a").expect("a opens");
+    b.client.open("b", "req-b").expect("b opens");
+
+    std::fs::write(
+        a.workspace.join("src/lib.rs"),
+        "pub fn one() {}\npub fn a() {}\n",
+    )
+    .expect("a edits");
+    std::fs::write(
+        b.workspace.join("src/lib.rs"),
+        "pub fn one() {}\npub fn b() {}\n",
+    )
+    .expect("b edits");
+    a.client
+        .candidate()
+        .expect("a freezes")
+        .expect("a candidate");
+    b.client
+        .candidate()
+        .expect("b freezes")
+        .expect("b candidate");
+
+    let published = a
+        .client
+        .keep(&commit_receipt("req-a"))
+        .expect("a publishes");
+    assert_eq!(
+        published.generation,
+        Some(2),
+        "a moved the line to generation 2"
+    );
+
+    let stale = b
+        .client
+        .keep(&commit_receipt("req-b"))
+        .expect_err("b's publication is stale and must be refused");
+    assert!(
+        stale.contains("no longer the published one") || stale.to_lowercase().contains("stale"),
+        "the refusal should say the generation moved: {stale}"
+    );
+    eprintln!("PROVEN stale: the kernel refused a publication against a generation that moved");
+}
+
+#[test]
+fn thalyx_kernel_fences_a_work_so_it_cannot_publish() {
+    let guest = match Guest::boot("fence") {
+        Ok(guest) => guest,
+        Err(why) if why.contains(NO_KERNEL) => {
+            return not_proven("a fenced work still published", &why, "THALYX_REQUIRE_K1");
+        }
+        Err(why) => panic!("{why}"),
+    };
+    let mut a =
+        session(&guest.line_socket(), "a", "src/lib.rs", "pub fn one() {}\n").expect("session");
+    a.client.open("a", "req-a").expect("a opens");
+    std::fs::write(
+        a.workspace.join("src/lib.rs"),
+        "pub fn one() {}\npub fn a() {}\n",
+    )
+    .expect("a edits");
+    a.client
+        .candidate()
+        .expect("a freezes")
+        .expect("a candidate");
+
+    // The work's scope is fenced from outside, over the control port. Every
+    // grant derived under it stops working, checked by the kernel.
+    let fenced = guest.control(br#"{"op":"fence","line":1}"#).expect("fence");
+    assert_eq!(fenced["ok"], json!(true), "the fence took: {fenced}");
+
+    let refused = a
+        .client
+        .keep(&commit_receipt("req-a"))
+        .expect_err("a fenced work must not publish");
+    assert!(
+        refused.to_lowercase().contains("closed") || refused.contains("work"),
+        "the refusal should name the closed work: {refused}"
+    );
+    // And the kernel is the one that refused it: the control port's own view of
+    // the work's grant says the lineage is fenced.
+    let admit = guest
+        .control(br#"{"op":"admit","line":1,"principal":1,"transaction":"a"}"#)
+        .unwrap_or(json!({"admitted": true}));
+    assert_eq!(
+        admit["admitted"],
+        json!(false),
+        "the kernel should refuse the work's grant: {admit}"
+    );
+    eprintln!("PROVEN fence: a fenced work's publication was refused by the kernel");
+}
+
+#[test]
+fn thalyx_kernel_recovers_a_published_version_after_a_reboot() {
+    // The medium outlives the guest, so the second boot is the same bytes the
+    // first left. That is what durability is here: not a power cut, but the
+    // writer disappearing and the store coming back on what reached the medium.
+    let medium = match tempfile::tempdir() {
+        Ok(medium) => medium,
+        Err(error) => panic!("{error}"),
+    };
+    let medium_file = medium.path().join("medium.img");
+
+    let root = {
+        let guest = match Guest::boot_on("recover-1", &medium_file, true, None) {
+            Ok(guest) => guest,
+            Err(why) if why.contains(NO_KERNEL) => {
+                return not_proven(
+                    "a published version did not survive a reboot",
+                    &why,
+                    "THALYX_REQUIRE_K1",
+                );
+            }
+            Err(why) => panic!("{why}"),
+        };
+        let mut a =
+            session(&guest.line_socket(), "a", "src/lib.rs", "pub fn one() {}\n").expect("session");
+        a.client.open("a", "req-a").expect("a opens");
+        std::fs::write(
+            a.workspace.join("src/lib.rs"),
+            "pub fn one() {}\npub fn a() {}\n",
+        )
+        .expect("a edits");
+        a.client
+            .candidate()
+            .expect("a freezes")
+            .expect("a candidate");
+        let kept = a
+            .client
+            .keep(&commit_receipt("req-a"))
+            .expect("a publishes");
+        assert_eq!(kept.generation, Some(2));
+        kept.root.expect("a root")
+        // The guest is dropped here: shutdown, and the machine powers off.
+    };
+
+    // Boot again on the same medium and read the published version back.
+    let guest = Guest::boot_on("recover-2", &medium_file, false, Some(medium))
+        .expect("the guest boots again on the same medium");
+    let transport = TestConsole::connect(&guest.line_socket()).expect("connect");
+    let mut client = KernelClient::new(
+        transport,
+        Path::new("/nonexistent/view"),
+        Path::new("/nonexistent/workspace"),
+        "a",
+    );
+    let (generation, recovered) = client
+        .published()
+        .expect("the store answers after a reboot");
+    assert_eq!(generation, 2, "the generation survived the reboot");
+    assert_eq!(
+        recovered.as_deref(),
+        Some(root.as_str()),
+        "the published root is the one written before the reboot"
+    );
+    eprintln!("PROVEN recovery: a version published before a reboot came back after it");
+}
+
+// ── the EXP-13 campaign ───────────────────────────────────────────────────────
+//
+// The final comparison. One frozen configuration, the same corpus, and as many
+// paired rounds as asked for; every arm that this machine can run is run each
+// round, in a randomised order, and every observation is written with its
+// platform trace so the analysis can take paired differences across rounds.
+//
+// It is `#[ignore]` because it is the campaign, not a unit test: it boots a
+// guest per K1 case per round, and it wants a Btrfs scratch for L0. It writes
+// nothing but observations; `dev/exp13/analyze.py` turns them into the causal
+// verdict. Run it with:
+//
+//   THALYX_EXP13_REPORT=<dir> THALYX_EXP13_ROUNDS=<n> \
+//   THALYX_BTRFS_SCRATCH=<btrfs dir> \
+//   THALYX_K1_IMAGE=<thalyx-k5.img> THALYX_K1_LAUNCHER=<run_k1_link.py> \
+//     cargo test -p thalyx-cli --test exp13_equivalence -- --ignored --nocapture exp13_campaign
+#[test]
+#[ignore = "the EXP-13 campaign: boots a guest per K1 case per round; run by hand"]
+fn exp13_campaign() {
+    let report = std::env::var("THALYX_EXP13_REPORT")
+        .expect("THALYX_EXP13_REPORT names where the campaign writes its observations");
+    let rounds: usize = std::env::var("THALYX_EXP13_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5);
+    let base = Path::new(&report);
+    std::fs::create_dir_all(base).expect("the report directory");
+
+    // Which arms this machine can run, decided once so every round runs the
+    // same set. L0 needs a Btrfs scratch; K1 needs a kernel image and launcher.
+    let mut arms: Vec<&str> = vec![MANAGED];
+    if std::env::var("THALYX_BTRFS_SCRATCH").is_ok() {
+        arms.insert(0, CURRENT);
+    } else {
+        eprintln!("campaign: L0 (linux-current) skipped — no THALYX_BTRFS_SCRATCH");
+    }
+    let has_kernel =
+        std::env::var("THALYX_K1_IMAGE").is_ok() && std::env::var("THALYX_K1_LAUNCHER").is_ok();
+    if has_kernel {
+        arms.push(KERNEL);
+    } else {
+        eprintln!("campaign: K1 (thalyx-kernel-managed) skipped — no THALYX_K1_IMAGE/LAUNCHER");
+    }
+
+    for round in 0..rounds {
+        // A randomised order per round, so a drift in the machine over a round
+        // does not land on one arm. A cheap deterministic shuffle seeded by the
+        // round is enough: the order is recorded in the paths.
+        let mut order = arms.clone();
+        let seed = (round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for index in (1..order.len()).rev() {
+            let pick = ((seed >> index) as usize + index) % (index + 1);
+            order.swap(index, pick);
+        }
+        for arm in &order {
+            let label = format!("r{round}");
+            // observe/observe_kernel write to `$THALYX_EXP13_REPORT/{backend}-{label}`,
+            // and the label carries the round, so the whole campaign lands under
+            // the one report directory without the environment changing.
+            let outcome = match *arm {
+                KERNEL => observe_kernel(&thalyx(), &label).map(|_| ()),
+                other => observe(&thalyx(), other, &label).map(|_| ()),
+            };
+            match outcome {
+                Ok(()) => eprintln!("campaign: round {round} arm {arm} done"),
+                Err(why) => panic!("campaign: round {round} arm {arm}: {why}"),
+            }
+        }
+    }
+    eprintln!(
+        "campaign: {rounds} round(s) of {:?} written under {}; analyze with \
+         dev/exp13/analyze.py",
+        arms,
+        base.display()
     );
 }
