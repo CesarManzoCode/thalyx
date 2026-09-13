@@ -163,22 +163,68 @@ distinto sólo donde un caso lo declara, y cada declaración tiene que ocurrir.
 La etapa 62 de `dev/verify.sh` construye `0492f72` desde git y corre el corpus
 con las dos cosas vivas en la máquina de Cesar.
 
-## Lo que queda para el Sprint 2
+## Sprint 2: K1, `thalyx-kernel-managed`, implementado
 
-Implementar `Platform` contra las primitivas de Thalyx-Kernel, y nada más:
+El tercer backend existe y se elige con `THALYX_PLATFORM=thalyx-kernel-managed`.
+Se implementó **sin tocar la semántica de `exec.rs`**: el único cambio en
+`exec.rs` es una rama de despacho —la selección del árbol trata a
+`thalyx-kernel-managed` igual que a `linux-managed`, porque los dos necesitan un
+directorio y no un subvolumen—. No cambió qué hace un paso rechazado, qué decide
+un commit ni qué autoriza un rollback. La frontera estaba bien cortada.
 
-- `VersionedState`: el mismo `thalyx_platform::managed::client::Managed` sobre un
-  `Transport` al servicio de estado de K4 (fork, freeze, publish con CAS sobre la
-  generación, result, discard).
-- `ProgramLaunch`: el lanzador de K5 sobre un candidato sellado; la contabilidad
-  es la del ámbito, leída del kernel.
-- `WorkControl`: la cerca de ámbito del kernel en lugar de `Scoped`.
-- `EvidenceSink`: el objeto de evidencia en el mismo servicio.
-- `MonotonicClock`: `CLOCK_QUERY`.
-- `MessageTransport`: el canal al invitado.
+Lo que K1 **es**, propiedad por propiedad:
 
-Si en el Sprint 2 hace falta tocar `exec.rs`, esta frontera estaba mal cortada, y
-eso se escribe aquí antes de arreglarlo.
+- `VersionedState` y `EvidenceSink`: **el mismo
+  `thalyx_platform::managed::client::Managed`, sin cambios**, sobre un
+  `Transport` nuevo —`ConsoleTransport` en `crates/thalyx-cli/src/platform.rs`—
+  que enmarca cada mensaje administrado (cuatro bytes de longitud y el cuerpo
+  JSON, la gramática de `thalyx-bridge`) y lo escribe en un puerto
+  virtio-console del kernel corriendo. Al otro lado está el servicio de estado
+  de K4 sin cambios, sobre el driver de bloque de K4, sobre un medio real. El
+  cliente no distingue este almacén del de `linux-managed` sobre loopback: esa
+  es toda la afirmación de K1 —el mismo Thalyx, la misma frontera, otra máquina—.
+- `WorkControl`: **un ámbito del kernel por transacción**. El dominio *link*
+  (`thalyx-kernel/user/k5link`) abre un ámbito hijo cuando un trabajo hace
+  `fork` y deriva bajo la vida de ese ámbito el grant por el que la publicación
+  viaja; cercar el ámbito hace que el kernel rechace ese grant en su siguiente
+  uso —comprobado por el kernel, no por un programa—. El coordinador host-side
+  (`Scoped`) es idéntico al de L1; la cerca real la impone el kernel y es lo que
+  la puerta adversaria de cancelación ejercita.
+- `MessageTransport`: un canal de kernel real —una función virtio-console que el
+  kernel asignó y que el link conduce desde usuario, `user/k5link/src/virtio.rs`,
+  el mismo transporte moderno que K3 levantó para bloques—.
+- `MonotonicClock` y `ProgramLaunch`: **host-side, y declarados como tales**. La
+  transacción de la revisión real de Thalyx corre en el host —`exec.rs`, el
+  reloj del host, `run_foreign` para lanzar la validación—, exactamente como en
+  L1. `Check::Rust` compila con `cargo` y QuickJS ejecuta el programa, y ninguno
+  corre bajo este kernel; K5 demostró una herramienta nativa sobre un candidato
+  sellado, pero no `Check::Rust`, y este brazo **no** reclama ejecución nativa
+  para la validación. El perfil de K1 lo dice: `launch =
+  linux_confined_process_host_side`.
+
+**La garantía más fuerte, declarada.** El perfil de `linux-managed` dice
+`exclusive_store_writer: detected_by_digest_not_prevented` y `holds = false`,
+porque nada en Linux impide que otro proceso del usuario escriba `objects/`. El
+perfil de K1 dice `exclusive_store_writer: prevented_kernel_owns_the_medium` y
+`holds = true`: no hay `objects/` en un sistema de archivos, hay un medio del
+que sólo el servicio de estado —el único dominio al que el kernel dio el
+dispositivo— puede escribir. Prevenirlo es para lo que sirve un kernel dueño del
+medio, y es la única diferencia de garantía que K1 declara sobre L1.
+
+Cómo aterriza el modelo de Thalyx sobre el de K4: Thalyx tiene *líneas*
+(secuencias de generaciones con identidad de contenido `c1-…`), K4 publica una
+*raíz* (un árbol de a lo más doce nombres). El link guarda el estado de cada
+línea dentro de una sola raíz de K4 —un árbol `O` de todos los objetos, un
+índice `X`, y por línea su historia `H`, su evidencia `E` y su recibo `R`—, y un
+objeto mayor que el techo de K4 viaja como un árbol de trozos. Una publicación de
+Thalyx es una publicación de K4 con CAS sobre la generación de la raíz, decidida
+además contra la generación de la línea; un corte entre `PREPARE` y `COMMIT` lo
+resuelve la recuperación de K4 como en su matriz. Detalle en
+`user/k5link/src/managed.rs` y en la evidencia del kernel `exp13-k1-final.md`.
+
+Qué corre dónde, sin redondear: el servicio de estado, el driver, el medio, los
+ámbitos de trabajo y el transporte son del kernel; el agente, QuickJS, las
+herramientas, la validación y la respuesta son del host, igual que en L1.
 
 Relacionado: [[Principio-Doble-Ruta]], [[Identidad-de-Estado]],
 [[Estrategia-de-Pruebas]], [[Punto-Actual]].
