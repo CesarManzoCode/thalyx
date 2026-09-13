@@ -2404,7 +2404,7 @@ pub fn run(store: &Store, here: &mut Where, rest: &str, face: Face, request_id: 
                 return Ok(());
             }
         },
-        crate::platform::Backend::LinuxManaged => {
+        crate::platform::Backend::LinuxManaged | crate::platform::Backend::KernelManaged => {
             match crate::platform::managed_tree_for(here.at()) {
                 Ok(tree) => tree,
                 Err((word, why)) => {

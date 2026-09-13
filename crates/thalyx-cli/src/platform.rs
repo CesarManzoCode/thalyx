@@ -42,7 +42,7 @@ use thalyx_platform::launch::{LaunchRequest, Launched, ProgramLaunch};
 use thalyx_platform::managed::client::Managed;
 use thalyx_platform::profile::{ManagedLocal, Profile};
 use thalyx_platform::state::{AbandonFailure, Changes, Kept, Opened, Receipt, VersionedState};
-use thalyx_platform::transport::Loopback;
+use thalyx_platform::transport::{Carried, Loopback, Transport, TransportError};
 #[cfg(test)]
 use thalyx_platform::work::Fence;
 use thalyx_platform::work::{Ambient, Scoped, WorkControl};
@@ -59,10 +59,20 @@ pub const VARIABLE: &str = "THALYX_PLATFORM";
 /// not name.
 pub const PRINCIPAL: &str = "session";
 
+/// The socket a `thalyx-kernel-managed` session speaks its managed protocol on.
+///
+/// One console port of the running kernel, exposed by QEMU as a UNIX socket.
+/// The port is the line: a session on this socket is a view of the store the
+/// kernel keeps, and a second session on another port is another view. The
+/// harness that boots the kernel sets this per session, the way
+/// `project_directory` places a store per view on Linux.
+pub const KERNEL_SOCKET: &str = "THALYX_KERNEL_SOCKET";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     LinuxCurrent,
     LinuxManaged,
+    KernelManaged,
 }
 
 impl Backend {
@@ -70,6 +80,7 @@ impl Backend {
         match word {
             "linux-current" => Some(Backend::LinuxCurrent),
             "linux-managed" => Some(Backend::LinuxManaged),
+            "thalyx-kernel-managed" => Some(Backend::KernelManaged),
             _ => None,
         }
     }
@@ -78,6 +89,7 @@ impl Backend {
         match self {
             Backend::LinuxCurrent => "linux-current",
             Backend::LinuxManaged => "linux-managed",
+            Backend::KernelManaged => "thalyx-kernel-managed",
         }
     }
 
@@ -93,7 +105,7 @@ impl Backend {
             Ok(value) => Self::named(&value).ok_or_else(|| {
                 format!(
                     "`{VARIABLE}={value}` names no platform this machine has; it has \
-                     `linux-current` and `linux-managed`"
+                     `linux-current`, `linux-managed` and `thalyx-kernel-managed`"
                 )
             }),
         }
@@ -602,6 +614,307 @@ impl Platform for LinuxManaged<'_> {
     }
 }
 
+// ── thalyx-kernel-managed ────────────────────────────────────────────────────
+
+/// The managed protocol over one console port of the running kernel.
+///
+/// Every request is a length-prefixed JSON frame — four bytes little-endian,
+/// then that many bytes, the grammar `thalyx_bridge` fixes — written to a UNIX
+/// socket QEMU exposes for one virtio-console port, and the reply comes back the
+/// same way. The client on this side is `thalyx_platform::managed::Managed`,
+/// unchanged and the same one `linux-managed` uses; what is on the far side is
+/// the kernel's K4 state service, reached through the link domain over a real
+/// kernel transport, rather than a `thalyx-managed::LinuxStore` on a loopback.
+/// The client cannot tell the difference, which is the whole point of the
+/// arm: the same Thalyx, over the same boundary, on a different machine.
+pub struct ConsoleTransport {
+    stream: std::os::unix::net::UnixStream,
+    carried: Carried,
+}
+
+impl ConsoleTransport {
+    /// Connects to the console port socket named by `path`.
+    pub fn connect(path: &Path) -> Result<Self, String> {
+        let stream = std::os::unix::net::UnixStream::connect(path).map_err(|error| {
+            format!(
+                "the kernel's console port {} could not be reached: {error}",
+                path.display()
+            )
+        })?;
+        // A managed call is a request and its reply; a transaction that hangs
+        // on a machine that stopped answering has to be able to say so.
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .ok();
+        Ok(Self {
+            stream,
+            carried: Carried::default(),
+        })
+    }
+}
+
+impl Transport for ConsoleTransport {
+    fn call(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        use std::io::{Read, Write};
+        let length = u32::try_from(request.len())
+            .map_err(|_| TransportError::Gone("a managed request is too large to frame".into()))?;
+        self.carried.calls += 1;
+        self.carried.bytes_sent += request.len() as u64;
+        let gone = |error: std::io::Error| TransportError::Gone(error.to_string());
+        self.stream.write_all(&length.to_le_bytes()).map_err(gone)?;
+        self.stream.write_all(request).map_err(gone)?;
+        self.stream.flush().map_err(gone)?;
+
+        let mut header = [0u8; 4];
+        self.stream.read_exact(&mut header).map_err(gone)?;
+        let reply_len = u32::from_le_bytes(header) as usize;
+        // The link never frames a reply larger than its own buffer; a length
+        // past what a managed reply can be is a machine that lost the framing,
+        // and reading it is the denial of service.
+        if reply_len > 8 * 1024 * 1024 {
+            return Err(TransportError::Gone(format!(
+                "the kernel answered a frame of {reply_len} bytes, which is not a managed reply"
+            )));
+        }
+        let mut reply = vec![0u8; reply_len];
+        self.stream.read_exact(&mut reply).map_err(gone)?;
+        self.carried.bytes_received += reply.len() as u64;
+        Ok(reply)
+    }
+
+    fn carried(&self) -> Carried {
+        self.carried
+    }
+}
+
+pub fn kernel_managed_profile() -> Profile {
+    Profile {
+        backend: Backend::KernelManaged.word().to_string(),
+        managed_local_v1: ManagedLocal {
+            immutable_roots: true,
+            durable_cas_publication: true,
+            defined_grants_and_closure: true,
+            // The work's life is a kernel scope, and the grant a publication
+            // goes through is derived under it: a fenced work's publication is
+            // refused by the kernel, not by a flag in a program.
+            explicit_resources: "kernel_scope_accounting_and_fence".to_string(),
+            // The stronger guarantee this backend is for. Nothing but the K4
+            // state service can write the medium: it is the only domain the
+            // kernel gave the block device, and no other process of any user
+            // can reach `objects/` because there is no `objects/` on a
+            // filesystem — there is a medium the kernel owns.
+            exclusive_store_writer: "prevented_kernel_owns_the_medium".to_string(),
+            holds: true,
+        },
+        // The private workspace is a host directory on this side of the
+        // boundary, because Thalyx's tools, QuickJS and validation run on the
+        // host exactly as they do for `linux-managed`; what is native is the
+        // store, the work's life and the transport.
+        mutable_files: true,
+        type_check: true,
+        validation_binding: "candidate_content_identity".to_string(),
+        publication: "cas_on_generation_k4_prepare_commit_log".to_string(),
+        rollback: "private_workspace_discarded".to_string(),
+        evidence: "content_addressed_object_named_in_k4_log".to_string(),
+        // Declared host-side and identical to linux-managed: a Thalyx
+        // validation of the real revision compiles with cargo and runs QuickJS,
+        // and neither runs under this kernel. K5 proved a native tool over a
+        // sealed candidate; this arm does not claim it for `Check::Rust`.
+        launch: "linux_confined_process_host_side".to_string(),
+        work: "kernel_scope_with_fence".to_string(),
+        transport: "virtio_console_length_prefixed_frames".to_string(),
+        power_cut_durability: "k4_log_and_objects_driver_suppressed_writes".to_string(),
+    }
+}
+
+/// The K1 backend: the managed model over a console port of the running kernel.
+///
+/// It is `LinuxManaged` with one part replaced — the transport — because that
+/// is the whole of what the boundary asked the Sprint-2 work to do: implement
+/// `Platform` against Thalyx-Kernel's primitives and change nothing else. The
+/// view and the private workspace are host directories, as they are for
+/// `linux-managed`; the launcher is the same host `run_foreign`; the store,
+/// the work's life and the channel are the kernel's.
+pub struct KernelManaged<'a> {
+    profile: Profile,
+    clock: SystemClock,
+    state: KernelState<'a>,
+    launcher: Confined<'a>,
+    work: Scoped,
+}
+
+/// The managed client over the console, with Thalyx's journal beside it.
+pub struct KernelState<'a> {
+    store: &'a Store,
+    inner: Managed<ConsoleTransport>,
+    request_id: String,
+    journal_error: Option<String>,
+}
+
+impl KernelState<'_> {
+    fn journal(&mut self, operation: &str, notes: Vec<String>) {
+        let entry = Entry {
+            timestamp: thalyx_journal::now(),
+            operation: operation.to_string(),
+            module_id: None,
+            version: None,
+            outcome: Outcome::Success,
+            request_id: self.request_id.clone(),
+            origin: Origin::UserUtterance,
+            snapshot: None,
+            notes,
+        };
+        if let Err(error) = Journal::open(self.store.journal_path()).and_then(|j| j.append(&entry))
+        {
+            self.journal_error = Some(error.to_string());
+        }
+    }
+}
+
+impl VersionedState for KernelState<'_> {
+    fn workspace(&self) -> &Path {
+        self.inner.workspace()
+    }
+
+    fn open(&mut self, label: &str, request_id: &str) -> Result<Opened, String> {
+        self.request_id = request_id.to_string();
+        let opened = self.inner.open(label, request_id)?;
+        let view = self.inner.view().display().to_string();
+        self.journal(
+            "kernel_fork",
+            vec![format!("on {view}"), format!("from {}", opened.base)],
+        );
+        Ok(opened)
+    }
+
+    fn changed(&mut self) -> Changes {
+        self.inner.changed()
+    }
+
+    fn candidate(&mut self) -> Result<Option<String>, String> {
+        self.inner.candidate()
+    }
+
+    fn keep(&mut self, receipt: &Receipt) -> Result<Kept, String> {
+        let kept = self.inner.keep(receipt)?;
+        self.journal(
+            "kernel_publish",
+            vec![
+                format!("generation {}", kept.generation.unwrap_or(0)),
+                format!("root {}", kept.root.clone().unwrap_or_default()),
+            ],
+        );
+        Ok(kept)
+    }
+
+    fn abandon(&mut self, receipt: &Receipt) -> Result<(), AbandonFailure> {
+        self.inner.abandon(receipt)?;
+        let view = self.inner.view().display().to_string();
+        self.journal(
+            "kernel_abandon",
+            vec![format!("private work on {view} discarded")],
+        );
+        Ok(())
+    }
+
+    fn end_state(&mut self) -> Option<String> {
+        self.inner.end_state()
+    }
+
+    fn describe(&self) -> Value {
+        let mut described = self.inner.describe();
+        if let (Some(object), Some(error)) = (described.as_object_mut(), &self.journal_error) {
+            object.insert("journal_error".to_string(), json!(error));
+        }
+        described
+    }
+}
+
+impl EvidenceSink for KernelState<'_> {
+    fn record(&mut self, id: &str, body: &[u8]) -> std::io::Result<()> {
+        self.inner.record(id, body)
+    }
+
+    fn fetch(&mut self, id: &str) -> Fetched {
+        self.inner.fetch(id)
+    }
+}
+
+impl<'a> KernelManaged<'a> {
+    /// The socket path a `thalyx-kernel-managed` session speaks on.
+    pub fn socket_path() -> Result<PathBuf, String> {
+        match std::env::var(KERNEL_SOCKET) {
+            Ok(value) if !value.is_empty() => Ok(PathBuf::from(value)),
+            _ => Err(format!(
+                "`thalyx-kernel-managed` needs {KERNEL_SOCKET} to name a console port of a \
+                 running kernel; boot one with `tools/run_k1_link.py` and point it at a port"
+            )),
+        }
+    }
+
+    pub fn open(store: &'a Store, view: &Path, request_id: &str) -> Result<Self, String> {
+        let socket = Self::socket_path()?;
+        let transport = ConsoleTransport::connect(&socket)?;
+        let project = kernel_project_directory(store, view);
+        let workspace = project.join("workspaces").join(PRINCIPAL);
+        std::fs::create_dir_all(&workspace)
+            .map_err(|error| format!("the private workspace could not be made: {error}"))?;
+        Ok(Self {
+            profile: kernel_managed_profile(),
+            clock: SystemClock::new(),
+            state: KernelState {
+                store,
+                inner: Managed::new(transport, view, workspace, PRINCIPAL),
+                request_id: request_id.to_string(),
+                journal_error: None,
+            },
+            launcher: Confined { store },
+            work: Scoped::new(request_id),
+        })
+    }
+
+    /// The handle that closes this work on the host side. The kernel closes the
+    /// real work's scope over the control line; this is the host coordinator's
+    /// mirror, held to by the tests exactly as `LinuxManaged`'s is.
+    #[cfg(test)]
+    pub fn fence(&self) -> Fence {
+        self.work.fence()
+    }
+}
+
+impl Platform for KernelManaged<'_> {
+    fn profile(&self) -> &Profile {
+        &self.profile
+    }
+    fn clock(&self) -> &dyn MonotonicClock {
+        &self.clock
+    }
+    fn state(&mut self) -> &mut dyn VersionedState {
+        &mut self.state
+    }
+    fn launcher(&mut self) -> &mut dyn ProgramLaunch {
+        &mut self.launcher
+    }
+    fn work(&mut self) -> &mut dyn WorkControl {
+        &mut self.work
+    }
+    fn evidence(&mut self) -> &mut dyn EvidenceSink {
+        &mut self.state
+    }
+}
+
+/// Where a kernel-managed view's private workspace and journal-side project
+/// live on the host. The store itself is not here — it is on the kernel's
+/// medium — so this holds only the host half: the private workspace the work's
+/// requests act in, forked from the version the kernel published.
+pub fn kernel_project_directory(store: &Store, view: &Path) -> PathBuf {
+    let digest = Sha256::digest(view.as_os_str().as_encoded_bytes());
+    store
+        .state_root()
+        .join("kernel-managed")
+        .join(hex::encode(&digest[..12]))
+}
+
 /// The backend a boundary on this tree is carried out on.
 pub fn for_tree<'a>(
     store: &'a Store,
@@ -616,6 +929,7 @@ pub fn for_tree<'a>(
             tree,
         ))),
         Backend::LinuxManaged => Ok(Box::new(LinuxManaged::open(store, tree, request_id)?)),
+        Backend::KernelManaged => Ok(Box::new(KernelManaged::open(store, tree, request_id)?)),
     }
 }
 
@@ -642,6 +956,27 @@ pub fn fetch_evidence(store: &Store, backend: Backend, id: &str) -> Fetched {
             }
             // Rule 10: a store that could not be read might hold it.
             unreadable.map_or(Fetched::Absent, Fetched::Unreadable)
+        }
+        Backend::KernelManaged => {
+            // Fetched over the same console port the run used, without opening
+            // anything else: `find_evidence` then `get`, which is all
+            // `Managed::fetch` does and neither touches the view. A throwaway
+            // client carries the two calls.
+            let socket = match KernelManaged::socket_path() {
+                Ok(path) => path,
+                Err(why) => return Fetched::Unreadable(why),
+            };
+            let transport = match ConsoleTransport::connect(&socket) {
+                Ok(transport) => transport,
+                Err(why) => return Fetched::Unreadable(why),
+            };
+            let mut client = Managed::new(
+                transport,
+                std::path::Path::new("/nonexistent/view"),
+                std::path::Path::new("/nonexistent/workspace"),
+                PRINCIPAL,
+            );
+            client.fetch(id)
         }
     }
 }
